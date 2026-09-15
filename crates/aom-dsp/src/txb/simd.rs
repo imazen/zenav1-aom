@@ -18,7 +18,7 @@
 
 use archmage::prelude::*;
 
-use crate::txb::{TX_PAD_BOTTOM, TX_PAD_END, TX_PAD_HOR, TxClass};
+use crate::txb::{TxClass, TX_PAD_BOTTOM, TX_PAD_END, TX_PAD_HOR};
 
 /// Scalar tier = the transcribed port, verbatim.
 pub(crate) fn txb_init_levels_impl_scalar(
@@ -87,8 +87,8 @@ pub(crate) fn txb_init_levels_impl(
             // going — it was the top `__memset`/store caller in the frame-pointer
             // profile despite already being SIMD.
             let bytes = [
-                a[0] as u8, a[1] as u8, a[2] as u8, a[3] as u8,
-                a[4] as u8, a[5] as u8, a[6] as u8, a[7] as u8,
+                a[0] as u8, a[1] as u8, a[2] as u8, a[3] as u8, a[4] as u8, a[5] as u8, a[6] as u8,
+                a[7] as u8,
             ];
             out[c * 8..c * 8 + 8].copy_from_slice(&bytes);
         }
@@ -135,63 +135,22 @@ pub(crate) fn txb_init_levels_impl_v3(
     // One preflight covers every access below: short buffers take the scalar
     // path (which panics on them identically — same contract, no reachable
     // behaviour change), and the fast path is then check-free by shape.
-    if levels.len() < tail + TX_PAD_BOTTOM * stride + TX_PAD_END
-        || coeff.len() < width * height
-    {
+    if levels.len() < tail + TX_PAD_BOTTOM * stride + TX_PAD_END || coeff.len() < width * height {
         crate::txb::txb_init_levels_scalar(coeff, width, height, levels);
         return;
     }
 
     // The tail pad is 48..160 bytes (4*stride+16, stride in {8,12,20,36}) —
-    // always a multiple of 16. Written as a straight-line sequence per height
-    // arm: a zero-store LOOP gets idiom-recognised back into a memset call
-    // (~106 Ir/call at 1.7M calls — measured), while fixed stores inline.
-    let zero128 = _mm_setzero_si128();
-    let zero256 = _mm256_setzero_si256();
-    {
-        let pad = &mut levels[tail..tail + TX_PAD_BOTTOM * stride + TX_PAD_END];
-        let s128 = |p: &mut [u8], o: usize| {
-            _mm_storeu_si128(<&mut [u8; 16]>::try_from(&mut p[o..o + 16]).unwrap(), zero128);
-        };
-        match height {
-            4 => {
-                s128(pad, 0);
-                s128(pad, 16);
-                s128(pad, 32); // 48B
-            }
-            8 => {
-                _mm256_storeu_si256(
-                    <&mut [u8; 32]>::try_from(&mut pad[..32]).unwrap(),
-                    zero256,
-                );
-                s128(pad, 32);
-                s128(pad, 48); // 64B
-            }
-            16 => {
-                let mut s256 = |o: usize| {
-                    _mm256_storeu_si256(
-                        <&mut [u8; 32]>::try_from(&mut pad[o..o + 32]).unwrap(),
-                        zero256,
-                    );
-                };
-                s256(0);
-                s256(32);
-                s256(64); // 96B
-            }
-            _ => {
-                let mut s256 = |o: usize| {
-                    _mm256_storeu_si256(
-                        <&mut [u8; 32]>::try_from(&mut pad[o..o + 32]).unwrap(),
-                        zero256,
-                    );
-                };
-                s256(0);
-                s256(32);
-                s256(64);
-                s256(96);
-                s256(128); // 160B
-            }
-        }
+    // always a multiple of 16. One aggregate copy_from_slice per arm: a
+    // comptime-length copy lowers to inline vector stores, while a byte-wise
+    // loop or `.fill(0)` on a dynamic slice gets idiom-recognised back into a
+    // memset call (~106 Ir/call at 1.7M calls — measured).
+    let pad_len = TX_PAD_BOTTOM * stride + TX_PAD_END;
+    match pad_len {
+        48 => levels[tail..tail + 48].copy_from_slice(&[0u8; 48]),
+        64 => levels[tail..tail + 64].copy_from_slice(&[0u8; 64]),
+        96 => levels[tail..tail + 96].copy_from_slice(&[0u8; 96]),
+        _ => levels[tail..tail + 160].copy_from_slice(&[0u8; 160]),
     }
 
     let zero = _mm256_setzero_si256();
@@ -390,8 +349,8 @@ fn nz_map_ctx_body(
     tx_class: TxClass,
     coeff_contexts: &mut [i8],
 ) {
-    use archmage::intrinsics::x86_64::*;
     use crate::txb::{txb_high, txb_wide};
+    use archmage::intrinsics::x86_64::*;
 
     let width = txb_wide(tx_size); // padded-buffer column count (C `width`)
     let height = txb_high(tx_size); // padded column length (C `height`)
@@ -414,12 +373,15 @@ fn nz_map_ctx_body(
     // padded-buffer offset; each lane-vector gathers one neighbour plane.
     let t4 = |base: usize, off: usize| -> __m128i {
         let r0: &[u8; 4] = levels[base + off..base + off + 4].try_into().unwrap();
-        let r1: &[u8; 4] =
-            levels[base + off + stride..base + off + stride + 4].try_into().unwrap();
-        let r2: &[u8; 4] =
-            levels[base + off + 2 * stride..base + off + 2 * stride + 4].try_into().unwrap();
-        let r3: &[u8; 4] =
-            levels[base + off + 3 * stride..base + off + 3 * stride + 4].try_into().unwrap();
+        let r1: &[u8; 4] = levels[base + off + stride..base + off + stride + 4]
+            .try_into()
+            .unwrap();
+        let r2: &[u8; 4] = levels[base + off + 2 * stride..base + off + 2 * stride + 4]
+            .try_into()
+            .unwrap();
+        let r3: &[u8; 4] = levels[base + off + 3 * stride..base + off + 3 * stride + 4]
+            .try_into()
+            .unwrap();
         _mm_unpacklo_epi64(
             _mm_unpacklo_epi32(_mm_loadu_si32(r0), _mm_loadu_si32(r1)),
             _mm_unpacklo_epi32(_mm_loadu_si32(r2), _mm_loadu_si32(r3)),
@@ -427,8 +389,9 @@ fn nz_map_ctx_body(
     };
     let t8 = |base: usize, off: usize| -> __m128i {
         let r0: &[u8; 8] = levels[base + off..base + off + 8].try_into().unwrap();
-        let r1: &[u8; 8] =
-            levels[base + off + stride..base + off + stride + 8].try_into().unwrap();
+        let r1: &[u8; 8] = levels[base + off + stride..base + off + stride + 8]
+            .try_into()
+            .unwrap();
         _mm_unpacklo_epi64(_mm_loadu_si64(r0), _mm_loadu_si64(r1))
     };
     let t16 = |base: usize, off: usize| -> __m128i {
@@ -480,11 +443,15 @@ fn nz_map_ctx_body(
                 } else if width < 8 {
                     (
                         _mm_setr_epi8(0, 11, 6, 6, 21, 21, 21, 21, 11, 11, 6, 21, 21, 21, 21, 21),
-                        _mm_setr_epi8(11, 11, 21, 21, 21, 21, 21, 21, 11, 11, 21, 21, 21, 21, 21, 21),
+                        _mm_setr_epi8(
+                            11, 11, 21, 21, 21, 21, 21, 21, 11, 11, 21, 21, 21, 21, 21, 21,
+                        ),
                     )
                 } else {
                     (
-                        _mm_setr_epi8(0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16),
+                        _mm_setr_epi8(
+                            0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+                        ),
                         _mm_setr_epi8(6, 6, 21, 21, 21, 21, 21, 21, 6, 21, 21, 21, 21, 21, 21, 21),
                     )
                 };
@@ -521,13 +488,15 @@ fn nz_map_ctx_body(
                         _mm_setr_epi8(1, 6, 6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21);
                     pto[2] =
                         _mm_setr_epi8(6, 6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21);
-                    pto[3] =
-                        _mm_setr_epi8(6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21);
+                    pto[3] = _mm_setr_epi8(
+                        6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
+                    );
                 } else if real_width < real_height {
                     pto[0] =
                         _mm_setr_epi8(0, 11, 6, 6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21);
-                    pto[1] =
-                        _mm_setr_epi8(11, 11, 6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21);
+                    pto[1] = _mm_setr_epi8(
+                        11, 11, 6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
+                    );
                     pto[2] = _mm_setr_epi8(
                         11, 11, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
                     );
@@ -537,9 +506,8 @@ fn nz_map_ctx_body(
                     let t16 = _mm_set1_epi8(16);
                     pto[0] = t16;
                     pto[1] = t16;
-                    pto[2] = _mm_setr_epi8(
-                        6, 6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
-                    );
+                    pto[2] =
+                        _mm_setr_epi8(6, 6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21);
                     pto[3] = _mm_setr_epi8(
                         6, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
                     );
@@ -583,8 +551,9 @@ fn nz_map_ctx_body(
             let (s0, s5, s10) = (26i8, 31i8, 36i8); // SIG_COEF_CONTEXTS_2D + {0,5,10}
             if height == 4 {
                 // get_4_nz_map_contexts_hor.
-                let mut pto =
-                    _mm_setr_epi8(s0, s0, s0, s0, s5, s5, s5, s5, s10, s10, s10, s10, s10, s10, s10, s10);
+                let mut pto = _mm_setr_epi8(
+                    s0, s0, s0, s0, s5, s5, s5, s5, s10, s10, s10, s10, s10, s10, s10, s10,
+                );
                 let big = _mm_set1_epi8(s10);
                 let (mut lv, mut cc, mut col) = (0usize, 0usize, width);
                 while col != 0 {
@@ -603,8 +572,9 @@ fn nz_map_ctx_body(
                 }
             } else if height == 8 {
                 // get_8_coeff_contexts_hor.
-                let mut pto =
-                    _mm_setr_epi8(s0, s0, s0, s0, s0, s0, s0, s0, s5, s5, s5, s5, s5, s5, s5, s5);
+                let mut pto = _mm_setr_epi8(
+                    s0, s0, s0, s0, s0, s0, s0, s0, s5, s5, s5, s5, s5, s5, s5, s5,
+                );
                 let big = _mm_set1_epi8(s10);
                 let (mut lv, mut cc, mut col) = (0usize, 0usize, width);
                 while col != 0 {
@@ -656,8 +626,9 @@ fn nz_map_ctx_body(
             let (s0, s5, s10) = (26i8, 31i8, 36i8);
             if height == 4 {
                 // get_4_nz_map_contexts_ver: same table every tile.
-                let pto =
-                    _mm_setr_epi8(s0, s5, s10, s10, s0, s5, s10, s10, s0, s5, s10, s10, s0, s5, s10, s10);
+                let pto = _mm_setr_epi8(
+                    s0, s5, s10, s10, s0, s5, s10, s10, s0, s5, s10, s10, s0, s5, s10, s10,
+                );
                 let (mut lv, mut cc, mut col) = (0usize, 0usize, width);
                 while col != 0 {
                     let l = [
@@ -674,8 +645,9 @@ fn nz_map_ctx_body(
                 }
             } else if height == 8 {
                 // get_8_coeff_contexts_ver.
-                let pto =
-                    _mm_setr_epi8(s0, s5, s10, s10, s10, s10, s10, s10, s0, s5, s10, s10, s10, s10, s10, s10);
+                let pto = _mm_setr_epi8(
+                    s0, s5, s10, s10, s10, s10, s10, s10, s0, s5, s10, s10, s10, s10, s10, s10,
+                );
                 let (mut lv, mut cc, mut col) = (0usize, 0usize, width);
                 while col != 0 {
                     let l = [
@@ -697,7 +669,8 @@ fn nz_map_ctx_body(
                 let (mut lv, mut cc, mut col) = (0usize, 0usize, width);
                 loop {
                     let mut pto = _mm_setr_epi8(
-                        s0, s5, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10,
+                        s0, s5, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10, s10,
+                        s10,
                     );
                     let mut h = height;
                     while h != 0 {

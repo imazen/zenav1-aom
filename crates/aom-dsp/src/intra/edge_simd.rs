@@ -69,10 +69,7 @@ pub(crate) fn filter_intra_edge_run(p: &mut [u16], sz: usize, taps: [i32; 5]) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     #[cfg(target_arch = "x86_64")]
     {
-        incant!(
-            filter_intra_edge_impl_x86(p, sz, taps),
-            [v3, scalar]
-        );
+        incant!(filter_intra_edge_impl_x86(p, sz, taps), [v3, scalar]);
         return;
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -177,12 +174,12 @@ fn filter_intra_edge_impl_x86(token: Token, p: &mut [u16], sz: usize, taps: [i32
             _mm_madd_epi16(ld(i + 3), pair128(taps[4], 0)),
         );
         let re = _mm_srai_epi32::<4>(_mm_add_epi32(even, _mm_set1_epi32(8)));
-        let ro = _mm_slli_epi32::<16>(_mm_srai_epi32::<4>(_mm_add_epi32(
-            odd,
-            _mm_set1_epi32(8),
-        )));
+        let ro = _mm_slli_epi32::<16>(_mm_srai_epi32::<4>(_mm_add_epi32(odd, _mm_set1_epi32(8))));
         let out: &mut [u16; 8] = (&mut p[i..i + 8]).try_into().unwrap();
-        _mm_storeu_si128(out, _mm_or_si128(_mm_and_si128(re, _mm_set1_epi32(0xFFFF)), ro));
+        _mm_storeu_si128(
+            out,
+            _mm_or_si128(_mm_and_si128(re, _mm_set1_epi32(0xFFFF)), ro),
+        );
     };
 
     p[1] = filter_edge_out(&orig, 1, sz, &taps);
@@ -191,18 +188,18 @@ fn filter_intra_edge_impl_x86(token: Token, p: &mut [u16], sz: usize, taps: [i32
         do16(p, &orig, i);
         i += 16;
     }
-    if i <= sz - 3 {
+    if i + 3 <= sz {
         if sz >= 20 {
             // Backward-overlap finisher: covers (sz - 18)..=(sz - 3), all
             // interior; lanes it rewrites store identical values.
             do16(p, &orig, sz - 18);
             i = sz - 2;
         } else {
-            while i + 8 <= sz - 2 {
+            while i + 10 <= sz {
                 do8(p, &orig, i);
                 i += 8;
             }
-            if i <= sz - 3 && sz >= 12 {
+            if sz >= 12 && i + 3 <= sz {
                 do8(p, &orig, sz - 10);
                 i = sz - 2;
             }
@@ -264,20 +261,14 @@ fn filter_intra_edge_impl(token: Token, p: &mut [u16], sz: usize, taps: [i32; 5]
     // 8 lanes of originals starting at `b`: `widen_low` keeps lanes 0..8 —
     // exactly the `orig[b + k]` each output lane k needs. The 16-lane load
     // reads up to `b + 15 <= i + 9 + 15 <= sz + 6 < FILTER_SCRATCH`.
-    let w8 = |b: usize| -> i32x8 {
-        i16x16::from_slice(token, &orig[b..b + 16]).widen_low()
-    };
+    let w8 = |b: usize| -> i32x8 { i16x16::from_slice(token, &orig[b..b + 16]).widen_low() };
 
     p[1] = filter_edge_out(&orig, 1, sz, &taps);
     // Interior outputs i in [2, sz-3]: an 8-chunk starting at i covers
     // i..i+7, all interior iff i + 7 <= sz - 3.
     let mut i = 2usize;
     while i + 8 <= sz - 2 {
-        let s = t0 * w8(i - 2)
-            + t1 * w8(i - 1)
-            + t2 * w8(i)
-            + t3 * w8(i + 1)
-            + t4 * w8(i + 2);
+        let s = t0 * w8(i - 2) + t1 * w8(i - 1) + t2 * w8(i) + t3 * w8(i + 1) + t4 * w8(i + 2);
         let out = (s + eight).shr_arithmetic_const::<4>().to_array();
         p[i..i + 8].copy_from_slice(&out.map(|x| x as u16));
         i += 8;
@@ -290,15 +281,11 @@ fn filter_intra_edge_impl(token: Token, p: &mut [u16], sz: usize, taps: [i32; 5]
         let q2 = i32x4::splat(token, taps[2]);
         let q3 = i32x4::splat(token, taps[3]);
         let q4 = i32x4::splat(token, taps[4]);
-        let w4 = |b: usize| -> i32x4 {
-            i16x8::from_slice(token, &orig[b..b + 8]).widen_low()
-        };
-        let s = q0 * w4(i - 2)
-            + q1 * w4(i - 1)
-            + q2 * w4(i)
-            + q3 * w4(i + 1)
-            + q4 * w4(i + 2);
-        let out = (s + i32x4::splat(token, 8)).shr_arithmetic_const::<4>().to_array();
+        let w4 = |b: usize| -> i32x4 { i16x8::from_slice(token, &orig[b..b + 8]).widen_low() };
+        let s = q0 * w4(i - 2) + q1 * w4(i - 1) + q2 * w4(i) + q3 * w4(i + 1) + q4 * w4(i + 2);
+        let out = (s + i32x4::splat(token, 8))
+            .shr_arithmetic_const::<4>()
+            .to_array();
         p[i..i + 4].copy_from_slice(&out.map(|x| x as u16));
         i += 4;
     }
