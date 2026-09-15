@@ -485,15 +485,22 @@ fn prune_intra_mode_with_hog_matches_c() {
         fill_content(&mut rng, &mut plane, off, STRIDE, bw, bh, class, bd);
 
         let mut got = [false; 13];
+        // off = 8*STRIDE+8 px -> mi (2,2); sb_mi 16 (BLOCK_64X64) roots the
+        // gradient cache's whole-SB fill at mi (0,0) — inside the 160x96
+        // plane.
         prune_intra_mode_with_hog_y(
             &plane,
-            off,
+            0,
             STRIDE,
             bsize,
+            2,
+            2,
+            16,
             right_edge,
             bottom_edge,
             th,
             &mut got,
+            &mut aom_encode::hog::HogGradCache::default(),
         );
         let want = c::ref_prune_intra_mode_with_hog_y(
             &plane,
@@ -602,17 +609,24 @@ fn prune_intra_mode_with_hog_uv_matches_c() {
         }
 
         let mut got = [false; 13];
+        // off = 8*STRIDE+8 chroma px -> luma px (8<<ss, 8<<ss) -> mi
+        // (2<<ss, 2<<ss). sb_mi 16 roots the whole-SB chroma fill at mi (0,0)
+        // — <=64x64 luma-mapped chroma px, inside the 160x160 plane.
         prune_intra_mode_with_hog_uv(
             &plane,
-            off,
+            0,
             STRIDE,
             bsize,
             ss_x,
             ss_y,
+            2 << ss_y,
+            2 << ss_x,
+            16,
             right_edge,
             bottom_edge,
             th,
             &mut got,
+            &mut aom_encode::hog::HogGradCache::default(),
         );
         assert_eq!(
             got, want,

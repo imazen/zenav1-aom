@@ -72,6 +72,216 @@ pub fn get_hist_bin_idx(dx: i32, dy: i32) -> usize {
         .expect("no valid histogram bin")
 }
 
+/// `PixelLevelGradientInfo` (block.h): one interior pixel's cached Sobel
+/// gradient for `generate_hog_using_gradient_cache`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HogGradPx {
+    /// `abs(dx) + abs(dy)` — max 2*4*4095 < u16::MAX at every depth.
+    abs_dx_abs_dy_sum: u16,
+    /// `get_hist_bin_idx(dx, dy)`, or -1 when `dx == 0`.
+    hist_bin_idx: i8,
+    is_dx_zero: bool,
+}
+
+/// `x->pixel_gradient_info + plane * MAX_SB_SQUARE` + `is_sb_gradient_cached`
+/// (block.h): the per-superblock Sobel/bin table `produce_gradients_for_sb`
+/// fills once (`compute_gradient_info_sb`) and every `collect_hog_data` in the
+/// SB then reads. The port fills it LAZILY on the first hog call inside an SB
+/// — same pure function of the same source pixels, so the histograms are
+/// identical; only the recomputation count changes (C pays it once per SB,
+/// the direct form paid it once per block).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HogGradSlot {
+    /// The SB origin this table covers, in mi — `None` until first fill.
+    key: Option<(i32, i32)>,
+    /// Plane-unit SB extent: row stride `sb_w` x `sb_h` rows (4:2:2 is NOT
+    /// square — `block_size_wide/high >> ss_x/ss_y`).
+    sb_w: usize,
+    sb_h: usize,
+    px: Vec<HogGradPx>,
+}
+
+impl HogGradSlot {
+    /// Fill `self` for the SB at (`sb_mi_row`, `sb_mi_col`) unless already
+    /// cached. `sb_src_off` is the plane offset of that SB's origin pixel;
+    /// the interior walk reads the `sb_w`×`sb_h` region rooted there
+    /// (always inside the edge-extended source plane).
+    fn ensure(
+        &mut self,
+        src: &[u16],
+        sb_src_off: usize,
+        src_stride: usize,
+        sb_w: usize,
+        sb_h: usize,
+        sb_mi_row: i32,
+        sb_mi_col: i32,
+    ) {
+        if self.key == Some((sb_mi_row, sb_mi_col)) && self.sb_w == sb_w && self.sb_h == sb_h {
+            return;
+        }
+        self.px.clear();
+        self.px.resize(sb_w * sb_h, HogGradPx::default());
+        for r in 1..sb_h.saturating_sub(1) {
+            let row = sb_src_off + r * src_stride;
+            for c in 1..sb_w.saturating_sub(1) {
+                let p = row + c;
+                let dx = (i32::from(src[p - src_stride + 1])
+                    + 2 * i32::from(src[p + 1])
+                    + i32::from(src[p + src_stride + 1]))
+                    - (i32::from(src[p - src_stride - 1])
+                        + 2 * i32::from(src[p - 1])
+                        + i32::from(src[p + src_stride - 1]));
+                let dy = (i32::from(src[p + src_stride - 1])
+                    + 2 * i32::from(src[p + src_stride])
+                    + i32::from(src[p + src_stride + 1]))
+                    - (i32::from(src[p - src_stride - 1])
+                        + 2 * i32::from(src[p - src_stride])
+                        + i32::from(src[p - src_stride + 1]));
+                self.px[r * sb_w + c] = HogGradPx {
+                    is_dx_zero: dx == 0,
+                    abs_dx_abs_dy_sum: (dx.abs() + dy.abs()) as u16,
+                    hist_bin_idx: if dx != 0 {
+                        get_hist_bin_idx(dx, dy) as i8
+                    } else {
+                        -1
+                    },
+                };
+            }
+        }
+        self.key = Some((sb_mi_row, sb_mi_col));
+        self.sb_w = sb_w;
+        self.sb_h = sb_h;
+    }
+
+    /// `generate_hog_using_gradient_cache` (intra_mode_search_utils.h:365):
+    /// histogram walk over the cached per-pixel gradients. `block_off` is the
+    /// block's offset INSIDE the table (`block_offset_in_grad_cache`); the
+    /// walk order and f32 accumulation match the direct form exactly
+    /// (`>> 1` == `/ 2` on the non-negative sums). `None` when the block's
+    /// cache rect does not fit the table — in production blocks never exceed
+    /// their SB (bsize <= sb_size), but synthetic callers may place a
+    /// larger-than-SB block; the caller then takes the direct walk.
+    fn hog(&self, block_off: usize, rows: usize, cols: usize) -> Option<[f32; HOG_BINS]> {
+        if self.sb_w == 0 {
+            return None;
+        }
+        let (row0, col0) = (block_off / self.sb_w, block_off % self.sb_w);
+        if col0 + cols > self.sb_w || row0 + rows > self.sb_h {
+            return None;
+        }
+        let mut hist = [0f32; HOG_BINS];
+        let mut total = 0.1f32;
+        if rows >= 3 && cols >= 3 {
+            for r in 1..rows - 1 {
+                let row = block_off + r * self.sb_w;
+                for c in 1..cols - 1 {
+                    let g = self.px[row + c];
+                    let temp = i32::from(g.abs_dx_abs_dy_sum);
+                    if temp == 0 {
+                        continue;
+                    }
+                    total += temp as f32;
+                    if g.is_dx_zero {
+                        hist[0] += (temp >> 1) as f32;
+                        hist[HOG_BINS - 1] += (temp >> 1) as f32;
+                    } else {
+                        hist[g.hist_bin_idx as usize] += temp as f32;
+                    }
+                }
+            }
+        }
+        for h in hist.iter_mut() {
+            *h /= total;
+        }
+        Some(hist)
+    }
+}
+
+/// `x->pixel_gradient_info` pair (PLANE_TYPE_Y slot 0, PLANE_TYPE_UV slot 1).
+/// Owned per tile-walk — a fresh `TileCtxState` per tile makes stale
+/// cross-frame reuse impossible.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HogGradCache {
+    pub y: HogGradSlot,
+    pub uv: HogGradSlot,
+}
+
+/// `collect_hog_data`'s cached arm for the luma hog: ensure the Y table for
+/// the block's SB, then walk it. `mi_row`/`mi_col` locate the block inside the
+/// `sb_mi`-per-side superblock rooted at (`mi_row & !(sb_mi-1)`, …).
+#[allow(clippy::too_many_arguments)]
+pub fn generate_hog_y_cached(
+    cache: &mut HogGradCache,
+    src: &[u16],
+    src_base: usize,
+    src_stride: usize,
+    mi_row: i32,
+    mi_col: i32,
+    sb_mi: i32,
+    rows: usize,
+    cols: usize,
+) -> [f32; HOG_BINS] {
+    let sb_mi_row = mi_row & !(sb_mi - 1);
+    let sb_mi_col = mi_col & !(sb_mi - 1);
+    let sb_px = (sb_mi as usize) * 4;
+    let sb_off = src_base + (sb_mi_row as usize * 4) * src_stride + sb_mi_col as usize * 4;
+    cache
+        .y
+        .ensure(src, sb_off, src_stride, sb_px, sb_px, sb_mi_row, sb_mi_col);
+    let block_off = ((mi_row - sb_mi_row) as usize * 4) * sb_px + (mi_col - sb_mi_col) as usize * 4;
+    cache.y.hog(block_off, rows, cols).unwrap_or_else(|| {
+        generate_hog(
+            src,
+            src_base + (mi_row as usize * 4) * src_stride + mi_col as usize * 4,
+            src_stride,
+            rows,
+            cols,
+        )
+    })
+}
+
+/// The chroma arm — cache indexes are in CHROMA plane units
+/// (`sb_width = block_size_wide[sb_size] >> ss_x`), so the SB origin and block
+/// offset shift by `ss` (intra_mode_search_utils.h:371-382).
+#[allow(clippy::too_many_arguments)]
+pub fn generate_hog_uv_cached(
+    cache: &mut HogGradCache,
+    src: &[u16],
+    src_base: usize,
+    src_stride: usize,
+    mi_row: i32,
+    mi_col: i32,
+    sb_mi: i32,
+    ss_x: usize,
+    ss_y: usize,
+    rows: usize,
+    cols: usize,
+) -> [f32; HOG_BINS] {
+    let sb_mi_row = mi_row & !(sb_mi - 1);
+    let sb_mi_col = mi_col & !(sb_mi - 1);
+    let sb_w = ((sb_mi as usize) * 4) >> ss_x;
+    let sb_h = ((sb_mi as usize) * 4) >> ss_y;
+    let sb_off = src_base
+        + ((sb_mi_row as usize * 4) >> ss_y) * src_stride
+        + ((sb_mi_col as usize * 4) >> ss_x);
+    cache
+        .uv
+        .ensure(src, sb_off, src_stride, sb_w, sb_h, sb_mi_row, sb_mi_col);
+    let block_off = (((mi_row - sb_mi_row) as usize * 4) >> ss_y) * sb_w
+        + (((mi_col - sb_mi_col) as usize * 4) >> ss_x);
+    cache.uv.hog(block_off, rows, cols).unwrap_or_else(|| {
+        generate_hog(
+            src,
+            src_base
+                + ((mi_row as usize * 4) >> ss_y) * src_stride
+                + ((mi_col as usize * 4) >> ss_x),
+            src_stride,
+            rows,
+            cols,
+        )
+    })
+}
+
 /// `lowbd_generate_hog` / `highbd_generate_hog`: Sobel-gradient orientation
 /// histogram over the interior pixels (`r`/`c` in `1..dim-1`) of the
 /// edge-clipped `rows x cols` block at `src[src_off..]`, normalized by the
@@ -277,13 +487,17 @@ pub fn hog_nn_predict(hist: &[f32; HOG_BINS], reduce_prec: bool) -> [f32; DIRECT
 #[allow(clippy::too_many_arguments)]
 pub fn prune_intra_mode_with_hog_y(
     src: &[u16],
-    src_off: usize,
+    src_base: usize,
     src_stride: usize,
     bsize: usize,
+    mi_row: i32,
+    mi_col: i32,
+    sb_mi: i32,
     mb_to_right_edge: i32,
     mb_to_bottom_edge: i32,
     th: f32,
     directional_mode_skip_mask: &mut [bool; 13],
+    cache: &mut HogGradCache,
 ) {
     const BLK_W: [usize; 22] = [
         4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
@@ -304,7 +518,9 @@ pub fn prune_intra_mode_with_hog_y(
         (mb_to_right_edge >> 3) + bw
     } as usize;
 
-    let mut hog = generate_hog(src, src_off, src_stride, rows, cols);
+    let mut hog = generate_hog_y_cached(
+        cache, src, src_base, src_stride, mi_row, mi_col, sb_mi, rows, cols,
+    );
     // collect_hog_data: hog[b] *= (1 + ss_x) * (1 + ss_y) — luma ss 0/0.
     for b in hog.iter_mut() {
         *b *= 1.0;
@@ -332,15 +548,19 @@ pub fn prune_intra_mode_with_hog_y(
 #[allow(clippy::too_many_arguments)]
 pub fn prune_intra_mode_with_hog_uv(
     src_u: &[u16],
-    src_off: usize,
+    src_base: usize,
     src_stride: usize,
     bsize: usize,
     ss_x: usize,
     ss_y: usize,
+    mi_row: i32,
+    mi_col: i32,
+    sb_mi: i32,
     mb_to_right_edge: i32,
     mb_to_bottom_edge: i32,
     th: f32,
     directional_mode_skip_mask: &mut [bool; 13],
+    cache: &mut HogGradCache,
 ) {
     const BLK_W: [usize; 22] = [
         4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
@@ -363,7 +583,9 @@ pub fn prune_intra_mode_with_hog_uv(
         (mb_to_right_edge >> 3) + bw
     } >> ss_x) as usize;
 
-    let mut hog = generate_hog(src_u, src_off, src_stride, rows, cols);
+    let mut hog = generate_hog_uv_cached(
+        cache, src_u, src_base, src_stride, mi_row, mi_col, sb_mi, ss_x, ss_y, rows, cols,
+    );
     // collect_hog_data: hog[b] *= (1 + ss_x) * (1 + ss_y).
     let scale = ((1 + ss_x) * (1 + ss_y)) as f32;
     for b in hog.iter_mut() {

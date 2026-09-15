@@ -132,15 +132,22 @@ fn rd_pick_intra_sby_mode_matches_c_loop() {
             // mb_to_*_edge are large positive.
             let mut skip_mask = [false; INTRA_MODES];
             if iter % 4 == 2 {
+                // src_off = 32*STRIDE+32 px -> mi (8,8); sb_mi 16 roots the
+                // whole-SB gradient fill at mi (0,0) — 64x64 px inside the
+                // 256x96 plane.
                 prune_intra_mode_with_hog_y(
                     &src,
-                    src_off,
+                    0,
                     STRIDE,
                     bsize,
+                    8,
+                    8,
+                    16,
                     1 << 12,
                     1 << 12,
                     -1.2,
                     &mut skip_mask,
+                    &mut aom_encode::hog::HogGradCache::default(),
                 );
                 let mask_c = c::ref_prune_intra_mode_with_hog_y(
                     &src,

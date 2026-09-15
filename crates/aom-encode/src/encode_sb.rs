@@ -157,6 +157,14 @@ pub struct TileCtxState {
     pub left_pctx: [i8; 32],
     pub above_tctx: Vec<u8>,
     pub left_tctx: [u8; 32],
+    /// `x->pixel_gradient_info` + `x->is_sb_gradient_cached` (block.h) — the
+    /// per-SB Sobel/bin tables `produce_gradients_for_sb` fills once per SB
+    /// (encodeframe.c:1322) and every `collect_hog_data` reuses. The port
+    /// fills each slot lazily on the SB's first hog call; the tables are a
+    /// pure function of the source plane, so lazy-vs-eager is byte-inert.
+    /// `RefCell` because the partition walk threads `&TileCtxState`; the
+    /// borrow never spans a call that can re-enter it.
+    pub hog_grad: std::cell::RefCell<crate::hog::HogGradCache>,
 }
 
 /// `ALIGN_POWER_OF_TWO(mi_cols, MAX_MIB_SIZE_LOG2)` (aom_ports/mem.h:68;
@@ -206,6 +214,7 @@ impl TileCtxState {
             // aom_dsp::entropy::partition::TXFM_CTX_INIT).
             above_tctx: vec![aom_dsp::entropy::partition::TXFM_CTX_INIT; aligned],
             left_tctx: [aom_dsp::entropy::partition::TXFM_CTX_INIT; 32],
+            hog_grad: std::cell::RefCell::new(crate::hog::HogGradCache::default()),
         }
     }
 }

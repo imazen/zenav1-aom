@@ -913,13 +913,17 @@ fn leaf_pick_sb_modes(
         let th = [-1.2f32, -1.2, -0.6, 0.4][luma_hog_level - 1];
         prune_intra_mode_with_hog_y(
             env.src_y,
-            ref_off_y,
+            env.base_y,
             env.stride,
             bsize,
+            mi_row,
+            mi_col,
+            MI_SIZE_WIDE_B[env.sb_size] as i32,
             mb_right,
             mb_bottom,
             th,
             &mut skip_mask,
+            &mut tile.hog_grad.borrow_mut(),
         );
     }
     let mut gates = IntraSbyGates::speed0(skip_mask);
@@ -1456,8 +1460,20 @@ fn leaf_pick_sb_modes(
             let mb_bottom = (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8;
             let th = [-1.2f32, -1.2, -0.6, 0.4][chroma_hog_level - 1];
             prune_intra_mode_with_hog_uv(
-                env.src_u, ref_off_uv, env.stride, bsize, env.ss_x, env.ss_y, mb_right, mb_bottom,
-                th, &mut mask,
+                env.src_u,
+                env.base_uv,
+                env.stride,
+                bsize,
+                env.ss_x,
+                env.ss_y,
+                mi_row,
+                mi_col,
+                MI_SIZE_WIDE_B[env.sb_size] as i32,
+                mb_right,
+                mb_bottom,
+                th,
+                &mut mask,
+                &mut tile.hog_grad.borrow_mut(),
             );
             mask
         });
