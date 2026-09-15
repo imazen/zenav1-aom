@@ -434,6 +434,14 @@ pub fn xform_quant(
 ) -> XformQuantResult {
     let mut s = XformQuantScratch::default();
     let sum = xform_quant_into(residual, tx_size, tx_type, kind, qp, use_optimize_b, &mut s);
+    // `xform_quant_into` now keeps the scratch Vecs grow-only; the result
+    // contract is the exact lengths (`coeff` = TX_W*TX_H, `qcoeff`/`dqcoeff`
+    // = av1_get_max_eob) — truncate restores it at zero cost.
+    let full = TX_W[tx_size] * TX_H[tx_size];
+    let n = txb_wide(tx_size) * txb_high(tx_size);
+    s.coeff.truncate(full);
+    s.qcoeff.truncate(n);
+    s.dqcoeff.truncate(n);
     XformQuantResult {
         coeff: s.coeff,
         qcoeff: s.qcoeff,
@@ -469,22 +477,24 @@ pub fn xform_quant_into(
     // `clear` + `resize(_, 0)` reproduces the `vec![0i32; n]` these three
     // replace element for element (see `XformQuantScratch`).
     let XformQuantScratch { coeff, qcoeff, dqcoeff, fwd, .. } = scratch;
-    // GROW-ONLY, not clear-and-refill. `resize` alone already leaves the length
-    // exactly right — it truncates when the buffer is long enough and pads with
-    // zeros only when it genuinely grows. The `clear()` that used to precede it
-    // is what forced all `n` elements to be re-zeroed on EVERY call.
+    // GROW-ONLY, not clear-and-refill — and `resize` alone does NOT give that:
+    // it truncates when the buffer is longer than requested, so alternating
+    // tx sizes bounce the length and re-zero the grown tail on every larger
+    // tx. Instead the Vec keeps its largest-ever length and each consumer
+    // gets the exact live slice — the zero fill runs only on genuine first
+    // growth.
     //
-    // Dropping it is sound because every element these buffers hand on is
-    // written before it is read, which KB-PERF-2 established rather than
-    // assumed: `av1_fwd_txfm2d` writes every `coeff[..full]`, and all twelve
-    // quantizer variants open by filling `qcoeff[..n]` / `dqcoeff[..n]`.
-    //
-    // KB-PERF-2 built this and measured it INSIDE the control band — on
-    // aarch64-apple-darwin at `--cpu-used 6`. Its own record says the
-    // memset-vs-allocator split is priced differently by platform, so this is a
-    // re-measurement on x86-64 at `--cpu-used 0`, not a re-run of a settled
-    // question.
-    coeff.resize(full, 0);
+    // Skipping the refill is sound because every element these buffers hand
+    // on is written before it is read, which KB-PERF-2 established rather
+    // than assumed: `av1_fwd_txfm2d` writes every `coeff[..full]`, and all
+    // twelve quantizer variants open by filling `qcoeff[..n]` /
+    // `dqcoeff[..n]`. Downstream readers that need a length contract get
+    // `&vec[..n]` at the call site; index-bounded readers (cost/dist/
+    // inverse-transform) are agnostic to the longer Vec len.
+    if coeff.len() < full {
+        coeff.resize(full, 0);
+    }
+    let coeff = &mut coeff[..full];
     if qp.lossless {
         debug_assert_eq!(tx_size, 0, "lossless forces TX_4X4");
         debug_assert_eq!(tx_type, 0, "lossless forces DCT_DCT");
@@ -494,9 +504,13 @@ pub fn xform_quant_into(
     }
 
     // av1_quant: quantize the valid coefficient block.
-    qcoeff.resize(n_coeffs, 0);
-    dqcoeff.resize(n_coeffs, 0);
-    let (qcoeff, dqcoeff) = (&mut qcoeff[..], &mut dqcoeff[..]);
+    if qcoeff.len() < n_coeffs {
+        qcoeff.resize(n_coeffs, 0);
+    }
+    if dqcoeff.len() < n_coeffs {
+        dqcoeff.resize(n_coeffs, 0);
+    }
+    let (qcoeff, dqcoeff) = (&mut qcoeff[..n_coeffs], &mut dqcoeff[..n_coeffs]);
     let src = &coeff[..n_coeffs];
     let hbd = qp.bd > 8;
     // av1_setup_qmatrix: per-(tx_size, tx_type) QM selection (QM-off / explicit
@@ -739,6 +753,13 @@ pub fn xform_quant_optimize_split(
     let sum = xform_quant_optimize_split_into(
         residual, tx_size, tx_type, kind, qp_quant, qp_trellis, bctx, opt, &mut s,
     );
+    // Grow-only scratch Vecs (see `xform_quant`) — truncate restores the
+    // exact-length result contract at zero cost.
+    let full = TX_W[tx_size] * TX_H[tx_size];
+    let n = txb_wide(tx_size) * txb_high(tx_size);
+    s.coeff.truncate(full);
+    s.qcoeff.truncate(n);
+    s.dqcoeff.truncate(n);
     XformQuantOptResult {
         coeff: s.coeff,
         qcoeff: s.qcoeff,
@@ -807,7 +828,12 @@ pub fn xform_quant_optimize_split_into(
     // bounds check per access that the `[u8; TX_PAD_2D]` array type removes.
     let levels: &mut [u8; aom_dsp::txb::TX_PAD_2D] =
         levels.as_mut_slice().try_into().unwrap();
-    let tcoeff = &coeff[..qcoeff.len()];
+    // `xform_quant_into` leaves the scratch Vecs grow-only now — slice each to
+    // the live coefficient count; the trellis's reads/writes are all
+    // scan-indexed below `n_coeffs`.
+    let n_coeffs = txb_wide(tx_size) * txb_high(tx_size);
+    let (qcoeff, dqcoeff) = (&mut qcoeff[..n_coeffs], &mut dqcoeff[..n_coeffs]);
+    let tcoeff = &coeff[..n_coeffs];
     // Same av1_setup_qmatrix selection the quantize above used — the trellis
     // (optimize_txb_qm's get_dqv) must fold the SAME per-position inverse.
     //

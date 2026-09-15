@@ -756,10 +756,10 @@ pub fn txfm_rd_in_plane_uv_p(
             // `xform_quant_into` asserts it).
             let src = env.src(plane);
             let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-            if walk.residual.len() != txw * txh {
+            if walk.residual.len() < txw * txh {
                 walk.residual.resize(txw * txh, 0);
             }
-            let residual = &mut walk.residual;
+            let residual = &mut walk.residual[..txw * txh];
             aom_dsp::dist::highbd_subtract_block(
                 txh,
                 txw,
@@ -1205,12 +1205,18 @@ pub fn intra_model_rd_uv(
             // it there, so the tight snapshot this replaced was a copy of these
             // very bytes, and the subtract's per-(r, c) inputs are unchanged.
             let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-            txs.walk.residual.clear();
-            txs.walk.residual.resize(n, 0);
+            // Grow-only: `clear`+`resize` forced a full-length memset on every
+            // txb, and a bare `resize` truncates on a smaller tx — alternating
+            // model tx sizes refilled the grown tail every bounce. Both
+            // buffers are fully overwritten (subtract / forward transform)
+            // before any read; the live `n` is sliced per use.
+            if txs.walk.residual.len() < n {
+                txs.walk.residual.resize(n, 0);
+            }
             aom_dsp::dist::highbd_subtract_block(
                 txh,
                 txw,
-                &mut txs.walk.residual,
+                &mut txs.walk.residual[..n],
                 txw,
                 &src[src_txb_off..],
                 env.src_stride,
@@ -1218,18 +1224,19 @@ pub fn intra_model_rd_uv(
                 env.ref_stride,
             );
             // av1_quick_txfm(use_hadamard=0): DCT_DCT forward transform.
-            let coeff = &mut txs.search.satd_coeff;
-            coeff.clear();
-            coeff.resize(n, 0);
+            if txs.search.satd_coeff.len() < n {
+                txs.search.satd_coeff.resize(n, 0);
+            }
+            let coeff = &mut txs.search.satd_coeff[..n];
             aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into(
-                &txs.walk.residual,
+                &txs.walk.residual[..n],
                 coeff,
                 txw,
                 0,
                 tx_size,
                 &mut txs.search.xq.fwd,
             );
-            satd_cost += i64::from(aom_dsp::dist::hadamard::satd(&coeff[..n]));
+            satd_cost += i64::from(aom_dsp::dist::hadamard::satd(coeff));
             blk_col += txw_unit;
         }
         blk_row += txh_unit;

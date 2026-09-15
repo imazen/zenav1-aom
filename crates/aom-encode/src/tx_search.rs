@@ -664,8 +664,17 @@ fn skip_trellis_opt_based_on_satd(
     // TXS_W/TXS_H == the crate's TX_W/TX_H the quant path uses).
     let full = TXS_W[tx_size] * TXS_H[tx_size];
     // Same contents as the `vec![0i32; full]` this replaces (see `TxSearchScratch`).
-    coeff.clear();
-    coeff.resize(full, 0);
+    // Grow-only, not clear+resize: `av1_fwd_txfm2d_into` writes all `full`
+    // elements before any read, so re-zeroing the live range is dead work —
+    // and `clear` forced a full-length memset on EVERY call. `resize` alone
+    // also truncates the len, so alternating tx sizes refilled the grown tail
+    // every bounce; keeping the len at its max and slicing per call removes
+    // both memsets. The exact `full` slice preserves the len contract the
+    // transform and `satd` were written against.
+    if coeff.len() < full {
+        coeff.resize(full, 0);
+    }
+    let coeff = &mut coeff[..full];
     aom_dsp::transform::txfm2d::av1_fwd_txfm2d_into(
         residual, coeff, TXS_W[tx_size], tx_type, tx_size, fwd,
     );
@@ -1338,6 +1347,16 @@ pub fn search_tx_type_intra(
 ) -> Option<TxTypeSearchResult> {
     let mut s = TxSearchScratch::default();
     let b = search_tx_type_intra_into(inp, pol, ref_best_rd, &mut s)?;
+    // The swap in `_into` can leave `best_*` at the scratch's largest-ever
+    // length; the result contract is the live extent (`full` on the skip
+    // fast path, `max_eob` on a quantize win) — truncate restores it.
+    let want = if b.skip_txfm {
+        TXS_W[inp.tx_size] * TXS_H[inp.tx_size]
+    } else {
+        aom_dsp::txb::txb_wide(inp.tx_size) * aom_dsp::txb::txb_high(inp.tx_size)
+    };
+    s.best_qcoeff.truncate(want);
+    s.best_dqcoeff.truncate(want);
     Some(TxTypeSearchResult {
         best_tx_type: b.best_tx_type,
         best_eob: b.best_eob,
@@ -2003,9 +2022,17 @@ pub fn dist_block_px_domain_into(
     // runtime-width `copy_from_slice` lowers to a `memcpy` call per row — the
     // single largest memcpy-call site on the shipping path (~7 calls per
     // invocation here). Fixed extents compile to inline vector moves instead.
-    recon.resize(w * h, 0);
+    // Grow-only: `resize` alone truncates on a smaller tx, so alternating tx
+    // sizes refilled the grown tail every bounce — a memset per candidate.
+    // The buffer is written (copy + inverse-transform-add) before any read,
+    // so only the capacity matters; the exact `w*h` slice keeps the len
+    // contract for the readers.
+    if recon.len() < w * h {
+        recon.resize(w * h, 0);
+    }
+    let recon = &mut recon[..w * h];
     if pred_stride == w {
-        recon[..w * h].copy_from_slice(&pred[..w * h]);
+        recon.copy_from_slice(&pred[..w * h]);
     } else {
         match w {
             4 => copy_pred_rows::<4>(recon, pred, pred_stride, h),
@@ -2458,10 +2485,15 @@ pub fn txfm_rd_in_plane_intra(
             // re-zero was a dead memset per candidate per txb — the len must
             // still land exactly on `txw*txh` (`xform_quant_into` asserts it).
             let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-            if walk.residual.len() != txw * txh {
+            // Grow-only: `resize` truncates on a smaller tx, so alternating
+            // tx sizes refilled the grown tail every bounce. `residual` is
+            // fully overwritten by `highbd_subtract_block` before any read —
+            // keep the Vec at its max and hand down the exact `txw*txh`
+            // slice (`xform_quant_into` asserts the len).
+            if walk.residual.len() < txw * txh {
                 walk.residual.resize(txw * txh, 0);
             }
-            let residual = &mut walk.residual;
+            let residual = &mut walk.residual[..txw * txh];
             highbd_subtract_block(
                 txh,
                 txw,
@@ -2485,7 +2517,7 @@ pub fn txfm_rd_in_plane_intra(
             if let Some(nn) = nn_prune.as_mut() {
                 if !env.lossless && tx_size == 1 && bsize == 3 && env.bd == 8 {
                     *nn.outcome = ml_predict_intra_tx_depth_prune(
-                        &residual,
+                        residual,
                         txw,
                         nn.source_variance,
                         env.qindex,
@@ -2529,7 +2561,7 @@ pub fn txfm_rd_in_plane_intra(
                 0,
             );
             let inp = TxTypeSearchInputs {
-                residual: &residual,
+                residual,
                 src: env.src,
                 src_off: src_txb_off,
                 src_stride: env.src_stride,
@@ -3218,38 +3250,42 @@ fn wht_satd(
     };
     // The 16x16/32x32 arms write into the caller's `buf` so no 1–4 KB array is
     // zero-initialised and moved per model txb (the `_into` kernels write
-    // every element before any read, so a grow-only resize suffices).
+    // every element before any read, so a grow-only resize suffices). The
+    // resize must ACTUALLY be grow-only: `buf.resize(256, 0)` truncates a
+    // 1024-long buffer left by a previous 32x32 arm, so alternating model tx
+    // sizes refilled the tail on every bounce. `satd` sums the whole slice it
+    // is handed, so it must see the exact live `n` — not `buf`'s whole len.
+    fn b256(buf: &mut Vec<i32>) -> &mut [i32; 256] {
+        if buf.len() < 256 {
+            buf.resize(256, 0);
+        }
+        (&mut buf[..256]).try_into().unwrap()
+    }
+    fn b1024(buf: &mut Vec<i32>) -> &mut [i32; 1024] {
+        if buf.len() < 1024 {
+            buf.resize(1024, 0);
+        }
+        (&mut buf[..1024]).try_into().unwrap()
+    }
     match (bd > 8, tx_size) {
         (_, 0) => satd(&hadamard_4x4(residual, stride)),
         (false, 1) => satd(&hadamard_8x8(residual, stride)),
         (false, 2) => {
-            buf.resize(256, 0);
-            hadamard_16x16_into(residual, stride, buf.as_mut_slice().try_into().unwrap());
-            satd(buf)
+            hadamard_16x16_into(residual, stride, b256(buf));
+            satd(&buf[..256])
         }
         (false, 3) => {
-            buf.resize(1024, 0);
-            hadamard_32x32_into(residual, stride, buf.as_mut_slice().try_into().unwrap());
-            satd(buf)
+            hadamard_32x32_into(residual, stride, b1024(buf));
+            satd(&buf[..1024])
         }
         (true, 1) => satd(&highbd_hadamard_8x8(residual, stride)),
         (true, 2) => {
-            buf.resize(256, 0);
-            highbd_hadamard_16x16_into(
-                residual,
-                stride,
-                buf.as_mut_slice().try_into().unwrap(),
-            );
-            satd(buf)
+            highbd_hadamard_16x16_into(residual, stride, b256(buf));
+            satd(&buf[..256])
         }
         (true, 3) => {
-            buf.resize(1024, 0);
-            highbd_hadamard_32x32_into(
-                residual,
-                stride,
-                buf.as_mut_slice().try_into().unwrap(),
-            );
-            satd(buf)
+            highbd_hadamard_32x32_into(residual, stride, b1024(buf));
+            satd(&buf[..1024])
         }
         _ => unreachable!("model tx size is TX_4X4..TX_32X32 (square)"),
     }
@@ -3360,13 +3396,17 @@ pub fn intra_model_rd_y(
             // now read straight out of the plane at `ref_stride`; the copy this
             // replaced made those bytes equal by construction.
             let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-            if walk.residual.len() != txw * txh {
+            // Grow-only — see the block_rd_txfm twin above: `resize`
+            // truncates, so alternating tx sizes refilled the grown tail
+            // every bounce; `highbd_subtract_block` overwrites the live
+            // range before any read.
+            if walk.residual.len() < txw * txh {
                 walk.residual.resize(txw * txh, 0);
             }
             highbd_subtract_block(
                 txh,
                 txw,
-                &mut walk.residual,
+                &mut walk.residual[..txw * txh],
                 txw,
                 &env.src[src_txb_off..],
                 env.src_stride,
@@ -3374,7 +3414,8 @@ pub fn intra_model_rd_y(
                 env.ref_stride,
             );
 
-            let tile_satd = wht_satd(&walk.residual, txw, tx_size, env.bd, &mut walk.satd);
+            let tile_satd =
+                wht_satd(&walk.residual[..txw * txh], txw, tx_size, env.bd, &mut walk.satd);
             if crate::tx_search::tx_dbg_target()
                 .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
             {

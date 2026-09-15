@@ -88,7 +88,7 @@ use aom_dsp::entropy::partition::{get_plane_block_size, intra_avail};
 use aom_dsp::intra::cfl::{CflCtx, cfl_store_tx};
 use aom_dsp::intra::predict_intra_high_in_place;
 use aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into;
-use aom_dsp::txb::{CoeffCostTables, get_txb_ctx};
+use aom_dsp::txb::{CoeffCostTables, get_txb_ctx, txb_high, txb_wide};
 
 /// `TRELLIS_OPT_TYPE` (encodemb.h:43-48). C-valued discriminants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,16 +481,18 @@ pub fn encode_intra_block_plane_y(
             } else {
                 // av1_subtract_txb — the prediction is read out of the plane
                 // at `ref_stride`; `residual` is fully overwritten before any
-                // read, so only the exact-size grow survives (xform_quant
-                // asserts len == txw*txh).
+                // read, so the Vec is grow-only (`resize` would truncate on a
+                // smaller tx and refill the grown tail on the next bounce)
+                // and the live `txw*txh` is sliced per use — `xform_quant`
+                // asserts len == txw*txh.
                 let src_txb_off = env.src_off + (blk_row * env.src_stride + blk_col) * 4;
-                if residual.len() != txw * txh {
+                if residual.len() < txw * txh {
                     residual.resize(txw * txh, 0);
                 }
                 highbd_subtract_block(
                     txh,
                     txw,
-                    &mut residual,
+                    &mut residual[..txw * txh],
                     txw,
                     &env.src[src_txb_off..],
                     env.src_stride,
@@ -540,20 +542,24 @@ pub fn encode_intra_block_plane_y(
                     // av1_xform_quant(FP, use_optimize_b) + get_txb_ctx +
                     // av1_optimize_b; the rate is C's dummy_rate_cost.
                     let r = crate::xform_quant_optimize_split_into(
-                        &residual, tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
+                        &residual[..txw * txh], tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
                     );
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
+                    // `xq`'s Vecs are grow-only scratch — `from_slice` copies
+                    // the whole range, so slice to the live `n_coeffs`.
+                    let n = txb_wide(tx_size) * txb_high(tx_size);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
                     dc_sign_ctx = r.dc_sign_ctx;
                 } else {
                     let r = crate::xform_quant_into(
-                        &residual, tx_size, tx_type, kind, &qp, false, &mut xq,
+                        &residual[..txw * txh], tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
+                    let n = txb_wide(tx_size) * txb_high(tx_size);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     // get_txb_ctx: xform_quant (non-optimize_b) doesn't derive
@@ -860,18 +866,18 @@ pub fn encode_intra_block_plane_uv(
                 // av1_subtract_txb: the prediction stays in the recon plane
                 // and is read at `ref_stride` — the tight snapshot this
                 // replaced was a per-row copy out of `recon` feeding only this
-                // subtract. `residual` is fully overwritten before any read
-                // (len must still land exactly on txw*txh — xform_quant
-                // asserts it).
+                // subtract. `residual` is fully overwritten before any read,
+                // so the Vec is grow-only and the live `txw*txh` is sliced
+                // per use (xform_quant asserts the len).
                 let src = if plane == 1 { env.src_u } else { env.src_v };
                 let src_txb_off = env.src_off[pi] + (blk_row * env.src_stride + blk_col) * 4;
-                if residual.len() != txw * txh {
+                if residual.len() < txw * txh {
                     residual.resize(txw * txh, 0);
                 }
                 highbd_subtract_block(
                     txh,
                     txw,
-                    &mut residual,
+                    &mut residual[..txw * txh],
                     txw,
                     &src[src_txb_off..],
                     env.src_stride,
@@ -921,20 +927,24 @@ pub fn encode_intra_block_plane_uv(
                         sharpness: prm.sharpness,
                     };
                     let r = crate::xform_quant_optimize_split_into(
-                        &residual, tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
+                        &residual[..txw * txh], tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
                     );
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
+                    // `xq`'s Vecs are grow-only scratch — `from_slice` copies
+                    // the whole range, so slice to the live `n_coeffs`.
+                    let n = txb_wide(tx_size) * txb_high(tx_size);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
                     dc_sign_ctx = r.dc_sign_ctx;
                 } else {
                     let r = crate::xform_quant_into(
-                        &residual, tx_size, tx_type, kind, &qp, false, &mut xq,
+                        &residual[..txw * txh], tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
-                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff);
-                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff);
+                    let n = txb_wide(tx_size) * txb_high(tx_size);
+                    qcoeff = TxbCoeffs::from_slice(&xq.qcoeff[..n]);
+                    dqcoeff = TxbCoeffs::from_slice(&xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     let (sc, dc) =
