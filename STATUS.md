@@ -1,5 +1,30 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## `pack_leaf` replays retained leaf payloads — the pack re-encode is gone (Gate 3, 2026-09-15)
+
+`pack_leaf` re-ran `encode_b_intra_dry` on every committed leaf — 3,312
+calls vs the pick's 1,656 at the 192² s9 cell, ~44% of it — where C's
+`write_modes_b` reads the `cb_coef_buff` coefficients the OUTPUT_ENABLED
+encode already produced. The port now mirrors that: `LeafWinner::replay:
+Option<LeafEncodeOut>` retains the output-enabled walk's result
+(`encode_sb_dry`'s leaf sites via `finish_leaf_out`, plus
+`nonrd_leaf_pick_and_encode`; ordinary intra leaves only — inter/intrabc
+keep the re-encode fallback since their early-return arms stamp a
+different ctx pattern). The encode's persistent-context steps 4+6 moved
+into shared `stamp_leaf_ctx`, which the replay arm re-runs on the pack
+pass's `TileCtxState` — recomputed-identical `(txb_skip_ctx,
+dc_sign_ctx)` pairs, `cul == txb_entropy_ctx` asserts live. The payload
+is restored to the winner so the phase-2 `pack_tile_from_trees_lr`
+re-walk replays too.
+
+Same-protocol callgrind `192x192 cq27 s9 reps=5`: **229.85M → 166.93M
+Ir (−27.4%)** — `encode_b_intra_dry` calls 4,968 → 1,524. Session
+cumulative at the cell: **271.1M → 166.93M (−38.4%)**. Perf gate
+(`encode_perf_vs_libaom`, 12/12 byte-identical): worst cell **3.42× →
+2.12×**, s9 cells 3.42×/3.3× → 2.03×/1.96×. Byte-identical at both
+witnesses; encode `all` 654/654. Record:
+`benchmarks/encoder_s9_pack_replay_2026-09-15.md`.
+
 ## Mode split: `KeyFrameMode::{LibaomExact, Zenaom}` — the SCM trial lands as the first opt-in zenaom feature (KB-67, 2026-09-13)
 
 `KeyFrameConfig` gained `mode` (default `LibaomExact`) and

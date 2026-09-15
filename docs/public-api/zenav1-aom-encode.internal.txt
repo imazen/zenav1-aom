@@ -14,7 +14,7 @@
 #   pub consts/statics                        639
 #   free functions                            617
 #   inherent methods                          927
-#   struct fields                            1928
+#   struct fields                            1929
 #   enum variants                             174
 #   re-exports                                  1
 #   trait roster entries (type × trait)      1089
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4616
+#   aom_encode                     4617
 #   u16                               3
 #   u8                                3
 
-## items (4608 lines)
+## items (4609 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -228,6 +228,7 @@ pub aom_encode::encode_sb::LeafWinner::palette_y: core::option::Option<aom_encod
 pub aom_encode::encode_sb::LeafWinner::raw_rdstats: aom_encode::partition::PartRdStats
 pub aom_encode::encode_sb::LeafWinner::ref_frame0: i8
 pub aom_encode::encode_sb::LeafWinner::ref_frame1: i8
+pub aom_encode::encode_sb::LeafWinner::replay: core::option::Option<aom_encode::encode_sb::LeafEncodeOut>
 pub aom_encode::encode_sb::LeafWinner::skip_txfm: bool
 pub aom_encode::encode_sb::LeafWinner::tx_size: usize
 pub aom_encode::encode_sb::LeafWinner::tx_type_map: alloc::vec::Vec<u8>
