@@ -302,10 +302,12 @@ fn z2_left_chunk8(
         _mm256_set1_epi32(16),
     ));
     _mm256_storeu_si256(out, res);
-    let mut off = r * stride + c;
+    // One slice covering the whole strided column — every `col[k * stride]`
+    // (k < 8) is statically inside `7 * stride + 1` elements, so the eight
+    // stores carry no per-element bounds check.
+    let col: &mut [u16] = &mut dst[r * stride + c..(r + 7) * stride + c + 1];
     for k in 0..8 {
-        dst[off] = out[k] as u16;
-        off += stride;
+        col[k * stride] = out[k] as u16;
     }
 }
 
