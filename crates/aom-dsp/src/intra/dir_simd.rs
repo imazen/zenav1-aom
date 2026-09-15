@@ -220,59 +220,18 @@ fn z2_left_gather_x86(
             continue;
         }
         let shv = _mm256_set1_epi32(shift);
-        let c16 = _mm256_set1_epi32(16);
-        // One 8-row chunk at row r; every element read is inside the checked
-        // `[lo, hi]` window (`r + 8 <= bh` on the forward pass, `r = bh - 8`
-        // for the overlap finisher — idempotent: a rewritten row stores the
-        // same value).
-        let mut do8 = |dst: &mut [u16], ld: &[u16], r: usize| {
-            let b = (base as i64 + r as i64 * s) as usize;
-            let (w0, w1) = if up_left == 0 {
-                let a: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
-                let d: &[u16; 8] = ld[b + 1..b + 9].try_into().unwrap();
-                (_mm_loadu_si128(a), _mm_loadu_si128(d))
-            } else {
-                let lo8: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
-                let hi8: &[u16; 8] = ld[b + 8..b + 16].try_into().unwrap();
-                let lo = _mm_loadu_si128(lo8);
-                let hi = _mm_loadu_si128(hi8);
-                (
-                    _mm_unpacklo_epi64(
-                        _mm_shuffle_epi8(lo, ev),
-                        _mm_shuffle_epi8(hi, ev),
-                    ),
-                    _mm_unpacklo_epi64(
-                        _mm_shuffle_epi8(lo, od),
-                        _mm_shuffle_epi8(hi, od),
-                    ),
-                )
-            };
-            let a0 = _mm256_cvtepu16_epi32(w0);
-            let a1 = _mm256_cvtepu16_epi32(w1);
-            let res = _mm256_srai_epi32::<5>(_mm256_add_epi32(
-                _mm256_add_epi32(
-                    _mm256_slli_epi32::<5>(a0),
-                    _mm256_mullo_epi32(_mm256_sub_epi32(a1, a0), shv),
-                ),
-                c16,
-            ));
-            _mm256_storeu_si256(&mut out, res);
-            let mut off = r * stride + c;
-            for k in 0..8 {
-                dst[off] = out[k] as u16;
-                off += stride;
-            }
-        };
         let mut r = r0;
         while r + 8 <= bh {
-            do8(dst, ld, r);
+            z2_left_chunk8(dst, stride, ld, c, r, base, s, up_left, shv, ev, od, &mut out);
             r += 8;
         }
         if r < bh {
             if bh >= r0 + 8 {
                 // Overlap finisher: rows bh-8..bh all covered, earlier rows
-                // of the window store identical values.
-                do8(dst, ld, bh - 8);
+                // of the window store identical values (idempotent rewrite).
+                z2_left_chunk8(
+                    dst, stride, ld, c, bh - 8, base, s, up_left, shv, ev, od, &mut out,
+                );
             } else {
                 let mut y2r = ((r as i32) << 6) - (c as i32 + 1) * dy;
                 for rr in r..bh {
@@ -285,6 +244,68 @@ fn z2_left_gather_x86(
                 }
             }
         }
+    }
+}
+
+/// One 8-row chunk of the z2 left gather at column `c`, rows `r..r + 8`.
+/// Every element read is inside the caller's checked `[lo, hi]` window
+/// (`r + 8 <= bh` on the forward pass, `r = bh - 8` for the overlap
+/// finisher). `#[inline(always)]` — the closure form of this body measured a
+/// real call per chunk (call+marshal ~15 Ir on a ~60 Ir body).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+fn z2_left_chunk8(
+    dst: &mut [u16],
+    stride: usize,
+    ld: &[u16],
+    c: usize,
+    r: usize,
+    base: i32,
+    s: i64,
+    up_left: u32,
+    shv: core::arch::x86_64::__m256i,
+    ev: core::arch::x86_64::__m128i,
+    od: core::arch::x86_64::__m128i,
+    out: &mut [i32; 8],
+) {
+    use archmage::intrinsics::x86_64::*;
+    let b = (base as i64 + r as i64 * s) as usize;
+    let (w0, w1) = if up_left == 0 {
+        let a: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
+        let d: &[u16; 8] = ld[b + 1..b + 9].try_into().unwrap();
+        (_mm_loadu_si128(a), _mm_loadu_si128(d))
+    } else {
+        let lo8: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
+        let hi8: &[u16; 8] = ld[b + 8..b + 16].try_into().unwrap();
+        let lo = _mm_loadu_si128(lo8);
+        let hi = _mm_loadu_si128(hi8);
+        (
+            _mm_unpacklo_epi64(
+                _mm_shuffle_epi8(lo, ev),
+                _mm_shuffle_epi8(hi, ev),
+            ),
+            _mm_unpacklo_epi64(
+                _mm_shuffle_epi8(lo, od),
+                _mm_shuffle_epi8(hi, od),
+            ),
+        )
+    };
+    let a0 = _mm256_cvtepu16_epi32(w0);
+    let a1 = _mm256_cvtepu16_epi32(w1);
+    let res = _mm256_srai_epi32::<5>(_mm256_add_epi32(
+        _mm256_add_epi32(
+            _mm256_slli_epi32::<5>(a0),
+            _mm256_mullo_epi32(_mm256_sub_epi32(a1, a0), shv),
+        ),
+        _mm256_set1_epi32(16),
+    ));
+    _mm256_storeu_si256(out, res);
+    let mut off = r * stride + c;
+    for k in 0..8 {
+        dst[off] = out[k] as u16;
+        off += stride;
     }
 }
 
