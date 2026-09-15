@@ -992,15 +992,9 @@ fn assemble_dir_edges(recon: &[u16], g: &DirEdge, above_data: &mut [u16], left_d
     } = *g;
     const P: usize = DIR_PAD;
 
-    // Whole-buffer defaults (valgrind-safety + the z2 predictor's negative reads).
-    let ao = (base - 1) as u16;
-    let lo = (base + 1) as u16;
-    for e in above_data.iter_mut() {
-        *e = ao;
-    }
-    for e in left_data.iter_mut() {
-        *e = lo;
-    }
+    // Whole-buffer defaults (valgrind-safety + the z2 predictor's negative
+    // reads): the caller pre-fills `above_data` with `base - 1` and
+    // `left_data` with `base + 1`, so nothing to write here.
 
     if need_left {
         let num_left = txhpx + if n_bottomleft_px >= 0 { txwpx } else { 0 };
@@ -1101,8 +1095,11 @@ pub fn build_directional_intra_high(
     n_bottomleft_px: i32,
     bd: i32,
 ) {
-    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
-    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    // Pre-fill with the assemble defaults (`base - 1` / `base + 1`,
+    // `base = 128 << (bd - 8)` as in `plan_dir_intra_high`) — the init IS the
+    // fill, so `assemble_dir_edges` writes only the live range.
+    let mut above_data = [((128i32 << (bd - 8)) - 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let mut left_data = [((128i32 << (bd - 8)) + 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
     let plan = plan_dir_intra_high(
         recon,
         ref_off,
@@ -1154,8 +1151,9 @@ pub fn build_directional_intra_high_in_place(
     n_bottomleft_px: i32,
     bd: i32,
 ) {
-    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
-    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    // Pre-fill with the assemble defaults — see `build_directional_intra_high`.
+    let mut above_data = [((128i32 << (bd - 8)) - 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let mut left_data = [((128i32 << (bd - 8)) + 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
     let plan = plan_dir_intra_high(
         &*buf,
         off,
@@ -1533,8 +1531,9 @@ pub fn build_filter_intra_high(
     n_bottomleft_px: i32,
     bd: i32,
 ) {
-    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
-    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    // Pre-fill with the assemble defaults — see `build_directional_intra_high`.
+    let mut above_data = [((128i32 << (bd - 8)) - 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let mut left_data = [((128i32 << (bd - 8)) + 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
     plan_filter_intra_high(
         recon,
         ref_off,
@@ -1579,8 +1578,9 @@ pub fn build_filter_intra_high_in_place(
     n_bottomleft_px: i32,
     bd: i32,
 ) {
-    let mut above_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
-    let mut left_data = [0u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    // Pre-fill with the assemble defaults — see `build_directional_intra_high`.
+    let mut above_data = [((128i32 << (bd - 8)) - 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
+    let mut left_data = [((128i32 << (bd - 8)) + 1) as u16; NUM_INTRA_NEIGHBOUR_PIXELS];
     plan_filter_intra_high(
         &*buf,
         off,

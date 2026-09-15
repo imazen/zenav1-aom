@@ -67,7 +67,161 @@ fn filter_edge_out(orig: &[i16], i: usize, sz: usize, taps: &[i32; 5]) -> u16 {
 /// caller returns early, exactly like the scalar).
 pub(crate) fn filter_intra_edge_run(p: &mut [u16], sz: usize, taps: [i32; 5]) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
-    incant!(filter_intra_edge_impl(p, sz, taps), [v3, neon, wasm128, scalar])
+    #[cfg(target_arch = "x86_64")]
+    {
+        incant!(
+            filter_intra_edge_impl_x86(p, sz, taps),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    incant!(filter_intra_edge_impl(p, sz, taps), [neon, wasm128, scalar])
+}
+
+/// x86 v3 body — `madd_epi16` pair-taps instead of the generic i32-lane
+/// widening: i32 lane `m` of an `orig` load already holds the adjacent pair
+/// `(orig[b+2m], orig[b+2m+1])` the (t_j, t_j+1) tap pair needs, so even
+/// outputs come from loads at `i-2`/`i`/`i+2` and odd outputs at `i-1`/`i+1`/
+/// `i+3`. Six loads + six madds per 16 outputs replace five widen+mul chains
+/// per 8. The interleave-back is free: `(even & 0xFFFF) | (odd << 16)` IS the
+/// u16 output pair layout. Exact: `orig <= 4095` and `|taps| <= 8`, so every
+/// madd pair-sum `<= 2 * 8 * 4095` and the i32 total `<= 16 * 4095 + 8` —
+/// same `(s + 8) >> 4 as u16` value the scalar writes (no clip; the `& 0xFFFF`
+/// and `<< 16` keep exactly the low 16 bits the `as u16` cast keeps).
+///
+/// `sz` is `2k+1`-shaped in practice (`n_px = edge + 1 + ext`), so the
+/// interior tail after the stride-16 walk is finished with ONE overlapping
+/// backward chunk at `sz - 18` (idempotent: every interior output is a pure
+/// function of `orig`, so rewriting an already-computed lane stores the same
+/// value) rather than a long scalar tail.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x16), v3, -scalar)]
+fn filter_intra_edge_impl_x86(token: Token, p: &mut [u16], sz: usize, taps: [i32; 5]) {
+    use archmage::intrinsics::x86_64::*;
+    let _ = token;
+    if sz > 192 || sz < 2 {
+        super::edge::filter_intra_edge_scalar_inplace(p, sz, taps);
+        return;
+    }
+    let mut orig = [0i16; FILTER_SCRATCH];
+    // Vector snapshot of the originals: same bits, u16->i16 needs no convert.
+    let mut k = 0usize;
+    while k + 16 <= sz {
+        let s: &[u16; 16] = p[k..k + 16].try_into().unwrap();
+        let d: &mut [i16; 16] = (&mut orig[k..k + 16]).try_into().unwrap();
+        _mm256_storeu_si256(d, _mm256_loadu_si256(s));
+        k += 16;
+    }
+    while k < sz {
+        orig[k] = p[k] as i16;
+        k += 1;
+    }
+
+    let pair = |a: i32, b: i32| -> __m256i {
+        _mm256_set1_epi32(((a as u16 as u32) | ((b as u16 as u32) << 16)) as i32)
+    };
+    let t01 = pair(taps[0], taps[1]);
+    let t23 = pair(taps[2], taps[3]);
+    let t45 = pair(taps[4], 0);
+    let eight = _mm256_set1_epi32(8);
+    let lo16 = _mm256_set1_epi32(0xFFFF);
+
+    // One 16-output chunk at position i; outputs i..i+15 must all be interior
+    // (i >= 2, i + 15 <= sz - 3). Reads orig[i - 2 ..= i + 18] < FILTER_SCRATCH.
+    let do16 = |p: &mut [u16], orig: &[i16; FILTER_SCRATCH], i: usize| {
+        let ld = |b: usize| -> __m256i {
+            let s: &[i16; 16] = orig[b..b + 16].try_into().unwrap();
+            _mm256_loadu_si256(s)
+        };
+        let even = _mm256_add_epi32(
+            _mm256_add_epi32(
+                _mm256_madd_epi16(ld(i - 2), t01),
+                _mm256_madd_epi16(ld(i), t23),
+            ),
+            _mm256_madd_epi16(ld(i + 2), t45),
+        );
+        let odd = _mm256_add_epi32(
+            _mm256_add_epi32(
+                _mm256_madd_epi16(ld(i - 1), t01),
+                _mm256_madd_epi16(ld(i + 1), t23),
+            ),
+            _mm256_madd_epi16(ld(i + 3), t45),
+        );
+        let re = _mm256_srai_epi32::<4>(_mm256_add_epi32(even, eight));
+        let ro = _mm256_slli_epi32::<16>(_mm256_srai_epi32::<4>(_mm256_add_epi32(odd, eight)));
+        let out: &mut [u16; 16] = (&mut p[i..i + 16]).try_into().unwrap();
+        _mm256_storeu_si256(out, _mm256_or_si256(_mm256_and_si256(re, lo16), ro));
+    };
+    // Same shape on xmm for sz < 20; reads orig[i - 2 ..= i + 10].
+    let do8 = |p: &mut [u16], orig: &[i16; FILTER_SCRATCH], i: usize| {
+        let pair128 = |a: i32, b: i32| -> __m128i {
+            _mm_set1_epi32(((a as u16 as u32) | ((b as u16 as u32) << 16)) as i32)
+        };
+        let ld = |b: usize| -> __m128i {
+            let s: &[i16; 8] = orig[b..b + 8].try_into().unwrap();
+            _mm_loadu_si128(s)
+        };
+        let even = _mm_add_epi32(
+            _mm_add_epi32(
+                _mm_madd_epi16(ld(i - 2), pair128(taps[0], taps[1])),
+                _mm_madd_epi16(ld(i), pair128(taps[2], taps[3])),
+            ),
+            _mm_madd_epi16(ld(i + 2), pair128(taps[4], 0)),
+        );
+        let odd = _mm_add_epi32(
+            _mm_add_epi32(
+                _mm_madd_epi16(ld(i - 1), pair128(taps[0], taps[1])),
+                _mm_madd_epi16(ld(i + 1), pair128(taps[2], taps[3])),
+            ),
+            _mm_madd_epi16(ld(i + 3), pair128(taps[4], 0)),
+        );
+        let re = _mm_srai_epi32::<4>(_mm_add_epi32(even, _mm_set1_epi32(8)));
+        let ro = _mm_slli_epi32::<16>(_mm_srai_epi32::<4>(_mm_add_epi32(
+            odd,
+            _mm_set1_epi32(8),
+        )));
+        let out: &mut [u16; 8] = (&mut p[i..i + 8]).try_into().unwrap();
+        _mm_storeu_si128(out, _mm_or_si128(_mm_and_si128(re, _mm_set1_epi32(0xFFFF)), ro));
+    };
+
+    p[1] = filter_edge_out(&orig, 1, sz, &taps);
+    let mut i = 2usize;
+    while i + 16 <= sz - 2 {
+        do16(p, &orig, i);
+        i += 16;
+    }
+    if i <= sz - 3 {
+        if sz >= 20 {
+            // Backward-overlap finisher: covers (sz - 18)..=(sz - 3), all
+            // interior; lanes it rewrites store identical values.
+            do16(p, &orig, sz - 18);
+            i = sz - 2;
+        } else {
+            while i + 8 <= sz - 2 {
+                do8(p, &orig, i);
+                i += 8;
+            }
+            if i <= sz - 3 && sz >= 12 {
+                do8(p, &orig, sz - 10);
+                i = sz - 2;
+            }
+        }
+    }
+    for k in i..sz {
+        p[k] = filter_edge_out(&orig, k, sz, &taps);
+    }
+}
+
+/// Scalar tier for the x86 dispatch — same in-place walk as the generic tier.
+#[cfg(target_arch = "x86_64")]
+fn filter_intra_edge_impl_x86_scalar(
+    t: archmage::ScalarToken,
+    p: &mut [u16],
+    sz: usize,
+    taps: [i32; 5],
+) {
+    filter_intra_edge_impl_scalar(t, p, sz, taps);
 }
 
 fn filter_intra_edge_impl_scalar(
@@ -90,7 +244,7 @@ fn filter_intra_edge_impl_scalar(
     }
 }
 
-#[magetypes(define(i16x16, i16x8, i32x8, i32x4), v3, neon, wasm128, -scalar)]
+#[magetypes(define(i16x16, i16x8, i32x8, i32x4), neon, wasm128, -scalar)]
 fn filter_intra_edge_impl(token: Token, p: &mut [u16], sz: usize, taps: [i32; 5]) {
     if sz > 192 || sz < 2 {
         super::edge::filter_intra_edge_scalar_inplace(p, sz, taps);

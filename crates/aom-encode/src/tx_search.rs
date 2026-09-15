@@ -172,6 +172,47 @@ pub fn get_default_tx_type_y(
     }
 }
 
+// Direct-mapped memo shared by `get_tx_mask_intra` / `get_tx_mask_uv_intra`:
+// both are pure over a small enum domain and run once per transform-block
+// search (~250 Ir of table math each); a per-thread hit replays the stored
+// tuple in ~20 Ir. Byte-identical — the cache only replays the pure result.
+// `key == u64::MAX` marks an empty slot (live keys are < 2^40; bit 62
+// distinguishes the two functions' layouts).
+#[derive(Clone, Copy)]
+struct TxMaskMemoEntry {
+    key: u64,
+    mask: u16,
+    /// `get_tx_mask_intra`: `single` as i16 (-1 = `None`); uv: `txk_allowed`.
+    aux: i16,
+}
+
+const TX_MASK_MEMO_EMPTY: TxMaskMemoEntry = TxMaskMemoEntry {
+    key: u64::MAX,
+    mask: 0,
+    aux: -1,
+};
+
+thread_local! {
+    static TX_MASK_MEMO: core::cell::RefCell<[TxMaskMemoEntry; 512]> =
+        const { core::cell::RefCell::new([TX_MASK_MEMO_EMPTY; 512]) };
+}
+
+/// Pack the seven [`TxMaskParams`] fields into key bits 0..9.
+fn tx_mask_params_key(p: &TxMaskParams) -> u64 {
+    (p.use_reduced_intra_txset as u64 & 3)
+        | (p.use_derived_intra_tx_type_set as u64) << 2
+        | (p.use_default_intra_tx_type as u64) << 3
+        | (p.enable_flip_idtx as u64) << 4
+        | (p.use_intra_dct_only as u64) << 5
+        | (p.prune_tx_type_using_stats as u64 & 3) << 6
+        | (p.use_screen_content_tools as u64) << 8
+}
+
+#[inline]
+fn tx_mask_memo_idx(key: u64) -> usize {
+    (key ^ (key >> 13) ^ (key >> 26)) as usize & 511
+}
+
 /// `get_tx_mask` (tx_search.c, static) — the LUMA INTRA arm: the bitmask of
 /// tx types `search_tx_type` iterates for one txb, plus `txk_allowed`
 /// (`Some(t)` when exactly one specific type is allowed, `None` = the mask is
@@ -184,6 +225,49 @@ pub fn get_default_tx_type_y(
 /// `rd_model == LOW_TXFM_RD` DCT-only override (the pick loop runs
 /// `FULL_TXFM_RD`), and the UV path (tx type inherited from Y).
 pub fn get_tx_mask_intra(
+    tx_size: usize,
+    mode: usize,
+    use_filter_intra: bool,
+    filter_intra_mode: usize,
+    lossless: bool,
+    reduced_tx_set_used: bool,
+    p: &TxMaskParams,
+) -> (u16, Option<usize>) {
+    let key = tx_size as u64
+        | (mode as u64) << 5
+        | (use_filter_intra as u64) << 9
+        | (filter_intra_mode as u64) << 10
+        | (lossless as u64) << 13
+        | (reduced_tx_set_used as u64) << 14
+        | tx_mask_params_key(p) << 15;
+    let idx = tx_mask_memo_idx(key);
+    let hit = TX_MASK_MEMO.with(|c| {
+        let e = c.borrow()[idx];
+        (e.key == key).then_some((e.mask, e.aux))
+    });
+    if let Some((mask, aux)) = hit {
+        return (mask, (aux >= 0).then_some(aux as usize));
+    }
+    let (mask, single) = get_tx_mask_intra_inner(
+        tx_size,
+        mode,
+        use_filter_intra,
+        filter_intra_mode,
+        lossless,
+        reduced_tx_set_used,
+        p,
+    );
+    TX_MASK_MEMO.with(|c| {
+        c.borrow_mut()[idx] = TxMaskMemoEntry {
+            key,
+            mask,
+            aux: single.map_or(-1, |t| t as i16),
+        };
+    });
+    (mask, single)
+}
+
+fn get_tx_mask_intra_inner(
     tx_size: usize,
     mode: usize,
     use_filter_intra: bool,
@@ -341,6 +425,53 @@ pub fn uv_intra_tx_type(
 /// bit.
 #[allow(clippy::too_many_arguments)]
 pub fn get_tx_mask_uv_intra(
+    tx_size: usize,
+    uv_mode: usize,
+    luma_mode: usize,
+    luma_use_filter_intra: bool,
+    luma_filter_intra_mode: usize,
+    lossless: bool,
+    reduced_tx_set_used: bool,
+    p: &TxMaskParams,
+) -> (u16, usize) {
+    let key = (1u64 << 62)
+        | tx_size as u64
+        | (uv_mode as u64) << 5
+        | (luma_mode as u64) << 10
+        | (luma_use_filter_intra as u64) << 14
+        | (luma_filter_intra_mode as u64) << 15
+        | (lossless as u64) << 18
+        | (reduced_tx_set_used as u64) << 19
+        | tx_mask_params_key(p) << 20;
+    let idx = tx_mask_memo_idx(key);
+    let hit = TX_MASK_MEMO.with(|c| {
+        let e = c.borrow()[idx];
+        (e.key == key).then_some((e.mask, e.aux))
+    });
+    if let Some((mask, aux)) = hit {
+        return (mask, aux as usize);
+    }
+    let (mask, txk) = get_tx_mask_uv_intra_inner(
+        tx_size,
+        uv_mode,
+        luma_mode,
+        luma_use_filter_intra,
+        luma_filter_intra_mode,
+        lossless,
+        reduced_tx_set_used,
+        p,
+    );
+    TX_MASK_MEMO.with(|c| {
+        c.borrow_mut()[idx] = TxMaskMemoEntry {
+            key,
+            mask,
+            aux: txk as i16,
+        };
+    });
+    (mask, txk)
+}
+
+fn get_tx_mask_uv_intra_inner(
     tx_size: usize,
     uv_mode: usize,
     luma_mode: usize,

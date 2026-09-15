@@ -509,7 +509,16 @@ fn paeth_impl_scalar(
     paeth_scalar(dst, stride, bw, bh, above_row, left, top_left);
 }
 
-#[magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+/// PAETH in **u16 lanes** — the three candidate distances factor out the
+/// per-pixel `base` entirely: `p_left = |base - left| = |top - tl|` is
+/// row-invariant (hoisted per column chunk), `p_top = |left - tl|` is
+/// column-invariant (one scalar `abs_diff` per row), and
+/// `p_tl = |base - tl| = |top + left - 2*tl|` is computed as
+/// `max(top+left, 2*tl) - min(...)` — all magnitudes `<= 8190`, so nothing
+/// needs a signed or widened lane. Selection is the scalar's exact recipe
+/// (`p_left <= p_top && p_left <= p_tl -> left; else p_top <= p_tl -> top;
+/// else tl`), so the result is bit-identical.
+#[magetypes(define(u16x16, u16x8), v3, neon, wasm128, -scalar)]
 fn paeth_impl(
     token: Token,
     dst: &mut [u16],
@@ -520,39 +529,58 @@ fn paeth_impl(
     left: &[u16],
     top_left: i32,
 ) {
-    let full = bw & !7;
-    let mut above_i32 = [0i32; 64];
-    for c in 0..bw {
-        above_i32[c] = above_row[c] as i32;
+    let tl = top_left as u16;
+    let tl2 = tl + tl; // <= 8190: no wrap
+    let tl_v = u16x16::splat(token, tl);
+    let tl2_v = u16x16::splat(token, tl2);
+    // Loop-invariant per 16-column chunk: the above row itself and
+    // `p_left = |above - tl|`. bw in {8,16,32,64} here (bw==4 early-outs).
+    let n16 = bw >> 4;
+    let mut top_v = [u16x16::zero(token); 4];
+    let mut pl_v = [u16x16::zero(token); 4];
+    for (k, tv) in top_v.iter_mut().enumerate().take(n16) {
+        let t = u16x16::from_slice(token, &above_row[k * 16..k * 16 + 16]);
+        *tv = t;
+        pl_v[k] = t.max(tl_v) - t.min(tl_v);
     }
-    let tl_v = i32x8::splat(token, top_left);
+    // bw == 8's lane (the only tx width below 16 that reaches here).
+    let top8 = if bw & 8 != 0 {
+        let t = u16x8::from_slice(token, &above_row[n16 * 16..n16 * 16 + 8]);
+        Some((t, t.max(u16x8::splat(token, tl)) - t.min(u16x8::splat(token, tl))))
+    } else {
+        None
+    };
+    let tl8_v = u16x8::splat(token, tl);
+    let tl28_v = u16x8::splat(token, tl2);
     for r in 0..bh {
-        let left_r = left[r] as i32;
-        let left_v = i32x8::splat(token, left_r);
+        let l = left[r];
+        let pt = l.abs_diff(tl); // p_top = |left - tl|
+        let lv = u16x16::splat(token, l);
+        let pt_v = u16x16::splat(token, pt);
         let row = r * stride;
-        let mut c = 0;
-        while c < full {
-            let top = i32x8::from_slice(token, &above_i32[c..c + 8]);
-            // base = top + left - top_left; distances to each; nearest wins.
-            let base = top + left_v - tl_v;
-            let p_left = (base - left_v).abs();
-            let p_top = (base - top).abs();
-            let p_tl = (base - tl_v).abs();
-            // scalar: p_left<=p_top && p_left<=p_tl -> left;
-            //         else p_top<=p_tl -> top; else top_left.
-            let use_left = p_left.simd_le(p_top) & p_left.simd_le(p_tl);
-            let use_top = p_top.simd_le(p_tl);
-            let sel = i32x8::blend(use_left, left_v, i32x8::blend(use_top, top, tl_v));
-            let a = sel.to_array();
-            for (dv, &av) in dst[row + c..row + c + 8].iter_mut().zip(a.iter()) {
-                *dv = av as u16;
-            }
-            c += 8;
+        for k in 0..n16 {
+            let top = top_v[k];
+            let sum = top + lv; // top + left <= 8190: no wrap
+            let p_tl = sum.max(tl2_v) - sum.min(tl2_v);
+            let pl = pl_v[k];
+            let use_left = pl.simd_le(pt_v) & pl.simd_le(p_tl);
+            let use_top = pt_v.simd_le(p_tl);
+            let sel = u16x16::blend(use_left, lv, u16x16::blend(use_top, top, tl_v));
+            sel.store((&mut dst[row + k * 16..row + k * 16 + 16])
+                .try_into()
+                .unwrap());
         }
-        while c < bw {
-            dst[row + c] =
-                crate::intra::paeth_single_i32(left_r, above_row[c] as i32, top_left) as u16;
-            c += 1;
+        if let Some((top8, pl8)) = top8 {
+            let lv8 = u16x8::splat(token, l);
+            let pt8 = u16x8::splat(token, pt);
+            let sum = top8 + lv8;
+            let p_tl = sum.max(tl28_v) - sum.min(tl28_v);
+            let use_left = pl8.simd_le(pt8) & pl8.simd_le(p_tl);
+            let use_top = pt8.simd_le(p_tl);
+            let sel = u16x8::blend(use_left, lv8, u16x8::blend(use_top, top8, tl8_v));
+            sel.store((&mut dst[row + n16 * 16..row + n16 * 16 + 8])
+                .try_into()
+                .unwrap());
         }
     }
 }
