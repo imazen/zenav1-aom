@@ -185,6 +185,103 @@ fn z2_left_gather_x86(
     let ev = _mm_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
     let od = _mm_setr_epi8(2, 3, 6, 7, 10, 11, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
     let mut out = [0i32; 8];
+    if bh >= 8 && bw >= 8 {
+        // ---- geometry table: one Bresenham pass fills per-column r0, the
+        // first band-aligned row `rt8 = ceil8(r0)`, `base` and `shift`.
+        // `r0(c) = ((c+1)*64)/dx` is nondecreasing, so the first column with
+        // `r0 >= bh` ends the covered prefix.
+        let mut r0t = [0u8; 64];
+        let mut rt8 = [0u8; 64];
+        let mut base_t = [0i32; 64];
+        let mut sh_t = [0i32; 64];
+        let mut r0 = 0usize;
+        let mut frac = 0i32;
+        let mut y2 = -dy;
+        let mut ncol = 0usize;
+        for c in 0..bw {
+            frac += 64;
+            while frac >= dx {
+                frac -= dx;
+                r0 += 1;
+            }
+            if r0 >= bh {
+                break;
+            }
+            ncol = c + 1;
+            r0t[c] = r0 as u8;
+            rt8[c] = ((r0 + 7) & !7).min(bh) as u8;
+            base_t[c] = pad as i32 + (y2 >> frac_y);
+            sh_t[c] = ((y2 << up_left) & 0x3F) >> 1;
+            y2 -= dy;
+        }
+        // `c_tile` — count of leading columns handled by the band-tile pass:
+        // whole groups of 8 whose every column is eligible in the last band
+        // (`rt8[last] <= bh-8`, so the group has at least one full tile) AND
+        // whose tile-range tap reads `[base + rt8*s, base + (bh-1)*s + 1]`
+        // are in bounds. A failing column ends the tile prefix — that column
+        // and everything right of it take the per-column path below, which
+        // re-checks and scalar-falls-back exactly like the old body.
+        let mut c_tile = 0usize;
+        'groups: while c_tile + 8 <= ncol && rt8[c_tile + 7] as usize <= bh - 8 {
+            for k in 0..8 {
+                let c = c_tile + k;
+                let lo = base_t[c] as i64 + rt8[c] as i64 * s;
+                let hi = base_t[c] as i64 + (bh as i64 - 1) * s + 1;
+                if lo < 0 || hi >= ld.len() as i64 {
+                    break 'groups;
+                }
+            }
+            c_tile += 8;
+        }
+        // ---- band tiles: each full tile gathers 8 columns' contiguous (or
+        // stride-2) taps, transposes in-register, and stores 8 CONTIGUOUS
+        // u16x8 rows — replacing 64 strided scalar stores. A group joins in
+        // the band its last column's rt8 reaches.
+        for rb in (0..=bh - 8).step_by(8) {
+            let mut c0 = 0usize;
+            while c0 < c_tile && rt8[c0 + 7] as usize <= rb {
+                z2_tile8(
+                    dst, stride, ld, rb, c0, &base_t, &sh_t, s as i32, up_left, ev, od,
+                );
+                c0 += 8;
+            }
+        }
+        // ---- tile-column heads + the non-tile columns ----
+        // A tile column's rows below its group's first eligible band
+        // (`rt8[(c & !7) + 7]`) are written scalar — same index expression,
+        // same `&ld[i0..i0+2]` panic point as the scalar recipe.
+        for c in 0..ncol {
+            if c < c_tile {
+                let head_end = rt8[(c & !7) + 7] as usize;
+                let sh = sh_t[c];
+                let mut i0 = base_t[c] + r0t[c] as i32 * s as i32;
+                for r in r0t[c] as usize..head_end {
+                    let iu = i0 as usize;
+                    let w = &ld[iu..iu + 2];
+                    dst[r * stride + c] =
+                        ((i32::from(w[0]) * (32 - sh) + i32::from(w[1]) * sh + 16) >> 5) as u16;
+                    i0 += s as i32;
+                }
+            } else {
+                z2_col_full(
+                    dst,
+                    stride,
+                    ld,
+                    c,
+                    r0t[c] as usize,
+                    base_t[c],
+                    sh_t[c],
+                    bh,
+                    s as i32,
+                    up_left,
+                    ev,
+                    od,
+                    &mut out,
+                );
+            }
+        }
+        return;
+    }
     // Column walk, all incremental — `r0(c) = ((c+1)*64)/dx` tracked as a
     // Bresenham staircase (`frac` carries the remainder; total subtractions
     // over the walk = `r0` of the last column <= bh), and `y2 = -(c+1)*dy`
@@ -204,46 +301,181 @@ fn z2_left_gather_x86(
         let base = pad as i32 + (y2 >> frac_y);
         let shift = ((y2 << up_left) & 0x3F) >> 1;
         y2 -= dy;
-        let lo = base as i64 + r0 as i64 * s;
-        let hi = base as i64 + (bh - 1) as i64 * s + 1;
-        if lo < 0 || hi >= ld.len() as i64 {
-            // Same cells the scalar would write for this column, in order.
-            let mut y2r0 = ((r0 as i32) << 6) - (c as i32 + 1) * dy;
-            for r in r0..bh {
-                let i0 = (pad as i32 + (y2r0 >> frac_y)) as usize;
-                let sh = ((y2r0 << up_left) & 0x3F) >> 1;
-                let w = &ld[i0..i0 + 2];
-                dst[r * stride + c] =
-                    ((i32::from(w[0]) * (32 - sh) + i32::from(w[1]) * sh + 16) >> 5) as u16;
-                y2r0 += 64;
+        z2_col_full(
+            dst, stride, ld, c, r0, base, shift, bh, s as i32, up_left, ev, od, &mut out,
+        );
+    }
+}
+
+/// One covered column's full extent, rows `r0..bh`: bound-checks the whole
+/// affine tap range once, then vector 8-row chunks plus an overlap finisher;
+/// an out-of-bounds range takes the scalar recipe verbatim (same cells, same
+/// `&ld[i0..i0+2]` panic point — `i0 = base + r*s` is the scalar's
+/// `(pad + base_y)` exactly, since `frac_y + up_left == 6` under the gate).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+fn z2_col_full(
+    dst: &mut [u16],
+    stride: usize,
+    ld: &[u16],
+    c: usize,
+    r0: usize,
+    base: i32,
+    shift: i32,
+    bh: usize,
+    s: i32,
+    up_left: u32,
+    ev: core::arch::x86_64::__m128i,
+    od: core::arch::x86_64::__m128i,
+    out: &mut [i32; 8],
+) {
+    use archmage::intrinsics::x86_64::*;
+    let lo = base as i64 + r0 as i64 * s as i64;
+    let hi = base as i64 + (bh as i64 - 1) * s as i64 + 1;
+    if lo < 0 || hi >= ld.len() as i64 {
+        let mut i0 = base + r0 as i32 * s;
+        for r in r0..bh {
+            let iu = i0 as usize;
+            let w = &ld[iu..iu + 2];
+            dst[r * stride + c] =
+                ((i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift + 16) >> 5) as u16;
+            i0 += s;
+        }
+        return;
+    }
+    let shv = _mm256_set1_epi32(shift);
+    let mut r = r0;
+    while r + 8 <= bh {
+        z2_left_chunk8(
+            dst, stride, ld, c, r, base, s as i64, up_left, shv, ev, od, out,
+        );
+        r += 8;
+    }
+    if r < bh {
+        if bh >= r0 + 8 {
+            // Overlap finisher: rows bh-8..bh all covered, earlier rows
+            // of the window store identical values (idempotent rewrite).
+            z2_left_chunk8(
+                dst,
+                stride,
+                ld,
+                c,
+                bh - 8,
+                base,
+                s as i64,
+                up_left,
+                shv,
+                ev,
+                od,
+                out,
+            );
+        } else {
+            let mut i0 = base + r as i32 * s;
+            for rr in r..bh {
+                let iu = i0 as usize;
+                let w = &ld[iu..iu + 2];
+                dst[rr * stride + c] =
+                    ((i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift + 16) >> 5) as u16;
+                i0 += s;
             }
-            continue;
         }
-        let shv = _mm256_set1_epi32(shift);
-        let mut r = r0;
-        while r + 8 <= bh {
-            z2_left_chunk8(dst, stride, ld, c, r, base, s, up_left, shv, ev, od, &mut out);
-            r += 8;
-        }
-        if r < bh {
-            if bh >= r0 + 8 {
-                // Overlap finisher: rows bh-8..bh all covered, earlier rows
-                // of the window store identical values (idempotent rewrite).
-                z2_left_chunk8(
-                    dst, stride, ld, c, bh - 8, base, s, up_left, shv, ev, od, &mut out,
-                );
-            } else {
-                let mut y2r = ((r as i32) << 6) - (c as i32 + 1) * dy;
-                for rr in r..bh {
-                    let i0 = (pad as i32 + (y2r >> frac_y)) as usize;
-                    let sh = ((y2r << up_left) & 0x3F) >> 1;
-                    let w = &ld[i0..i0 + 2];
-                    dst[rr * stride + c] =
-                        ((i32::from(w[0]) * (32 - sh) + i32::from(w[1]) * sh + 16) >> 5) as u16;
-                    y2r += 64;
-                }
-            }
-        }
+    }
+}
+
+/// One full 8x8 tile of the z2 left gather: rows `rb..rb+8`, columns
+/// `c0..c0+8` — all eight columns covered for all eight rows by the caller's
+/// eligibility rule (`rt8[c0+7] <= rb`) and bound-checked (`[base + rt8*s,
+/// base + (bh-1)*s + 1]` in range). Gathers each column's contiguous (or
+/// stride-2) taps lane-wise, transposes the 8x8 i32 block in-register, packs
+/// to u16 (exact: `res = a0*32 + (a1-a0)*s + 16` is a convex combination in
+/// `[0, 65535]`, so `packus_epi32` never saturates) and stores 8 contiguous
+/// u16x8 rows — the transpose is what removes the per-element strided store.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+fn z2_tile8(
+    dst: &mut [u16],
+    stride: usize,
+    ld: &[u16],
+    rb: usize,
+    c0: usize,
+    base_t: &[i32; 64],
+    sh_t: &[i32; 64],
+    s: i32,
+    up_left: u32,
+    ev: core::arch::x86_64::__m128i,
+    od: core::arch::x86_64::__m128i,
+) {
+    use archmage::intrinsics::x86_64::*;
+    let c16 = _mm256_set1_epi32(16);
+    let mut v = [_mm256_setzero_si256(); 8];
+    for k in 0..8usize {
+        let b = (base_t[c0 + k] + rb as i32 * s) as usize;
+        let (w0, w1) = if up_left == 0 {
+            let a: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
+            let d: &[u16; 8] = ld[b + 1..b + 9].try_into().unwrap();
+            (_mm_loadu_si128(a), _mm_loadu_si128(d))
+        } else {
+            let lo8: &[u16; 8] = ld[b..b + 8].try_into().unwrap();
+            let hi8: &[u16; 8] = ld[b + 8..b + 16].try_into().unwrap();
+            let lo = _mm_loadu_si128(lo8);
+            let hi = _mm_loadu_si128(hi8);
+            (
+                _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, ev), _mm_shuffle_epi8(hi, ev)),
+                _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, od), _mm_shuffle_epi8(hi, od)),
+            )
+        };
+        let a0 = _mm256_cvtepu16_epi32(w0);
+        let a1 = _mm256_cvtepu16_epi32(w1);
+        v[k] = _mm256_srai_epi32::<5>(_mm256_add_epi32(
+            _mm256_add_epi32(
+                _mm256_slli_epi32::<5>(a0),
+                _mm256_mullo_epi32(_mm256_sub_epi32(a1, a0), _mm256_set1_epi32(sh_t[c0 + k])),
+            ),
+            c16,
+        ));
+    }
+    // 8x8 i32 transpose: unpack_epi32 pairs, unpack_epi64 quads, permute2x128.
+    let t0 = _mm256_unpacklo_epi32(v[0], v[1]);
+    let t1 = _mm256_unpackhi_epi32(v[0], v[1]);
+    let t2 = _mm256_unpacklo_epi32(v[2], v[3]);
+    let t3 = _mm256_unpackhi_epi32(v[2], v[3]);
+    let t4 = _mm256_unpacklo_epi32(v[4], v[5]);
+    let t5 = _mm256_unpackhi_epi32(v[4], v[5]);
+    let t6 = _mm256_unpacklo_epi32(v[6], v[7]);
+    let t7 = _mm256_unpackhi_epi32(v[6], v[7]);
+    let u0 = _mm256_unpacklo_epi64(t0, t2);
+    let u1 = _mm256_unpackhi_epi64(t0, t2);
+    let u2 = _mm256_unpacklo_epi64(t1, t3);
+    let u3 = _mm256_unpackhi_epi64(t1, t3);
+    let u4 = _mm256_unpacklo_epi64(t4, t6);
+    let u5 = _mm256_unpackhi_epi64(t4, t6);
+    let u6 = _mm256_unpacklo_epi64(t5, t7);
+    let u7 = _mm256_unpackhi_epi64(t5, t7);
+    let rows = [
+        _mm256_permute2x128_si256(u0, u4, 0x20),
+        _mm256_permute2x128_si256(u1, u5, 0x20),
+        _mm256_permute2x128_si256(u2, u6, 0x20),
+        _mm256_permute2x128_si256(u3, u7, 0x20),
+        _mm256_permute2x128_si256(u0, u4, 0x31),
+        _mm256_permute2x128_si256(u1, u5, 0x31),
+        _mm256_permute2x128_si256(u2, u6, 0x31),
+        _mm256_permute2x128_si256(u3, u7, 0x31),
+    ];
+    // One slice covering the whole 8x8 destination block — every
+    // `sl[r*stride..r*stride+8]` (r < 8) is statically inside
+    // `7*stride + 8` elements.
+    let sl = &mut dst[rb * stride + c0..(rb + 7) * stride + c0 + 8];
+    for (r, rv) in rows.iter().enumerate() {
+        let p = _mm_packus_epi32(
+            _mm256_castsi256_si128(*rv),
+            _mm256_extracti128_si256(*rv, 1),
+        );
+        let d: &mut [u16; 8] = (&mut sl[r * stride..r * stride + 8]).try_into().unwrap();
+        _mm_storeu_si128(d, p);
     }
 }
 
@@ -282,14 +514,8 @@ fn z2_left_chunk8(
         let lo = _mm_loadu_si128(lo8);
         let hi = _mm_loadu_si128(hi8);
         (
-            _mm_unpacklo_epi64(
-                _mm_shuffle_epi8(lo, ev),
-                _mm_shuffle_epi8(hi, ev),
-            ),
-            _mm_unpacklo_epi64(
-                _mm_shuffle_epi8(lo, od),
-                _mm_shuffle_epi8(hi, od),
-            ),
+            _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, ev), _mm_shuffle_epi8(hi, ev)),
+            _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, od), _mm_shuffle_epi8(hi, od)),
         )
     };
     let a0 = _mm256_cvtepu16_epi32(w0);
@@ -375,8 +601,7 @@ pub(crate) fn z2_left_gather_scalar(
             let shift = ((y2 * (1 << up_left)) & 0x3F) >> 1;
             let i0 = (pad as i32 + base_y) as usize;
             let w = &ld[i0..i0 + 2];
-            *slot =
-                ((i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift + 16) >> 5) as u16;
+            *slot = ((i32::from(w[0]) * (32 - shift) + i32::from(w[1]) * shift + 16) >> 5) as u16;
         }
     }
 }
@@ -576,14 +801,8 @@ fn z2_above_run_impl(
                 let lo = _mm_loadu_si128(lo);
                 let hi = _mm_loadu_si128(hi);
                 (
-                    _mm_unpacklo_epi64(
-                        _mm_shuffle_epi8(lo, ev),
-                        _mm_shuffle_epi8(hi, ev),
-                    ),
-                    _mm_unpacklo_epi64(
-                        _mm_shuffle_epi8(lo, od),
-                        _mm_shuffle_epi8(hi, od),
-                    ),
+                    _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, ev), _mm_shuffle_epi8(hi, ev)),
+                    _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, od), _mm_shuffle_epi8(hi, od)),
                 )
             };
             let res = _mm_srai_epi16::<5>(_mm_add_epi16(
@@ -722,14 +941,8 @@ fn z1_rows_impl(
                 let lo = _mm_loadu_si128(lo);
                 let hi = _mm_loadu_si128(hi);
                 (
-                    _mm_unpacklo_epi64(
-                        _mm_shuffle_epi8(lo, ev),
-                        _mm_shuffle_epi8(hi, ev),
-                    ),
-                    _mm_unpacklo_epi64(
-                        _mm_shuffle_epi8(lo, od),
-                        _mm_shuffle_epi8(hi, od),
-                    ),
+                    _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, ev), _mm_shuffle_epi8(hi, ev)),
+                    _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, od), _mm_shuffle_epi8(hi, od)),
                 )
             };
             let res = _mm_srai_epi16::<5>(_mm_add_epi16(
@@ -953,14 +1166,8 @@ fn z3_cols_impl(
                         let lo = _mm_loadu_si128(lo);
                         let hi = _mm_loadu_si128(hi);
                         (
-                            _mm_unpacklo_epi64(
-                                _mm_shuffle_epi8(lo, ev),
-                                _mm_shuffle_epi8(hi, ev),
-                            ),
-                            _mm_unpacklo_epi64(
-                                _mm_shuffle_epi8(lo, od),
-                                _mm_shuffle_epi8(hi, od),
-                            ),
+                            _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, ev), _mm_shuffle_epi8(hi, ev)),
+                            _mm_unpacklo_epi64(_mm_shuffle_epi8(lo, od), _mm_shuffle_epi8(hi, od)),
                         )
                     };
                     let sv = _mm_set1_epi16(shifts[k]);
@@ -989,10 +1196,10 @@ fn z3_cols_impl(
             });
             let rows = transpose(cols);
             for (rr, row) in rows.iter().enumerate() {
-                let t: &mut [u16; 8] =
-                    (&mut dst[(r0 + rr) * stride + c0..(r0 + rr) * stride + c0 + 8])
-                        .try_into()
-                        .unwrap();
+                let t: &mut [u16; 8] = (&mut dst
+                    [(r0 + rr) * stride + c0..(r0 + rr) * stride + c0 + 8])
+                    .try_into()
+                    .unwrap();
                 _mm_storeu_si128(t, *row);
             }
             r0 += 8;
@@ -1204,15 +1411,24 @@ mod tests {
             let mut ld = vec![0u16; 160];
             for (i, e) in ld.iter_mut().enumerate() {
                 *e = match rep {
-                    0 => (next() % 4096) as u16, // bd12 dense random
-                    1 => (next() % 65536) as u16, // full u16 (no data bound)
+                    0 => (next() % 4096) as u16,          // bd12 dense random
+                    1 => (next() % 65536) as u16,         // full u16 (no data bound)
                     2 => ((i as u32 * 53) % 4096) as u16, // ramp
-                    _ => 4095,                   // flat bd12 max
+                    _ => 4095,                            // flat bd12 max
                 };
             }
             for &up_left in &[0u32, 1] {
                 let frac_y = 6 - up_left;
-                for &(bw, bh) in &[(8usize, 8usize), (16, 16), (32, 32), (64, 64), (4, 8), (8, 16), (16, 8), (64, 16)] {
+                for &(bw, bh) in &[
+                    (8usize, 8usize),
+                    (16, 16),
+                    (32, 32),
+                    (64, 64),
+                    (4, 8),
+                    (8, 16),
+                    (16, 8),
+                    (64, 16),
+                ] {
                     for &dx in &[4i32, 17, 32, 45, 64, 90, 121, 190, 361] {
                         for &dy in &[4i32, 17, 45, 90, 190] {
                             // Feasibility: every kept lane's `pad + base_y` /
@@ -1222,8 +1438,7 @@ mod tests {
                             let mut ok = true;
                             for r in 0..bh {
                                 let y = (r + 1) as i32;
-                                let ce =
-                                    ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+                                let ce = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
                                 if ce == 0 {
                                     continue;
                                 }
@@ -1247,7 +1462,10 @@ mod tests {
                             z2_left_gather_scalar(
                                 &mut want, stride, bw, bh, &ld, 8, dx, dy, frac_y, up_left,
                             );
-                            assert_eq!(got, want, "{bw}x{bh} dx={dx} dy={dy} up_l={up_left} rep={rep}");
+                            assert_eq!(
+                                got, want,
+                                "{bw}x{bh} dx={dx} dy={dy} up_l={up_left} rep={rep}"
+                            );
                             for r in 0..bh {
                                 let y = (r + 1) as i32;
                                 let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
