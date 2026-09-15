@@ -318,6 +318,23 @@ pub(crate) fn highbd_variance64_impl_v3(
     // lane may take at most 8 madds: strip = 8 / ceil(w/16) rows
     // (w<=16 -> 8, w=32 -> 4, w=64 -> 2, w>=128 -> 1, i.e. per-row again
     // only for the widest blocks where the row already fills the bound).
+    // Width-specialized bodies mirror C's per-size kernels
+    // (`aom_highbd_8_bit_variance{8,16,32,64,128}xH_*`): with `W` literal the
+    // row's chunk loop unrolls to a constant trip count and — after one
+    // checked `a[ra..ra+W]` slice per row — every inner `ar[c..c+16]` index
+    // is statically in range (`c + 16 <= W == ar.len()`), so the checks fold
+    // away. Other multiples of 8 (only reachable via the frame-edge
+    // `pixel_dist_visible_only` clip, never a real block width) take the
+    // generic body.
+    match w {
+        8 => return var_w_v3::<8>(_t, ones, a, a_stride, b, b_stride, h),
+        16 => return var_w_v3::<16>(_t, ones, a, a_stride, b, b_stride, h),
+        32 => return var_w_v3::<32>(_t, ones, a, a_stride, b, b_stride, h),
+        64 => return var_w_v3::<64>(_t, ones, a, a_stride, b, b_stride, h),
+        128 => return var_w_v3::<128>(_t, ones, a, a_stride, b, b_stride, h),
+        _ => {}
+    }
+
     let ones128 = _mm_set1_epi16(1);
     let strip = (8 / w.div_ceil(16)).max(1).min(h);
     let mut y = 0usize;
@@ -327,10 +344,12 @@ pub(crate) fn highbd_variance64_impl_v3(
         let mut xv = sv;
         for yy in y..yend {
             let (ra, rb) = (yy * a_stride, yy * b_stride);
+            let ar = &a[ra..ra + w];
+            let br = &b[rb..rb + w];
             let mut c = 0;
             while c + 16 <= w {
-                let av: &[u16; 16] = a[ra + c..ra + c + 16].try_into().unwrap();
-                let bv: &[u16; 16] = b[rb + c..rb + c + 16].try_into().unwrap();
+                let av: &[u16; 16] = ar[c..c + 16].try_into().unwrap();
+                let bv: &[u16; 16] = br[c..c + 16].try_into().unwrap();
                 let d = _mm256_sub_epi16(_mm256_loadu_si256(av), _mm256_loadu_si256(bv));
                 sv = _mm256_add_epi32(sv, _mm256_madd_epi16(d, ones));
                 xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
@@ -338,9 +357,76 @@ pub(crate) fn highbd_variance64_impl_v3(
             }
             if c < w {
                 // w % 16 == 8 tail (w%8==0 is a caller precondition).
-                let av: &[u16; 8] = a[ra + c..ra + c + 8].try_into().unwrap();
-                let bv: &[u16; 8] = b[rb + c..rb + c + 8].try_into().unwrap();
+                let av: &[u16; 8] = ar[c..c + 8].try_into().unwrap();
+                let bv: &[u16; 8] = br[c..c + 8].try_into().unwrap();
                 let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_loadu_si128(bv));
+                sv =
+                    _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
+                xv = _mm256_add_epi32(xv, _mm256_zextsi128_si256(_mm_madd_epi16(d, d)));
+            }
+        }
+        reduce!(sv, xv);
+        y = yend;
+    }
+    (tsse, tsum)
+}
+
+/// Width-specialized AVX2 body for [`highbd_variance64_impl_v3`]. `W` is a
+/// compile-time block width (multiple of 8, >= 8); the per-row `&a[ra..ra+W]`
+/// slice is the single checked index, after which every chunk load is
+/// statically in range. Accumulation/reduction semantics are identical to the
+/// generic arm's (`reduce!` shared via copy — the strip bound derivation is
+/// the same formula with `W` folded in).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn var_w_v3<const W: usize>(
+    _t: archmage::X64V3Token,
+    ones: archmage::intrinsics::x86_64::__m256i,
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    h: usize,
+) -> (u64, i64) {
+    use archmage::intrinsics::x86_64::*;
+    let mut tsum: i64 = 0;
+    let mut tsse: u64 = 0;
+    macro_rules! reduce {
+        ($sv:expr, $xv:expr) => {{
+            let p1 = _mm256_hadd_epi32($sv, $xv);
+            let p2 = _mm256_hadd_epi32(p1, p1);
+            let both = _mm_add_epi32(
+                _mm256_castsi256_si128(p2),
+                _mm256_extracti128_si256::<1>(p2),
+            );
+            tsum += i64::from(_mm_extract_epi32::<0>(both));
+            tsse += u64::from(_mm_extract_epi32::<1>(both) as u32);
+        }};
+    }
+    let strip = (8 / W.div_ceil(16)).max(1).min(h);
+    let mut y = 0usize;
+    while y < h {
+        let yend = (y + strip).min(h);
+        let mut sv = _mm256_setzero_si256();
+        let mut xv = sv;
+        for yy in y..yend {
+            let (ra, rb) = (yy * a_stride, yy * b_stride);
+            let ar = &a[ra..ra + W];
+            let br = &b[rb..rb + W];
+            let mut c = 0;
+            while c + 16 <= W {
+                let av: &[u16; 16] = ar[c..c + 16].try_into().unwrap();
+                let bv: &[u16; 16] = br[c..c + 16].try_into().unwrap();
+                let d = _mm256_sub_epi16(_mm256_loadu_si256(av), _mm256_loadu_si256(bv));
+                sv = _mm256_add_epi32(sv, _mm256_madd_epi16(d, ones));
+                xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
+                c += 16;
+            }
+            if c < W {
+                let av: &[u16; 8] = ar[c..c + 8].try_into().unwrap();
+                let bv: &[u16; 8] = br[c..c + 8].try_into().unwrap();
+                let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_loadu_si128(bv));
+                let ones128 = _mm_set1_epi16(1);
                 sv =
                     _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
                 xv = _mm256_add_epi32(xv, _mm256_zextsi128_si256(_mm_madd_epi16(d, d)));
