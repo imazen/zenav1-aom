@@ -1960,6 +1960,9 @@ fn leaf_pick_sb_modes(
                 inter_mode_context: best.inter_mode_context,
                 interp_filter: best.interp_filter,
                 raw_rdstats: stats,
+                // Filled by the output-enabled leaf encode once this winner
+                // is committed (`nonrd_leaf_pick_and_encode`).
+                replay: None,
             };
             (stats, Some(winner), source_variance)
         }
@@ -5711,10 +5714,18 @@ fn nonrd_leaf_pick_and_encode(
         // into the winner map and re-introduce the KB-4 bug on the full-RD
         // arm (non-DCT winner quantizing to eob 0). Matches the speed-7
         // rd_use_partition_real SB-root walk (output_enabled = bsize==sb_size).
-        let _ = crate::encode_sb::encode_b_intra_dry(
+        let out = crate::encode_sb::encode_b_intra_dry(
             env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition, true,
             true,
         );
+        // Retain the OUTPUT_ENABLED payload for `pack_leaf`'s replay arm —
+        // the winner lands in the committed tree and pack would otherwise
+        // re-run this identical encode twice (both pack passes). Inter /
+        // intrabc winners carry no replay contract (different pack side
+        // effects); they fall back to the re-encode.
+        if !w.is_inter && !w.use_intrabc {
+            w.replay = Some(out);
+        }
         grid.stamp(
             mi_row,
             mi_col,
@@ -6109,14 +6120,21 @@ fn nonrd_leaf_pick_and_encode(
         // chroma answer is a hard UV_DC_PRED (:1735).
         palette_y,
         palette_uv: None,
+        // Filled by the output-enabled leaf encode just below.
+        replay: None,
     };
     // output_enabled = true (OUTPUT_ENABLED) — see the full-RD arm above.
     // On the estimate arm `w.tx_type_map` is all-DCT so copy/alias are
     // identical here, but true keeps the faithful C semantics.
-    let _ = crate::encode_sb::encode_b_intra_dry(
+    let out = crate::encode_sb::encode_b_intra_dry(
         env, tile, recon_y, recon_u, recon_v, cfl, &mut w, mi_row, mi_col, partition, true,
         true,
     );
+    // Retain the OUTPUT_ENABLED payload for `pack_leaf`'s replay arm —
+    // see the full-RD arm above.
+    if !w.is_inter && !w.use_intrabc {
+        w.replay = Some(out);
+    }
     grid.stamp(
         mi_row,
         mi_col,

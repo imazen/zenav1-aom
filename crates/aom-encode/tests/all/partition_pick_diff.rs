@@ -509,6 +509,7 @@ impl CPick<'_> {
                     raw_rdstats: stats,
                     palette_y: None,
                     palette_uv: None,
+                    replay: None,
                 };
                 (stats, Some(winner))
             }

@@ -185,6 +185,7 @@ fn gen_winner(rng: &mut Rng, bsize: usize, reduced: bool) -> LeafWinner {
         raw_rdstats: aom_encode::partition::PartRdStats::invalid(),
         palette_y: None,
         palette_uv: None,
+        replay: None,
     }
 }
 

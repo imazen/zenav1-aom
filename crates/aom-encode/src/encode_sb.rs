@@ -326,6 +326,18 @@ pub struct LeafWinner {
     /// sub-block at the SAME position/size can be seeded from it verbatim
     /// instead of re-searching under a different (tighter) budget.
     pub raw_rdstats: PartRdStats,
+    /// The OUTPUT_ENABLED walk's own [`LeafEncodeOut`], retained by the
+    /// search-side leaf encode so `pack_leaf` can REPLAY it (re-stamp the
+    /// persistent entropy contexts + write the retained coefficient tokens)
+    /// instead of re-running predict/transform/quantize/trellis — C's
+    /// `write_modes_b` writes the `cb_coef_buff` coefficients the encode pass
+    /// already produced rather than re-encoding. `Some` only for an ordinary
+    /// intra leaf (`!is_inter && !use_intrabc`) that ran
+    /// `encode_b_intra_dry` with `output_enabled = true`; every other winner
+    /// leaves it `None` and the pack falls back to the re-encode. See
+    /// pack.rs's module docs for the both-walks-identical invariant this
+    /// replay rests on.
+    pub replay: Option<LeafEncodeOut>,
 }
 
 impl LeafWinner {
@@ -370,6 +382,7 @@ impl LeafWinner {
             inter_mode_context: 0,
             interp_filter: 0,
             raw_rdstats: PartRdStats::invalid(),
+            replay: None,
         }
     }
 
@@ -1315,7 +1328,7 @@ pub fn encode_b_intra_dry(
         eprintln!("[pcommit-pre] mi({},{}) bs{} ttm_pre={:?}", mi_row, mi_col, bsize,
             winner.tx_type_map);
     }
-    let mut y_out = if output_enabled {
+    let y_out = if output_enabled {
         // OUTPUT_ENABLED: the eob-0 -> DCT_DCT resets land in the frame-map
         // copy (transient here — the pack writes tx_type syntax only for
         // eob > 0 txbs, whose entries the reset never touches), and the
@@ -1472,6 +1485,54 @@ pub fn encode_b_intra_dry(
             &uv_env, &uv_winner, &prm, 2, recon_v, cfl,
         ));
     }
+
+    // Steps 4+6: `av1_update_intra_mb_txb_context` + `set_txfm_ctxs` — the
+    // persistent entropy-context stamps, shared verbatim with `pack_leaf`'s
+    // replay arm via `stamp_leaf_ctx`.
+    let mut out = LeafEncodeOut {
+        mi_row,
+        mi_col,
+        bsize,
+        is_chroma_ref,
+        store_y,
+        y: y_out,
+        u: u_out,
+        v: v_out,
+    };
+    stamp_leaf_ctx(env, state, winner, &mut out, output_enabled);
+    out
+}
+
+/// `encode_b_intra_dry`'s steps 4+6, factored so `pack_leaf`'s replay arm
+/// runs the IDENTICAL persistent-context walk on retained
+/// [`LeafWinner::replay`] txbs — `av1_update_intra_mb_txb_context` (the
+/// DRY_RUN block: the tokenize `(txb_skip_ctx, dc_sign_ctx)` derive + the
+/// edge-clipped `av1_set_entropy_contexts` cul stamps) then `set_txfm_ctxs`.
+/// Under replay the per-txb derive rewrites the cached pair with
+/// recomputed-identical values (the pack's persistent arrays carry the same
+/// stamp sequence the encode left), and the `cul == txb_entropy_ctx`
+/// assertion stays live on the retained data.
+pub(crate) fn stamp_leaf_ctx(
+    env: &SbEncodeEnv,
+    state: &mut TileCtxState,
+    winner: &LeafWinner,
+    out: &mut LeafEncodeOut,
+    // The caller's RUN_TYPE — read only by the `pectxw` debug trace (the
+    // stamps themselves are flag-independent); `true` under replay.
+    output_enabled: bool,
+) {
+    let bsize = out.bsize;
+    let mi_row = out.mi_row;
+    let mi_col = out.mi_col;
+    let mi_w = MI_SIZE_WIDE_B[bsize];
+    let mi_h = MI_SIZE_HIGH_B[bsize];
+    let a0 = mi_col as usize;
+    let l0 = (mi_row & 31) as usize;
+    let is_chroma_ref = out.is_chroma_ref;
+    let uv_tx = av1_get_tx_size_uv(bsize, env.lossless, env.ss_x, env.ss_y);
+    let y_out = &mut out.y;
+    let u_out = &mut out.u;
+    let v_out = &mut out.v;
 
     // Step 4: av1_update_intra_mb_txb_context at DRY_RUN — the tile-level
     // entropy-context stamps (cul_level recomputed from the final qcoeff,
@@ -1725,21 +1786,35 @@ pub fn encode_b_intra_dry(
     for x in state.left_tctx[l0..l0 + mi_h].iter_mut() {
         *x = TXS_H[final_tx] as u8;
     }
+}
 
-    LeafEncodeOut {
-        mi_row,
-        mi_col,
-        bsize,
-        is_chroma_ref,
-        store_y,
-        y: y_out,
-        u: u_out,
-        v: v_out,
+/// `encode_sb_dry`'s per-leaf output disposition. On the OUTPUT_ENABLED
+/// winner walk (`retain`) an ordinary intra leaf's coded payload stays ON
+/// the winner as [`LeafWinner::replay`] — `pack_leaf`'s replay arm re-stamps
+/// the persistent contexts and writes the retained coefficient tokens
+/// instead of re-running predict/transform/quantize/trellis (C's
+/// `write_modes_b` reads `cb_coef_buff` for exactly this). Inter/intrabc
+/// leaves carry no replay contract (their pack side effects differ), and
+/// DRY_RUN walks (`!retain`) keep the old `leaves` semantics — the
+/// `encode_sb_diff` gate runs DRY_RUN and still sees every output.
+fn finish_leaf_out(
+    out: LeafEncodeOut,
+    w: &mut LeafWinner,
+    leaves: &mut Vec<LeafEncodeOut>,
+    retain: bool,
+) {
+    if retain && !w.is_inter && !w.use_intrabc {
+        w.replay = Some(out);
+    } else {
+        leaves.push(out);
     }
 }
 
-/// `encode_sb` over a NONE/SPLIT tree — see the module docs. Appends each
-/// leaf's outputs to `leaves` in walk order. `output_enabled` selects C's
+/// `encode_sb` over a NONE/SPLIT tree — see the module docs. Under
+/// `output_enabled` each ordinary intra leaf's output is retained on the
+/// winner as [`LeafWinner::replay`] (pack's replay source — see
+/// [`finish_leaf_out`]); every other leaf's output is appended to `leaves`
+/// in walk order. `output_enabled` selects C's
 /// `RUN_TYPE` tx_type_map semantics per leaf — see [`encode_b_intra_dry`]:
 /// `false` for the search's DRY_RUN context-propagation walks (winner-map
 /// resets persist, C's ctx alias), `true` for the SB-root winner walk and
@@ -1822,7 +1897,7 @@ pub fn encode_sb_dry(
                 output_enabled,
                 true
             );
-            leaves.push(out);
+            finish_leaf_out(out, w, leaves, output_enabled);
         }
         SbTree::Split(children) => {
             for (idx, child) in children.iter_mut().enumerate() {
@@ -1863,7 +1938,7 @@ pub fn encode_sb_dry(
                 output_enabled,
                 true
             );
-            leaves.push(out);
+            finish_leaf_out(out, s0, leaves, output_enabled);
             if mi_row + hbs < env.mi_rows {
                 debug_assert_eq!(s1.bsize, subsize, "horz winner bsize == subsize");
                 let out = encode_b_intra_dry(
@@ -1880,7 +1955,7 @@ pub fn encode_sb_dry(
                     output_enabled,
                 true
                 );
-                leaves.push(out);
+                finish_leaf_out(out, s1, leaves, output_enabled);
             }
         }
         SbTree::Vert(subs) => {
@@ -1902,7 +1977,7 @@ pub fn encode_sb_dry(
                 output_enabled,
                 true
             );
-            leaves.push(out);
+            finish_leaf_out(out, s0, leaves, output_enabled);
             if mi_col + hbs < env.mi_cols {
                 debug_assert_eq!(s1.bsize, subsize, "vert winner bsize == subsize");
                 let out = encode_b_intra_dry(
@@ -1919,7 +1994,7 @@ pub fn encode_sb_dry(
                     output_enabled,
                 true
                 );
-                leaves.push(out);
+                finish_leaf_out(out, s1, leaves, output_enabled);
             }
         }
         SbTree::Horz4(subs) => {
@@ -1949,7 +2024,7 @@ pub fn encode_sb_dry(
                     output_enabled,
                 true
                 );
-                leaves.push(out);
+                finish_leaf_out(out, s, leaves, output_enabled);
             }
         }
         SbTree::Vert4(subs) => {
@@ -1979,7 +2054,7 @@ pub fn encode_sb_dry(
                     output_enabled,
                 true
                 );
-                leaves.push(out);
+                finish_leaf_out(out, s, leaves, output_enabled);
             }
         }
         SbTree::HorzA(subs) => {
@@ -2003,7 +2078,7 @@ pub fn encode_sb_dry(
                 output_enabled,
                 true
             );
-            leaves.push(out);
+            finish_leaf_out(out, s0, leaves, output_enabled);
             debug_assert_eq!(s1.bsize, bsize2);
             let out = encode_b_intra_dry(
                 env,
@@ -2019,7 +2094,7 @@ pub fn encode_sb_dry(
                 output_enabled,
                 true
             );
-            leaves.push(out);
+            finish_leaf_out(out, s1, leaves, output_enabled);
             debug_assert_eq!(s2.bsize, subsize);
             let out = encode_b_intra_dry(
                 env,
@@ -2035,7 +2110,7 @@ pub fn encode_sb_dry(
                 output_enabled,
                 true
             );
-            leaves.push(out);
+            finish_leaf_out(out, s2, leaves, output_enabled);
         }
         SbTree::HorzB(subs) => {
             // encode_sb PARTITION_HORZ_B (:1661-1667).
@@ -2056,7 +2131,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s0.bsize, subsize);
-            leaves.push(out);
+            finish_leaf_out(out, s0, leaves, output_enabled);
             let out = encode_b_intra_dry(
                 env,
                 state,
@@ -2072,7 +2147,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s1.bsize, bsize2);
-            leaves.push(out);
+            finish_leaf_out(out, s1, leaves, output_enabled);
             let out = encode_b_intra_dry(
                 env,
                 state,
@@ -2088,7 +2163,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s2.bsize, bsize2);
-            leaves.push(out);
+            finish_leaf_out(out, s2, leaves, output_enabled);
         }
         SbTree::VertA(subs) => {
             // encode_sb PARTITION_VERT_A (:1668-1676): column-axis mirror of
@@ -2110,7 +2185,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s0.bsize, bsize2);
-            leaves.push(out);
+            finish_leaf_out(out, s0, leaves, output_enabled);
             let out = encode_b_intra_dry(
                 env,
                 state,
@@ -2126,7 +2201,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s1.bsize, bsize2);
-            leaves.push(out);
+            finish_leaf_out(out, s1, leaves, output_enabled);
             let out = encode_b_intra_dry(
                 env,
                 state,
@@ -2142,7 +2217,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s2.bsize, subsize);
-            leaves.push(out);
+            finish_leaf_out(out, s2, leaves, output_enabled);
         }
         SbTree::VertB(subs) => {
             // encode_sb PARTITION_VERT_B (:1677-1684): column-axis mirror of
@@ -2164,7 +2239,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s0.bsize, subsize);
-            leaves.push(out);
+            finish_leaf_out(out, s0, leaves, output_enabled);
             let out = encode_b_intra_dry(
                 env,
                 state,
@@ -2180,7 +2255,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s1.bsize, bsize2);
-            leaves.push(out);
+            finish_leaf_out(out, s1, leaves, output_enabled);
             let out = encode_b_intra_dry(
                 env,
                 state,
@@ -2196,7 +2271,7 @@ pub fn encode_sb_dry(
                 true
             );
             debug_assert_eq!(s2.bsize, bsize2);
-            leaves.push(out);
+            finish_leaf_out(out, s2, leaves, output_enabled);
         }
         // Off-frame placeholder — unreachable past the entry frame-bound guard.
         SbTree::Absent => {}

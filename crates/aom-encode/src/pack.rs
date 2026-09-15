@@ -14,31 +14,48 @@
 //! (`av1/encoder/encodeframe.c`'s `encode_sb_row`) that calls search then
 //! pack for every superblock in raster order.
 //!
-//! # Why re-running `encode_b_intra_dry` is correct, not a shortcut
+//! # Coefficient payload: retained-output replay, with re-encode as fallback
 //!
+//! C's `write_modes_b` reads `cb_coef_buff` — the coefficient buffer the
+//! OUTPUT_ENABLED encode already filled — and never re-encodes a leaf at
+//! pack time. This module mirrors that: the pick's output-enabled winner
+//! walk ([`crate::encode_sb::encode_sb_dry`] via `finish_leaf_out`, and
+//! [`crate::partition_pick::nonrd_leaf_pick_and_encode`]) retains each
+//! ordinary intra leaf's [`crate::encode_sb::LeafEncodeOut`] on
+//! [`crate::encode_sb::LeafWinner::replay`], and [`pack_leaf`]'s replay arm
+//! writes those retained txbs instead of re-running predict/transform/
+//! quantize/trellis — measured at ~44% of the speed-9 encode cell when it
+//! still re-encoded. The replay arm DOES re-run
+//! [`crate::encode_sb::stamp_leaf_ctx`] — the encode's persistent-context
+//! steps (the tokenize `(txb_skip_ctx, dc_sign_ctx)` derive + edge-clipped
+//! `cul` stamps + `set_txfm_ctxs`) — on THIS pass's [`TileCtxState`], so the
+//! ctx state evolves exactly as a re-encode would leave it, and the cached
+//! ctx pairs come out recomputed-identical.
+//!
+//! The retained encode is byte-identical to what a re-run would produce:
 //! [`crate::encode_intra::encode_intra_block_plane_y`]/`_uv`'s only
 //! `dry_run_output_enabled`-gated behavior is [`crate::encode_intra::is_trellis_used`]'s
-//! `FinalPassTrellisOpt` check (`encodemb.h`). For the default speed-0
-//! envelope (`NoEstimateYrdTrellisOpt`) and the `NO_TRELLIS`/lossless arms
-//! `is_trellis_used` returns the same value **regardless** of the flag, so
-//! the pack matched even when the flag was hardcoded. `FINAL_PASS_TRELLIS_OPT`
-//! (`--disable-trellis-quant=2`) is the exception: the final encode MUST
-//! trellis where the search did not, so [`crate::encode_sb::encode_b_intra_dry`]
-//! now takes an `output_enabled` argument and this pack passes `true`
-//! (C's `OUTPUT_ENABLED`). Re-running it over the SAME winning leaf, from the
-//! SAME starting context state, reproduces byte-identical
-//! qcoeff/eob/tx_type/dqcoeff to what a true `OUTPUT_ENABLED` call would —
-//! this module reuses that validated code path instead of a parallel copy,
-//! and only adds the two things `OUTPUT_ENABLED` actually changes: symbol
-//! emission (partition / mode-info / tx-size / coefficients) and CDF
-//! adaptation. Both search and pack walks visit the SAME winning leaves in
-//! the SAME order starting from the SAME zeroed initial tile state (search's
-//! own `av1_save_context`/`av1_restore_context` rollback ensures only the
-//! winning subtree's contribution survives in its context arrays by the time
-//! [`crate::partition_pick::rd_pick_partition_real`] returns) — so the two
-//! independently-progressing [`TileCtxState`] instances ([`pack_tile`] keeps
-//! one for search, one for pack) stay in lockstep across the whole tile
-//! without needing to snapshot/restore between them.
+//! `FinalPassTrellisOpt` check (`encodemb.h`), and the pick walk that filled
+//! `replay` ran with `output_enabled = true` already — same flag, same
+//! winner, same starting context state ⇒ same qcoeff/eob/tx_type/dqcoeff.
+//!
+//! `replay` is `None` — and [`pack_leaf`] falls back to re-running
+//! [`crate::encode_sb::encode_b_intra_dry`] — for leaf classes whose pack
+//! side effects differ from the ordinary-intra ctx walk: inter leaves and
+//! intrabc leaves (both early-return arms of `encode_b_intra_dry` stamp
+//! reset-to-zero contexts instead). Any tree built without the retaining
+//! walks (tests, future pick paths) likewise re-encodes; a re-encoded
+//! ordinary-intra leaf is stored back into `replay` so a SECOND pack pass
+//! over the same tree (phase-2 `pack_tile_from_trees_lr`) still replays.
+//!
+//! Both search and pack walks visit the SAME winning leaves in the SAME
+//! order starting from the SAME zeroed initial tile state (search's own
+//! `av1_save_context`/`av1_restore_context` rollback ensures only the
+//! winning subtree's contribution survives in its context arrays by the
+//! time [`crate::partition_pick::rd_pick_partition_real`] returns) — so the
+//! two independently-progressing [`TileCtxState`] instances ([`pack_tile`]
+//! keeps one for search, one for pack) stay in lockstep across the whole
+//! tile without needing to snapshot/restore between them.
 //!
 //! # Scope
 //!
@@ -842,18 +859,53 @@ pub fn pack_leaf(
         }
     }
 
-    // ---- 3. residual/coefficient recompute (reuses the validated dry-run
-    //     leaf encode -- see module docs for why this reproduces the true
-    //     OUTPUT_ENABLED result in this envelope). ----
+    // ---- 3. coefficient payload: REPLAY the retained OUTPUT_ENABLED leaf
+    //     encode when the winner walk kept it; RE-ENCODE only for leaf
+    //     classes that carry no replay contract. ----
+    // C's `write_modes_b` reads `cb_coef_buff` — the coefficients the
+    // OUTPUT_ENABLED encode wrote — it does not re-encode. `winner.replay`
+    // is that buffer: the pick's output-enabled walk ran this identical
+    // leaf encode on the same ctx state, and its txbs carry the final
+    // qcoeff/eob/tx_type the writer below consumes. The pack pass still
+    // owes the persistent above/left ctx stamps, so `stamp_leaf_ctx`
+    // re-runs the encode's steps 4+6 on THIS pass's TileCtxState (the
+    // cached txb_skip_ctx/dc_sign_ctx pairs come out recomputed-identical).
+    // Inter and intrabc winners always carry `None` — their early-return
+    // arms stamp a different ctx pattern — and fall through to the
+    // re-encode, as does any winner whose walk did not retain.
     // OUTPUT_ENABLED (C bitstream write == the same walk as the SB-root
     // winner encode): the winner tx_type_map must arrive here exactly as the
     // SEARCH left it — both this walk and the search's SB-root walk model
     // C's single OUTPUT_ENABLED pass, whose eob-0 resets go to the frame map,
     // never back into ctx (see encode_b_intra_dry's doc).
-    let out = encode_b_intra_dry(
-        env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition, true,
-        true,
-    );
+    let out = match winner.replay.take() {
+        Some(mut retained) => {
+            // A retained payload that does not name THIS leaf means the tree
+            // was rebuilt after the encode walk — silently emitting it would
+            // write another block's coefficients at this position.
+            assert!(
+                retained.mi_row == mi_row
+                    && retained.mi_col == mi_col
+                    && retained.bsize == bsize
+                    && !winner.is_inter
+                    && !winner.use_intrabc,
+                "pack replay: retained payload (mi=({},{}) bsize={} inter={} \
+                 intrabc={}) does not match the packed leaf at \
+                 mi=({mi_row},{mi_col}) bsize={bsize}",
+                retained.mi_row,
+                retained.mi_col,
+                retained.bsize,
+                winner.is_inter,
+                winner.use_intrabc
+            );
+            crate::encode_sb::stamp_leaf_ctx(env, tile, winner, &mut retained, true);
+            retained
+        }
+        None => encode_b_intra_dry(
+            env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition, true,
+            true,
+        ),
+    };
 
     // ---- 4. write_tokens_b: coefficient bytes, gated on !skip_txfm (always
     //     true in the KEY intra envelope, asserted by encode_b_intra_dry). ----
@@ -1108,6 +1160,15 @@ pub fn pack_leaf(
             out.v.as_ref().is_none_or(|v| vc == v.txbs.len()),
             "mu-64 pack consumed all V txbs"
         );
+    }
+
+    // Hand the payload back for the NEXT pack pass over this tree: the
+    // phase-2 `pack_tile_from_trees_lr` re-walks the same winners, and a
+    // re-encoded ordinary-intra leaf (replay was `None` this pass) becomes
+    // replayable there. The coeff writes above only read `out`; the ctx
+    // fields `stamp_leaf_ctx` rewrote are recomputed-identical per pass.
+    if !winner.is_inter && !winner.use_intrabc {
+        winner.replay = Some(out);
     }
 
     // ---- 5. neighbour-grid stamp for the next block's Y-mode/skip ctx. ----
