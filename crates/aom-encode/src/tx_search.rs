@@ -1994,12 +1994,27 @@ pub fn dist_block_px_domain_into(
     inv_scratch: &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch,
 ) -> i64 {
     let (w, h) = (TXS_W[tx_size], TXS_H[tx_size]);
-    recon.clear();
+    // `recon` is a per-candidate scratch: keep the capacity and write the rows.
+    // The strided arm is width-specialised (`copy_pred_rows`) because a
+    // runtime-width `copy_from_slice` lowers to a `memcpy` call per row — the
+    // single largest memcpy-call site on the shipping path (~7 calls per
+    // invocation here). Fixed extents compile to inline vector moves instead.
+    recon.resize(w * h, 0);
     if pred_stride == w {
-        recon.extend_from_slice(&pred[..w * h]);
+        recon[..w * h].copy_from_slice(&pred[..w * h]);
     } else {
-        for r in 0..h {
-            recon.extend_from_slice(&pred[r * pred_stride..r * pred_stride + w]);
+        match w {
+            4 => copy_pred_rows::<4>(recon, pred, pred_stride, h),
+            8 => copy_pred_rows::<8>(recon, pred, pred_stride, h),
+            16 => copy_pred_rows::<16>(recon, pred, pred_stride, h),
+            32 => copy_pred_rows::<32>(recon, pred, pred_stride, h),
+            64 => copy_pred_rows::<64>(recon, pred, pred_stride, h),
+            _ => {
+                for r in 0..h {
+                    recon[r * w..r * w + w]
+                        .copy_from_slice(&pred[r * pred_stride..r * pred_stride + w]);
+                }
+            }
         }
     }
     aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into(
@@ -2042,6 +2057,23 @@ pub fn dist_block_px_domain_into(
         );
     }
     16 * i64::from(sse)
+}
+
+/// `h` rows of `W` pixels from `pred` (stride `pred_stride`) into `recon`
+/// (packed, stride `W`). Const-generic `W` keeps each row a fixed-size array
+/// move — the runtime-width `copy_from_slice` form emits a `memcpy` call per
+/// row, which dominates at 4..64-px widths.
+fn copy_pred_rows<const W: usize>(
+    recon: &mut [u16],
+    pred: &[u16],
+    pred_stride: usize,
+    h: usize,
+) {
+    for r in 0..h {
+        let d: &mut [u16; W] = (&mut recon[r * W..r * W + W]).try_into().unwrap();
+        let s: &[u16; W] = pred[r * pred_stride..r * pred_stride + W].try_into().unwrap();
+        *d = *s;
+    }
 }
 
 // ---------------------------------------------------------------------------

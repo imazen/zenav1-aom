@@ -164,6 +164,17 @@ fn quantize_fp_impl(
         let abs = (c ^ sign) - sign;
         let gate = abs.simd_ge(thr_v);
 
+        // av1_quantize_fp_avx2's nzflag early-out (av1_quantize_avx2.c:207-222):
+        // a chunk with no lane past the gate produces all-zero qcoeff/dqcoeff
+        // and contributes nothing to the eob — identical output without the
+        // multiply/shift/sign work or the iscan load. Most post-eob chunks of
+        // a real block take this arm.
+        if !gate.any_true() {
+            zero.store(&mut q_chunks[ci]);
+            zero.store(&mut dq_chunks[ci]);
+            continue;
+        }
+
         // abs_r = clamp(min(abs, 2^17) + rounding, i16::MIN, i16::MAX)
         let abs_r = (abs.min(abs_cap) + rnd_v).clamp(clamp_lo, clamp_hi);
         // tmp32 = (abs_r * quant) >> (16 - ls), gated to 0 outside the gate.
