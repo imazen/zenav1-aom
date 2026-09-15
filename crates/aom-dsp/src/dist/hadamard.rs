@@ -225,6 +225,227 @@ fn hadamard_8x8_avx2(
     Some(())
 }
 
+/// `aom_hadamard_lp_8x8` — the lowbd (i16-out) Hadamard the nonrd estimate
+/// arm's `av1_block_yrd` runs per 8x8. The transform is the identical network
+/// to [`hadamard_8x8_into`]'s (C shares `hadamard_col8_sse2` across the fp/lp
+/// variants); only the i16-narrow store differs.
+///
+/// The lane order written is C's own: `hadamard_col8_sse2(iter=0)`'s fused
+/// transpose already emits coefficient rows in the order the scalar port
+/// reaches via its trailing `coeff[i*8+j] = buffer2[j*8+i]` — the transpose
+/// documented on the aom-encode scalar twin (KB-12's eob order).
+pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = crate::dispatch::scalar_forced();
+        if let Some(()) =
+            archmage::incant!(hadamard_lp_8x8_v3(src_diff, src_stride, coeff), [v3, scalar])
+        {
+            return;
+        }
+    }
+    hadamard_lp_8x8_scalar(src_diff, src_stride, coeff);
+}
+
+/// `aom_hadamard_lp_8x8_dual` (avg_intrin_sse2.c) — two adjacent 8x8s.
+pub fn hadamard_lp_8x8_dual(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
+    for i in 0..2 {
+        hadamard_lp_8x8(&src_diff[i * 8..], src_stride, &mut coeff[i * 64..]);
+    }
+}
+
+/// `aom_hadamard_lp_16x16` — four 8x8 stages + the `_mm_srai_epi16(.., 1)`
+/// cross-combine. The combine truncates BEFORE shifting
+/// (`wrapping_add(..) >> 1`), matching the note on the aom-encode scalar twin:
+/// the two differ from shift-then-truncate only when `|a0+a1| > i16::MAX`,
+/// unreachable on the lp arm's 9-bit inputs.
+pub fn hadamard_lp_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
+    for idx in 0..4 {
+        let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
+        hadamard_lp_8x8(&src_diff[off..], src_stride, &mut coeff[idx * 64..]);
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = crate::dispatch::scalar_forced();
+        if let Some(()) = archmage::incant!(hadamard_lp_16_combine_v3(coeff), [v3, scalar]) {
+            return;
+        }
+    }
+    hadamard_lp_16_combine_scalar(coeff);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn hadamard_lp_8x8_v3_scalar(
+    _t: archmage::ScalarToken,
+    _src: &[i16],
+    _src_stride: usize,
+    _out: &mut [i16],
+) -> Option<()> {
+    None
+}
+
+/// The lp 8x8 as `aom_hadamard_lp_8x8_sse2` writes it: 8 unaligned row loads,
+/// the column butterfly, the in-register transpose, the second butterfly, 8
+/// i16 stores. All loads/stores are `loadu`/`storeu` — C's `_mm_load_si128`
+/// assumes its own aligned scratch; the port's `diff` buffer is a `Vec<i16>`
+/// with no 16-byte guarantee.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x8), v3, -scalar)]
+fn hadamard_lp_8x8_v3(
+    _token: Token,
+    src: &[i16],
+    src_stride: usize,
+    out: &mut [i16],
+) -> Option<()> {
+    use archmage::intrinsics::x86_64::*;
+
+    // Same network as hadamard_8x8_avx2's col8 — naturally-ordered output.
+    let col8 = |s: [__m128i; 8]| -> [__m128i; 8] {
+        let b0 = _mm_add_epi16(s[0], s[1]);
+        let b1 = _mm_sub_epi16(s[0], s[1]);
+        let b2 = _mm_add_epi16(s[2], s[3]);
+        let b3 = _mm_sub_epi16(s[2], s[3]);
+        let b4 = _mm_add_epi16(s[4], s[5]);
+        let b5 = _mm_sub_epi16(s[4], s[5]);
+        let b6 = _mm_add_epi16(s[6], s[7]);
+        let b7 = _mm_sub_epi16(s[6], s[7]);
+        let c0 = _mm_add_epi16(b0, b2);
+        let c1 = _mm_add_epi16(b1, b3);
+        let c2 = _mm_sub_epi16(b0, b2);
+        let c3 = _mm_sub_epi16(b1, b3);
+        let c4 = _mm_add_epi16(b4, b6);
+        let c5 = _mm_add_epi16(b5, b7);
+        let c6 = _mm_sub_epi16(b4, b6);
+        let c7 = _mm_sub_epi16(b5, b7);
+        let mut o = [_mm_setzero_si128(); 8];
+        o[0] = _mm_add_epi16(c0, c4);
+        o[7] = _mm_add_epi16(c1, c5);
+        o[3] = _mm_add_epi16(c2, c6);
+        o[4] = _mm_add_epi16(c3, c7);
+        o[2] = _mm_sub_epi16(c0, c4);
+        o[6] = _mm_sub_epi16(c1, c5);
+        o[1] = _mm_sub_epi16(c2, c6);
+        o[5] = _mm_sub_epi16(c3, c7);
+        o
+    };
+
+    let transpose = |r: [__m128i; 8]| -> [__m128i; 8] {
+        let a0 = _mm_unpacklo_epi16(r[0], r[1]);
+        let a1 = _mm_unpackhi_epi16(r[0], r[1]);
+        let a2 = _mm_unpacklo_epi16(r[2], r[3]);
+        let a3 = _mm_unpackhi_epi16(r[2], r[3]);
+        let a4 = _mm_unpacklo_epi16(r[4], r[5]);
+        let a5 = _mm_unpackhi_epi16(r[4], r[5]);
+        let a6 = _mm_unpacklo_epi16(r[6], r[7]);
+        let a7 = _mm_unpackhi_epi16(r[6], r[7]);
+        let b0 = _mm_unpacklo_epi32(a0, a2);
+        let b1 = _mm_unpackhi_epi32(a0, a2);
+        let b2 = _mm_unpacklo_epi32(a1, a3);
+        let b3 = _mm_unpackhi_epi32(a1, a3);
+        let b4 = _mm_unpacklo_epi32(a4, a6);
+        let b5 = _mm_unpackhi_epi32(a4, a6);
+        let b6 = _mm_unpacklo_epi32(a5, a7);
+        let b7 = _mm_unpackhi_epi32(a5, a7);
+        [
+            _mm_unpacklo_epi64(b0, b4),
+            _mm_unpackhi_epi64(b0, b4),
+            _mm_unpacklo_epi64(b1, b5),
+            _mm_unpackhi_epi64(b1, b5),
+            _mm_unpacklo_epi64(b2, b6),
+            _mm_unpackhi_epi64(b2, b6),
+            _mm_unpacklo_epi64(b3, b7),
+            _mm_unpackhi_epi64(b3, b7),
+        ]
+    };
+
+    let mut v = [_mm_setzero_si128(); 8];
+    for (k, vk) in v.iter_mut().enumerate() {
+        let row: &[i16; 8] = match src[k * src_stride..k * src_stride + 8].try_into() {
+            Ok(r) => r,
+            Err(_) => return None,
+        };
+        *vk = _mm_loadu_si128(row);
+    }
+    let u = col8(transpose(col8(v)));
+    for (i, ui) in u.iter().enumerate() {
+        let dst: &mut [i16; 8] = (&mut out[i * 8..i * 8 + 8]).try_into().ok()?;
+        _mm_storeu_si128(dst, *ui);
+    }
+    Some(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn hadamard_lp_16_combine_v3_scalar(_t: archmage::ScalarToken, _out: &mut [i16]) -> Option<()> {
+    None
+}
+
+/// `aom_hadamard_lp_16x16_sse2`'s combine pass: 8 iterations of 4 loads,
+/// add/sub, `srai(.., 1)` (truncate-then-shift — see the doc above), 4 stores.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x8), v3, -scalar)]
+fn hadamard_lp_16_combine_v3(_token: Token, coeff: &mut [i16]) -> Option<()> {
+    use archmage::intrinsics::x86_64::*;
+    for idx in (0..64).step_by(8) {
+        let c0: &[i16; 8] = coeff[idx..idx + 8].try_into().ok()?;
+        let c1: &[i16; 8] = coeff[idx + 64..idx + 72].try_into().ok()?;
+        let c2: &[i16; 8] = coeff[idx + 128..idx + 136].try_into().ok()?;
+        let c3: &[i16; 8] = coeff[idx + 192..idx + 200].try_into().ok()?;
+        let a0 = _mm_loadu_si128(c0);
+        let a1 = _mm_loadu_si128(c1);
+        let a2 = _mm_loadu_si128(c2);
+        let a3 = _mm_loadu_si128(c3);
+        let b0 = _mm_srai_epi16(_mm_add_epi16(a0, a1), 1);
+        let b1 = _mm_srai_epi16(_mm_sub_epi16(a0, a1), 1);
+        let b2 = _mm_srai_epi16(_mm_add_epi16(a2, a3), 1);
+        let b3 = _mm_srai_epi16(_mm_sub_epi16(a2, a3), 1);
+        let d0: &mut [i16; 8] = (&mut coeff[idx..idx + 8]).try_into().ok()?;
+        _mm_storeu_si128(d0, _mm_add_epi16(b0, b2));
+        let d1: &mut [i16; 8] = (&mut coeff[idx + 64..idx + 72]).try_into().ok()?;
+        _mm_storeu_si128(d1, _mm_add_epi16(b1, b3));
+        let d2: &mut [i16; 8] = (&mut coeff[idx + 128..idx + 136]).try_into().ok()?;
+        _mm_storeu_si128(d2, _mm_sub_epi16(b0, b2));
+        let d3: &mut [i16; 8] = (&mut coeff[idx + 192..idx + 200]).try_into().ok()?;
+        _mm_storeu_si128(d3, _mm_sub_epi16(b1, b3));
+    }
+    Some(())
+}
+
+/// Scalar core of [`hadamard_lp_8x8`] — the aom-encode `hadamard_lp_8x8`
+/// recipe (16x [`hadamard_col8`] + the trailing transpose that matches the
+/// SSE2 tier's fused-transpose output order).
+fn hadamard_lp_8x8_scalar(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
+    let mut rows = [[0i16; 8]; 8];
+    for (r, row) in rows.iter_mut().enumerate() {
+        row.copy_from_slice(&src_diff[r * src_stride..r * src_stride + 8]);
+    }
+    let a: [[i16; 8]; 8] =
+        core::array::from_fn(|idx| hadamard_col8(core::array::from_fn(|k| rows[k][idx])));
+    let b: [[i16; 8]; 8] =
+        core::array::from_fn(|idx| hadamard_col8(core::array::from_fn(|k| a[k][idx])));
+    for i in 0..8 {
+        for j in 0..8 {
+            coeff[i * 8 + j] = b[j][i];
+        }
+    }
+}
+
+fn hadamard_lp_16_combine_scalar(coeff: &mut [i16]) {
+    for idx in 0..64 {
+        let a0 = coeff[idx];
+        let a1 = coeff[idx + 64];
+        let a2 = coeff[idx + 128];
+        let a3 = coeff[idx + 192];
+        let b0 = a0.wrapping_add(a1) >> 1;
+        let b1 = a0.wrapping_sub(a1) >> 1;
+        let b2 = a2.wrapping_add(a3) >> 1;
+        let b3 = a2.wrapping_sub(a3) >> 1;
+        coeff[idx] = b0.wrapping_add(b2);
+        coeff[idx + 64] = b1.wrapping_add(b3);
+        coeff[idx + 128] = b0.wrapping_sub(b2);
+        coeff[idx + 192] = b1.wrapping_sub(b3);
+    }
+}
+
 /// The transcribed scalar core — the differential's reference and the
 /// non-x86 / `AOM_FORCE_SCALAR` path.
 fn hadamard_8x8_scalar_core(src: &[i16], src_stride: usize) -> [i32; 64] {

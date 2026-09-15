@@ -231,39 +231,6 @@ pub(crate) fn get_msb(n: u32) -> i32 {
     31 - n.leading_zeros() as i32
 }
 
-/// `hadamard_col8` (aom_dsp/avg.c:149). C does the arithmetic in int16_t —
-/// intermediate sums are allowed to wrap (the dynamic-range comments bound
-/// REAL inputs away from wrap, but bit-exactness demands wrapping semantics).
-#[inline]
-fn hadamard_col8(src: &[i16], stride: usize, coeff: &mut [i16; 8]) {
-    let b0 = src[0].wrapping_add(src[stride]);
-    let b1 = src[0].wrapping_sub(src[stride]);
-    let b2 = src[2 * stride].wrapping_add(src[3 * stride]);
-    let b3 = src[2 * stride].wrapping_sub(src[3 * stride]);
-    let b4 = src[4 * stride].wrapping_add(src[5 * stride]);
-    let b5 = src[4 * stride].wrapping_sub(src[5 * stride]);
-    let b6 = src[6 * stride].wrapping_add(src[7 * stride]);
-    let b7 = src[6 * stride].wrapping_sub(src[7 * stride]);
-
-    let c0 = b0.wrapping_add(b2);
-    let c1 = b1.wrapping_add(b3);
-    let c2 = b0.wrapping_sub(b2);
-    let c3 = b1.wrapping_sub(b3);
-    let c4 = b4.wrapping_add(b6);
-    let c5 = b5.wrapping_add(b7);
-    let c6 = b4.wrapping_sub(b6);
-    let c7 = b5.wrapping_sub(b7);
-
-    coeff[0] = c0.wrapping_add(c4);
-    coeff[7] = c1.wrapping_add(c5);
-    coeff[3] = c2.wrapping_add(c6);
-    coeff[4] = c3.wrapping_add(c7);
-    coeff[2] = c0.wrapping_sub(c4);
-    coeff[6] = c1.wrapping_sub(c5);
-    coeff[1] = c2.wrapping_sub(c6);
-    coeff[5] = c3.wrapping_sub(c7);
-}
-
 /// `aom_hadamard_lp_8x8_c` (aom_dsp/avg.c:209): 8x8 2D Hadamard, int16 out.
 ///
 /// **The trailing transpose is part of the kernel** (avg.c:232-236, *"Extra
@@ -279,24 +246,11 @@ fn hadamard_col8(src: &[i16], stride: usize, coeff: &mut [i16; 8]) {
 /// (LIBAOM_UPSTREAM_NOTES A1 / KB-20 root #4) there is nothing
 /// ISA-conditional to model.
 pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
-    let mut buffer = [0i16; 64];
-    let mut buffer2 = [0i16; 64];
-    for idx in 0..8 {
-        let mut col = [0i16; 8];
-        hadamard_col8(&src_diff[idx..], src_stride, &mut col);
-        buffer[idx * 8..idx * 8 + 8].copy_from_slice(&col);
-    }
-    for idx in 0..8 {
-        let mut col = [0i16; 8];
-        hadamard_col8(&buffer[idx..], 8, &mut col);
-        buffer2[idx * 8..idx * 8 + 8].copy_from_slice(&col);
-    }
-    // avg.c:232-236 — the extra transpose.
-    for i in 0..8 {
-        for j in 0..8 {
-            coeff[i * 8 + j] = buffer2[j * 8 + i];
-        }
-    }
+    // Dispatched through aom-dsp: the v3 tier mirrors `aom_hadamard_lp_8x8_sse2`
+    // (its iter-0 fused transpose emits the same lane order this scalar
+    // recipe's trailing transpose produces); the scalar arm is the same
+    // 16x-col8 + transpose recipe.
+    aom_dsp::dist::hadamard::hadamard_lp_8x8(src_diff, src_stride, coeff);
 }
 
 /// `aom_hadamard_lp_8x8_dual_c` (avg.c:240): two adjacent 8x8s. UNREACHABLE
@@ -307,9 +261,7 @@ pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
 /// size, 8 px wide whenever the tx is TX_8X8, at a NON-square leaf as much as a
 /// square one. Kept for completeness / the inter path.
 pub fn hadamard_lp_8x8_dual(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
-    for i in 0..2 {
-        hadamard_lp_8x8(&src_diff[i * 8..], src_stride, &mut coeff[i * 64..]);
-    }
+    aom_dsp::dist::hadamard::hadamard_lp_8x8_dual(src_diff, src_stride, coeff);
 }
 
 /// `aom_hadamard_lp_16x16_c` (avg.c:291): four 8x8 stages + a cross-combine
@@ -334,26 +286,10 @@ pub fn hadamard_lp_8x8_dual(src_diff: &[i16], src_stride: usize, coeff: &mut [i1
 /// asserts both halves of that: the tiers agree, and the grid really does
 /// drive `|coeff|` above 16000.
 pub fn hadamard_lp_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
-    for idx in 0..4 {
-        let src_off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
-        hadamard_lp_8x8(&src_diff[src_off..], src_stride, &mut coeff[idx * 64..]);
-    }
-    for idx in 0..64 {
-        let a0 = coeff[idx];
-        let a1 = coeff[idx + 64];
-        let a2 = coeff[idx + 128];
-        let a3 = coeff[idx + 192];
-
-        let b0 = a0.wrapping_add(a1) >> 1;
-        let b1 = a0.wrapping_sub(a1) >> 1;
-        let b2 = a2.wrapping_add(a3) >> 1;
-        let b3 = a2.wrapping_sub(a3) >> 1;
-
-        coeff[idx] = b0.wrapping_add(b2);
-        coeff[idx + 64] = b1.wrapping_add(b3);
-        coeff[idx + 128] = b0.wrapping_sub(b2);
-        coeff[idx + 192] = b1.wrapping_sub(b3);
-    }
+    // Dispatched through aom-dsp: the v3 tier mirrors `aom_hadamard_lp_16x16_sse2`
+    // (4x lp-8x8 + the `_mm_srai_epi16(.., 1)` combine — truncate-then-shift,
+    // the same semantics the `wrapping_add(..) >> 1` below documented).
+    aom_dsp::dist::hadamard::hadamard_lp_16x16(src_diff, src_stride, coeff);
 }
 
 /// `aom_fdct4x4_lp_c` (aom_dsp/fwd_txfm.c:85-146). The lowbd `av1_block_yrd`
