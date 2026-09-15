@@ -335,6 +335,15 @@ thread_local! {
         core::cell::RefCell::new(crate::XformQuantScratch::default());
     static XQ_POOL_UV: core::cell::RefCell<crate::XformQuantScratch> =
         core::cell::RefCell::new(crate::XformQuantScratch::default());
+    /// Per-call `residual` scratch — `highbd_subtract_block` writes every
+    /// element before any read (the live prefix is sliced to `txw*txh`), so a
+    /// carried-over buffer needs no re-zero; grow-only keeps capacity across
+    /// alternating tx sizes. One pool per plane mirrors `XQ_POOL_*` (the two
+    /// walks never nest).
+    static RESIDUAL_POOL_Y: core::cell::RefCell<Vec<i16>> =
+        core::cell::RefCell::new(Vec::new());
+    static RESIDUAL_POOL_UV: core::cell::RefCell<Vec<i16>> =
+        core::cell::RefCell::new(Vec::new());
 }
 
 /// `av1_encode_intra_block_plane(cpi, x, bsize, AOM_PLANE_Y, dry_run,
@@ -396,9 +405,13 @@ pub fn encode_intra_block_plane_y(
     // contents. `xq` additionally reuses the forward transform's own buffers;
     // its `qcoeff`/`dqcoeff` are MOVED into `TxbEncode` (they are retained
     // per-txb output, not churn), so those two still allocate as before.
-    let mut residual: Vec<i16> = Vec::new();
+    let mut residual: Vec<i16> = RESIDUAL_POOL_Y.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut xq = XQ_POOL_Y.with(|c| core::mem::take(&mut *c.borrow_mut()));
-    let mut txbs: Vec<TxbEncode> = Vec::new();
+    // The walk appends exactly ceil(w/txw) * ceil(h/txh) txbs — reserve once
+    // instead of paying the log-growth realloc chain per leaf.
+    let mut txbs: Vec<TxbEncode> = Vec::with_capacity(
+        blocks_wide_visible.div_ceil(txw_unit) * blocks_high_visible.div_ceil(txh_unit),
+    );
     // `av1_foreach_transformed_block_in_plane` mu-64 chunk walk (encodemb.c:
     // 560-582): a coding block > 64x64 is split into 64x64 units so prediction
     // + reconstruction happen in the SAME chunk order the decoder uses. Above
@@ -699,6 +712,7 @@ pub fn encode_intra_block_plane_y(
     }
 
     XQ_POOL_Y.with(|c| *c.borrow_mut() = xq);
+    RESIDUAL_POOL_Y.with(|c| *c.borrow_mut() = residual);
     EncodeIntraPlaneOutcome { txbs, ta, tl }
 }
 
@@ -805,9 +819,13 @@ pub fn encode_intra_block_plane_uv(
     let mut dc_cache = CflDcCache::cleared();
 
     // Per-txb buffers hoisted out of the walk — see the luma twin above.
-    let mut residual: Vec<i16> = Vec::new();
+    let mut residual: Vec<i16> =
+        RESIDUAL_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut xq = XQ_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
-    let mut txbs: Vec<TxbEncode> = Vec::new();
+    // Exact-capacity reserve — see the luma twin.
+    let mut txbs: Vec<TxbEncode> = Vec::with_capacity(
+        blocks_wide_visible.div_ceil(txw_unit) * blocks_high_visible.div_ceil(txh_unit),
+    );
     // mu-64 chunk walk (see `encode_intra_block_plane_y`). The chroma unit is
     // `get_plane_block_size(BLOCK_64X64, ss_x, ss_y)` (encodemb.c:560-561) — at
     // 4:2:0 that is BLOCK_32X32 (mu = 8 chroma-mi = 64 luma-px), so both planes
@@ -1020,5 +1038,6 @@ pub fn encode_intra_block_plane_uv(
     }
 
     XQ_POOL_UV.with(|c| *c.borrow_mut() = xq);
+    RESIDUAL_POOL_UV.with(|c| *c.borrow_mut() = residual);
     EncodeIntraPlaneOutcome { txbs, ta, tl }
 }
