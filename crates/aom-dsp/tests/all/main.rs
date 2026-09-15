@@ -57,6 +57,7 @@ mod frame_walk_diff;
 mod hadamard_diff;
 mod hbd_dist_diff;
 mod hbd_lpf_diff;
+mod hbd_lpf_sse2_diff;
 mod hbd_variance_simd_diff;
 mod header_diff;
 mod highbd_diff;

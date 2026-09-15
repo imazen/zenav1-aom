@@ -5618,6 +5618,54 @@ pub fn ref_hbd_lpf(
     }
 }
 
+// hbd_lpf_sse2_shim.c — the REAL dispatched x86-64 kernels
+// (aom_highbd_lpf_{horizontal,vertical}_{4,6,8,14}_sse2), not the `_c`
+// references. The shim broadcasts the scalar thresholds into the aligned
+// 16-byte rows the kernels load.
+#[cfg(target_arch = "x86_64")]
+extern "C" {
+    fn shim_hbd_lpf_sse2(
+        dir: i32,
+        width: i32,
+        s: *mut u16,
+        p: i32,
+        bl: u8,
+        li: u8,
+        th: u8,
+        bd: i32,
+    );
+}
+
+/// Apply a reference highbd loop filter via the real dispatched SSE2 kernels.
+/// `dir`: 'h'/'v'. x86-64 only.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_hbd_lpf_sse2(
+    dir: u8,
+    width: u32,
+    buf: &mut [u16],
+    center: usize,
+    pitch: usize,
+    bl: u8,
+    li: u8,
+    th: u8,
+    bd: i32,
+) {
+    let d = if dir == b'h' { 0 } else { 1 };
+    unsafe {
+        shim_hbd_lpf_sse2(
+            d,
+            width as i32,
+            buf.as_mut_ptr().add(center),
+            pitch as i32,
+            bl,
+            li,
+            th,
+            bd,
+        );
+    }
+}
+
 // aom_dsp/loopfilter.c — deblocking edge filters.
 pub type LpfFn = unsafe extern "C" fn(*mut u8, i32, *const u8, *const u8, *const u8);
 extern "C" {
