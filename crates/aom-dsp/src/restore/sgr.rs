@@ -268,11 +268,14 @@ fn boxsum_vert(
 /// Every output is an INDEPENDENT sum of the ORIGINAL row values, but the
 /// scalar tier reads back positions it has already written — `out[j]` needs
 /// `dst[j+2]` which a vector store to `dst[j..j+8]` would clobber for the
-/// next chunk. So the vector tier copies each row into `scratch` once, then
-/// each lane sums the same source elements the scalar lane does, in the same
-/// left-to-right order — no reassociation, identical `i32` add semantics.
-/// Interior positions that don't fill a chunk plus the shrunken edge sums
-/// stay scalar over `scratch` (== the original `dst` values).
+/// next chunk. So the vector tier software-pipelines: each chunk's source
+/// vectors are loaded BEFORE the previous chunk's store lands, and the
+/// scalar tail is seeded with a snapshot of the one cell range the last
+/// store overwrote. Each lane still sums the same source elements the
+/// scalar lane does, in the same left-to-right order — no reassociation,
+/// identical `i32` add semantics. Interior positions that don't fill a
+/// chunk plus the shrunken edge sums stay scalar (the rolling `a..e` /
+/// `a..c` window, which only ever reads original values).
 #[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
 fn boxsum_horz_impl(
     token: Token,
@@ -282,47 +285,124 @@ fn boxsum_horz_impl(
     height: usize,
     r5: bool,
 ) {
-    let mut scratch = vec![0i32; width];
+    // No row copy: the scalar tier's read-back (it reads `dst` positions it
+    // has already written) is handled by software pipelining instead — each
+    // chunk's source vectors for the NEXT iteration are loaded BEFORE this
+    // iteration's store, so every lane still sums the same original row
+    // values the scalar lane does, and the scalar tail re-reads at most the
+    // last store's final two/one cells, which `sv` snapshots. This drops the
+    // per-call `vec![width]` and the per-row `copy_from_slice` the old
+    // `scratch` buffer cost.
     for i in 0..height {
         let row = i * dst_stride;
-        scratch.copy_from_slice(&dst[row..row + width]);
-        let s = scratch.as_slice();
         if r5 {
-            dst[row] = s[0] + s[1] + s[2];
-            dst[row + 1] = s[0] + s[1] + s[2] + s[3];
+            // Original s[0..4] — the edge writes can't land until the first
+            // vector chunk has loaded s[0..10).
+            let (s0, s1, s2, s3) = (dst[row], dst[row + 1], dst[row + 2], dst[row + 3]);
             let mut j = 2;
-            while j + 8 <= width - 3 {
-                let v = i32x8::from_slice(token, &s[j - 2..j + 6])
-                    + i32x8::from_slice(token, &s[j - 1..j + 7])
-                    + i32x8::from_slice(token, &s[j..j + 8])
-                    + i32x8::from_slice(token, &s[j + 1..j + 9])
-                    + i32x8::from_slice(token, &s[j + 2..j + 10]);
-                v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
-                j += 8;
+            // Original s[jv-2], s[jv-1] — the only clobbered cells the tail
+            // can read (it reads s[j-2..j+2] for j >= jv). Defaults cover the
+            // never-ran case: jv = 2, reads s[0]/s[1].
+            let (mut ta, mut tb) = (s0, s1);
+            if j + 8 <= width - 3 {
+                let mut w0 = i32x8::from_slice(token, &dst[row + j - 2..row + j + 6]);
+                let mut w1 = i32x8::from_slice(token, &dst[row + j - 1..row + j + 7]);
+                let mut w2 = i32x8::from_slice(token, &dst[row + j..row + j + 8]);
+                let mut w3 = i32x8::from_slice(token, &dst[row + j + 1..row + j + 9]);
+                let mut w4 = i32x8::from_slice(token, &dst[row + j + 2..row + j + 10]);
+                loop {
+                    let v = w0 + w1 + w2 + w3 + w4;
+                    // Chunk j+8 reads s[j+6..j+18]; this store writes
+                    // dst[j..j+8] — overlapping at j+6/j+7, so the loads (and
+                    // the tail snapshot) run first. j+18 <= width holds
+                    // whenever a next chunk exists (j + 16 <= width - 3).
+                    let more = j + 16 <= width - 3;
+                    if more {
+                        w0 = i32x8::from_slice(token, &dst[row + j + 6..row + j + 14]);
+                        w1 = i32x8::from_slice(token, &dst[row + j + 7..row + j + 15]);
+                        w2 = i32x8::from_slice(token, &dst[row + j + 8..row + j + 16]);
+                        w3 = i32x8::from_slice(token, &dst[row + j + 9..row + j + 17]);
+                        w4 = i32x8::from_slice(token, &dst[row + j + 10..row + j + 18]);
+                    } else {
+                        ta = dst[row + j + 6];
+                        tb = dst[row + j + 7];
+                    }
+                    v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
+                    j += 8;
+                    if !more {
+                        break;
+                    }
+                }
             }
+            dst[row] = s0 + s1 + s2;
+            dst[row + 1] = s0 + s1 + s2 + s3;
+            // Tail: the scalar tier's rolling window. a/b are the snapshotted
+            // originals (s[j-2], s[j-1] — the cells the last vector store
+            // clobbered); c/d/e read positions >= j — never stored (vector
+            // stores end at j, and tail stores trail the e-load by 3).
+            let mut a = ta;
+            let mut b = tb;
+            let mut c = dst[row + j];
+            let mut d = dst[row + j + 1];
+            let mut e = dst[row + j + 2];
             while j < width - 3 {
-                dst[row + j] = s[j - 2] + s[j - 1] + s[j] + s[j + 1] + s[j + 2];
+                dst[row + j] = a + b + c + d + e;
+                a = b;
+                b = c;
+                c = d;
+                d = e;
+                e = dst[row + j + 3];
                 j += 1;
             }
-            dst[row + j] = s[j - 2] + s[j - 1] + s[j] + s[j + 1] + s[j + 2];
-            dst[row + j + 1] = s[j - 1] + s[j] + s[j + 1] + s[j + 2];
-            dst[row + j + 2] = s[j] + s[j + 1] + s[j + 2];
+            dst[row + j] = a + b + c + d + e;
+            dst[row + j + 1] = b + c + d + e;
+            dst[row + j + 2] = c + d + e;
         } else {
-            dst[row] = s[0] + s[1];
+            let (s0, s1) = (dst[row], dst[row + 1]);
             let mut j = 1;
-            while j + 8 <= width - 2 {
-                let v = i32x8::from_slice(token, &s[j - 1..j + 7])
-                    + i32x8::from_slice(token, &s[j..j + 8])
-                    + i32x8::from_slice(token, &s[j + 1..j + 9]);
-                v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
-                j += 8;
+            // Original s[j-1] at the tail's start — the last vector store's
+            // final cell. Default covers the never-ran case (j = 1 → s[0]).
+            let mut ta = s0;
+            if j + 8 <= width - 2 {
+                let mut w0 = i32x8::from_slice(token, &dst[row + j - 1..row + j + 7]);
+                let mut w1 = i32x8::from_slice(token, &dst[row + j..row + j + 8]);
+                let mut w2 = i32x8::from_slice(token, &dst[row + j + 1..row + j + 9]);
+                loop {
+                    let v = w0 + w1 + w2;
+                    // Chunk j+8 reads s[j+7..j+17]; the store writes
+                    // dst[j..j+8] — overlapping at j+7, loads first. Next
+                    // chunk exists iff j + 16 <= width - 2.
+                    let more = j + 16 <= width - 2;
+                    if more {
+                        w0 = i32x8::from_slice(token, &dst[row + j + 7..row + j + 15]);
+                        w1 = i32x8::from_slice(token, &dst[row + j + 8..row + j + 16]);
+                        w2 = i32x8::from_slice(token, &dst[row + j + 9..row + j + 17]);
+                    } else {
+                        ta = dst[row + j + 7];
+                    }
+                    v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
+                    j += 8;
+                    if !more {
+                        break;
+                    }
+                }
             }
+            dst[row] = s0 + s1;
+            // Same rolling window as the scalar tier's: `a` is the snapshot,
+            // b/c read positions >= j — never stored (the c-load leads the
+            // tail stores by 2).
+            let mut a = ta;
+            let mut b = dst[row + j];
+            let mut c = dst[row + j + 1];
             while j < width - 2 {
-                dst[row + j] = s[j - 1] + s[j] + s[j + 1];
+                dst[row + j] = a + b + c;
+                a = b;
+                b = c;
+                c = dst[row + j + 2];
                 j += 1;
             }
-            dst[row + j] = s[j - 1] + s[j] + s[j + 1];
-            dst[row + j + 1] = s[j] + s[j + 1];
+            dst[row + j] = a + b + c;
+            dst[row + j + 1] = b + c;
         }
     }
 }
