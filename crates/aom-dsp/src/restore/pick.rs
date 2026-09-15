@@ -199,6 +199,8 @@ fn gather_window(
 ///   read-modify-write measurement below asks for.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
+// x86-64's v3 tier inlines its own const-generic copy of this gather.
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
 fn gather_window_quad(
     dgd: &[u16],
     dgd_origin: usize,
@@ -239,6 +241,42 @@ fn gather_window_quad(
 #[allow(clippy::too_many_arguments)]
 fn acc_stat_line_impl_scalar(
     _t: archmage::ScalarToken,
+    dgd: &[u16],
+    dgd_origin: usize,
+    src_row: &[u16],
+    dgd_stride: i32,
+    h_start: i32,
+    h_end: i32,
+    avg: u16,
+    wiener_halfwin: i32,
+    wiener_win2: usize,
+    m_row: &mut [i32],
+    h_row: &mut [i32],
+    hstride: usize,
+    count: i32,
+) {
+    acc_stat_line_recipe(
+        dgd,
+        dgd_origin,
+        src_row,
+        dgd_stride,
+        h_start,
+        h_end,
+        avg,
+        wiener_halfwin,
+        wiener_win2,
+        m_row,
+        h_row,
+        hstride,
+        count,
+    );
+}
+
+/// The scalar tier's body, token-free so the x86 v3 tier can delegate on
+/// inputs its window-size specialization does not cover (identical behaviour,
+/// identical panics).
+#[allow(clippy::too_many_arguments)]
+fn acc_stat_line_recipe(
     dgd: &[u16],
     dgd_origin: usize,
     src_row: &[u16],
@@ -344,7 +382,16 @@ fn acc_stat_line_impl_scalar(
 /// **16-bit** lanes on top of the fold, which is a further 2x on the multiply
 /// side and needs either a magetypes bump to >= 0.9.29 (for `madd_adjacent`) or
 /// an equivalent widening-multiply-add. `compute_stats_highbd` is untouched.
-#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+///
+/// 2026-09-15: the x86-64 v3 tier moved out of this body into
+/// [`acc_stat_line_v3_x86`], the same four-pixel fold monomorphized on the
+/// window size (`WIN` is only ever 5 or 7) so every loop bound and accumulator
+/// index is a compile-time constant. MEASURED on the 196x196 cq27 speed-0
+/// profile cell, identical call counts both sides: **92,556 -> 53,247 Ir per
+/// call (-42 %)**; the kernel's gap to libaom's `compute_stats_win5/7_avx2`
+/// per restoration unit goes **4.5x -> 2.57x**. This body remains the neon and
+/// wasm128 tier.
+#[archmage::magetypes(define(i32x8), neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn acc_stat_line_impl(
     token: Token,
@@ -485,6 +532,253 @@ fn acc_stat_line_impl(
             while l < wiener_win2 {
                 let acc = ld!(h_row, base + l) + ld!(y[0], l) * yk;
                 st!(h_row, base + l, acc);
+                l += 8;
+            }
+        }
+        j += 1;
+    }
+}
+
+/// AVX2 tier (x86-64): the same four-pixel fold, but monomorphized on the
+/// window size. `wiener_halfwin` is only ever 2 (win5) or 3 (win7), so the
+/// generic tier's runtime `win2`/`hstride` bounds kept every accumulator
+/// access bounds-checked; with `WIN` a literal, every index is statically
+/// provable and the checks elide. Anything outside {5, 7} — including any
+/// window a future caller could construct — delegates to the scalar recipe,
+/// whose observable behaviour (including panics) is unchanged.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn acc_stat_line_impl_v3(
+    t: archmage::X64V3Token,
+    dgd: &[u16],
+    dgd_origin: usize,
+    src_row: &[u16],
+    dgd_stride: i32,
+    h_start: i32,
+    h_end: i32,
+    avg: u16,
+    wiener_halfwin: i32,
+    wiener_win2: usize,
+    m_row: &mut [i32],
+    h_row: &mut [i32],
+    hstride: usize,
+    count: i32,
+) {
+    match wiener_halfwin {
+        2 => acc_stat_line_v3_x86::<5>(
+            t, dgd, dgd_origin, src_row, dgd_stride, h_start, h_end, avg, wiener_halfwin,
+            wiener_win2, m_row, h_row, hstride, count,
+        ),
+        3 => acc_stat_line_v3_x86::<7>(
+            t, dgd, dgd_origin, src_row, dgd_stride, h_start, h_end, avg, wiener_halfwin,
+            wiener_win2, m_row, h_row, hstride, count,
+        ),
+        _ => acc_stat_line_recipe(
+            dgd,
+            dgd_origin,
+            src_row,
+            dgd_stride,
+            h_start,
+            h_end,
+            avg,
+            wiener_halfwin,
+            wiener_win2,
+            m_row,
+            h_row,
+            hstride,
+            count,
+        ),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn acc_stat_line_v3_x86<const WIN: usize>(
+    _t: archmage::X64V3Token,
+    dgd: &[u16],
+    dgd_origin: usize,
+    src_row: &[u16],
+    dgd_stride: i32,
+    h_start: i32,
+    h_end: i32,
+    avg: u16,
+    wiener_halfwin: i32,
+    wiener_win2: usize,
+    m_row: &mut [i32],
+    h_row: &mut [i32],
+    hstride: usize,
+    count: i32,
+) {
+    use archmage::intrinsics::x86_64::*;
+
+    // Loads/stores through a fixed-size referent: once the element range is
+    // statically provable against the array length, no bounds check survives.
+    // Macros rather than nested fns so the expansion stays inside this fn's
+    // `#[target_feature]` context.
+    macro_rules! ld8 {
+        ($a:expr, $i:expr) => {{
+            let lane: &[i32; 8] = $a[$i..$i + 8].try_into().unwrap();
+            _mm256_loadu_si256(lane)
+        }};
+    }
+    macro_rules! st8 {
+        ($a:expr, $i:expr, $v:expr) => {{
+            let v = $v;
+            let lane: &mut [i32; 8] = (&mut $a[$i..$i + 8]).try_into().unwrap();
+            _mm256_storeu_si256(lane, v)
+        }};
+    }
+
+    let win2 = WIN * WIN;
+    let hstride_v = win2.div_ceil(8) * 8;
+    let halfwin = WIN as i32 / 2;
+    // Preflight: any accumulator or layout that does not match this
+    // specialization's static shape takes the scalar recipe, which panics on
+    // genuinely-short buffers identically to before.
+    if wiener_halfwin != halfwin
+        || wiener_win2 != win2
+        || hstride != hstride_v
+        || m_row.len() < WIENER_H_STRIDE
+        || h_row.len() < WIENER_H_ROW_LEN
+    {
+        return acc_stat_line_recipe(
+            dgd,
+            dgd_origin,
+            src_row,
+            dgd_stride,
+            h_start,
+            h_end,
+            avg,
+            wiener_halfwin,
+            wiener_win2,
+            m_row,
+            h_row,
+            hstride,
+            count,
+        );
+    }
+    let m: &mut [i32; WIENER_H_STRIDE] =
+        (&mut m_row[..WIENER_H_STRIDE]).try_into().unwrap();
+    let h: &mut [i32; WIENER_H_ROW_LEN] =
+        (&mut h_row[..WIENER_H_ROW_LEN]).try_into().unwrap();
+
+    // Each `y` is zero-padded to a whole vector and NEVER written past
+    // `win2`, so the padding lanes contribute `0 * anything` — see
+    // `WIENER_H_STRIDE`.
+    let mut y = [[0i32; WIENER_H_STRIDE]; 4];
+    let mut j = h_start;
+    while j + 3 < h_end {
+        // `gather_window_quad` with static bounds: one checked row slice per
+        // window row instead of a per-element index, and every `col`/`y`
+        // index is a literal-bounded value against a fixed-size array.
+        let mut col = [[0i32; WIENER_WIN]; WIENER_WIN + 3];
+        for l in 0..WIN {
+            // Signed intermediate, exactly like `gather_window`: window rows
+            // may address into the extended border before the origin, and the
+            // negative partial sums must not wrap before `dgd_origin` is added.
+            let lo = (dgd_origin as isize
+                + (((count - halfwin + l as i32) * dgd_stride + (j - halfwin)) as isize))
+                as usize;
+            let wrow = &dgd[lo..lo + WIN + 3];
+            for c in 0..WIN + 3 {
+                col[c][l] = i32::from(wrow[c] as i16 - avg as i16);
+            }
+        }
+        let mut idx = 0usize;
+        for k in 0..WIN {
+            for l in 0..WIN {
+                y[0][idx] = col[k][l];
+                y[1][idx] = col[k + 1][l];
+                y[2][idx] = col[k + 2][l];
+                y[3][idx] = col[k + 3][l];
+                idx += 1;
+            }
+        }
+        let s4: &[u16; 4] = src_row[j as usize..j as usize + 4].try_into().unwrap();
+        let xv = [
+            _mm256_set1_epi32(i32::from(s4[0] as i16 - avg as i16)),
+            _mm256_set1_epi32(i32::from(s4[1] as i16 - avg as i16)),
+            _mm256_set1_epi32(i32::from(s4[2] as i16 - avg as i16)),
+            _mm256_set1_epi32(i32::from(s4[3] as i16 - avg as i16)),
+        ];
+
+        // M: lanes are k. Runs off the end into the padding, which stays zero.
+        let mut k = 0usize;
+        while k < win2 {
+            let acc = _mm256_add_epi32(
+                _mm256_add_epi32(
+                    _mm256_add_epi32(ld8!(m, k), _mm256_mullo_epi32(ld8!(&y[0], k), xv[0])),
+                    _mm256_mullo_epi32(ld8!(&y[1], k), xv[1]),
+                ),
+                _mm256_add_epi32(
+                    _mm256_mullo_epi32(ld8!(&y[2], k), xv[2]),
+                    _mm256_mullo_epi32(ld8!(&y[3], k), xv[3]),
+                ),
+            );
+            st8!(m, k, acc);
+            k += 8;
+        }
+
+        // H upper triangle: one read-modify-write of `H` per four pixels.
+        for k in 0..win2 {
+            let k0 = _mm256_set1_epi32(y[0][k]);
+            let k1 = _mm256_set1_epi32(y[1][k]);
+            let k2 = _mm256_set1_epi32(y[2][k]);
+            let k3 = _mm256_set1_epi32(y[3][k]);
+            let base = k * hstride_v;
+            let mut l = k;
+            while l < win2 {
+                let acc = _mm256_add_epi32(
+                    _mm256_add_epi32(
+                        _mm256_add_epi32(
+                            ld8!(h, base + l),
+                            _mm256_mullo_epi32(ld8!(&y[0], l), k0),
+                        ),
+                        _mm256_mullo_epi32(ld8!(&y[1], l), k1),
+                    ),
+                    _mm256_add_epi32(
+                        _mm256_mullo_epi32(ld8!(&y[2], l), k2),
+                        _mm256_mullo_epi32(ld8!(&y[3], l), k3),
+                    ),
+                );
+                st8!(h, base + l, acc);
+                l += 8;
+            }
+        }
+        j += 4;
+    }
+
+    // Column tail: up to three pixels, one at a time, the original shape.
+    while j < h_end {
+        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
+        let idx = gather_window(dgd, dgd_origin, dgd_stride, avg, halfwin, j, count, &mut y[0]);
+        debug_assert_eq!(idx, win2);
+
+        let xv = _mm256_set1_epi32(x);
+        let mut k = 0usize;
+        while k < win2 {
+            st8!(
+                m,
+                k,
+                _mm256_add_epi32(ld8!(m, k), _mm256_mullo_epi32(ld8!(&y[0], k), xv))
+            );
+            k += 8;
+        }
+        for k in 0..win2 {
+            let yk = _mm256_set1_epi32(y[0][k]);
+            let base = k * hstride_v;
+            let mut l = k;
+            while l < win2 {
+                st8!(
+                    h,
+                    base + l,
+                    _mm256_add_epi32(
+                        ld8!(h, base + l),
+                        _mm256_mullo_epi32(ld8!(&y[0], l), yk),
+                    )
+                );
                 l += 8;
             }
         }
