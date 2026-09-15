@@ -1802,6 +1802,36 @@ int shim_wiener_convolve(const uint16_t *src, uint16_t *dst, int buf_w,
   return 0;
 }
 
+/* REAL av1_highbd_wiener_convolve_add_src_avx2 — the DISPATCHED x86 kernel
+ * for u16 planes (what the port's wiener_impl_v3 mirrors instruction-for-
+ * instruction). Same padded-buffer convention as shim_wiener_convolve, but no
+ * u8 copy: the kernel's domain is u16 at every bd. Caller guarantees
+ * w % 8 == 0 (the kernel's own assert). NOTE: for w % 16 == 8 the kernel's
+ * 16-column stores write up to 8 columns PAST w in dst (and read src a few
+ * elements past the documented +4 margin) — real libaom relies on the next
+ * unit / the plane margin absorbing that, so callers compare only the w x h
+ * output block. */
+void av1_highbd_wiener_convolve_add_src_avx2(
+    const uint8_t *src8, ptrdiff_t src_stride, uint8_t *dst8,
+    ptrdiff_t dst_stride, const int16_t *filter_x, int x_step_q4,
+    const int16_t *filter_y, int y_step_q4, int w, int h,
+    const WienerConvolveParams *conv_params, int bd);
+int shim_wiener_convolve_hbd_avx2(const uint16_t *src, uint16_t *dst, int buf_w,
+                                  int buf_h, int off_x, int off_y, int w, int h,
+                                  const int16_t *hf, const int16_t *vf,
+                                  int bd) {
+  WienerInfo wi;
+  memset(&wi, 0, sizeof(wi));
+  memcpy(wi.hfilter, hf, 8 * sizeof(int16_t));
+  memcpy(wi.vfilter, vf, 8 * sizeof(int16_t));
+  const WienerConvolveParams conv_params = get_conv_params_wiener(bd);
+  const long off = (long)off_y * buf_w + off_x;
+  av1_highbd_wiener_convolve_add_src_avx2(
+      CONVERT_TO_BYTEPTR(src) + off, buf_w, CONVERT_TO_BYTEPTR(dst) + off,
+      buf_w, wi.hfilter, 16, wi.vfilter, 16, w, h, &conv_params, bd);
+  return 0;
+}
+
 /* REAL av1_apply_selfguided_restoration_c over the same buffer convention. */
 int shim_apply_sgr(const uint16_t *src, uint16_t *dst, int buf_w, int buf_h,
                    int off_x, int off_y, int w, int h, int ep, int xqd0,

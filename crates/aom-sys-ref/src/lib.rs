@@ -8869,6 +8869,20 @@ extern "C" {
         bd: i32,
     ) -> i32;
     #[allow(clippy::too_many_arguments)]
+    fn shim_wiener_convolve_hbd_avx2(
+        src: *const u16,
+        dst: *mut u16,
+        buf_w: i32,
+        buf_h: i32,
+        off_x: i32,
+        off_y: i32,
+        w: i32,
+        h: i32,
+        hf: *const i16,
+        vf: *const i16,
+        bd: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
     fn shim_apply_sgr(
         src: *const u16,
         dst: *mut u16,
@@ -9056,6 +9070,47 @@ pub fn ref_wiener_convolve(
         )
     };
     assert_eq!(rc, 0, "shim_wiener_convolve failed");
+}
+
+/// REAL `av1_highbd_wiener_convolve_add_src_avx2` — the dispatched x86 kernel
+/// the port's `wiener_impl_v3` mirrors — over the same padded-buffer
+/// convention, on u16 at every bd. Requires `w % 8 == 0` (the kernel's own
+/// assert). For `w % 16 == 8` the kernel stores up to 8 columns past `w`
+/// (into this buffer's right margin), so callers compare the `w x h` block
+/// only.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_wiener_convolve_hbd_avx2(
+    src: &[u16],
+    dst: &mut [u16],
+    buf_w: usize,
+    buf_h: usize,
+    off_x: usize,
+    off_y: usize,
+    w: usize,
+    h: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    bd: i32,
+) {
+    assert_eq!(src.len(), buf_w * buf_h);
+    assert_eq!(dst.len(), buf_w * buf_h);
+    let rc = unsafe {
+        shim_wiener_convolve_hbd_avx2(
+            src.as_ptr(),
+            dst.as_mut_ptr(),
+            buf_w as i32,
+            buf_h as i32,
+            off_x as i32,
+            off_y as i32,
+            w as i32,
+            h as i32,
+            hfilter.as_ptr(),
+            vfilter.as_ptr(),
+            bd,
+        )
+    };
+    assert_eq!(rc, 0, "shim_wiener_convolve_hbd_avx2 failed");
 }
 
 /// REAL `av1_apply_selfguided_restoration_c` over the same buffer convention.

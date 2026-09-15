@@ -128,6 +128,8 @@ mod vector_var_diff;
 mod warp_diff;
 mod warp_highbd_diff;
 mod wb_diff;
+#[cfg(target_arch = "x86_64")]
+mod wiener_avx2_diff;
 mod wiener_simd_diff;
 mod write_coeffs_diff;
 mod write_txb_full_diff;
