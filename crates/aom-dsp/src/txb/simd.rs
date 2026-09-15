@@ -143,11 +143,55 @@ pub(crate) fn txb_init_levels_impl_v3(
     }
 
     // The tail pad is 48..160 bytes (4*stride+16, stride in {8,12,20,36}) —
-    // always a multiple of 16, so fixed-size chunks store it without checks.
+    // always a multiple of 16. Written as a straight-line sequence per height
+    // arm: a zero-store LOOP gets idiom-recognised back into a memset call
+    // (~106 Ir/call at 1.7M calls — measured), while fixed stores inline.
     let zero128 = _mm_setzero_si128();
-    let pad = &mut levels[tail..tail + TX_PAD_BOTTOM * stride + TX_PAD_END];
-    for z in pad.as_chunks_mut::<16>().0 {
-        _mm_storeu_si128(z, zero128);
+    let zero256 = _mm256_setzero_si256();
+    {
+        let pad = &mut levels[tail..tail + TX_PAD_BOTTOM * stride + TX_PAD_END];
+        let s128 = |p: &mut [u8], o: usize| {
+            _mm_storeu_si128(<&mut [u8; 16]>::try_from(&mut p[o..o + 16]).unwrap(), zero128);
+        };
+        match height {
+            4 => {
+                s128(pad, 0);
+                s128(pad, 16);
+                s128(pad, 32); // 48B
+            }
+            8 => {
+                _mm256_storeu_si256(
+                    <&mut [u8; 32]>::try_from(&mut pad[..32]).unwrap(),
+                    zero256,
+                );
+                s128(pad, 32);
+                s128(pad, 48); // 64B
+            }
+            16 => {
+                let mut s256 = |o: usize| {
+                    _mm256_storeu_si256(
+                        <&mut [u8; 32]>::try_from(&mut pad[o..o + 32]).unwrap(),
+                        zero256,
+                    );
+                };
+                s256(0);
+                s256(32);
+                s256(64); // 96B
+            }
+            _ => {
+                let mut s256 = |o: usize| {
+                    _mm256_storeu_si256(
+                        <&mut [u8; 32]>::try_from(&mut pad[o..o + 32]).unwrap(),
+                        zero256,
+                    );
+                };
+                s256(0);
+                s256(32);
+                s256(64);
+                s256(96);
+                s256(128); // 160B
+            }
+        }
     }
 
     let zero = _mm256_setzero_si256();
@@ -298,6 +342,16 @@ pub(crate) fn nz_map_contexts_impl(
     crate::txb::nz_map_contexts_scalar(levels, scan, eob, tx_size, tx_class, coeff_contexts)
 }
 
+thread_local! {
+    /// Raster-tile scratch for the v3 nz-map body. The tile walk writes every
+    /// position `0..width*height` before the scan scatter reads `ctx[p]` —
+    /// the scatter's `p` is always inside the written raster area — so the
+    /// buffer needs no per-call init; pooling it removes a 1 KB memset per
+    /// call (~107M Ir at the 512x512 s3 profile, measured).
+    static NZ_CTX: core::cell::RefCell<[i8; 32 * 32]> =
+        const { core::cell::RefCell::new([0; 32 * 32]) };
+}
+
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 pub(crate) fn nz_map_contexts_impl_v3(
@@ -309,9 +363,6 @@ pub(crate) fn nz_map_contexts_impl_v3(
     tx_class: TxClass,
     coeff_contexts: &mut [i8],
 ) {
-    use archmage::intrinsics::x86_64::*;
-    use crate::txb::{txb_high, txb_wide};
-
     // C: `if (!last_idx) { coeff_contexts[0] = 0; return; }`. eob==0 is
     // unreachable in C (scan[-1] would be UB); the port's contract is a
     // no-op, kept verbatim.
@@ -321,6 +372,26 @@ pub(crate) fn nz_map_contexts_impl_v3(
         }
         return;
     }
+    NZ_CTX.with_borrow_mut(|ctx| {
+        nz_map_ctx_body(ctx, levels, scan, eob, tx_size, tx_class, coeff_contexts)
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+fn nz_map_ctx_body(
+    ctx: &mut [i8; 32 * 32],
+    levels: &[u8],
+    scan: &[i16],
+    eob: usize,
+    tx_size: usize,
+    tx_class: TxClass,
+    coeff_contexts: &mut [i8],
+) {
+    use archmage::intrinsics::x86_64::*;
+    use crate::txb::{txb_high, txb_wide};
 
     let width = txb_wide(tx_size); // padded-buffer column count (C `width`)
     let height = txb_high(tx_size); // padded column length (C `height`)
@@ -365,7 +436,6 @@ pub(crate) fn nz_map_contexts_impl_v3(
         _mm_loadu_si128(r)
     };
 
-    let mut ctx = [0i8; 32 * 32];
     macro_rules! store16 {
         ($cc:expr, $v:expr) => {{
             let d: &mut [i8; 16] = (&mut ctx[$cc..$cc + 16]).try_into().unwrap();
