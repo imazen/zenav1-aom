@@ -1448,27 +1448,28 @@ fn pixel_proj_error_impl_v3(
     let mut sum64 = _mm256_setzero_si256();
     let mut err: i64 = 0;
 
-    // Per-row slices + `as_chunks`/`array_windows`-free iteration: one bounds
-    // check per row, none per 16-px step (this crate is `#![forbid(unsafe)]`,
-    // so a check can only be removed structurally). The zipped chunks are all
-    // `width/16` long, so they stay in lockstep; the `width % 16` remainder is
-    // the scalar `tail!` below.
+    // Per-row `as_chunks` views + indexed loops: one bounds check per row,
+    // none per 16-px step — every view's len is `width / 16` (the same
+    // expression), so LLVM folds the `d16[k]`/`s16[k]`/... checks against the
+    // loop bound (this crate is `#![forbid(unsafe)]`, so a check can only be
+    // removed structurally). The `width % 16` remainder is the scalar `tail!`
+    // below.
     macro_rules! rows16 {
         ($dr:expr, $sr:expr, $f0r:expr, $f1r:expr) => {
             (
-                dat[$dr..$dr + width].as_chunks::<16>().0.iter(),
-                src[$sr..$sr + width].as_chunks::<16>().0.iter(),
-                flt0[$f0r..$f0r + width].as_chunks::<16>().0.iter(),
-                flt1[$f1r..$f1r + width].as_chunks::<16>().0.iter(),
+                dat[$dr..$dr + width].as_chunks::<16>().0,
+                src[$sr..$sr + width].as_chunks::<16>().0,
+                flt0[$f0r..$f0r + width].as_chunks::<16>().0,
+                flt1[$f1r..$f1r + width].as_chunks::<16>().0,
             )
         };
     }
     macro_rules! rows16_1f {
         ($fs:expr, $dr:expr, $sr:expr, $fr:expr) => {
             (
-                dat[$dr..$dr + width].as_chunks::<16>().0.iter(),
-                src[$sr..$sr + width].as_chunks::<16>().0.iter(),
-                $fs[$fr..$fr + width].as_chunks::<16>().0.iter(),
+                dat[$dr..$dr + width].as_chunks::<16>().0,
+                src[$sr..$sr + width].as_chunks::<16>().0,
+                $fs[$fr..$fr + width].as_chunks::<16>().0,
             )
         };
     }
@@ -1482,6 +1483,25 @@ fn pixel_proj_error_impl_v3(
         ($c:expr, hi) => {{
             let w: &[i32; 8] = $c[8..].try_into().unwrap();
             _mm256_loadu_si256(w)
+        }};
+    }
+    // Truncating i32x8,i32x8 -> i16x16 in `vpackssdw` lane order
+    // ([a0..3, b0..3 | a4..7, b4..7]): vpshufb gathers each dword's low word
+    // per 128-lane, vpunpcklqdq pairs them — 3 insns. `_mm256_packs_epi32` in
+    // core_arch is spelled `imax(imin())`+shuffle, and LLVM keeps the (dead)
+    // clamps next to the `vpackssdw` it selects — 5 insns. Bit-identical to
+    // `packs` wherever the saturating pack never fires, which is this kernel's
+    // whole documented domain: `|flt| < 2^15` (C's own assert) and
+    // `|vr| < 2^14` (`|xq| <= 96`, `|f - u| < 2^17` -> `|v| < 2^25`).
+    let tpack_mask = _mm256_setr_epi8(
+        0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1,
+        0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1,
+    );
+    macro_rules! tpack {
+        ($a:expr, $b:expr) => {{
+            let at = _mm256_shuffle_epi8($a, tpack_mask);
+            let bt = _mm256_shuffle_epi8($b, tpack_mask);
+            _mm256_unpacklo_epi64(at, bt)
         }};
     }
     // The scalar tail (`for k = j; k < width; k++` in C) — identical body to
@@ -1555,7 +1575,8 @@ fn pixel_proj_error_impl_v3(
                 let f1r = i * flt1_stride;
                 let mut sum32 = _mm256_setzero_si256();
                 let (d16, s16, f016, f116) = rows16!(dr, sr, f0r, f1r);
-                for (((dc, sc), f0c), f1c) in d16.zip(s16).zip(f016).zip(f116) {
+                for k in 0..d16.len() {
+                    let (dc, sc, f0c, f1c) = (&d16[k], &s16[k], &f016[k], &f116[k]);
                     let s0 = _mm256_loadu_si256(sc);
                     let d0 = _mm256_loadu_si256(dc);
                     let u0 = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0);
@@ -1576,10 +1597,13 @@ fn pixel_proj_error_impl_v3(
                     );
                     let vrl = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vl, rounding));
                     let vrh = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vh, rounding));
-                    let vr =
-                        _mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(vrl, vrh));
+                    // `packs` order (no post-permute — that merges into the
+                    // clamp+shuffle expansion); d0/s0 permuted to match.
+                    let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
+                    let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
+                    let vr = tpack!(vrl, vrh);
                     let e0 =
-                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0), s0);
+                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0p), s0p);
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
                 tail!(i, width & !15);
@@ -1595,18 +1619,31 @@ fn pixel_proj_error_impl_v3(
                 let f1r = i * flt1_stride;
                 let mut sum32 = _mm256_setzero_si256();
                 let (d16, s16, f016, f116) = rows16!(dr, sr, f0r, f1r);
-                for (((dc, sc), f0c), f1c) in d16.zip(s16).zip(f016).zip(f116) {
+                for k in 0..d16.len() {
+                    let (dc, sc, f0c, f1c) = (&d16[k], &s16[k], &f016[k], &f116[k]);
+                    // Permute d0/s0 into `packs` order ([px0..3, px8..11,
+                    // px4..7, px12..15]) ONCE instead of permuting each flt
+                    // pack into pixel order: `packs(f0lo,f0hi)` feeds a
+                    // non-shuffle consumer (`sub_epi16`), so LLVM keeps the
+                    // real `vpackssdw` — with `permute4x64(packs(..))` the two
+                    // shuffles merge into a ~9-insn clamp+shuffle expansion
+                    // per pack. The unpack pair restores i32-lane order (v0 =
+                    // px 0..7, v1 = px 8..15), so `packs(vr0,vr1)` lands back
+                    // in packs order — exactly what `d0p`/`s0p` hold. The
+                    // final madd sum is lane-order-invariant anyway.
                     let d0 = _mm256_loadu_si256(dc);
                     let s0 = _mm256_loadu_si256(sc);
-                    let flt0_16b = _mm256_permute4x64_epi64::<0xd8>(
-                        _mm256_packs_epi32(half8!(f0c, lo), half8!(f0c, hi)),
+                    let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
+                    let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
+                    let u0p = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0p);
+                    let f0sub = _mm256_sub_epi16(
+                        tpack!(half8!(f0c, lo), half8!(f0c, hi)),
+                        u0p,
                     );
-                    let flt1_16b = _mm256_permute4x64_epi64::<0xd8>(
-                        _mm256_packs_epi32(half8!(f1c, lo), half8!(f1c, hi)),
+                    let f1sub = _mm256_sub_epi16(
+                        tpack!(half8!(f1c, lo), half8!(f1c, hi)),
+                        u0p,
                     );
-                    let u0 = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0);
-                    let f0sub = _mm256_sub_epi16(flt0_16b, u0);
-                    let f1sub = _mm256_sub_epi16(flt1_16b, u0);
                     let v0 =
                         _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(f0sub, f1sub));
                     let v1 =
@@ -1614,8 +1651,8 @@ fn pixel_proj_error_impl_v3(
                     let vr0 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v0, rounding));
                     let vr1 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v1, rounding));
                     let e0 = _mm256_sub_epi16(
-                        _mm256_add_epi16(_mm256_packs_epi32(vr0, vr1), d0),
-                        s0,
+                        _mm256_add_epi16(tpack!(vr0, vr1), d0p),
+                        s0p,
                     );
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
@@ -1635,7 +1672,8 @@ fn pixel_proj_error_impl_v3(
                 let fr = i * flt_stride;
                 let mut sum32 = _mm256_setzero_si256();
                 let (d16, s16, f16) = rows16_1f!(flt, dr, sr, fr);
-                for ((dc, sc), fc) in d16.zip(s16).zip(f16) {
+                for k in 0..d16.len() {
+                    let (dc, sc, fc) = (&d16[k], &s16[k], &f16[k]);
                     let s0 = _mm256_loadu_si256(sc);
                     let d0 = _mm256_loadu_si256(dc);
                     let d0l = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(d0));
@@ -1651,10 +1689,13 @@ fn pixel_proj_error_impl_v3(
                     );
                     let vrl = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vl, rounding));
                     let vrh = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(vh, rounding));
-                    let vr =
-                        _mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(vrl, vrh));
+                    // `packs` order (no post-permute — that merges into the
+                    // clamp+shuffle expansion); d0/s0 permuted to match.
+                    let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
+                    let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
+                    let vr = tpack!(vrl, vrh);
                     let e0 =
-                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0), s0);
+                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0p), s0p);
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
                 tail!(i, width & !15);
@@ -1672,21 +1713,30 @@ fn pixel_proj_error_impl_v3(
                 let fr = i * flt_stride;
                 let mut sum32 = _mm256_setzero_si256();
                 let (d16, s16, f16) = rows16_1f!(flt, dr, sr, fr);
-                for ((dc, sc), fc) in d16.zip(s16).zip(f16) {
+                for k in 0..d16.len() {
+                    let (dc, sc, fc) = (&d16[k], &s16[k], &f16[k]);
+                    // Same trick as the two-filter arm: keep the flt pack in
+                    // `packs` order so it feeds `unpack` directly (no
+                    // packs+permq merge into the ~9-insn clamp+shuffle
+                    // expansion); permute d0/s0 into packs order instead.
+                    // unpacklo/hi restore i32-lane pixel order, and the final
+                    // `packs(vr0,vr1)` lands back in packs order to match
+                    // d0p/s0p — the madd accumulation is order-invariant.
                     let d0 = _mm256_loadu_si256(dc);
                     let s0 = _mm256_loadu_si256(sc);
-                    let flt_16b = _mm256_permute4x64_epi64::<0xd8>(
-                        _mm256_packs_epi32(half8!(fc, lo), half8!(fc, hi)),
-                    );
+                    let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
+                    let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
+                    let flt_16b =
+                        tpack!(half8!(fc, lo), half8!(fc, hi));
                     let v0 =
-                        _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(flt_16b, d0));
+                        _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(flt_16b, d0p));
                     let v1 =
-                        _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(flt_16b, d0));
+                        _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(flt_16b, d0p));
                     let vr0 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v0, rounding));
                     let vr1 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v1, rounding));
                     let e0 = _mm256_sub_epi16(
-                        _mm256_add_epi16(_mm256_packs_epi32(vr0, vr1), d0),
-                        s0,
+                        _mm256_add_epi16(tpack!(vr0, vr1), d0p),
+                        s0p,
                     );
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
@@ -1703,12 +1753,12 @@ fn pixel_proj_error_impl_v3(
             let sr = src_off + i * src_stride;
             let mut sum32 = _mm256_setzero_si256();
             let (d16, s16) = (
-                dat[dr..dr + width].as_chunks::<16>().0.iter(),
-                src[sr..sr + width].as_chunks::<16>().0.iter(),
+                dat[dr..dr + width].as_chunks::<16>().0,
+                src[sr..sr + width].as_chunks::<16>().0,
             );
-            for (dc, sc) in d16.zip(s16) {
-                let d0 = _mm256_loadu_si256(dc);
-                let s0 = _mm256_loadu_si256(sc);
+            for k in 0..d16.len() {
+                let d0 = _mm256_loadu_si256(&d16[k]);
+                let s0 = _mm256_loadu_si256(&s16[k]);
                 let diff = _mm256_sub_epi16(d0, s0);
                 sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(diff, diff));
             }
