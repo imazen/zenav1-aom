@@ -1304,6 +1304,10 @@ pub struct TxWalkScratch {
     pub pred: Vec<u16>,
     pub residual: Vec<i16>,
     pub tight: Vec<u16>,
+    /// `wht_satd`'s coefficient buffer: the Hadamard writes into it via the
+    /// `_into` variants so no 1–4 KB `[i32; N]` is initialised and moved per
+    /// model txb.
+    pub satd: Vec<i32>,
 }
 
 /// Everything the intra luma/chroma transform search allocates per transform
@@ -3201,19 +3205,52 @@ pub fn pick_uniform_tx_size_type_yrd_intra(
 /// `use_hadamard = 1`: 8-bit buffers use the lowbd `aom_hadamard_NxN` kernels
 /// for every size; highbd buffers (`bd > 8`) use lowbd `aom_hadamard_4x4` at
 /// TX_4X4 (its output fits 15 bits) and `aom_highbd_hadamard_NxN` above.
-fn wht_satd(residual: &[i16], stride: usize, tx_size: usize, bd: u8) -> i32 {
+fn wht_satd(
+    residual: &[i16],
+    stride: usize,
+    tx_size: usize,
+    bd: u8,
+    buf: &mut Vec<i32>,
+) -> i32 {
     use aom_dsp::dist::hadamard::{
-        hadamard_4x4, hadamard_8x8, hadamard_16x16, hadamard_32x32, highbd_hadamard_8x8,
-        highbd_hadamard_16x16, highbd_hadamard_32x32, satd,
+        hadamard_4x4, hadamard_8x8, hadamard_16x16_into, hadamard_32x32_into,
+        highbd_hadamard_8x8, highbd_hadamard_16x16_into, highbd_hadamard_32x32_into, satd,
     };
+    // The 16x16/32x32 arms write into the caller's `buf` so no 1–4 KB array is
+    // zero-initialised and moved per model txb (the `_into` kernels write
+    // every element before any read, so a grow-only resize suffices).
     match (bd > 8, tx_size) {
         (_, 0) => satd(&hadamard_4x4(residual, stride)),
         (false, 1) => satd(&hadamard_8x8(residual, stride)),
-        (false, 2) => satd(&hadamard_16x16(residual, stride)),
-        (false, 3) => satd(&hadamard_32x32(residual, stride)),
+        (false, 2) => {
+            buf.resize(256, 0);
+            hadamard_16x16_into(residual, stride, buf.as_mut_slice().try_into().unwrap());
+            satd(buf)
+        }
+        (false, 3) => {
+            buf.resize(1024, 0);
+            hadamard_32x32_into(residual, stride, buf.as_mut_slice().try_into().unwrap());
+            satd(buf)
+        }
         (true, 1) => satd(&highbd_hadamard_8x8(residual, stride)),
-        (true, 2) => satd(&highbd_hadamard_16x16(residual, stride)),
-        (true, 3) => satd(&highbd_hadamard_32x32(residual, stride)),
+        (true, 2) => {
+            buf.resize(256, 0);
+            highbd_hadamard_16x16_into(
+                residual,
+                stride,
+                buf.as_mut_slice().try_into().unwrap(),
+            );
+            satd(buf)
+        }
+        (true, 3) => {
+            buf.resize(1024, 0);
+            highbd_hadamard_32x32_into(
+                residual,
+                stride,
+                buf.as_mut_slice().try_into().unwrap(),
+            );
+            satd(buf)
+        }
         _ => unreachable!("model tx size is TX_4X4..TX_32X32 (square)"),
     }
 }
@@ -3337,7 +3374,7 @@ pub fn intra_model_rd_y(
                 env.ref_stride,
             );
 
-            let tile_satd = wht_satd(&walk.residual, txw, tx_size, env.bd);
+            let tile_satd = wht_satd(&walk.residual, txw, tx_size, env.bd, &mut walk.satd);
             if crate::tx_search::tx_dbg_target()
                 .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
             {

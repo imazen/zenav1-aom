@@ -249,60 +249,82 @@ fn hadamard_8x8_scalar_core(src: &[i16], src_stride: usize) -> [i32; 64] {
     coeff
 }
 
-/// `aom_hadamard_16x16_c`. Returns 256 coeffs.
-pub fn hadamard_16x16(src: &[i16], src_stride: usize) -> [i32; 256] {
-    let mut coeff = [0i32; 256];
+/// [`hadamard_8x8`] into a caller-provided buffer — identical values; the
+/// 256-byte body is small enough that the move is already inline stores.
+pub fn hadamard_8x8_into(src: &[i16], src_stride: usize, out: &mut [i32; 64]) {
+    *out = hadamard_8x8(src, src_stride);
+}
+
+/// [`hadamard_16x16`] into a caller-provided buffer — identical values, but no
+/// 1 KB array is initialised and moved per call. The quadrant writes go
+/// straight into `out` (each [`hadamard_8x8`] returns its 256-byte block), and
+/// the combine pass updates `out` element-wise in place, which is safe because
+/// each position is read once and written once.
+pub fn hadamard_16x16_into(src: &[i16], src_stride: usize, out: &mut [i32; 256]) {
     for idx in 0..4 {
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
-        let sub = hadamard_8x8(&src[off..], src_stride);
-        coeff[idx * 64..idx * 64 + 64].copy_from_slice(&sub);
+        hadamard_8x8_into(&src[off..], src_stride, (&mut out[idx * 64..idx * 64 + 64])
+            .try_into()
+            .unwrap());
     }
     for idx in 0..64 {
-        let a0 = coeff[idx];
-        let a1 = coeff[idx + 64];
-        let a2 = coeff[idx + 128];
-        let a3 = coeff[idx + 192];
+        let a0 = out[idx];
+        let a1 = out[idx + 64];
+        let a2 = out[idx + 128];
+        let a3 = out[idx + 192];
         let b0 = (a0.wrapping_add(a1)) >> 1;
         let b1 = (a0.wrapping_sub(a1)) >> 1;
         let b2 = (a2.wrapping_add(a3)) >> 1;
         let b3 = (a2.wrapping_sub(a3)) >> 1;
-        coeff[idx] = b0.wrapping_add(b2);
-        coeff[idx + 64] = b1.wrapping_add(b3);
-        coeff[idx + 128] = b0.wrapping_sub(b2);
-        coeff[idx + 192] = b1.wrapping_sub(b3);
+        out[idx] = b0.wrapping_add(b2);
+        out[idx + 64] = b1.wrapping_add(b3);
+        out[idx + 128] = b0.wrapping_sub(b2);
+        out[idx + 192] = b1.wrapping_sub(b3);
     }
-    // Swap columns [4..8) and [8..12) of each row (AVX2 output order).
     for i in 0..16 {
         for j in 0..4 {
-            coeff.swap(i * 16 + 4 + j, i * 16 + 8 + j);
+            out.swap(i * 16 + 4 + j, i * 16 + 8 + j);
         }
     }
+}
+
+/// `aom_hadamard_16x16_c`. Returns 256 coeffs.
+pub fn hadamard_16x16(src: &[i16], src_stride: usize) -> [i32; 256] {
+    let mut coeff = [0i32; 256];
+    hadamard_16x16_into(src, src_stride, &mut coeff);
     coeff
+}
+
+/// [`hadamard_32x32`] into a caller-provided buffer — identical values, no
+/// 4 KB array initialised and moved per call.
+pub fn hadamard_32x32_into(src: &[i16], src_stride: usize, out: &mut [i32; 1024]) {
+    for idx in 0..4 {
+        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
+        hadamard_16x16_into(&src[off..], src_stride, (&mut out[idx * 256..idx * 256 + 256])
+            .try_into()
+            .unwrap());
+    }
+    for idx in 0..256 {
+        let a0 = out[idx];
+        let a1 = out[idx + 256];
+        let a2 = out[idx + 512];
+        let a3 = out[idx + 768];
+        let b0 = a0.wrapping_add(a1) >> 2;
+        let b1 = a0.wrapping_sub(a1) >> 2;
+        let b2 = a2.wrapping_add(a3) >> 2;
+        let b3 = a2.wrapping_sub(a3) >> 2;
+        out[idx] = b0.wrapping_add(b2);
+        out[idx + 256] = b1.wrapping_add(b3);
+        out[idx + 512] = b0.wrapping_sub(b2);
+        out[idx + 768] = b1.wrapping_sub(b3);
+    }
 }
 
 /// `aom_hadamard_32x32_c`: four 16x16 Hadamards over the quadrants, then a 4-point
 /// combine (`>>2`) across the quadrant coefficients. Returns 1024 coeffs.
 pub fn hadamard_32x32(src: &[i16], src_stride: usize) -> [i32; 1024] {
     let mut coeff = [0i32; 1024];
-    for idx in 0..4 {
-        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
-        let sub = hadamard_16x16(&src[off..], src_stride);
-        coeff[idx * 256..idx * 256 + 256].copy_from_slice(&sub);
-    }
-    for idx in 0..256 {
-        let a0 = coeff[idx];
-        let a1 = coeff[idx + 256];
-        let a2 = coeff[idx + 512];
-        let a3 = coeff[idx + 768];
-        let b0 = a0.wrapping_add(a1) >> 2;
-        let b1 = a0.wrapping_sub(a1) >> 2;
-        let b2 = a2.wrapping_add(a3) >> 2;
-        let b3 = a2.wrapping_sub(a3) >> 2;
-        coeff[idx] = b0.wrapping_add(b2);
-        coeff[idx + 256] = b1.wrapping_add(b3);
-        coeff[idx + 512] = b0.wrapping_sub(b2);
-        coeff[idx + 768] = b1.wrapping_sub(b3);
-    }
+    hadamard_32x32_into(src, src_stride, &mut coeff);
     coeff
 }
 
@@ -378,47 +400,59 @@ pub fn highbd_hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
     buffer2
 }
 
-/// `aom_highbd_hadamard_16x16_c`: four highbd 8x8 + a 4-point `>>1` combine.
-pub fn highbd_hadamard_16x16(src: &[i16], src_stride: usize) -> [i32; 256] {
-    let mut coeff = [0i32; 256];
+/// [`highbd_hadamard_16x16`] into a caller-provided buffer — identical values.
+pub fn highbd_hadamard_16x16_into(src: &[i16], src_stride: usize, out: &mut [i32; 256]) {
     for idx in 0..4 {
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
         let sub = highbd_hadamard_8x8(&src[off..], src_stride);
-        coeff[idx * 64..idx * 64 + 64].copy_from_slice(&sub);
+        out[idx * 64..idx * 64 + 64].copy_from_slice(&sub);
     }
     for idx in 0..64 {
-        let (a0, a1, a2, a3) = (coeff[idx], coeff[idx + 64], coeff[idx + 128], coeff[idx + 192]);
+        let (a0, a1, a2, a3) = (out[idx], out[idx + 64], out[idx + 128], out[idx + 192]);
         let b0 = (a0 + a1) >> 1;
         let b1 = (a0 - a1) >> 1;
         let b2 = (a2 + a3) >> 1;
         let b3 = (a2 - a3) >> 1;
-        coeff[idx] = b0 + b2;
-        coeff[idx + 64] = b1 + b3;
-        coeff[idx + 128] = b0 - b2;
-        coeff[idx + 192] = b1 - b3;
+        out[idx] = b0 + b2;
+        out[idx + 64] = b1 + b3;
+        out[idx + 128] = b0 - b2;
+        out[idx + 192] = b1 - b3;
     }
+}
+
+/// `aom_highbd_hadamard_16x16_c`: four highbd 8x8 + a 4-point `>>1` combine.
+pub fn highbd_hadamard_16x16(src: &[i16], src_stride: usize) -> [i32; 256] {
+    let mut coeff = [0i32; 256];
+    highbd_hadamard_16x16_into(src, src_stride, &mut coeff);
     coeff
+}
+
+/// [`highbd_hadamard_32x32`] into a caller-provided buffer — identical values.
+pub fn highbd_hadamard_32x32_into(src: &[i16], src_stride: usize, out: &mut [i32; 1024]) {
+    for idx in 0..4 {
+        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
+        highbd_hadamard_16x16_into(&src[off..], src_stride, (&mut out
+            [idx * 256..idx * 256 + 256])
+            .try_into()
+            .unwrap());
+    }
+    for idx in 0..256 {
+        let (a0, a1, a2, a3) = (out[idx], out[idx + 256], out[idx + 512], out[idx + 768]);
+        let b0 = (a0 + a1) >> 2;
+        let b1 = (a0 - a1) >> 2;
+        let b2 = (a2 + a3) >> 2;
+        let b3 = (a2 - a3) >> 2;
+        out[idx] = b0 + b2;
+        out[idx + 256] = b1 + b3;
+        out[idx + 512] = b0 - b2;
+        out[idx + 768] = b1 - b3;
+    }
 }
 
 /// `aom_highbd_hadamard_32x32_c`: four highbd 16x16 + a 4-point `>>2` combine.
 pub fn highbd_hadamard_32x32(src: &[i16], src_stride: usize) -> [i32; 1024] {
     let mut coeff = [0i32; 1024];
-    for idx in 0..4 {
-        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
-        let sub = highbd_hadamard_16x16(&src[off..], src_stride);
-        coeff[idx * 256..idx * 256 + 256].copy_from_slice(&sub);
-    }
-    for idx in 0..256 {
-        let (a0, a1, a2, a3) = (coeff[idx], coeff[idx + 256], coeff[idx + 512], coeff[idx + 768]);
-        let b0 = (a0 + a1) >> 2;
-        let b1 = (a0 - a1) >> 2;
-        let b2 = (a2 + a3) >> 2;
-        let b3 = (a2 - a3) >> 2;
-        coeff[idx] = b0 + b2;
-        coeff[idx + 256] = b1 + b3;
-        coeff[idx + 512] = b0 - b2;
-        coeff[idx + 768] = b1 - b3;
-    }
+    highbd_hadamard_32x32_into(src, src_stride, &mut coeff);
     coeff
 }
 
