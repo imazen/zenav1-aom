@@ -1769,6 +1769,14 @@ fn should_prune_intra_modes_using_neighbors(
 ///   `temp_skippable` restarts at 1 in each call — so a multi-txb leaf's
 ///   skippable flag is the LAST txb's, not the AND. Rate and dist DO accumulate
 ///   (`args->rdc->rate += ...`, nonrd_opt.c:667-668).
+thread_local! {
+    /// `(visits, diff)` scratch for `nonrd_pick_intra_mode` — see the take site
+    /// for the reuse-safety argument. The fn never nests, so a single pool is
+    /// total.
+    static NONRD_SCRATCH: std::cell::RefCell<(Vec<(usize, usize)>, Vec<i16>)> =
+        std::cell::RefCell::new((Vec::new(), Vec::new()));
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn nonrd_pick_intra_mode(
     env: &SbEncodeEnv,
@@ -1800,6 +1808,16 @@ pub fn nonrd_pick_intra_mode(
     if !single_txb {
         note_multi_txb_leaf(bsize);
     }
+    // Per-call scratch from the thread-local pool (the XQ_POOL shape — this fn
+    // never nests, so take-at-entry/put-back-at-exit is total). `visits` is
+    // rebuilt from `push`es every call; `diff` is fully overwritten by
+    // `highbd_subtract_block` before `block_yrd_*` reads it, so neither needs
+    // re-zeroing — C's own scratch is uninitialized `malloc`.
+    let (mut visits_vec, mut diff_vec) = NONRD_SCRATCH.with(|c| {
+        let mut c = c.borrow_mut();
+        (core::mem::take(&mut c.0), core::mem::take(&mut c.1))
+    });
+    visits_vec.clear();
 
     // Edge clamps. `mb_to_right_edge = (mi_cols - mi_w - mi_col) * 4 * 8` (in
     // 1/8 pel) is the LEAF's, and BOTH clamps below read it — they differ only
@@ -1860,10 +1878,9 @@ pub fn nonrd_pick_intra_mode(
     // a `[_; 8]` stack array. At coded-lossless `nonrd_leaf_tx_size` returns
     // TX_4X4 for EVERY bsize, so a 128x128 leaf walks 32x32 = 1024 txbs and the
     // fixed array would have tripped its own assert. Sized from the walk instead.
-    let mut visits: Vec<(usize, usize)> =
-        Vec::with_capacity(if single_txb { 1 } else { mi_w * mi_h });
+    visits_vec.reserve(if single_txb { 1 } else { mi_w * mi_h });
     if single_txb {
-        visits.push((0, 0));
+        visits_vec.push((0, 0));
     } else {
         let mut chunk_r = 0usize;
         while chunk_r < walk_blocks_high {
@@ -1875,7 +1892,7 @@ pub fn nonrd_pick_intra_mode(
                 while blk_row < unit_h {
                     let mut blk_col = chunk_c;
                     while blk_col < unit_w {
-                        visits.push((blk_row, blk_col));
+                        visits_vec.push((blk_row, blk_col));
                         blk_col += tx_w4;
                     }
                     blk_row += tx_h4;
@@ -1886,13 +1903,18 @@ pub fn nonrd_pick_intra_mode(
         }
         // encodemb.c:584 `assert(i >= 1)`.
         assert!(
-            !visits.is_empty(),
+            !visits_vec.is_empty(),
             "the txb walk visited nothing at bsize {bsize}"
         );
     }
-    let visits = &visits[..];
+    let visits = &visits_vec[..];
 
-    let mut diff = vec![0i16; tx_bw * tx_bh];
+    // Grow-only scratch — `highbd_subtract_block` writes all `tx_bw*tx_bh`
+    // before `block_yrd_*` reads it; consumers take the exact live prefix.
+    if diff_vec.len() < tx_bw * tx_bh {
+        diff_vec.resize(tx_bw * tx_bh, 0);
+    }
+    let diff = &mut diff_vec[..tx_bw * tx_bh];
 
     for &this_mode in INTRA_MODE_LIST.iter() {
         // Force DC for spatially flat block at top-left, bsize >= 32x32
@@ -2050,7 +2072,7 @@ pub fn nonrd_pick_intra_mode(
             highbd_subtract_block(
                 tx_bh,
                 tx_bw,
-                &mut diff,
+                diff,
                 tx_bw,
                 &env.src_y[txb_src..],
                 env.stride,
@@ -2059,7 +2081,7 @@ pub fn nonrd_pick_intra_mode(
             );
             let (rate_yrd, dist_yrd, txb_skippable) = if use_hbd {
                 block_yrd_hbd(
-                    &diff,
+                    diff,
                     tx_w4,
                     tx_h4,
                     max_blocks_wide,
@@ -2072,7 +2094,7 @@ pub fn nonrd_pick_intra_mode(
                 )
             } else {
                 block_yrd_lowbd(
-                    &diff,
+                    diff,
                     tx_w4,
                     tx_h4,
                     max_blocks_wide,
@@ -2138,6 +2160,12 @@ pub fn nonrd_pick_intra_mode(
         best_sad_norm,
         lctx.source_variance,
     );
+
+    NONRD_SCRATCH.with(|c| {
+        let mut c = c.borrow_mut();
+        c.0 = visits_vec;
+        c.1 = diff_vec;
+    });
 
     // mi->mode = best_mode; mi->uv_mode = UV_DC_PRED (:1734-1735) — the
     // chroma answer. store_coding_context_nonrd's ctx->mic snapshot maps to
