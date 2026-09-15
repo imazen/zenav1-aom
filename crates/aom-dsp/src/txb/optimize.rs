@@ -24,7 +24,7 @@ const RDDIV_BITS: i64 = 7;
 const INT8_MAX: i32 = 127;
 
 /// `RDCOST(rdmult, rate, dist)`.
-#[inline]
+#[inline(always)]
 fn rdcost(rdmult: i64, rate: i64, dist: i64) -> i64 {
     ((rate * rdmult + (1 << (AV1_PROB_COST_SHIFT - 1))) >> AV1_PROB_COST_SHIFT)
         + (dist << RDDIV_BITS)
@@ -34,7 +34,7 @@ const AOM_QM_BITS: i32 = 5;
 
 /// `get_dqv`: per-position dequant step. With `iqmatrix`, folds the inverse
 /// quant-matrix weight `(iqm[ci]*dqv + 16) >> 5`; otherwise `dequant[ci!=0]`.
-#[inline]
+#[inline(always)]
 pub(crate) fn get_dqv(dequant: [i16; 2], coeff_idx: usize, iqmatrix: Option<&[u8]>) -> i32 {
     let dqv = dequant[(coeff_idx != 0) as usize] as i32;
     match iqmatrix {
@@ -45,7 +45,7 @@ pub(crate) fn get_dqv(dequant: [i16; 2], coeff_idx: usize, iqmatrix: Option<&[u8
 
 /// `get_coeff_dist`: squared-error distortion `((t - dq) << shift)^2`. With
 /// `qmatrix`, weights the diff by `qm[ci]` then rounds `>> (2*AOM_QM_BITS)`.
-#[inline]
+#[inline(always)]
 pub(crate) fn get_coeff_dist(
     tcoeff: i32,
     dqcoeff: i32,

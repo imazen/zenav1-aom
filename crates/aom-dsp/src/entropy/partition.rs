@@ -7496,6 +7496,7 @@ pub fn has_bottom_left(
 /// `row_off`/`col_off` the transform-unit offset (mi units) within the block;
 /// `angle_delta` is pre-scaled by `ANGLE_STEP`.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn intra_avail(
     sb_size: usize,
     bsize: usize,

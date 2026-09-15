@@ -362,7 +362,7 @@ pub(crate) fn get_lower_levels_ctx(
 }
 
 /// `get_lower_levels_ctx_eob`.
-#[inline]
+#[inline(always)]
 pub(crate) fn get_lower_levels_ctx_eob(bhl: u32, width: usize, scan_idx: usize) -> i32 {
     if scan_idx == 0 {
         return 0;
@@ -378,7 +378,7 @@ pub(crate) fn get_lower_levels_ctx_eob(bhl: u32, width: usize, scan_idx: usize) 
 
 /// `get_lower_levels_ctx_general`.
 #[allow(clippy::too_many_arguments)]
-#[inline]
+#[inline(always)]
 pub(crate) fn get_lower_levels_ctx_general(
     is_last: bool,
     scan_idx: usize,

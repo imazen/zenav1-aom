@@ -116,7 +116,7 @@ fn get_txb_ctx_general(
 
 /// Shared body over pre-sliced context arrays — `a.len() == txb_w_unit`,
 /// `l.len() == txb_h_unit` (C's `txb_w_unit`/`txb_h_unit` loop bounds).
-#[inline]
+#[inline(always)]
 fn get_txb_ctx_body(
     plane_bsize: usize,
     tx_size: usize,

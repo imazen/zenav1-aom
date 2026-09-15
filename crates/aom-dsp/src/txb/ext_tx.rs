@@ -297,6 +297,7 @@ pub fn fill_tx_type_costs(costs: &mut TxTypeCosts, intra_cdf: &[u16], inter_cdf:
 /// `xd->lossless[mbmi->segment_id]`; `mode`/`filter_intra_mode` select the
 /// intra CDF direction (`fimode_to_intradir` when filter-intra is used).
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn get_tx_type_cost(
     costs: &TxTypeCosts,
     plane: usize,
