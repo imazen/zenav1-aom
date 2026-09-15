@@ -56,6 +56,12 @@ fn get_entropy_context(tx_size: usize, a: &[i8], l: &[i8]) -> i32 {
 /// `get_txb_ctx`: neighbour entropy contexts (`a` above, `l` left; packed bytes
 /// `cul_level | dc_sign<<3`) -> `(txb_skip_ctx, dc_sign_ctx)` for `plane`
 /// (0 = luma). `plane_bsize` is the plane block size (BlockSize discriminant).
+///
+/// Mirrors C's `get_txb_ctx` wrapper (txb_common.h:446): the four square tx
+/// sizes dispatch to unit-dims-specialized bodies so the `w_unit`/`h_unit`
+/// loops compile away — C does this with `SPECIALIZE_GET_TXB_CTX` macros,
+/// here with `const W`/`const H` monomorphization. All other shapes take the
+/// general path, as C's `get_txb_ctx_general`.
 #[inline]
 pub fn get_txb_ctx(
     plane_bsize: usize,
@@ -64,14 +70,66 @@ pub fn get_txb_ctx(
     a: &[i8],
     l: &[i8],
 ) -> (i32, i32) {
-    let w_unit = TX_WIDE_UNIT[tx_size];
-    let h_unit = TX_HIGH_UNIT[tx_size];
+    match tx_size {
+        // TX_4X4/8X8/16X16/32X32 -> units 1/2/4/8 x same.
+        0 => get_txb_ctx_units::<1, 1>(plane_bsize, 0, plane, a, l),
+        1 => get_txb_ctx_units::<2, 2>(plane_bsize, 1, plane, a, l),
+        2 => get_txb_ctx_units::<4, 4>(plane_bsize, 2, plane, a, l),
+        3 => get_txb_ctx_units::<8, 8>(plane_bsize, 3, plane, a, l),
+        _ => get_txb_ctx_general(plane_bsize, tx_size, plane, a, l),
+    }
+}
+
+/// The `get_txb_ctx_general` body (txb_common.h:283-367) with const unit dims:
+/// `W`/`H` are `tx_size_wide_unit`/`tx_size_high_unit` of the matching square
+/// `tx_size` — kept as a parameter (a literal at every call site) so
+/// `TXSIZE_TO_BSIZE`/`NUM_PELS_LOG2` still index by the real discriminant.
+#[inline]
+fn get_txb_ctx_units<const W: usize, const H: usize>(
+    plane_bsize: usize,
+    tx_size: usize,
+    plane: usize,
+    a: &[i8],
+    l: &[i8],
+) -> (i32, i32) {
+    debug_assert_eq!(W, TX_WIDE_UNIT[tx_size]);
+    debug_assert_eq!(H, TX_HIGH_UNIT[tx_size]);
+    get_txb_ctx_body(plane_bsize, tx_size, plane, &a[..W], &l[..H])
+}
+
+/// `get_txb_ctx_general`: runtime unit dims from `tx_size`.
+fn get_txb_ctx_general(
+    plane_bsize: usize,
+    tx_size: usize,
+    plane: usize,
+    a: &[i8],
+    l: &[i8],
+) -> (i32, i32) {
+    get_txb_ctx_body(
+        plane_bsize,
+        tx_size,
+        plane,
+        &a[..TX_WIDE_UNIT[tx_size]],
+        &l[..TX_HIGH_UNIT[tx_size]],
+    )
+}
+
+/// Shared body over pre-sliced context arrays — `a.len() == txb_w_unit`,
+/// `l.len() == txb_h_unit` (C's `txb_w_unit`/`txb_h_unit` loop bounds).
+#[inline]
+fn get_txb_ctx_body(
+    plane_bsize: usize,
+    tx_size: usize,
+    plane: usize,
+    a: &[i8],
+    l: &[i8],
+) -> (i32, i32) {
     const SIGNS: [i32; 3] = [0, -1, 1];
     let mut dc_sign = 0;
-    for &x in &a[..w_unit] {
+    for &x in a {
         dc_sign += SIGNS[((x as u8) >> COEFF_CONTEXT_BITS) as usize];
     }
-    for &x in &l[..h_unit] {
+    for &x in l {
         dc_sign += SIGNS[((x as u8) >> COEFF_CONTEXT_BITS) as usize];
     }
     let dc_sign_ctx = dc_sign_context(dc_sign);
@@ -81,12 +139,12 @@ pub fn get_txb_ctx(
             0
         } else {
             let mut top = 0i32;
-            for &x in &a[..w_unit] {
+            for &x in a {
                 top |= x as i32;
             }
             top = (top & COEFF_CONTEXT_MASK).min(4);
             let mut left = 0i32;
-            for &x in &l[..h_unit] {
+            for &x in l {
                 left |= x as i32;
             }
             left = (left & COEFF_CONTEXT_MASK).min(4);
