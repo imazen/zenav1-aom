@@ -258,7 +258,8 @@ fn z2_left_gather_impl(
                 // is computed in i32 THEN cast, so a negative base wraps to a
                 // huge index and panics at the lane the scalar would.
                 let i0 = (pad as i32 + by[k]) as usize;
-                *p = i32::from(ld[i0]) | (i32::from(ld[i0 + 1]) << 16);
+                let w = &ld[i0..i0 + 2];
+                *p = i32::from(w[0]) | (i32::from(w[1]) << 16);
             }
             let pv = i32x8::from_array(token, pairs);
             let a0 = pv & mask_lo;
