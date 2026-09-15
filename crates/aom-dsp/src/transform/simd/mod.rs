@@ -527,8 +527,8 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
     // below, which is always correct.
     if row_clamp == 16
         && col_clamp == 16
-        && sr_row.iter().all(|&b| b == 16)
-        && sr_col.iter().all(|&b| b == 16)
+        && *sr_row == [16i8; 12]
+        && *sr_col == [16i8; 12]
     {
         let pick = |t: i32| -> Option<(InvR48, usize)> {
             match t {
@@ -1251,8 +1251,8 @@ pub(crate) fn try_inv_txfm2d_rect816_fused(
     // below, which is always correct.
     if row_clamp == 16
         && col_clamp == 16
-        && sr_row.iter().all(|&b| b == 16)
-        && sr_col.iter().all(|&b| b == 16)
+        && *sr_row == [16i8; 12]
+        && *sr_col == [16i8; 12]
     {
         if let (Some(kr16), Some(kc16)) = (inv16_kind(kr), inv16_kind(kc)) {
             let bound = match (col_n, row_n) {
@@ -1459,8 +1459,8 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
     // i32 fused path below, which is always correct.
     if row_clamp == 16
         && col_clamp == 16
-        && sr_row.iter().all(|&b| b == 16)
-        && sr_col.iter().all(|&b| b == 16)
+        && *sr_row == [16i8; 12]
+        && *sr_col == [16i8; 12]
     {
         if let (Some(kr16), Some(kc16)) = (inv16_kind(kr), inv16_kind(kc)) {
             if incant!(
@@ -1660,8 +1660,8 @@ pub(crate) fn try_inv_txfm2d_8x8_fused(
     // below, which is always correct.
     if row_clamp == 16
         && col_clamp == 16
-        && sr_row.iter().all(|&b| b == 16)
-        && sr_col.iter().all(|&b| b == 16)
+        && *sr_row == [16i8; 12]
+        && *sr_col == [16i8; 12]
     {
         if let (Some(kr), Some(kc)) = (inv8_kernel(txfm_type_row), inv8_kernel(txfm_type_col)) {
             if incant!(
@@ -3636,7 +3636,12 @@ fn fwd_4x4_fused(
     };
 
     // load_buffer_16bit_to_16bit_w4(+_flip), then round_shift_16bit(shift[0]=2)
-    // = slli by 2 — exact under the gate.
+    // = slli by 2 — exact under the gate. The dispatcher's input bound
+    // (`max_abs_i16_strided > 512`) runs HERE, fused into the load loop:
+    // `_mm_abs_epi16(i16::MIN) == i16::MIN`, which `_mm_max_epu16` reads as
+    // 32768 > 512 — the scalar `unsigned_abs` bound exactly. A decline returns
+    // false to the same generic fallback either way.
+    let mut mx = _mm_setzero_si128();
     let mut b = [_mm_setzero_si128(); 4];
     for (r, v) in b.iter_mut().enumerate() {
         let src = if ud_flip { 3 - r } else { r };
@@ -3647,7 +3652,15 @@ fn fwd_4x4_fused(
             },
             None => return false,
         };
-        *v = _mm_slli_epi16::<2>(_mm_loadu_si64(row));
+        let x = _mm_loadu_si64(row);
+        mx = _mm_max_epu16(mx, _mm_abs_epi16(x));
+        *v = _mm_slli_epi16::<2>(x);
+    }
+    let mx = _mm_max_epu16(mx, _mm_srli_si128::<8>(mx));
+    let mx = _mm_max_epu16(mx, _mm_srli_si128::<4>(mx));
+    let mx = _mm_max_epu16(mx, _mm_srli_si128::<2>(mx));
+    if (_mm_cvtsi128_si32(mx) as u32) & 0xFFFF > 512 {
+        return false;
     }
 
     let col = run4(kc, &b, cos_bit_col);
@@ -3699,9 +3712,9 @@ pub(crate) fn try_fwd_txfm2d_4x4_fused(
     let (Some(kc), Some(kr)) = (fwd4_kernel(txfm_type_col), fwd4_kernel(txfm_type_row)) else {
         return false;
     };
-    if prims16::max_abs_i16_strided(input, stride, 4, 4) > 512 {
-        return false;
-    }
+    // The `|input| <= 512` bound runs inside `fwd_4x4_fused`, fused into its
+    // row loads (vector `max_epu16` over the same four rows) — a decline
+    // returns false to the same fallback either way.
     incant!(
         fwd_4x4_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
         [v3, scalar]
@@ -3769,6 +3782,36 @@ fn inv_4x4_fused(
     use archmage::intrinsics::x86_64::*;
     let _ = t;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
+
+    // Runtime input bound (was a scalar scan in the dispatcher — moved inside
+    // so the max runs in vector lanes): the i16 lanes are exact only while NO
+    // intermediate saturates, which the port scalar (i32/i64-wide, no stage
+    // clamps on the iadst4 path) does not guarantee. With |input| <= 4096
+    // every lane stays inside i16 through both passes: row outputs <= ~11.2k,
+    // col outputs <= ~30.3k < 32767, so `packs`/`adds`/`subs` are all
+    // lossless. `_mm256_abs_epi32(i32::MIN) == i32::MIN`, read unsigned as
+    // 2^31 > 4096 — the wrapping lane still declines, matching the scalar
+    // `unsigned_abs().max` bound exactly.
+    if input.len() < 16 {
+        return false;
+    }
+    let m = _mm256_max_epu32(
+        _mm256_abs_epi32(_mm256_loadu_si256(
+            <&[i32; 8]>::try_from(&input[..8]).unwrap(),
+        )),
+        _mm256_abs_epi32(_mm256_loadu_si256(
+            <&[i32; 8]>::try_from(&input[8..16]).unwrap(),
+        )),
+    );
+    let m = _mm_max_epu32(
+        _mm256_castsi256_si128(m),
+        _mm256_extracti128_si256::<1>(m),
+    );
+    let m = _mm_max_epu32(m, _mm_srli_si128::<8>(m));
+    let m = _mm_max_epu32(m, _mm_srli_si128::<4>(m));
+    if _mm_cvtsi128_si32(m) as u32 > 4096 {
+        return false;
+    }
 
     // `pair_set_epi16(a, b)` — i16 pair (a lo, b hi) per 32-bit group.
     let pair = |a: i32, b: i32| -> __m128i {
@@ -3939,28 +3982,15 @@ pub(crate) fn try_inv_txfm2d_4x4_fused(
     bd: i32,
 ) -> bool {
     let _ = crate::dispatch::scalar_forced();
-    if row_clamp != 16
-        || col_clamp != 16
-        || !sr_row.iter().all(|&b| b == 16)
-        || !sr_col.iter().all(|&b| b == 16)
-    {
+    if row_clamp != 16 || col_clamp != 16 || *sr_row != [16i8; 12] || *sr_col != [16i8; 12] {
         return false;
     }
     let (Some(kr), Some(kc)) = (inv4_kernel(txfm_type_row), inv4_kernel(txfm_type_col)) else {
         return false;
     };
-    // Runtime input bound — the i16 lanes are exact only while NO intermediate
-    // saturates, which the port scalar (i32/i64-wide, no stage clamps on the
-    // iadst4 path) does not guarantee. With |input| <= 4096 every lane stays
-    // inside i16 through both passes: row outputs <= ~11.2k, col outputs <=
-    // ~30.3k < 32767, so `packs`/`adds`/`subs` are all lossless.
-    let mut max_abs = 0u32;
-    for &v in &input[..16.min(input.len())] {
-        max_abs = max_abs.max(v.unsigned_abs());
-    }
-    if input.len() < 16 || max_abs > 4096 {
-        return false;
-    }
+    // The runtime input bound (`|input[..16]| <= 4096`) runs INSIDE the fused
+    // body, vectorized — see `inv_4x4_fused`. A decline there returns false
+    // here identically.
     incant!(
         inv_4x4_fused(kr, kc, input, output, stride, ud_flip, lr_flip, bd),
         [v3, scalar]
