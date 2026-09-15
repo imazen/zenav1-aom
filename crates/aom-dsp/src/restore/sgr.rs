@@ -781,7 +781,9 @@ fn calculate_intermediate(
     ep: usize,
     radius_idx: usize,
     pass: usize,
-) -> (Vec<i32>, Vec<i32>, usize, usize) {
+    a_buf: &mut Vec<i32>,
+    b_buf: &mut Vec<i32>,
+) -> (usize, usize) {
     let (rads, ss) = SGR_PARAMS[ep];
     let r = rads[radius_idx];
     let width_ext = width + 2 * SGRPROJ_BORDER_HORZ;
@@ -791,8 +793,12 @@ fn calculate_intermediate(
     // but keep the layout for clarity).
     let buf_stride = ((width_ext + 3) & !3) + 16;
     let step = if pass == 0 { 1 } else { 2 };
-    let mut a_buf = vec![0i32; buf_stride * (height_ext + 1)];
-    let mut b_buf = vec![0i32; buf_stride * (height_ext + 1)];
+    // `resize` without clear: every cell `ab_row` reads was written by the
+    // boxsum pair above it (read rows 2..h+4 and cols 2..w+4 sit inside the
+    // written 0..h_ext x 0..w_ext), so stale pool contents are unreachable —
+    // the same guarantee C gets from `aom_malloc`.
+    a_buf.resize(buf_stride * (height_ext + 1), 0);
+    b_buf.resize(buf_stride * (height_ext + 1), 0);
 
     let ext_off = dgd_origin - dgd_stride * SGRPROJ_BORDER_VERT - SGRPROJ_BORDER_HORZ;
     let bx = |s: &mut [i32], sqr: bool| {
@@ -806,8 +812,8 @@ fn calculate_intermediate(
             );
         }
     };
-    bx(&mut b_buf, false);
-    bx(&mut a_buf, true);
+    bx(b_buf, false);
+    bx(a_buf, true);
 
     let org = SGRPROJ_BORDER_VERT * buf_stride + SGRPROJ_BORDER_HORZ;
     // A[] / B[] with a 1-pixel ring: i in -1 ..= height, j in -1 ..= width.
@@ -833,7 +839,31 @@ fn calculate_intermediate(
         );
         i += step;
     }
-    (a_buf, b_buf, buf_stride, org)
+    (buf_stride, org)
+}
+
+/// Per-thread SGR work buffers — C's `rst->tmpbuf` equivalent. Every buffer's
+/// read set is provably overwritten earlier in the same call (the `ab_row`
+/// ring reads only cells `boxsum` wrote; `sgr_widen` fills all of `dgd32`;
+/// `flt`'s `rads[i] > 0` read guard is also its write guard), so pooled
+/// buffers are resized WITHOUT re-zeroing — C's uninitialized-`malloc`
+/// semantics, kept exact. This was the `alloc_zeroed`/`calloc` memset class's
+/// top site (~56M Ir per 196x196 s3 rep).
+#[derive(Default)]
+struct SgrTlsScratch {
+    dgd32: Vec<i32>,
+    ab: [Vec<i32>; 2],
+    flt: [Vec<i32>; 2],
+}
+
+thread_local! {
+    static SGR_TLS: core::cell::RefCell<SgrTlsScratch> = const {
+        core::cell::RefCell::new(SgrTlsScratch {
+            dgd32: Vec::new(),
+            ab: [Vec::new(), Vec::new()],
+            flt: [Vec::new(), Vec::new()],
+        })
+    };
 }
 
 /// `selfguided_restoration_fast_internal` (the r=2 pass, A/B at odd rows).
@@ -848,12 +878,14 @@ fn selfguided_fast(
     dst_stride: usize,
     bit_depth: i32,
     ep: usize,
+    ab: &mut [Vec<i32>; 2],
 ) {
-    let (a, b, bs, org) = calculate_intermediate(
-        dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 0, 1,
+    let [a, b] = ab;
+    let (bs, org) = calculate_intermediate(
+        dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 0, 1, a, b,
     );
     sgr_final_fast(
-        &a, &b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
+        a, b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
     );
 }
 
@@ -869,12 +901,14 @@ fn selfguided_full(
     dst_stride: usize,
     bit_depth: i32,
     ep: usize,
+    ab: &mut [Vec<i32>; 2],
 ) {
-    let (a, b, bs, org) = calculate_intermediate(
-        dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 1, 0,
+    let [a, b] = ab;
+    let (bs, org) = calculate_intermediate(
+        dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 1, 0, a, b,
     );
     sgr_final_full(
-        &a, &b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
+        a, b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
     );
 }
 
@@ -1277,7 +1311,12 @@ pub fn selfguided_restoration(
     bit_depth: i32,
 ) {
     let dgd32_stride = width + 2 * SGRPROJ_BORDER_HORZ;
-    let mut dgd32 = vec![0i32; dgd32_stride * (height + 2 * SGRPROJ_BORDER_VERT)];
+    // `mem::take` out of the TLS pool (no borrow held across the calls below —
+    // `apply_selfguided_restoration` nests through this) and put back at the
+    // end. See [`SgrTlsScratch`] for why dirty reuse is exact.
+    let mut s = SGR_TLS.with(|c| core::mem::take(&mut *c.borrow_mut()));
+    s.dgd32
+        .resize(dgd32_stride * (height + 2 * SGRPROJ_BORDER_VERT), 0);
     let src_origin = dgd_off as isize
         - SGRPROJ_BORDER_VERT as isize * dgd_stride as isize
         - SGRPROJ_BORDER_HORZ as isize;
@@ -1285,7 +1324,7 @@ pub fn selfguided_restoration(
         dgd,
         dgd_stride,
         src_origin,
-        &mut dgd32,
+        &mut s.dgd32,
         dgd32_stride,
         dgd32_stride,
         height + 2 * SGRPROJ_BORDER_VERT,
@@ -1295,7 +1334,7 @@ pub fn selfguided_restoration(
     debug_assert!(!(rads[0] == 0 && rads[1] == 0));
     if rads[0] > 0 {
         selfguided_fast(
-            &dgd32,
+            &s.dgd32,
             origin,
             width,
             height,
@@ -1304,11 +1343,12 @@ pub fn selfguided_restoration(
             flt_stride,
             bit_depth,
             ep,
+            &mut s.ab,
         );
     }
     if rads[1] > 0 {
         selfguided_full(
-            &dgd32,
+            &s.dgd32,
             origin,
             width,
             height,
@@ -1317,8 +1357,10 @@ pub fn selfguided_restoration(
             flt_stride,
             bit_depth,
             ep,
+            &mut s.ab,
         );
     }
+    SGR_TLS.with(|c| *c.borrow_mut() = s);
 }
 
 /// `av1_decode_xq` (restoration.c): the projection weights from the coded
@@ -1352,8 +1394,18 @@ pub fn apply_selfguided_restoration(
     dst_stride: usize,
     bit_depth: i32,
 ) {
-    let mut flt0 = vec![0i32; width * height];
-    let mut flt1 = vec![0i32; width * height];
+    // Pool `flt0`/`flt1` field-wise (the nested `selfguided_restoration`
+    // `mem::take`s the whole scratch, so the flt fields are already empty for
+    // it) and put them back after the blend. See [`SgrTlsScratch`].
+    let (mut flt0, mut flt1) = SGR_TLS.with(|c| {
+        let mut s = c.borrow_mut();
+        (
+            core::mem::take(&mut s.flt[0]),
+            core::mem::take(&mut s.flt[1]),
+        )
+    });
+    flt0.resize(width * height, 0);
+    flt1.resize(width * height, 0);
     selfguided_restoration(
         dat, dat_off, stride, width, height, &mut flt0, &mut flt1, width, ep, bit_depth,
     );
@@ -1377,4 +1429,8 @@ pub fn apply_selfguided_restoration(
             dst[dst_off + i * dst_stride + j] = (w as i32).clamp(0, pixel_max) as u16;
         }
     }
+    SGR_TLS.with(|c| {
+        let mut s = c.borrow_mut();
+        s.flt = [flt0, flt1];
+    });
 }
