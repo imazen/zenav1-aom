@@ -286,7 +286,7 @@ fn quantize_fp_impl(
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 fn quantize_fp_impl_v3(
-    _t: archmage::X64V3Token,
+    t: archmage::X64V3Token,
     quant: &[i16; 2],
     dequant: &[i16; 2],
     round: &[i16; 2],
@@ -297,8 +297,6 @@ fn quantize_fp_impl_v3(
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
 ) -> u16 {
-    use archmage::intrinsics::x86_64::*;
-
     let n = coeff.len();
     if n == 0
         || n % 16 != 0
@@ -312,6 +310,34 @@ fn quantize_fp_impl_v3(
             quant, dequant, round, log_scale, scan, coeff, qcoeff, dqcoeff,
         );
     }
+    // C ships three log_scale-specialized kernels (`av1_quantize_fp_avx2`,
+    // `_32x32`, `_64x64`) — `const int log_scale` per body. The const-generic
+    // mirror keeps the same split: with `LS` a literal the per-chunk
+    // `log_scale` selects, the `rt`/`qt` param math and the variable-count
+    // threshold shift all const-fold to the one arm C compiles.
+    match log_scale {
+        0 => quantize_fp_v3_ls::<0>(t, quant, dequant, round, iscan, coeff, qcoeff, dqcoeff),
+        1 => quantize_fp_v3_ls::<1>(t, quant, dequant, round, iscan, coeff, qcoeff, dqcoeff),
+        _ => quantize_fp_v3_ls::<2>(t, quant, dequant, round, iscan, coeff, qcoeff, dqcoeff),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn quantize_fp_v3_ls<const LS: i32>(
+    _t: archmage::X64V3Token,
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    round: &[i16; 2],
+    iscan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    use archmage::intrinsics::x86_64::*;
+
+    let n = coeff.len();
 
     // init_qp (av1_quantize_avx2.c:30-55): the C param rows are
     // int16_t[8] with ac replicated through lane 7, so the 16-byte load +
@@ -320,15 +346,15 @@ fn quantize_fp_impl_v3(
     // lane lives only in chunk 0's lane 0.
     let rt = |x: i16| -> i16 {
         // _mm_add_epi16 (wrapping) + _mm_srai_epi16 for log_scale > 0.
-        if log_scale > 0 {
-            x.wrapping_add(1i16 << (log_scale - 1)) >> log_scale
+        if LS > 0 {
+            x.wrapping_add(1i16 << (LS - 1)) >> LS
         } else {
             x
         }
     };
     let qt = |x: i16| -> i16 {
         // slli_epi16 by log_scale — only applied when log_scale == 1.
-        if log_scale == 1 {
+        if LS == 1 {
             x << 1
         } else {
             x
@@ -348,7 +374,7 @@ fn quantize_fp_impl_v3(
     let (dqt0, dqt_a) = mk(dequant[0], dequant[1]);
     // threshold = (dequant >> (1+log_scale)) - 1, i16 arithmetic — C
     // computes it vector-side with the same ops.
-    let sh = _mm_cvtsi32_si128(1 + log_scale);
+    let sh = _mm_cvtsi32_si128(1 + LS);
     let one = _mm256_set1_epi16(1);
     let thr0 = _mm256_sub_epi16(_mm256_sra_epi16(dqt0, sh), one);
     let thr_a = _mm256_sub_epi16(_mm256_sra_epi16(dqt_a, sh), one);
@@ -389,14 +415,14 @@ fn quantize_fp_impl_v3(
                 _mm256_storeu_si256(&mut d8[2 * i + 1], zero);
             } else {
                 let (q16, dq16, nz);
-                if log_scale == 0 {
+                if LS == 0 {
                     // quantize_fp_16.
                     let tmp_rnd = _mm256_adds_epi16(abs, $r_v);
                     let abs_q = _mm256_mulhi_epi16(tmp_rnd, $q_v);
                     q16 = _mm256_sign_epi16(abs_q, c);
                     dq16 = _mm256_mullo_epi16(q16, $d_v);
                     nz = _mm256_cmpgt_epi16(abs_q, zero);
-                } else if log_scale == 1 {
+                } else if LS == 1 {
                     // quantize_fp_32x32.
                     let tmp_rnd = _mm256_adds_epi16(abs, $r_v);
                     let abs_q = _mm256_mulhi_epu16(tmp_rnd, $q_v);
