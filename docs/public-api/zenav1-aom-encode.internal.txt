@@ -11,10 +11,10 @@
 #
 #   pub modules                                80
 #   pub types (struct/enum/trait/alias)       278
-#   pub consts/statics                        638
+#   pub consts/statics                        639
 #   free functions                            617
 #   inherent methods                          927
-#   struct fields                            1927
+#   struct fields                            1928
 #   enum variants                             174
 #   re-exports                                  1
 #   trait roster entries (type × trait)      1089
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4614
+#   aom_encode                     4616
 #   u16                               3
 #   u8                                3
 
-## items (4606 lines)
+## items (4608 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -122,8 +122,8 @@ pub aom_encode::compound_type::ValidCompTypeCfg::use_dist_wtd_comp_flag: aom_enc
 pub aom_encode::compound_type::WedgePick::index: usize
 pub aom_encode::compound_type::WedgePick::rd: i64
 pub aom_encode::compound_type::WedgePick::sign: usize
-pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::ta: alloc::vec::Vec<i8>
-pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::tl: alloc::vec::Vec<i8>
+pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::ta: [i8; 32]
+pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::tl: [i8; 32]
 pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::txbs: alloc::vec::Vec<aom_encode::encode_intra::TxbEncode>
 pub aom_encode::encode_intra::EncodeIntraYEnv::above_ctx: &'a [i8]
 pub aom_encode::encode_intra::EncodeIntraYEnv::angle_delta: i32
@@ -1898,6 +1898,7 @@ pub aom_encode::tx_search::TxTypeSearchSummary::rd: i64
 pub aom_encode::tx_search::TxTypeSearchSummary::skip_txfm: bool
 pub aom_encode::tx_search::TxWalkScratch::pred: alloc::vec::Vec<u16>
 pub aom_encode::tx_search::TxWalkScratch::residual: alloc::vec::Vec<i16>
+pub aom_encode::tx_search::TxWalkScratch::satd: alloc::vec::Vec<i32>
 pub aom_encode::tx_search::TxWalkScratch::tight: alloc::vec::Vec<u16>
 pub aom_encode::tx_search::TxbWinner::eob: u16
 pub aom_encode::tx_search::TxbWinner::tx_type: usize
@@ -2267,6 +2268,7 @@ pub const aom_encode::nonrd_inter::TX_MODE_LARGEST: i32
 pub const aom_encode::nonrd_inter::TX_MODE_SELECT: i32
 pub const aom_encode::nonrd_pickmode::AV1_DEFAULT_ISCAN_8X8_TRANSPOSE: [i16; 64]
 pub const aom_encode::nonrd_pickmode::AV1_DEFAULT_ISCAN_FP_16X16_TRANSPOSE: [i16; 256]
+pub const aom_encode::nonrd_pickmode::AV1_DEFAULT_ISCAN_LP_16X16_TRANSPOSE: [i16; 256]
 pub const aom_encode::nonrd_pickmode::DEFAULT_SCAN_8X8_TRANSPOSE: [i16; 64]
 pub const aom_encode::nonrd_pickmode::DEFAULT_SCAN_FP_16X16_TRANSPOSE: [i16; 256]
 pub const aom_encode::nonrd_pickmode::DEFAULT_SCAN_LP_16X16_TRANSPOSE: [i16; 256]
@@ -3314,7 +3316,7 @@ pub fn aom_encode::nonrd_idtx::UvModelRd::fmt(&self, &mut core::fmt::Formatter<'
 pub fn aom_encode::nonrd_idtx::UvPlane<'a>::clone(&self) -> aom_encode::nonrd_idtx::UvPlane<'a>
 pub fn aom_encode::nonrd_idtx::UvPlane<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::nonrd_idtx::block_yrd_idtx(&[i16], usize, usize, usize, usize, i64, &[i16; 8], &[i16; 8], &[i16; 8]) -> aom_encode::nonrd_idtx::IdtxRd
-pub fn aom_encode::nonrd_idtx::fast_idtx_scan_order(usize) -> core::option::Option<(&'static [i16], usize)>
+pub fn aom_encode::nonrd_idtx::fast_idtx_scan_order(usize) -> core::option::Option<(&'static [i16], &'static [i16], usize)>
 pub fn aom_encode::nonrd_idtx::model_rd_for_sb_uv(&[aom_encode::nonrd_idtx::UvPlane<'_>], usize, usize, usize, i32, usize, usize) -> aom_encode::nonrd_idtx::UvModelRd
 pub fn aom_encode::nonrd_idtx::scale_square_buf_vals(&mut [i16], usize, &[i16], usize)
 pub fn aom_encode::nonrd_inter::SubpelForceStop::assert_fields_are_eq(&self)
@@ -3364,7 +3366,7 @@ pub fn aom_encode::nonrd_pickmode::nonrd_palette_search_stats() -> [u64; 3]
 pub fn aom_encode::nonrd_pickmode::nonrd_pick_intra_mode(&aom_encode::encode_sb::SbEncodeEnv<'_>, &aom_encode::nonrd_pickmode::NonrdIntraLeafCtx<'_>, &mut [u16], i32, i32, usize, i32) -> aom_encode::nonrd_pickmode::NonrdIntraPick
 pub fn aom_encode::nonrd_pickmode::palette_gate_reach() -> [u64; 3]
 pub fn aom_encode::nonrd_pickmode::quantize_fp_dispatched(&[i32], &[i16; 2], &[i16; 2], &[i16; 2], &[i16], &[i16], &mut [i32], &mut [i32]) -> u16
-pub fn aom_encode::nonrd_pickmode::quantize_lp(&[i16], usize, &[i16; 8], &[i16; 8], &mut [i16], &mut [i16], &[i16; 8], &[i16]) -> u16
+pub fn aom_encode::nonrd_pickmode::quantize_lp(&[i16], usize, &[i16; 8], &[i16; 8], &mut [i16], &mut [i16], &[i16; 8], &[i16], &[i16]) -> u16
 pub fn aom_encode::nonrd_pickmode::reset_multi_txb_leaf_counts()
 pub fn aom_encode::nonrd_pickmode::reset_nonrd_palette_search_stats()
 pub fn aom_encode::nonrd_pickmode::reset_palette_gate_reach()

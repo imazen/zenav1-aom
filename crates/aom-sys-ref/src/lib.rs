@@ -360,6 +360,304 @@ pub fn ref_quantize_lp(
     (qcoeff, dqcoeff, eob)
 }
 
+// ---------------------------------------------------------------------------
+// The specialised tiers of the same three lp kernels. All three exist on
+// every libaom SIMD target (`av1_quantize_lp` sse2/avx2/neon,
+// `aom_satd_lp` sse2/avx2/neon, `av1_block_error_lp` sse2/avx2/neon/sve), so
+// the tier question these bindings exist to answer is whether they agree with
+// `_c` over the domain the nonrd estimate can reach — the same check
+// `ref_hadamard_lp_simd` performs for the hadamard kernels.
+//
+// ALIGNMENT CONTRACT, load-bearing: `av1_quantize_lp_sse2`/`_avx2` use
+// `_mm_load_si128`/`_mm256_load_si256` (ALIGNED) on `coeff_ptr`, `iscan`,
+// `qcoeff_ptr`, `dqcoeff_ptr` and the three quant rows — in-tree callers all
+// hand it `DECLARE_ALIGNED` struct fields. The wrappers below therefore copy
+// into 16/32-aligned buffers; a misaligned caller buffer would fault inside
+// the kernel, not diverge.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" {
+    pub fn aom_satd_lp_sse2(coeff: *const i16, length: i32) -> i32;
+    pub fn aom_satd_lp_avx2(coeff: *const i16, length: i32) -> i32;
+    pub fn av1_block_error_lp_sse2(
+        coeff: *const i16,
+        dqcoeff: *const i16,
+        block_size: isize,
+    ) -> i64;
+    pub fn av1_block_error_lp_avx2(
+        coeff: *const i16,
+        dqcoeff: *const i16,
+        block_size: isize,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    pub fn av1_quantize_lp_sse2(
+        coeff: *const i16,
+        n_coeffs: isize,
+        round_ptr: *const i16,
+        quant_ptr: *const i16,
+        qcoeff_ptr: *mut i16,
+        dqcoeff_ptr: *mut i16,
+        dequant_ptr: *const i16,
+        eob_ptr: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+    #[allow(clippy::too_many_arguments)]
+    pub fn av1_quantize_lp_avx2(
+        coeff: *const i16,
+        n_coeffs: isize,
+        round_ptr: *const i16,
+        quant_ptr: *const i16,
+        qcoeff_ptr: *mut i16,
+        dqcoeff_ptr: *mut i16,
+        dequant_ptr: *const i16,
+        eob_ptr: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    pub fn aom_satd_lp_neon(coeff: *const i16, length: i32) -> i32;
+    pub fn av1_block_error_lp_neon(
+        coeff: *const i16,
+        dqcoeff: *const i16,
+        block_size: isize,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    pub fn av1_quantize_lp_neon(
+        coeff: *const i16,
+        n_coeffs: isize,
+        round_ptr: *const i16,
+        quant_ptr: *const i16,
+        qcoeff_ptr: *mut i16,
+        dqcoeff_ptr: *mut i16,
+        dequant_ptr: *const i16,
+        eob_ptr: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+}
+
+/// A buffer whose allocation is 16-byte-aligned, for the SIMD oracles'
+/// aligned loads/stores. `Box` of a `repr(align(16))` array.
+#[repr(align(16))]
+struct Aligned16<const N: usize>([i16; N]);
+
+impl<const N: usize> Aligned16<N> {
+    fn from_slice(s: &[i16]) -> Box<Self> {
+        let mut a = Box::new(Self([0i16; N]));
+        a.0.copy_from_slice(s);
+        a
+    }
+    fn zeroed() -> Box<Self> {
+        Box::new(Self([0i16; N]))
+    }
+}
+
+/// The specialised tier of `aom_satd_lp` on this target (SSE2 — x86-64
+/// baseline — or NEON), else `_c`. `length` must be a multiple of 16 for the
+/// SIMD kernels, matching every real call site (the lp estimate only runs it
+/// on whole transform blocks, n >= 16).
+pub fn ref_satd_lp_simd(coeff: &[i16]) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        assert!(
+            coeff.len() % 16 == 0,
+            "the simd tiers require length % 16 == 0"
+        );
+        // Match what RTCD picks on this host — the tier libaom itself would
+        // run: AVX2 where available, SSE2 (x86-64 baseline) otherwise.
+        if std::arch::is_x86_feature_detected!("avx2") {
+            unsafe { aom_satd_lp_avx2(coeff.as_ptr(), coeff.len() as i32) }
+        } else {
+            unsafe { aom_satd_lp_sse2(coeff.as_ptr(), coeff.len() as i32) }
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        assert!(coeff.len() % 8 == 0);
+        unsafe { aom_satd_lp_neon(coeff.as_ptr(), coeff.len() as i32) }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        ref_satd_lp(coeff)
+    }
+}
+
+/// The specialised tier of `av1_block_error_lp` on this target, else `_c`.
+/// `block_size` must be a multiple of 16 for the x86 kernels.
+pub fn ref_block_error_lp_simd(coeff: &[i16], dqcoeff: &[i16]) -> i64 {
+    assert_eq!(coeff.len(), dqcoeff.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        assert!(coeff.len() % 16 == 0);
+        unsafe {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                av1_block_error_lp_avx2(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize)
+            } else {
+                av1_block_error_lp_sse2(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize)
+            }
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        assert!(coeff.len() % 8 == 0);
+        unsafe { av1_block_error_lp_neon(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize) }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        ref_block_error_lp(coeff, dqcoeff)
+    }
+}
+
+/// The specialised tier of `av1_quantize_lp` on this target, else `_c`.
+///
+/// Unlike [`ref_quantize_lp`], `iscan` is a REAL input here — the SIMD kernels
+/// walk raster order and derive the eob from `iscan[rc] + 1` masked by
+/// `dqcoeff != 0`, where `_c` walks `scan` order and tests `tmp != 0` (the
+/// un-dequantized magnitude). The kernels also differ at `coeff == -32768`
+/// (the SIMD abs is `_mm_sub_epi16(0, c)` — it wraps; `_c` computes in int).
+/// `n_coeffs` must be a multiple of 16.
+pub fn ref_quantize_lp_simd(
+    coeff: &[i16],
+    round: &[i16; 8],
+    quant: &[i16; 8],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+) -> (Vec<i16>, Vec<i16>, u16) {
+    let n = coeff.len();
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        assert!(n % 16 == 0, "the simd tiers require n_coeffs % 16 == 0");
+        assert!(n <= 256, "Aligned16 covers the lp arm's transform sizes");
+        let a_coeff = Aligned16::<256>::from_slice(&{
+            let mut v = vec![0i16; 256];
+            v[..n].copy_from_slice(coeff);
+            v
+        });
+        let a_iscan = Aligned16::<256>::from_slice(&{
+            let mut v = vec![0i16; 256];
+            v[..n].copy_from_slice(iscan);
+            v
+        });
+        let mut a_qcoeff = Aligned16::<256>::zeroed();
+        let mut a_dqcoeff = Aligned16::<256>::zeroed();
+        let a_round = Aligned16::<8>::from_slice(round);
+        let a_quant = Aligned16::<8>::from_slice(quant);
+        let a_dequant = Aligned16::<8>::from_slice(dequant);
+        let mut eob: u16 = 0;
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            {
+                // The tier RTCD picks on this host.
+                if std::arch::is_x86_feature_detected!("avx2") {
+                    av1_quantize_lp_avx2(
+                        a_coeff.0.as_ptr(),
+                        n as isize,
+                        a_round.0.as_ptr(),
+                        a_quant.0.as_ptr(),
+                        a_qcoeff.0.as_mut_ptr(),
+                        a_dqcoeff.0.as_mut_ptr(),
+                        a_dequant.0.as_ptr(),
+                        &mut eob,
+                        scan.as_ptr(),
+                        a_iscan.0.as_ptr(),
+                    );
+                } else {
+                    av1_quantize_lp_sse2(
+                        a_coeff.0.as_ptr(),
+                        n as isize,
+                        a_round.0.as_ptr(),
+                        a_quant.0.as_ptr(),
+                        a_qcoeff.0.as_mut_ptr(),
+                        a_dqcoeff.0.as_mut_ptr(),
+                        a_dequant.0.as_ptr(),
+                        &mut eob,
+                        scan.as_ptr(),
+                        a_iscan.0.as_ptr(),
+                    );
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            av1_quantize_lp_neon(
+                a_coeff.0.as_ptr(),
+                n as isize,
+                a_round.0.as_ptr(),
+                a_quant.0.as_ptr(),
+                a_qcoeff.0.as_mut_ptr(),
+                a_dqcoeff.0.as_mut_ptr(),
+                a_dequant.0.as_ptr(),
+                &mut eob,
+                scan.as_ptr(),
+                a_iscan.0.as_ptr(),
+            );
+        }
+        (a_qcoeff.0[..n].to_vec(), a_dqcoeff.0[..n].to_vec(), eob)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        ref_quantize_lp(coeff, round, quant, dequant, scan, iscan)
+    }
+}
+
+/// `av1_quantize_lp_sse2` specifically — its eob test is `dqcoeff != 0`,
+/// where `_c`/`_avx2`/`_neon` test the quantized magnitude. The only tier
+/// that can disagree on eob; bound directly so the tier-agreement harness can
+/// probe it rather than whichever tier the host happens to dispatch.
+#[cfg(target_arch = "x86_64")]
+pub fn ref_quantize_lp_sse2(
+    coeff: &[i16],
+    round: &[i16; 8],
+    quant: &[i16; 8],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+) -> (Vec<i16>, Vec<i16>, u16) {
+    let n = coeff.len();
+    assert!(n % 16 == 0 && n <= 256);
+    let a_coeff = Aligned16::<256>::from_slice(&{
+        let mut v = vec![0i16; 256];
+        v[..n].copy_from_slice(coeff);
+        v
+    });
+    let a_iscan = Aligned16::<256>::from_slice(&{
+        let mut v = vec![0i16; 256];
+        v[..n].copy_from_slice(iscan);
+        v
+    });
+    let mut a_qcoeff = Aligned16::<256>::zeroed();
+    let mut a_dqcoeff = Aligned16::<256>::zeroed();
+    let a_round = Aligned16::<8>::from_slice(round);
+    let a_quant = Aligned16::<8>::from_slice(quant);
+    let a_dequant = Aligned16::<8>::from_slice(dequant);
+    let mut eob: u16 = 0;
+    unsafe {
+        av1_quantize_lp_sse2(
+            a_coeff.0.as_ptr(),
+            n as isize,
+            a_round.0.as_ptr(),
+            a_quant.0.as_ptr(),
+            a_qcoeff.0.as_mut_ptr(),
+            a_dqcoeff.0.as_mut_ptr(),
+            a_dequant.0.as_ptr(),
+            &mut eob,
+            scan.as_ptr(),
+            a_iscan.0.as_ptr(),
+        );
+    }
+    (a_qcoeff.0[..n].to_vec(), a_dqcoeff.0[..n].to_vec(), eob)
+}
+
+/// True when the `_simd` lp wrappers above really call a different kernel from
+/// `_c` on this target (non-vacuity, same contract as
+/// [`REF_HADAMARD_LP_SIMD_IS_DISTINCT`]).
+pub const REF_LP_SIMD_IS_DISTINCT: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
 // aom_dsp/fwd_txfm.c — the TX_4X4 forward DCTs `av1_block_yrd`'s `default:`
 // arm runs (nonrd_opt.c:246-263), i.e. the CODED-LOSSLESS estimate path
 // (`select_tx_mode` -> ONLY_4X4, rdopt_utils.h:392). `_lp` is the lowbd

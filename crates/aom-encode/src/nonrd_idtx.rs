@@ -98,12 +98,12 @@ pub static AV1_FAST_IDTX_ISCAN_16X16: [i16; 256] = [
 /// returns `None` for the two asserted sizes instead of reproducing an
 /// assertion that is a contract, not a computation.
 #[must_use]
-pub fn fast_idtx_scan_order(tx_size: usize) -> Option<(&'static [i16], usize)> {
+pub fn fast_idtx_scan_order(tx_size: usize) -> Option<(&'static [i16], &'static [i16], usize)> {
     match tx_size {
         // TX_4X4 — C's `default:` arm, with `assert(tx_size == TX_4X4)`.
-        0 => Some((&AV1_FAST_IDTX_SCAN_4X4, 4)),
-        1 => Some((&AV1_FAST_IDTX_SCAN_8X8, 8)),
-        2 => Some((&AV1_FAST_IDTX_SCAN_16X16, 16)),
+        0 => Some((&AV1_FAST_IDTX_SCAN_4X4, &AV1_FAST_IDTX_ISCAN_4X4, 4)),
+        1 => Some((&AV1_FAST_IDTX_SCAN_8X8, &AV1_FAST_IDTX_ISCAN_8X8, 8)),
+        2 => Some((&AV1_FAST_IDTX_SCAN_16X16, &AV1_FAST_IDTX_ISCAN_16X16, 16)),
         // TX_32X32 ("Not used") and TX_64X64 ("Not implemented").
         _ => None,
     }
@@ -179,7 +179,7 @@ pub fn block_yrd_idtx(
     quant_fp: &[i16; 8],
     dequant: &[i16; 8],
 ) -> IdtxRd {
-    let (scan, tx_wd) =
+    let (scan, iscan, tx_wd) =
         fast_idtx_scan_order(tx_size).expect("av1_block_yrd_idtx asserts on TX_32X32 and TX_64X64");
     let diff_stride = 4 * num_4x4_w;
     let block_step = 1usize << tx_size;
@@ -211,6 +211,7 @@ pub fn block_yrd_idtx(
                 &mut dqcoeff,
                 dequant,
                 &scan[..n_coeffs],
+                &iscan[..n_coeffs],
             );
             // update_yrd_loop_vars (nonrd_opt.c:43).
             let ncoeffs = eob as usize;

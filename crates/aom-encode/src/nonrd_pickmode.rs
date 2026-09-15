@@ -381,9 +381,14 @@ pub fn fdct4x4_lp(input: &[i16], output: &mut [i16], stride: usize) {
     }
 }
 
-/// `av1_quantize_lp_c` (av1/encoder/av1_quantize.c:214): the low-precision FP
-/// quantizer. `scan` orders the eob computation; qcoeff/dqcoeff are written at
-/// RAW (`rc`) positions. round/quant/dequant use row lane `[rc != 0]`.
+/// `av1_quantize_lp` AS DISPATCHED — delegates to
+/// [`aom_dsp::quant::simd::av1_quantize_lp_dispatch`], whose v3 tier mirrors
+/// `av1_quantize_lp_avx2` (the kernel RTCD actually runs on x86-64). Tier
+/// agreement over the reachable domain is measured:
+/// `nonrd_block_yrd_lp_diff::lp_quantize_tiers_agree_over_the_reachable_range`.
+///
+/// `iscan` is the inverse of `scan` — ignored by the scalar arm (as `_c`
+/// ignores it) and consumed by the SIMD tiers for the raster-order eob.
 #[allow(clippy::too_many_arguments)]
 pub fn quantize_lp(
     coeff: &[i16],
@@ -394,41 +399,21 @@ pub fn quantize_lp(
     dqcoeff: &mut [i16],
     dequant: &[i16; 8],
     scan: &[i16],
+    iscan: &[i16],
 ) -> u16 {
-    let mut eob: i32 = -1;
-    qcoeff[..n_coeffs].fill(0);
-    dqcoeff[..n_coeffs].fill(0);
-    for (i, &sc) in scan[..n_coeffs].iter().enumerate() {
-        let rc = sc as usize;
-        let c = i32::from(coeff[rc]);
-        let coeff_sign = c >> 31; // AOMSIGN
-        let abs_coeff = (c ^ coeff_sign) - coeff_sign;
-        let lane = usize::from(rc != 0);
-        let mut tmp =
-            (abs_coeff + i32::from(round_fp[lane])).clamp(i16::MIN as i32, i16::MAX as i32);
-        tmp = (tmp * i32::from(quant_fp[lane])) >> 16;
-        qcoeff[rc] = ((tmp ^ coeff_sign) - coeff_sign) as i16;
-        dqcoeff[rc] = qcoeff[rc].wrapping_mul(dequant[lane]);
-        if tmp != 0 {
-            eob = i as i32;
-        }
-    }
-    (eob + 1) as u16
+    aom_dsp::quant::simd::av1_quantize_lp_dispatch(
+        round_fp, quant_fp, dequant, scan, iscan, coeff, n_coeffs, qcoeff, dqcoeff,
+    )
 }
 
-/// `aom_satd_lp_c` (avg.c:520).
+/// `aom_satd_lp` AS DISPATCHED — [`aom_dsp::dist::hadamard::satd_lp_simd`].
 pub fn satd_lp(coeff: &[i16], length: usize) -> i32 {
-    coeff[..length].iter().map(|&c| i32::from(c).abs()).sum()
+    aom_dsp::dist::hadamard::satd_lp_simd(coeff, length)
 }
 
-/// `av1_block_error_lp_c` (rdopt.c:907).
+/// `av1_block_error_lp` AS DISPATCHED — [`aom_dsp::dist::simd::block_error_lp_simd`].
 pub fn block_error_lp(coeff: &[i16], dqcoeff: &[i16], block_size: usize) -> i64 {
-    let mut error: i64 = 0;
-    for i in 0..block_size {
-        let diff = i64::from(coeff[i]) - i64::from(dqcoeff[i]);
-        error += diff * diff;
-    }
-    error
+    aom_dsp::dist::simd::block_error_lp_simd(coeff, dqcoeff, block_size)
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +477,26 @@ pub const DEFAULT_SCAN_FP_16X16_TRANSPOSE: [i16; 256] = [
     201, 199, 209, 159, 169, 167, 177, 127, 181, 179, 173, 171, 213, 211, 205, 203, 207, 217, 215,
     225, 175, 185, 183, 189, 187, 229, 227, 221, 219, 223, 233, 231, 241, 191, 245, 243, 237, 235,
     239, 249, 247, 253, 251, 255,
+];
+
+/// `av1_default_iscan_lp_16x16_transpose` (nonrd_opt.h:294) — the inverse of
+/// [`DEFAULT_SCAN_LP_16X16_TRANSPOSE`], which the lp quantizer's SIMD tiers
+/// consume (the `_c` tier ignores it). Transcribed verbatim; the lp diff
+/// tests assert the inverse-permutation property `iscan[scan[i]] == i`.
+pub const AV1_DEFAULT_ISCAN_LP_16X16_TRANSPOSE: [i16; 256] = [
+    0, 44, 2, 46, 3, 63, 9, 69, 1, 45, 4, 64, 8, 68, 11, 87, 5, 65, 7, 67, 12, 88, 18, 94, 6, 66,
+    13, 89, 17, 93, 24, 116, 14, 90, 16, 92, 25, 117, 31, 123, 15, 91, 26, 118, 30, 122, 41, 148,
+    27, 119, 29, 121, 42, 149, 48, 152, 28, 120, 43, 150, 47, 151, 62, 177, 10, 86, 20, 96, 21,
+    113, 35, 127, 19, 95, 22, 114, 34, 126, 37, 144, 23, 115, 33, 125, 38, 145, 52, 156, 32, 124,
+    39, 146, 51, 155, 58, 173, 40, 147, 50, 154, 59, 174, 73, 181, 49, 153, 60, 175, 72, 180, 83,
+    198, 61, 176, 71, 179, 84, 199, 98, 202, 70, 178, 85, 200, 97, 201, 112, 219, 36, 143, 54, 158,
+    55, 170, 77, 185, 53, 157, 56, 171, 76, 184, 79, 194, 57, 172, 75, 183, 80, 195, 102, 206, 74,
+    182, 81, 196, 101, 205, 108, 215, 82, 197, 100, 204, 109, 216, 131, 223, 99, 203, 110, 217,
+    130, 222, 140, 232, 111, 218, 129, 221, 141, 233, 160, 236, 128, 220, 142, 234, 159, 235, 169,
+    245, 78, 193, 104, 208, 105, 212, 135, 227, 103, 207, 106, 213, 134, 226, 136, 228, 107, 214,
+    133, 225, 137, 229, 164, 240, 132, 224, 138, 230, 163, 239, 165, 241, 139, 231, 162, 238, 166,
+    242, 189, 249, 161, 237, 167, 243, 188, 248, 190, 250, 168, 244, 187, 247, 191, 251, 210, 254,
+    186, 246, 192, 252, 209, 253, 211, 255,
 ];
 
 /// `av1_default_iscan_fp_16x16_transpose` (nonrd_opt.h:323) — the inverse of
@@ -575,6 +580,7 @@ pub fn block_yrd_lowbd(
                         &mut dqcoeff,
                         dequant,
                         &DEFAULT_SCAN_LP_16X16_TRANSPOSE,
+                        &AV1_DEFAULT_ISCAN_LP_16X16_TRANSPOSE,
                     )
                 }
                 1 => {
@@ -588,6 +594,7 @@ pub fn block_yrd_lowbd(
                         &mut dqcoeff,
                         dequant,
                         &DEFAULT_SCAN_8X8_TRANSPOSE,
+                        &AV1_DEFAULT_ISCAN_8X8_TRANSPOSE,
                     )
                 }
                 _ => {
@@ -620,6 +627,7 @@ pub fn block_yrd_lowbd(
                         &mut dqcoeff,
                         dequant,
                         aom_dsp::txb::scan(0, 0),
+                        aom_dsp::txb::iscan(0, 0),
                     )
                 }
             };
@@ -2325,6 +2333,7 @@ mod tests {
             &mut dq,
             &dequant,
             &DEFAULT_SCAN_8X8_TRANSPOSE,
+            &AV1_DEFAULT_ISCAN_8X8_TRANSPOSE,
         );
         // DC: (100+48)*2048 >> 16 = 4; dq = 4*32 = 128.
         assert_eq!(q[0], 4);

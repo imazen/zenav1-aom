@@ -699,3 +699,66 @@ pub fn satd(coeff: &[i32]) -> i32 {
     }
     s
 }
+
+/// `aom_satd_lp_c` (`aom_dsp/avg.c:520`) — sum of `|coeff|` over an lp
+/// Hadamard block. The i32 accumulator cannot wrap on any i16 input
+/// (256 * 32768 < 2^23 << 2^31).
+pub fn satd_lp(coeff: &[i16], length: usize) -> i32 {
+    coeff[..length].iter().map(|&c| i32::from(c).abs()).sum()
+}
+
+/// `aom_satd_lp` with runtime SIMD dispatch. The v3 tier mirrors
+/// `aom_satd_lp_avx2` (`avg_intrin_avx2.c:523`): `abs_epi16` +
+/// `madd_epi16(., 1)` + i32 accumulate — the kernel RTCD actually dispatches.
+/// `abs_epi16` maps -32768 back to -32768 where `_c` gives +32768: the ONE
+/// divergence anywhere, probed and bounded unreachable (the lp transforms'
+/// output bound is ~32654) by
+/// `nonrd_block_yrd_lp_diff::lp_satd_block_error_tiers_agree_over_the_reachable_range`.
+pub fn satd_lp_simd(coeff: &[i16], length: usize) -> i32 {
+    let _ = crate::dispatch::scalar_forced();
+    incant!(satd_lp_impl(coeff, length), [v3, neon, wasm128, scalar])
+}
+
+/// Scalar tier = the transcribed port, verbatim.
+fn satd_lp_impl_scalar(_t: archmage::ScalarToken, coeff: &[i16], length: usize) -> i32 {
+    satd_lp(coeff, length)
+}
+
+/// Non-x86 tiers: the `_c` sum-of-abs form — under the tier's target
+/// features LLVM lowers it to the `abs`/`madd` shape C's NEON kernel uses.
+/// Widening to i32 BEFORE abs keeps `_c`'s +32768 at input -32768 — a
+/// deliberate `abs_epi16` vs scalar-`abs` distinction C itself makes only on
+/// the unreachable bound lane.
+#[magetypes(neon, wasm128, -scalar)]
+fn satd_lp_impl(_t: Token, coeff: &[i16], length: usize) -> i32 {
+    satd_lp(coeff, length)
+}
+
+/// v3 mirror of `aom_satd_lp_avx2`: per 16 lanes, `abs_epi16` then
+/// `madd_epi16(., 1)` into a wrapping-i32 accumulator; C's cascade fold at
+/// the end. The madd pair sum of two -32768 abs results is -65536 — exact
+/// in i32 — so the accumulator wraps only past 2^31 of total, i.e. never on
+/// the reachable domain (and C's i32 accum is equally unwrappable there).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn satd_lp_impl_v3(_t: archmage::X64V3Token, coeff: &[i16], length: usize) -> i32 {
+    use archmage::intrinsics::x86_64::*;
+    // C loops `i += 16` unconditionally — a length % 16 != 0 would overread.
+    if length % 16 != 0 || coeff.len() < length {
+        return satd_lp(coeff, length);
+    }
+    let one = _mm256_set1_epi16(1);
+    let mut accum = _mm256_setzero_si256();
+    for c in coeff[..length].as_chunks::<16>().0 {
+        let src = _mm256_loadu_si256(c);
+        let abs = _mm256_abs_epi16(src);
+        accum = _mm256_add_epi32(accum, _mm256_madd_epi16(abs, one));
+    }
+    // C's horizontal add (avg_intrin_avx2.c:535-542).
+    let a = _mm256_srli_si256::<8>(accum);
+    let b = _mm256_add_epi32(accum, a);
+    let c2 = _mm256_srli_epi64::<32>(b);
+    let d = _mm256_add_epi32(b, c2);
+    let acc128 = _mm_add_epi32(_mm256_castsi256_si128(d), _mm256_extracti128_si256::<1>(d));
+    _mm_cvtsi128_si32(acc128)
+}

@@ -346,3 +346,153 @@ fn sum_squares_2d_i16_impl_v3(
     // scalar loop IS C-c's output, bit-identically.
     crate::dist::sum_squares_2d_i16_scalar_ref(src, src_stride, width, height)
 }
+
+/// `av1_block_error_lp_c` (`av1/encoder/rdopt.c:907`) — the lp-arm
+/// transform-domain distortion. Note the per-lane arithmetic is C `int`
+/// (i32) throughout: `diff` and `diff * diff` both wrap modulo 2^32 before
+/// the i64 accumulate (the wrap needs |diff| > 46340 — opposite-sign lanes,
+/// which quantize_lp never emits: dqcoeff carries coeff's sign on every
+/// reachable input; `nonrd_block_yrd_lp_diff` measures the reachable
+/// |dq - c| bound at 2308).
+pub fn block_error_lp(coeff: &[i16], dqcoeff: &[i16], block_size: usize) -> i64 {
+    let mut error: i64 = 0;
+    for i in 0..block_size {
+        let diff = i32::from(coeff[i]) - i32::from(dqcoeff[i]);
+        error += diff.wrapping_mul(diff) as i64;
+    }
+    error
+}
+
+/// `av1_block_error_lp` with runtime SIMD dispatch. The v3 tier is an
+/// instruction-level mirror of `av1_block_error_lp_avx2`
+/// (`av1/encoder/x86/error_intrin_avx2.c:128`) — the kernel RTCD actually
+/// dispatches on x86-64 — including its three shape arms (n==16 `hadd`,
+/// n==32, and the 64-wide loop) and their i32-wrap-then-zero-extend
+/// accumulation semantics. Every wrap class is unreachable on real
+/// (coeff, dqcoeff) pairs — measured, see [`block_error_lp`].
+///
+/// C asserts `block_size % 16 == 0` and would READ PAST the buffers for a
+/// %16-only size that misses its named arms; the port instead falls back to
+/// the scalar transcription there (call sites pass 16/64/256).
+pub fn block_error_lp_simd(coeff: &[i16], dqcoeff: &[i16], block_size: usize) -> i64 {
+    let _ = crate::dispatch::scalar_forced();
+    incant!(
+        block_error_lp_impl(coeff, dqcoeff, block_size),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// Scalar tier = the transcribed port, verbatim.
+fn block_error_lp_impl_scalar(
+    _t: archmage::ScalarToken,
+    coeff: &[i16],
+    dqcoeff: &[i16],
+    block_size: usize,
+) -> i64 {
+    block_error_lp(coeff, dqcoeff, block_size)
+}
+
+/// Non-x86 tiers: the same i32-diff / i64-accumulate loop — under the tier's
+/// target features LLVM lowers it to the widening-multiply shape the C NEON
+/// kernel (`block_error_neon`) uses. Exact-equal to `_c` on every input.
+#[magetypes(neon, wasm128, -scalar)]
+fn block_error_lp_impl(_t: Token, coeff: &[i16], dqcoeff: &[i16], block_size: usize) -> i64 {
+    block_error_lp(coeff, dqcoeff, block_size)
+}
+
+/// v3 mirror of `av1_block_error_lp_avx2` (error_intrin_avx2.c). The three
+/// named arms are replicated — `block_size16`'s `hadd_epi32` pair tree, the
+/// `block_size32` two-madd fold, and the 64-wide loop — because each wraps
+/// its i32 intermediate differently. All wraps are unreachable in production
+/// (see [`block_error_lp`]); they are mirrored anyway so the tier is
+/// bug-compatible with the dispatched C kernel on the FULL i16 domain.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn block_error_lp_impl_v3(
+    _t: archmage::X64V3Token,
+    coeff: &[i16],
+    dqcoeff: &[i16],
+    block_size: usize,
+) -> i64 {
+    use archmage::intrinsics::x86_64::*;
+
+    let n = block_size;
+    if n == 0 || coeff.len() < n || dqcoeff.len() < n {
+        return block_error_lp(coeff, dqcoeff, block_size);
+    }
+    let zero = _mm256_setzero_si256();
+    let mut sse = zero;
+
+    if n == 16 {
+        // av1_block_error_block_size16_avx2: one 16-lane madd, then the
+        // hadd_epi32 pair tree and a single zero-extend.
+        let c: &[i16; 16] = coeff[..16].try_into().unwrap();
+        let d: &[i16; 16] = dqcoeff[..16].try_into().unwrap();
+        let diff = _mm256_sub_epi16(_mm256_loadu_si256(d), _mm256_loadu_si256(c));
+        let error = _mm256_madd_epi16(diff, diff);
+        let error_hi = _mm256_hadd_epi32(error, error);
+        sse = _mm256_unpacklo_epi32(error_hi, zero);
+    } else if n == 32 {
+        // av1_block_error_block_size32_avx2: two madds summed in i32
+        // (wrapping), then zero-extended into i64 lanes.
+        let c0: &[i16; 16] = coeff[..16].try_into().unwrap();
+        let d0: &[i16; 16] = dqcoeff[..16].try_into().unwrap();
+        let c1: &[i16; 16] = coeff[16..32].try_into().unwrap();
+        let d1: &[i16; 16] = dqcoeff[16..32].try_into().unwrap();
+        let diff0 = _mm256_sub_epi16(_mm256_loadu_si256(d0), _mm256_loadu_si256(c0));
+        let diff1 = _mm256_sub_epi16(_mm256_loadu_si256(d1), _mm256_loadu_si256(c1));
+        let err = _mm256_add_epi32(
+            _mm256_madd_epi16(diff0, diff0),
+            _mm256_madd_epi16(diff1, diff1),
+        );
+        sse = _mm256_add_epi64(
+            sse,
+            _mm256_add_epi64(
+                _mm256_unpacklo_epi32(err, zero),
+                _mm256_unpackhi_epi32(err, zero),
+            ),
+        );
+    } else {
+        // av1_block_error_block_size64_avx2: per 64-lane group, four madds
+        // folded pairwise in i32 (wrapping), zero-extended into i64. C's
+        // loop condition is `i < block_size` stepping 64 — a size not
+        // divisible by 64 would overread there; the port declines instead.
+        if n % 64 != 0 {
+            return block_error_lp(coeff, dqcoeff, block_size);
+        }
+        let c32 = coeff[..n].as_chunks::<16>().0;
+        let d32 = dqcoeff[..n].as_chunks::<16>().0;
+        for i in (0..n / 16).step_by(4) {
+            let diff = |k: usize| {
+                _mm256_sub_epi16(
+                    _mm256_loadu_si256(&d32[i + k]),
+                    _mm256_loadu_si256(&c32[i + k]),
+                )
+            };
+            let e01 = _mm256_add_epi32(
+                _mm256_madd_epi16(diff(0), diff(0)),
+                _mm256_madd_epi16(diff(1), diff(1)),
+            );
+            let e23 = _mm256_add_epi32(
+                _mm256_madd_epi16(diff(2), diff(2)),
+                _mm256_madd_epi16(diff(3), diff(3)),
+            );
+            let s01 = _mm256_add_epi64(
+                _mm256_unpacklo_epi32(e01, zero),
+                _mm256_unpackhi_epi32(e01, zero),
+            );
+            let s23 = _mm256_add_epi64(
+                _mm256_unpacklo_epi32(e23, zero),
+                _mm256_unpackhi_epi32(e23, zero),
+            );
+            sse = _mm256_add_epi64(sse, _mm256_add_epi64(s01, s23));
+        }
+    }
+
+    // The caller's epilogue: fold each 128-bit half's high i64 into the low,
+    // then add the halves.
+    let sse_hi = _mm256_srli_si256::<8>(sse);
+    let s = _mm256_add_epi64(sse, sse_hi);
+    let s128 = _mm_add_epi64(_mm256_castsi256_si128(s), _mm256_extracti128_si256::<1>(s));
+    _mm_cvtsi128_si64(s128)
+}

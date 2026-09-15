@@ -478,3 +478,213 @@ fn quantize_fp_v3_ls<const LS: i32>(
     _mm256_storeu_si256(ea_ref, eob_v);
     ea.into_iter().max().unwrap_or(0) as u16
 }
+
+/// `av1_quantize_lp` with runtime SIMD dispatch — the low-precision FP
+/// quantizer `av1_block_yrd` runs on the nonrd estimate path
+/// (TX_4X4/8x8/16x16 arms). Returns the eob.
+///
+/// `scan`/`iscan` are the C signature's pair: the scalar tier walks `scan`
+/// order and ignores `iscan` (like `av1_quantize_lp_c`); the v3 tier walks
+/// RASTER order like `av1_quantize_lp_avx2` and derives the eob from
+/// `iscan` — equal because `iscan` is the inverse permutation.
+///
+/// # Tier agreement — MEASURED, not assumed
+///
+/// The C tiers differ in two corners, both PROVEN unreachable by
+/// `nonrd_block_yrd_lp_diff::lp_quantize_tiers_agree_over_the_reachable_range`:
+///
+/// * every SIMD abs wraps `coeff == -32768` where `_c` computes +32768 —
+///   above the lp transforms' ~32654 output bound;
+/// * `_sse2`'s eob tests `dqcoeff != 0` where `_c`/`_avx2`/`_neon` test the
+///   quantized magnitude — diverging only when `tmp*dequant == 0 mod 2^16`,
+///   which an exhaustive hunt over all 1,536 real quantizer rows bounds at
+///   `tmp*d <= 32768`, i.e. the wrap-to-zero product 65536 is unreachable.
+///
+/// So on every input the call site can produce, all four tiers — and this
+/// dispatch — agree bit-exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn av1_quantize_lp_dispatch(
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i16],
+    n_coeffs: usize,
+    qcoeff: &mut [i16],
+    dqcoeff: &mut [i16],
+) -> u16 {
+    let _ = crate::dispatch::scalar_forced();
+    incant!(
+        quantize_lp_impl(
+            round_fp, quant_fp, dequant, scan, iscan, coeff, n_coeffs, qcoeff, dqcoeff
+        ),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// Scalar tier = the transcribed `av1_quantize_lp_c` port, verbatim.
+#[allow(clippy::too_many_arguments)]
+fn quantize_lp_impl_scalar(
+    _t: archmage::ScalarToken,
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i16],
+    n_coeffs: usize,
+    qcoeff: &mut [i16],
+    dqcoeff: &mut [i16],
+) -> u16 {
+    crate::quant::av1_quantize_lp(
+        coeff, n_coeffs, round_fp, quant_fp, qcoeff, dqcoeff, dequant, scan, iscan,
+    )
+}
+
+/// Non-x86 tiers: the `_c` semantics in raster order — i32-domain abs (no
+/// i16 wrap at -32768; `_c` agrees) and the eob folded from `iscan` (the
+/// inverse-permutation identity `max_{tmp!=0} iscan[rc]+1 == scan-order eob`).
+/// LLVM lowers the per-lane math under the tier's target features; the
+/// raster walk removes the scan-order serial dependence C's scalar has.
+#[magetypes(neon, wasm128, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn quantize_lp_impl(
+    _t: Token,
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    dequant: &[i16; 8],
+    _scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i16],
+    n_coeffs: usize,
+    qcoeff: &mut [i16],
+    dqcoeff: &mut [i16],
+) -> u16 {
+    let n = n_coeffs;
+    qcoeff[..n].fill(0);
+    dqcoeff[..n].fill(0);
+    let mut eob = 0i32;
+    for rc in 0..n {
+        let c = i32::from(coeff[rc]);
+        let sign = c >> 31;
+        let abs = (c ^ sign) - sign;
+        let lane = usize::from(rc != 0);
+        let tmp = ((abs + i32::from(round_fp[lane])).clamp(i16::MIN as i32, i16::MAX as i32)
+            * i32::from(quant_fp[lane]))
+            >> 16;
+        let q = ((tmp ^ sign) - sign) as i16;
+        qcoeff[rc] = q;
+        dqcoeff[rc] = q.wrapping_mul(dequant[lane]);
+        if tmp != 0 {
+            eob = eob.max(i32::from(iscan[rc]) + 1);
+        }
+    }
+    eob as u16
+}
+
+/// v3 mirror of `av1_quantize_lp_avx2` (`av1/encoder/x86/av1_quantize_avx2.c:147`)
+/// — the kernel RTCD dispatches on this host. Instruction-level:
+/// `abs_epi16` / `adds_epi16` / `mulhi_epi16` / `sign_epi16` / `mullo_epi16`,
+/// nz test `cmpgt(abs_q, 0)`, eob gathered from `iscan` as
+/// `(iscan - nz) & nz` under `max_epi16`. Bit-compatible with the C AVX2
+/// kernel on the FULL i16 domain — including the -32768 wrapping-abs corner —
+/// which `quantize_lp_avx2_diff`-style gates pin against the exported symbol.
+///
+/// The parameter vectors replicate C's permutes exactly rather than assuming
+/// the table fill: the first chunk runs `[row0..7 | row4..7, row4..7]` (the
+/// `permute4x64(.., 0x54)` shape — dc at lane 0, ac at 1..7 and repeated),
+/// later chunks run `[row4..7 x4]` (the `permute2x128(.., 0x31)` hi-half
+/// broadcast). On the production rows lanes 1..7 all equal the ac value, so
+/// this is C's own parameter layout either way.
+///
+/// `n < 16` or `n % 16 != 0` would overread C's fixed 16-lane chunks; those
+/// shapes take the `_c` result instead (the lp path only ever calls
+/// n = 16/64/256).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn quantize_lp_impl_v3(
+    _t: archmage::X64V3Token,
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i16],
+    n_coeffs: usize,
+    qcoeff: &mut [i16],
+    dqcoeff: &mut [i16],
+) -> u16 {
+    use archmage::intrinsics::x86_64::*;
+
+    let n = n_coeffs;
+    if n < 16
+        || n % 16 != 0
+        || coeff.len() < n
+        || iscan.len() < n
+        || qcoeff.len() < n
+        || dqcoeff.len() < n
+    {
+        return crate::quant::av1_quantize_lp(
+            coeff, n_coeffs, round_fp, quant_fp, qcoeff, dqcoeff, dequant, scan, iscan,
+        );
+    }
+
+    // C's param construction, mirrored: chunk 0 sees [r0..r7 | r4..r7 x2],
+    // AC chunks see [r4..r7 x4].
+    let mk = |row: &[i16; 8]| -> (__m256i, __m256i) {
+        let first: [i16; 16] = [
+            row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[4], row[5], row[6],
+            row[7], row[4], row[5], row[6], row[7],
+        ];
+        let ac: [i16; 16] = [
+            row[4], row[5], row[6], row[7], row[4], row[5], row[6], row[7], row[4], row[5], row[6],
+            row[7], row[4], row[5], row[6], row[7],
+        ];
+        (_mm256_loadu_si256(&first), _mm256_loadu_si256(&ac))
+    };
+    let (rnd0, rnd_a) = mk(round_fp);
+    let (qnt0, qnt_a) = mk(quant_fp);
+    let (dqt0, dqt_a) = mk(dequant);
+
+    let zero = _mm256_setzero_si256();
+    let mut eob = zero;
+
+    let c16 = coeff[..n].as_chunks::<16>().0;
+    let q16 = qcoeff[..n].as_chunks_mut::<16>().0;
+    let d16 = dqcoeff[..n].as_chunks_mut::<16>().0;
+    let i16v = iscan[..n].as_chunks::<16>().0;
+
+    for i in 0..n / 16 {
+        let (r_v, q_v, d_v) = if i == 0 {
+            (rnd0, qnt0, dqt0)
+        } else {
+            (rnd_a, qnt_a, dqt_a)
+        };
+        // quantize_lp_16{,_first}: abs, sat-add round, mulhi, sign, mullo.
+        let c = _mm256_loadu_si256(&c16[i]);
+        let abs = _mm256_abs_epi16(c);
+        let tmp_rnd = _mm256_adds_epi16(abs, r_v);
+        let abs_q = _mm256_mulhi_epi16(tmp_rnd, q_v);
+        let q = _mm256_sign_epi16(abs_q, c);
+        let dq = _mm256_mullo_epi16(q, d_v);
+        _mm256_storeu_si256(&mut q16[i], q);
+        _mm256_storeu_si256(&mut d16[i], dq);
+
+        // nz = abs_q > 0; eob candidate = (iscan + 1) & nz.
+        let nz = _mm256_cmpgt_epi16(abs_q, zero);
+        let isc = _mm256_loadu_si256(&i16v[i]);
+        let nz_iscan = _mm256_and_si256(_mm256_sub_epi16(isc, nz), nz);
+        eob = _mm256_max_epi16(eob, nz_iscan);
+    }
+
+    // accumulate_eob256 — the max fold, lane order as C.
+    let lo = _mm256_castsi256_si128(eob);
+    let hi = _mm256_extracti128_si256::<1>(eob);
+    let e = _mm_max_epi16(lo, hi);
+    let e = _mm_max_epi16(e, _mm_shuffle_epi32::<0xe>(e));
+    let e = _mm_max_epi16(e, _mm_shufflelo_epi16::<0xe>(e));
+    let e = _mm_max_epi16(e, _mm_shufflelo_epi16::<0x1>(e));
+    _mm_extract_epi16::<1>(e) as u16
+}

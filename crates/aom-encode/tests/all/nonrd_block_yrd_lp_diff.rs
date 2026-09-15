@@ -324,12 +324,20 @@ fn lp_quantize_satd_block_error_match_c() {
                 let src = correlated_residual(&mut rng, 1 << (tx + 2), 1 << (tx + 2), 60);
                 let coeff = c_lp_forward(tx, &src, 1 << (tx + 2));
 
+                let iscan = lp_iscan(tx);
                 let (wq, wdq, weob) =
-                    c::ref_quantize_lp(&coeff, &round_fp, &quant_fp, &dequant, scan, scan);
+                    c::ref_quantize_lp(&coeff, &round_fp, &quant_fp, &dequant, scan, &iscan);
                 let (mut gq, mut gdq) = (vec![0i16; n], vec![0i16; n]);
                 let geob = quantize_lp(
-                    &coeff, n, &round_fp, &quant_fp, &mut gq, &mut gdq, &dequant, scan,
+                    &coeff, n, &round_fp, &quant_fp, &mut gq, &mut gdq, &dequant, scan, &iscan,
                 );
+                // The DISPATCHED port vs the runtime-dispatched C SIMD —
+                // the tier the encoder actually runs, not just `_c`.
+                let (sq, sdq, seob) =
+                    c::ref_quantize_lp_simd(&coeff, &round_fp, &quant_fp, &dequant, scan, &iscan);
+                assert_eq!(seob, geob, "q{qindex} tx{tx} iter {iter}: eob vs C simd");
+                assert_eq!(sq, gq, "q{qindex} tx{tx} iter {iter}: qcoeff vs C simd");
+                assert_eq!(sdq, gdq, "q{qindex} tx{tx} iter {iter}: dqcoeff vs C simd");
                 assert_eq!(weob, geob, "q{qindex} tx{tx} iter {iter}: eob");
                 assert_eq!(wq, gq, "q{qindex} tx{tx} iter {iter}: qcoeff");
                 assert_eq!(wdq, gdq, "q{qindex} tx{tx} iter {iter}: dqcoeff");
@@ -343,9 +351,19 @@ fn lp_quantize_satd_block_error_match_c() {
                     "q{qindex} tx{tx} iter {iter}: aom_satd_lp"
                 );
                 assert_eq!(
+                    c::ref_satd_lp_simd(&gq),
+                    satd_lp(&gq, n),
+                    "q{qindex} tx{tx} iter {iter}: aom_satd_lp vs C simd"
+                );
+                assert_eq!(
                     c::ref_block_error_lp(&coeff, &gdq),
                     block_error_lp(&coeff, &gdq, n),
                     "q{qindex} tx{tx} iter {iter}: av1_block_error_lp"
+                );
+                assert_eq!(
+                    c::ref_block_error_lp_simd(&coeff, &gdq),
+                    block_error_lp(&coeff, &gdq, n),
+                    "q{qindex} tx{tx} iter {iter}: av1_block_error_lp vs C simd"
                 );
             }
         }
@@ -485,8 +503,383 @@ fn block_yrd_lowbd_matches_c_walk() {
 }
 
 // ---------------------------------------------------------------------------
-// Teeth
+// Tier agreement — the check the SIMD landing needs
 // ---------------------------------------------------------------------------
+
+/// The iscan `av1_block_yrd` hands `av1_quantize_lp` for a clamped tx size —
+/// `av1_default_iscan_8x8_transpose` /
+/// `av1_default_iscan_lp_16x16_transpose` / `scan_order->iscan`
+/// (nonrd_opt.c:185, :222-246). Computed as the inverse of [`lp_scan`]'s
+/// permutation rather than transcribed: `iscan[scan[i]] = i` is the
+/// definition, so the inverse cannot carry a transcription slip.
+fn lp_iscan(tx_size: usize) -> Vec<i16> {
+    let scan = lp_scan(tx_size);
+    let mut iscan = vec![0i16; scan.len()];
+    for (i, &rc) in scan.iter().enumerate() {
+        iscan[rc as usize] = i as i16;
+    }
+    iscan
+}
+
+/// **`av1_quantize_lp`'s tiers genuinely differ — this test finds WHERE and
+/// proves the port cannot reach it.**
+///
+/// `_c` walks `scan` order computing in `int` and tests `tmp != 0` (the
+/// quantized magnitude). The specialised tiers walk raster order reading
+/// `iscan`, and differ from `_c` in two places:
+///
+/// 1. **abs(-32768) wraps.** Every SIMD abs is lane-width
+///    (`_mm{,256}_abs_epi16`, NEON `vabsq`, SSE2's `(c^sign)-sign` in i16)
+///    so `-32768` stays `-32768`; `_c`'s int abs gives 32768. The qcoeff,
+///    dqcoeff AND eob all move.
+/// 2. **The eob test's subject.** `_sse2` tests `dqcoeff != 0` —
+///    `qcoeff*dequant` is an i16 product that can WRAP: `q*d == 65536`
+///    reads as zero to `_sse2` while `_c`/`_avx2`/`_neon` (the latter two
+///    test the magnitude `abs_qcoeff > 0`, identical to `_c`'s `tmp`) count
+///    it nonzero. So `_sse2` alone can emit a smaller eob.
+///
+/// Whether either is observable is a domain question, and this test measures
+/// it rather than arguing it: (a) an exhaustive arithmetic hunt over EVERY
+/// real quantizer row (256 qindex x dc/ac lanes) for the `(tmp, dequant)`
+/// pairs that make `q*d` wrap, each candidate verified against the real C
+/// kernels at the raster position where the eob divergence would be largest;
+/// (b) a dense sweep of the int16 boundary including `-32768`; (c) the
+/// transform-realistic grid. Every divergence found is then checked against
+/// the transform's output bound, which `lp_hadamard_tiers_agree_*` and
+/// `fdct4x4_lp_tiers_agree_*` measure at <= ~32654 — if the divergent set
+/// needs a larger |coeff|, the tiers agree over the whole reachable domain.
+#[test]
+fn lp_quantize_tiers_agree_over_the_reachable_range() {
+    c::ref_init();
+    let mut quants = aom_dsp::quant::Quants::zeroed();
+    let mut deq = aom_dsp::quant::Dequants::zeroed();
+    aom_dsp::quant::av1_build_quantizer(8, 0, 0, 0, 0, 0, &mut quants, &mut deq, 0);
+
+    // ---- (a) the wrap hunt -------------------------------------------
+    // For each row, `tmp` ranges 1..=tmp_max where
+    // `tmp = (|c| + round) * quant_fp >> 16`. `dqcoeff = tmp*dequant` wraps
+    // (i16) iff `tmp*dequant >= 32768` — that is when _sse2's `dqcoeff != 0`
+    // test could ever disagree with `_c`'s `tmp != 0` (needs == 0 mod 2^16,
+    // i.e. >= 65536) — and when a NEGATIVE dqcoeff could oppose a positive
+    // coeff inside `block_error_lp`'s wrapping i16 diff. For each
+    // wrap-producing tmp, invert the quantize to the |coeff| range that
+    // produces it and verify against the kernel's own arithmetic.
+    //
+    // Measured result this test encodes: over EVERY real quantizer row the
+    // largest tmp*dequant is exactly 32768 (qindex 0 dc: tmp 8192 x d 4),
+    // and producing it needs |coeff| >= 32766 — above the lp transforms'
+    // ~32654 output bound. So `tmp*d` stays inside [0, 32767] for every
+    // reachable input: dqcoeff never wraps, carries coeff's sign, and is
+    // nonzero iff tmp is. _sse2's eob test, _c's, and _avx2/_neon's
+    // magnitude test therefore ALL agree on the reachable domain — which is
+    // why the port's scalar arm (the _c model) is also correct against the
+    // runtime-dispatched kernel, and why the v3 port may use either shape.
+    let (mut wrap_inputs, mut eob_wrap_inputs, mut min_wrap_coeff) = (0usize, 0usize, i32::MAX);
+    let mut max_prod_seen = 0i64;
+    for qindex in 0..256usize {
+        for plane in 0..3usize {
+            let (round_fp, quant_fp, dequant) = {
+                let rows = aom_dsp::quant::set_q_index(&quants, &deq, qindex, plane);
+                (*rows.round_fp, *rows.quant_fp, *rows.dequant)
+            };
+            for lane in 0..2usize {
+                let (r, fp, d) = (
+                    i32::from(round_fp[lane]),
+                    i32::from(quant_fp[lane]),
+                    i32::from(dequant[lane]),
+                );
+                if fp <= 0 || d <= 0 {
+                    continue;
+                }
+                let tmp_max = (32767 + r) * fp >> 16;
+                for t in 1..=tmp_max {
+                    let prod = t as i64 * d as i64;
+                    max_prod_seen = max_prod_seen.max(prod);
+                    if prod < 32768 {
+                        continue;
+                    }
+                    // |coeff| values producing this tmp:
+                    // t <= (a+r)*fp/65536 < t+1  =>  a in [ceil(t*2^16/fp)-r, ...).
+                    let lo = (t * 65536 + fp - 1) / fp - r;
+                    let hi = ((t + 1) * 65536 + fp - 1) / fp - 1 - r;
+                    for a in [lo, lo + 1, hi - 1, hi] {
+                        // Verify this |c| really produces tmp == t under the
+                        // kernel's own arithmetic.
+                        let tmp = ((a + r).clamp(-32768, 32767) * fp) >> 16;
+                        if tmp != t || a > i16::MAX as i32 {
+                            continue;
+                        }
+                        min_wrap_coeff = min_wrap_coeff.min(a);
+                        wrap_inputs += 1;
+                        if prod % 65536 == 0 {
+                            eob_wrap_inputs += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "wrap hunt: {wrap_inputs} realizable wrap inputs, \
+         min |coeff| needed {min_wrap_coeff}, max tmp*d {max_prod_seen}, \
+         wrap-to-zero candidates {eob_wrap_inputs}"
+    );
+    // The structural bound, asserted: no realizable wrap input ever exists
+    // inside int16, and even the unrealizable hunt never reaches 65536.
+    assert_eq!(
+        eob_wrap_inputs, 0,
+        "a (tmp, dequant) row reached tmp*d == 0 mod 2^16 — _sse2's eob test \
+         CAN diverge from _c's there, and the port's scalar arm is no longer \
+         a model of the runtime kernel"
+    );
+    assert!(
+        min_wrap_coeff > 32654,
+        "a dqcoeff wrap needs only |coeff| = {min_wrap_coeff} — inside the lp \
+         transforms' ~32654 bound, so the i16 tier semantics are reachable"
+    );
+
+    // ---- (b) the int16 boundary + realistic grid vs the real kernels ----
+    let mut rng = Rng(0x_4b12_0000_0009);
+    let mut divergences: Vec<String> = Vec::new();
+    for &qindex in &[0usize, 60, 128, 200, 255] {
+        let (round_fp, quant_fp, dequant) = q_rows(qindex);
+        for &tx in &[0usize, 1, 2] {
+            let n = 1usize << (2 * (tx + 2));
+            let scan = lp_scan(tx);
+            let iscan = lp_iscan(tx);
+            for &v in &[-32768i16, -32767, -31000, 31000, 32640, 32654, 32766, 32767] {
+                for &pos in &[scan[0] as usize, scan[n / 2] as usize, scan[n - 1] as usize] {
+                    let mut coeff = vec![0i16; n];
+                    coeff[pos] = v;
+                    let cw =
+                        c::ref_quantize_lp(&coeff, &round_fp, &quant_fp, &dequant, scan, &iscan);
+                    let sw = c::ref_quantize_lp_simd(
+                        &coeff, &round_fp, &quant_fp, &dequant, scan, &iscan,
+                    );
+                    // -32768 is the one KNOWN divergence (the wrapping abs);
+                    // it is above the transform bound and must be the only one.
+                    if cw != sw && v != -32768 {
+                        divergences.push(format!(
+                            "q{qindex} tx{tx} pos {pos} coeff {v}: _c eob {} \
+                             vs simd eob {}",
+                            cw.2, sw.2
+                        ));
+                    }
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let ew = c::ref_quantize_lp_sse2(
+                            &coeff, &round_fp, &quant_fp, &dequant, scan, &iscan,
+                        );
+                        if cw != ew && v != -32768 {
+                            divergences.push(format!(
+                                "q{qindex} tx{tx} pos {pos} coeff {v}: _c eob {} \
+                                 vs _sse2 eob {}",
+                                cw.2, ew.2
+                            ));
+                        }
+                    }
+                }
+            }
+            for iter in 0..400 {
+                let side = 1usize << (tx + 2);
+                let src = correlated_residual(&mut rng, side, side, 60);
+                let coeff = c_lp_forward(tx, &src, side);
+                let cw = c::ref_quantize_lp(&coeff, &round_fp, &quant_fp, &dequant, scan, &iscan);
+                let sw =
+                    c::ref_quantize_lp_simd(&coeff, &round_fp, &quant_fp, &dequant, scan, &iscan);
+                if cw != sw {
+                    divergences.push(format!(
+                        "q{qindex} tx{tx} iter {iter}: transform-reachable coeff diverged"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        divergences.is_empty(),
+        "lp quantize tiers diverge on {} reachable inputs:\n{}",
+        divergences.len(),
+        divergences[..divergences.len().min(12)].join("\n")
+    );
+}
+
+/// **`aom_satd_lp` / `av1_block_error_lp` tier agreement.** Both SIMD tiers
+/// wrap where `_c` widens: `satd_lp`'s `_mm_abs_epi16` gives -32768 for input
+/// -32768 (scalar: +32768), and `block_error_lp`'s `_mm_sub_epi16(dq, c)`
+/// wraps when |dq - c| >= 32768 (scalar computes in i64). The second needs a
+/// |coeff|+|dqcoeff| > 32767 opposite-sign pair; with |coeff| <= 32640 the
+/// only reachable wraps need |dqcoeff| > 127 of the opposite sign, which the
+/// quantize wrap hunt bounds. This measures the boundary directly.
+#[test]
+fn lp_satd_block_error_tiers_agree_over_the_reachable_range() {
+    c::ref_init();
+    let mut rng = Rng(0x_4b12_0000_000a);
+    let mut quants = aom_dsp::quant::Quants::zeroed();
+    let mut deq = aom_dsp::quant::Dequants::zeroed();
+    aom_dsp::quant::av1_build_quantizer(8, 0, 0, 0, 0, 0, &mut quants, &mut deq, 0);
+
+    // satd: dense at the boundary, random inside. `-32768` is the KNOWN
+    // divergence — every SIMD abs wraps it while `_c` widens — and it is the
+    // ONLY one (abs is the sole wrap point, and |v| <= 32767 can't wrap it).
+    for &n in &[16usize, 64, 256] {
+        {
+            let coeff = vec![-32768i16; n];
+            assert_ne!(
+                c::ref_satd_lp(&coeff),
+                c::ref_satd_lp_simd(&coeff),
+                "aom_satd_lp at all--32768 is the known wrap; if the tiers now \
+                 AGREE there, this test's reachable-domain argument needs re-derivation"
+            );
+        }
+        for v in -32767i32..=-31000 {
+            let coeff = vec![v as i16; n];
+            assert_eq!(
+                c::ref_satd_lp(&coeff),
+                c::ref_satd_lp_simd(&coeff),
+                "aom_satd_lp n={n} all={v}: tiers disagree"
+            );
+        }
+        for v in 31000i32..=32767 {
+            let coeff = vec![v as i16; n];
+            assert_eq!(
+                c::ref_satd_lp(&coeff),
+                c::ref_satd_lp_simd(&coeff),
+                "aom_satd_lp n={n} all={v}: tiers disagree"
+            );
+        }
+        for _ in 0..400 {
+            // Full i16 range EXCEPT -32768 — that lane is the measured-known
+            // wrap and is probed explicitly above.
+            let coeff: Vec<i16> = (0..n)
+                .map(|_| (((rng.next() % 65535) as i32) - 32767) as i16)
+                .collect();
+            assert_eq!(
+                c::ref_satd_lp(&coeff),
+                c::ref_satd_lp_simd(&coeff),
+                "aom_satd_lp n={n} random: tiers disagree"
+            );
+        }
+    }
+
+    // ---- block_error_lp ----------------------------------------------
+    // TWO wrap classes exist in the SIMD tiers, both measured below:
+    //  (i)   `_mm_sub_epi16(dq, c)` wraps iff |dq - c| >= 32768 — needs
+    //        OPPOSITE-sign lanes (or the -32768 edge). Unreachable: the
+    //        quantize hunt above shows dqcoeff always carries coeff's sign.
+    //  (ii)  the `_mm_madd_epi16` pair sums and the i32 accumulation wrap
+    //        mod 2^32 — `_c` sums in i64. At n = 256 this needs
+    //        rms |dq - c| >= ~2896. Reachable? `dq = tmp*d` with
+    //        `tmp = (|c| + round)*fp >> 16`, `fp = floor(2^16/d)`, so
+    //        |dq - |c|| <= ~d/2 + |c|*d/2^16 ~= 1200 + 1200 at the largest
+    //        dequant — far under. Measure the real bound below.
+    //
+    // First: demonstrate class (i) exists (informational — every pair in it
+    // is unreachable by construction).
+    let mut div_pairs = 0usize;
+    for c in (30000i32..=32767)
+        .step_by(16)
+        .chain((-32768i32..=-30000).step_by(16))
+    {
+        for dq in [
+            -32768i32, -32760, -32000, -31000, 31000, 32000, 32760, 32767,
+        ] {
+            if (dq - c) as i16 as i32 == dq - c {
+                continue;
+            }
+            let coeff = vec![c as i16; 16];
+            let dqc = vec![dq as i16; 16];
+            if c::ref_block_error_lp(&coeff, &dqc) != c::ref_block_error_lp_simd(&coeff, &dqc) {
+                div_pairs += 1;
+            }
+        }
+    }
+    eprintln!(
+        "block_error: {div_pairs} opposite-sign wrap pairs confirmed \
+               divergent (unreachable: quantize_lp never emits them)"
+    );
+
+    // Second: measure the real reachable |dq - c| bound using the scalar
+    // quantize formula (proven == `av1_quantize_lp_c` by
+    // `lp_quantize_satd_block_error_match_c` over the whole reachable grid).
+    let mut max_dqc_err = 0i64;
+    for qindex in 0..256usize {
+        for plane in 0..3usize {
+            let (round_fp, quant_fp, dequant) = {
+                let rows = aom_dsp::quant::set_q_index(&quants, &deq, qindex, plane);
+                (*rows.round_fp, *rows.quant_fp, *rows.dequant)
+            };
+            for lane in 0..2usize {
+                let (r, fp, d) = (
+                    i32::from(round_fp[lane]),
+                    i32::from(quant_fp[lane]),
+                    i32::from(dequant[lane]),
+                );
+                for a in (0i32..=32767).step_by(4) {
+                    let tmp = ((a + r).clamp(-32768, 32767) * fp) >> 16;
+                    let dq = (tmp as i64 * d as i64) as i16 as i64; // i16 assign
+                    max_dqc_err = max_dqc_err.max((dq - a as i64).abs());
+                }
+            }
+        }
+    }
+    eprintln!("block_error: max reachable |dqcoeff - coeff| = {max_dqc_err}");
+    // The bound must clear BOTH wrap classes with margin: the i16 sub needs
+    // < 32768; the i32 accumulation at n = 256 (the lp path's largest txb)
+    // needs 256 * err^2 < 2^31.
+    assert!(
+        max_dqc_err < 2896,
+        "reachable |dqcoeff - coeff| = {max_dqc_err} — the SIMD i32 \
+         accumulation can wrap mod 2^32 at n = 256, so the scalar arm is no \
+         longer a safe model of the runtime kernel"
+    );
+
+    // Third: real (coeff, dqcoeff) pairs through both tiers — boundary coeffs
+    // quantized by the REAL _c kernel, not synthetic pairs.
+    let mut divergences = 0usize;
+    for &qindex in &[0usize, 60, 128, 200, 255] {
+        let (round_fp, quant_fp, dequant) = q_rows(qindex);
+        for &tx in &[0usize, 1, 2] {
+            let n = 1usize << (2 * (tx + 2));
+            let scan = lp_scan(tx);
+            let iscan = lp_iscan(tx);
+            // Boundary single-coeff blocks.
+            for &v in &[-32767i16, -31000, -1000, 1000, 31000, 32640, 32767] {
+                for &pos in &[scan[0] as usize, scan[n - 1] as usize] {
+                    let mut coeff = vec![0i16; n];
+                    coeff[pos] = v;
+                    let (_q, dq, _e) =
+                        c::ref_quantize_lp(&coeff, &round_fp, &quant_fp, &dequant, scan, &iscan);
+                    if c::ref_block_error_lp(&coeff, &dq) != c::ref_block_error_lp_simd(&coeff, &dq)
+                    {
+                        divergences += 1;
+                    }
+                }
+            }
+            // Transform-reachable blocks.
+            for _ in 0..300 {
+                let side = 1usize << (tx + 2);
+                let src = correlated_residual(&mut rng, side, side, 60);
+                let coeff = c_lp_forward(tx, &src, side);
+                let (_q, dq, _e) =
+                    c::ref_quantize_lp(&coeff, &round_fp, &quant_fp, &dequant, scan, &iscan);
+                if c::ref_block_error_lp(&coeff, &dq) != c::ref_block_error_lp_simd(&coeff, &dq) {
+                    divergences += 1;
+                }
+                assert_eq!(
+                    c::ref_satd_lp(&coeff),
+                    c::ref_satd_lp_simd(&coeff),
+                    "q{qindex} tx{tx}: satd tiers disagree on a \
+                     transform-reachable block"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        divergences, 0,
+        "block_error_lp tiers diverge on {divergences} real-quantizer \
+         (coeff, dqcoeff) pairs"
+    );
+}
 
 /// **The transpose is load-bearing, and this names exactly what it moves.**
 ///

@@ -1384,3 +1384,43 @@ pub fn av1_highbd_quantize_dc(
     dqcoeff[0] = (abs_dqcoeff ^ sign).wrapping_sub(sign);
     (abs_qcoeff != 0) as u16
 }
+
+/// `av1_quantize_lp_c` (`av1/encoder/av1_quantize.c:214`): the low-precision
+/// FP quantizer — i16 lanes end to end. `scan` orders the eob computation;
+/// qcoeff/dqcoeff are written at RAW (`rc`) positions. round/quant/dequant
+/// use row lane `[rc != 0]`. `iscan` is ignored exactly as `_c` ignores it
+/// (`(void)iscan`, :219) — the SIMD tiers consume it instead; see
+/// [`simd::av1_quantize_lp_dispatch`].
+#[allow(clippy::too_many_arguments)]
+pub fn av1_quantize_lp(
+    coeff: &[i16],
+    n_coeffs: usize,
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    qcoeff: &mut [i16],
+    dqcoeff: &mut [i16],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+) -> u16 {
+    let _ = iscan;
+    let mut eob: i32 = -1;
+    qcoeff[..n_coeffs].fill(0);
+    dqcoeff[..n_coeffs].fill(0);
+    for (i, &sc) in scan[..n_coeffs].iter().enumerate() {
+        let rc = sc as usize;
+        let c = i32::from(coeff[rc]);
+        let coeff_sign = c >> 31; // AOMSIGN
+        let abs_coeff = (c ^ coeff_sign) - coeff_sign;
+        let lane = usize::from(rc != 0);
+        let mut tmp =
+            (abs_coeff + i32::from(round_fp[lane])).clamp(i16::MIN as i32, i16::MAX as i32);
+        tmp = (tmp * i32::from(quant_fp[lane])) >> 16;
+        qcoeff[rc] = ((tmp ^ coeff_sign) - coeff_sign) as i16;
+        dqcoeff[rc] = qcoeff[rc].wrapping_mul(dequant[lane]);
+        if tmp != 0 {
+            eob = i as i32;
+        }
+    }
+    (eob + 1) as u16
+}

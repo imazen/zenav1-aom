@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1822 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1837 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            607
+#   free functions                            622
 #   inherent methods                           97
 #   struct fields                             706
 #   enum variants                              13
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1779
+#   aom_dsp                        1794
 
-## items (1746 lines)
+## items (1761 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -248,19 +248,32 @@ pub fn aom_dsp::dist::avg::highbd_minmax_8x8(&[u16], usize, &[u16], usize) -> (i
 pub fn aom_dsp::dist::avg::minmax_8x8(&[u8], usize, &[u8], usize) -> (i32, i32)
 pub mod aom_dsp::dist::hadamard
 pub fn aom_dsp::dist::hadamard::hadamard_16x16(&[i16], usize) -> [i32; 256]
+pub fn aom_dsp::dist::hadamard::hadamard_16x16_into(&[i16], usize, &mut [i32; 256])
 pub fn aom_dsp::dist::hadamard::hadamard_32x32(&[i16], usize) -> [i32; 1024]
+pub fn aom_dsp::dist::hadamard::hadamard_32x32_into(&[i16], usize, &mut [i32; 1024])
 pub fn aom_dsp::dist::hadamard::hadamard_4x4(&[i16], usize) -> [i32; 16]
 pub fn aom_dsp::dist::hadamard::hadamard_8x8(&[i16], usize) -> [i32; 64]
+pub fn aom_dsp::dist::hadamard::hadamard_8x8_into(&[i16], usize, &mut [i32; 64])
+pub fn aom_dsp::dist::hadamard::hadamard_lp_16x16(&[i16], usize, &mut [i16])
+pub fn aom_dsp::dist::hadamard::hadamard_lp_8x8(&[i16], usize, &mut [i16])
+pub fn aom_dsp::dist::hadamard::hadamard_lp_8x8_dual(&[i16], usize, &mut [i16])
 pub fn aom_dsp::dist::hadamard::highbd_hadamard_16x16(&[i16], usize) -> [i32; 256]
+pub fn aom_dsp::dist::hadamard::highbd_hadamard_16x16_into(&[i16], usize, &mut [i32; 256])
 pub fn aom_dsp::dist::hadamard::highbd_hadamard_32x32(&[i16], usize) -> [i32; 1024]
+pub fn aom_dsp::dist::hadamard::highbd_hadamard_32x32_into(&[i16], usize, &mut [i32; 1024])
 pub fn aom_dsp::dist::hadamard::highbd_hadamard_8x8(&[i16], usize) -> [i32; 64]
+pub fn aom_dsp::dist::hadamard::highbd_hadamard_8x8_into(&[i16], usize, &mut [i32; 64])
 pub fn aom_dsp::dist::hadamard::satd(&[i32]) -> i32
+pub fn aom_dsp::dist::hadamard::satd_lp(&[i16], usize) -> i32
+pub fn aom_dsp::dist::hadamard::satd_lp_simd(&[i16], usize) -> i32
 pub mod aom_dsp::dist::obmc
 pub fn aom_dsp::dist::obmc::highbd_obmc_sub_pixel_variance(&[u16], usize, usize, usize, usize, &[i32], &[i32], usize, usize, u32) -> (u32, u32)
 pub fn aom_dsp::dist::obmc::highbd_obmc_variance(&[u16], usize, usize, &[i32], &[i32], usize, usize, u32) -> (u32, u32)
 pub fn aom_dsp::dist::obmc::obmc_sub_pixel_variance(&[u8], usize, usize, usize, usize, &[i32], &[i32], usize, usize) -> (u32, u32)
 pub fn aom_dsp::dist::obmc::obmc_variance(&[u8], usize, usize, &[i32], &[i32], usize, usize) -> (u32, u32)
 pub mod aom_dsp::dist::simd
+pub fn aom_dsp::dist::simd::block_error_lp(&[i16], &[i16], usize) -> i64
+pub fn aom_dsp::dist::simd::block_error_lp_simd(&[i16], &[i16], usize) -> i64
 pub fn aom_dsp::dist::simd::block_error_simd(&[i32], &[i32]) -> (i64, i64)
 pub fn aom_dsp::dist::simd::sad_simd(&[u8], usize, &[u8], usize, usize, usize) -> u32
 pub fn aom_dsp::dist::simd::sad_u16_simd(&[u16], usize, &[u16], usize, usize, usize) -> u32
@@ -1444,6 +1457,7 @@ pub mod aom_dsp::lowbd
 pub mod aom_dsp::quant
 pub mod aom_dsp::quant::simd
 pub fn aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::simd::av1_quantize_lp_dispatch(&[i16; 8], &[i16; 8], &[i16; 8], &[i16], &[i16], &[i16], usize, &mut [i16], &mut [i16]) -> u16
 pub enum aom_dsp::quant::QuantTuning
 pub aom_dsp::quant::QuantTuning::Iq
 pub aom_dsp::quant::QuantTuning::Psnr
@@ -1526,6 +1540,7 @@ pub fn aom_dsp::quant::av1_quantize_dc(&[i16; 2], i16, i16, i32, core::option::O
 pub fn aom_dsp::quant::av1_quantize_fp(&[i32], &[i16; 2], &[i16; 2], &[i16; 2], &mut [i32], &mut [i32], &[i16]) -> u16
 pub fn aom_dsp::quant::av1_quantize_fp_no_qmatrix(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
 pub fn aom_dsp::quant::av1_quantize_fp_qm(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[u8], &[u8], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
+pub fn aom_dsp::quant::av1_quantize_lp(&[i16], usize, &[i16; 8], &[i16; 8], &mut [i16], &mut [i16], &[i16; 8], &[i16], &[i16]) -> u16
 pub fn aom_dsp::quant::av1_set_quantizer(i32, i32, i32, bool, bool, aom_dsp::quant::QuantTuning, i32, i32, bool, bool) -> aom_dsp::quant::QuantizerSettings
 pub fn aom_dsp::quant::iqmatrix(usize, usize, usize, usize) -> core::option::Option<&'static [u8]>
 pub fn aom_dsp::quant::qmatrix(usize, usize, usize, usize) -> core::option::Option<&'static [u8]>
@@ -1701,12 +1716,12 @@ pub aom_dsp::txb::ExtTxDeriv::square: i32
 pub aom_dsp::txb::ExtTxDeriv::symb: i32
 pub aom_dsp::txb::ExtTxDeriv::used: i32
 pub struct aom_dsp::txb::LvMapCoeffCost
-pub aom_dsp::txb::LvMapCoeffCost::base: alloc::vec::Vec<i32>
-pub aom_dsp::txb::LvMapCoeffCost::base_eob: alloc::vec::Vec<i32>
-pub aom_dsp::txb::LvMapCoeffCost::dc_sign: alloc::vec::Vec<i32>
-pub aom_dsp::txb::LvMapCoeffCost::eob_extra: alloc::vec::Vec<i32>
-pub aom_dsp::txb::LvMapCoeffCost::lps: alloc::vec::Vec<i32>
-pub aom_dsp::txb::LvMapCoeffCost::txb_skip: alloc::vec::Vec<i32>
+pub aom_dsp::txb::LvMapCoeffCost::base: [i32; 336]
+pub aom_dsp::txb::LvMapCoeffCost::base_eob: [i32; 12]
+pub aom_dsp::txb::LvMapCoeffCost::dc_sign: [i32; 6]
+pub aom_dsp::txb::LvMapCoeffCost::eob_extra: [i32; 18]
+pub aom_dsp::txb::LvMapCoeffCost::lps: [i32; 546]
+pub aom_dsp::txb::LvMapCoeffCost::txb_skip: [i32; 26]
 pub fn aom_dsp::txb::LvMapCoeffCost::tables<'a>(&'a self, &'a [i32]) -> aom_dsp::txb::CoeffCostTables<'a>
 pub struct aom_dsp::txb::OptimizeResult
 pub aom_dsp::txb::OptimizeResult::eob: usize
