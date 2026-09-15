@@ -15,17 +15,17 @@ const COEFF_BASE_RANGE: usize = 12;
 #[derive(Clone, Debug)]
 pub struct LvMapCoeffCost {
     /// `txb_skip[13][2]`
-    pub txb_skip: Vec<i32>,
+    pub txb_skip: [i32; 13 * 2],
     /// `base_eob[4][3]`
-    pub base_eob: Vec<i32>,
+    pub base_eob: [i32; 4 * 3],
     /// `base[42][8]`
-    pub base: Vec<i32>,
+    pub base: [i32; 42 * 8],
     /// `eob_extra[9][2]`
-    pub eob_extra: Vec<i32>,
+    pub eob_extra: [i32; 9 * 2],
     /// `dc_sign[3][2]`
-    pub dc_sign: Vec<i32>,
+    pub dc_sign: [i32; 3 * 2],
     /// `lps[21][26]`
-    pub lps: Vec<i32>,
+    pub lps: [i32; 21 * 26],
 }
 
 impl LvMapCoeffCost {
@@ -56,7 +56,7 @@ pub fn fill_lv_map_coeff_cost(
     dc_sign_cdf: &[u16],
     br_cdf: &[u16],
 ) -> LvMapCoeffCost {
-    let mut txb_skip = vec![0i32; 13 * 2];
+    let mut txb_skip = [0i32; 13 * 2];
     for ctx in 0..13 {
         cost_tokens_from_cdf(
             &mut txb_skip[ctx * 2..ctx * 2 + 2],
@@ -64,7 +64,7 @@ pub fn fill_lv_map_coeff_cost(
             None,
         );
     }
-    let mut base_eob = vec![0i32; 4 * 3];
+    let mut base_eob = [0i32; 4 * 3];
     for ctx in 0..4 {
         cost_tokens_from_cdf(
             &mut base_eob[ctx * 3..ctx * 3 + 3],
@@ -72,7 +72,7 @@ pub fn fill_lv_map_coeff_cost(
             None,
         );
     }
-    let mut base = vec![0i32; 42 * 8];
+    let mut base = [0i32; 42 * 8];
     for ctx in 0..42 {
         // cost_tokens fills [0..3]; leave [4..7] for the fixup.
         let mut tmp = [0i32; 4];
@@ -86,7 +86,7 @@ pub fn fill_lv_map_coeff_cost(
         base[b + 6] = base[b + 2] - base[b + 1];
         base[b + 7] = base[b + 3] - base[b + 2];
     }
-    let mut eob_extra = vec![0i32; 9 * 2];
+    let mut eob_extra = [0i32; 9 * 2];
     for ctx in 0..9 {
         cost_tokens_from_cdf(
             &mut eob_extra[ctx * 2..ctx * 2 + 2],
@@ -94,7 +94,7 @@ pub fn fill_lv_map_coeff_cost(
             None,
         );
     }
-    let mut dc_sign = vec![0i32; 3 * 2];
+    let mut dc_sign = [0i32; 3 * 2];
     for ctx in 0..3 {
         cost_tokens_from_cdf(
             &mut dc_sign[ctx * 2..ctx * 2 + 2],
@@ -102,8 +102,9 @@ pub fn fill_lv_map_coeff_cost(
             None,
         );
     }
-    let stride = (COEFF_BASE_RANGE + 1) * 2; // 26
-    let mut lps = vec![0i32; 21 * stride];
+    const STRIDE: usize = (COEFF_BASE_RANGE + 1) * 2; // 26
+    let stride = STRIDE;
+    let mut lps = [0i32; 21 * STRIDE];
     for ctx in 0..21 {
         let base_off = ctx * stride;
         let mut br_rate = [0i32; 4];
@@ -201,9 +202,9 @@ pub fn fill_eob_cost_from_arena(
     for ctx in 0..2 {
         let off = base + (plane_type * 2 + ctx) * stride;
         let cdf = &arena[off..off + stride];
-        let mut tmp = vec![0i32; nsy];
-        cost_tokens_from_cdf(&mut tmp, cdf, None);
-        out[ctx * 11..ctx * 11 + nsy].copy_from_slice(&tmp);
+        let mut tmp = [0i32; 12];
+        cost_tokens_from_cdf(&mut tmp[..nsy], cdf, None);
+        out[ctx * 11..ctx * 11 + nsy].copy_from_slice(&tmp[..nsy]);
     }
     out
 }

@@ -67,12 +67,12 @@ pub fn coeff_cost_set_from_tables(
     eob: &[i32],
 ) -> CoeffCostSet {
     let single = LvMapCoeffCost {
-        txb_skip: txb_skip.to_vec(),
-        base_eob: base_eob.to_vec(),
-        base: base.to_vec(),
-        eob_extra: eob_extra.to_vec(),
-        dc_sign: dc_sign.to_vec(),
-        lps: lps.to_vec(),
+        txb_skip: txb_skip.try_into().unwrap(),
+        base_eob: base_eob.try_into().unwrap(),
+        base: base.try_into().unwrap(),
+        eob_extra: eob_extra.try_into().unwrap(),
+        dc_sign: dc_sign.try_into().unwrap(),
+        lps: lps.try_into().unwrap(),
     };
     let mut eob_row = [0i32; 22];
     eob_row[..eob.len()].copy_from_slice(eob);

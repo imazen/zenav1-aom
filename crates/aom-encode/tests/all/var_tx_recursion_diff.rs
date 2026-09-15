@@ -48,8 +48,8 @@ impl Rng {
         self.range(0, 20 << 9)
     }
 }
-fn tbl(rng: &mut Rng, n: usize) -> Vec<i32> {
-    (0..n).map(|_| rng.cost()).collect()
+fn tbl<const N: usize>(rng: &mut Rng) -> [i32; N] {
+    core::array::from_fn(|_| rng.cost())
 }
 fn gen_cdf_row(rng: &mut Rng, nsymbs: usize, padded: usize) -> Vec<u16> {
     let mut row = vec![0u16; padded];
@@ -596,12 +596,12 @@ fn pick_recursive_tx_size_type_matches_c_recursion() {
 /// unaffected by realism — only self-consistency matters.
 fn random_coeff_set(rng: &mut Rng) -> CoeffCostSet {
     let mk = |rng: &mut Rng| aom_dsp::txb::LvMapCoeffCost {
-        txb_skip: tbl(rng, 13 * 2),
-        base_eob: tbl(rng, 4 * 3),
-        base: tbl(rng, 42 * 8),
-        eob_extra: tbl(rng, 9 * 2),
-        dc_sign: tbl(rng, 3 * 2),
-        lps: tbl(rng, 21 * 26),
+        txb_skip: tbl(rng),
+        base_eob: tbl(rng),
+        base: tbl(rng),
+        eob_extra: tbl(rng),
+        dc_sign: tbl(rng),
+        lps: tbl(rng),
     };
     // Array literal evaluates left-to-right; each mk() call releases the borrow
     // before the next.

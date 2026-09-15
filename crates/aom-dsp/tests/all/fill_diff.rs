@@ -52,11 +52,11 @@ fn fill_coeff_costs_identical() {
             c::ref_fill_lv_map(&txb_skip, &base_eob, &base, &eob_extra, &dc_sign, &br);
         let got = fill_lv_map_coeff_cost(&txb_skip, &base_eob, &base, &eob_extra, &dc_sign, &br);
 
-        assert_eq!(got.txb_skip, wts, "txb_skip");
-        assert_eq!(got.base_eob, wbe, "base_eob");
-        assert_eq!(got.base, wb, "base (incl [4..7] trellis-diff fixup)");
-        assert_eq!(got.eob_extra, wee, "eob_extra");
-        assert_eq!(got.dc_sign, wds, "dc_sign");
-        assert_eq!(got.lps, wl, "lps (incl cumulation + diff fixup)");
+        assert_eq!(got.txb_skip[..], wts[..], "txb_skip");
+        assert_eq!(got.base_eob[..], wbe[..], "base_eob");
+        assert_eq!(got.base[..], wb[..], "base (incl [4..7] trellis-diff fixup)");
+        assert_eq!(got.eob_extra[..], wee[..], "eob_extra");
+        assert_eq!(got.dc_sign[..], wds[..], "dc_sign");
+        assert_eq!(got.lps[..], wl[..], "lps (incl cumulation + diff fixup)");
     }
 }

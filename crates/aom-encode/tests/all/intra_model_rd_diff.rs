@@ -38,12 +38,12 @@ fn intra_model_rd_matches_c_chain() {
     // the CoeffCostSet plumbing (TxfmYrdEnv::coeff_costs is now the full
     // per-txs_ctx set).
     let zero_lv_map = LvMapCoeffCost {
-        txb_skip: vec![0i32; 13 * 2],
-        base_eob: vec![0i32; 4 * 3],
-        base: vec![0i32; 42 * 8],
-        eob_extra: vec![0i32; 9 * 2],
-        dc_sign: vec![0i32; 3 * 2],
-        lps: vec![0i32; 21 * 26],
+        txb_skip: [0i32; 13 * 2],
+        base_eob: [0i32; 4 * 3],
+        base: [0i32; 42 * 8],
+        eob_extra: [0i32; 9 * 2],
+        dc_sign: [0i32; 3 * 2],
+        lps: [0i32; 21 * 26],
     };
     let coeff_costs = CoeffCostSet {
         by_txs_ctx: core::array::from_fn(|_| zero_lv_map.clone()),
