@@ -1236,8 +1236,10 @@ pub fn encode_b_intra_dry(
     let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
-    let above_y: Vec<i8> = state.above_ectx[0][a0..a0 + mi_w].to_vec();
-    let left_y: Vec<i8> = state.left_ectx[0][l0..l0 + mi_h].to_vec();
+    let mut above_y = [0i8; 32];
+    let mut left_y = [0i8; 32];
+    crate::tx_search::copy_ctx(&mut above_y, &state.above_ectx[0][a0..a0 + mi_w], mi_w);
+    crate::tx_search::copy_ctx(&mut left_y, &state.left_ectx[0][l0..l0 + mi_h], mi_h);
     if let Some(dbg) = crate::tx_search::tx_dbg_target() {
         if (mi_row, mi_col) == dbg {
             eprintln!(
@@ -1295,8 +1297,8 @@ pub fn encode_b_intra_dry(
         // (--disable-trellis-quant=2), where the final pack must trellis and
         // the search must not (init_rd_sf, is_trellis_used, encodemb.h:153).
         dry_run_output_enabled: output_enabled,
-        above_ctx: &above_y,
-        left_ctx: &left_y,
+        above_ctx: &above_y[..mi_w],
+        left_ctx: &left_y[..mi_h],
         qm_level: env.qm_levels.map(|l| l[0]),
         palette: winner
             .palette_y
@@ -1371,10 +1373,14 @@ pub fn encode_b_intra_dry(
         let (pmw, pmh) = (MI_SIZE_WIDE_B[plane_bsize], MI_SIZE_HIGH_B[plane_bsize]);
         let au = (mi_col >> env.ss_x) as usize;
         let lu = ((mi_row & 31) >> env.ss_y) as usize;
-        let above_u: Vec<i8> = state.above_ectx[1][au..au + pmw].to_vec();
-        let left_u: Vec<i8> = state.left_ectx[1][lu..lu + pmh].to_vec();
-        let above_v: Vec<i8> = state.above_ectx[2][au..au + pmw].to_vec();
-        let left_v: Vec<i8> = state.left_ectx[2][lu..lu + pmh].to_vec();
+        let mut above_u = [0i8; 32];
+        let mut left_u = [0i8; 32];
+        let mut above_v = [0i8; 32];
+        let mut left_v = [0i8; 32];
+        crate::tx_search::copy_ctx(&mut above_u, &state.above_ectx[1][au..au + pmw], pmw);
+        crate::tx_search::copy_ctx(&mut left_u, &state.left_ectx[1][lu..lu + pmh], pmh);
+        crate::tx_search::copy_ctx(&mut above_v, &state.above_ectx[2][au..au + pmw], pmw);
+        crate::tx_search::copy_ctx(&mut left_v, &state.left_ectx[2][lu..lu + pmh], pmh);
         // The real per-txs_ctx table for THIS leaf's uniform UV tx_size.
         let uv_tables = env.coeff_costs_uv.tables(uv_tx);
         let uv_env = UvRdEnv {
@@ -1419,8 +1425,8 @@ pub fn encode_b_intra_dry(
             rdmult: env.rdmult,
             coeff_costs: &uv_tables,
             tx_type_costs: env.tx_type_costs,
-            above_ctx: [&above_u, &above_v],
-            left_ctx: [&left_u, &left_v],
+            above_ctx: [&above_u[..pmw], &above_v[..pmw]],
+            left_ctx: [&left_u[..pmh], &left_v[..pmh]],
             qm_levels: env.qm_levels,
         };
         let uv_winner = UvWinner {
