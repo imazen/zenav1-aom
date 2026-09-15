@@ -91,12 +91,14 @@ fn quantize_fp_impl_scalar(
     )
 }
 
-// 256-bit kernel: the x8 generic types' backends are v3 (AVX2) / neon /
-// wasm128 (x16/512-bit widths are the v4 tier's domain — a hand-slotted
-// `_v4` i32x16 variant can join later if profiling justifies it).
+// 256-bit kernel: the x8 generic types' backends are neon / wasm128.
 // `-scalar` drops the macro's auto-appended scalar variant — the hand-written
-// `_scalar` above (the transcribed port, verbatim) takes that slot instead.
-#[magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+// `_scalar` above (the transcribed port, verbatim) takes that slot instead —
+// and `v3` is absent because a hand-written AVX2 body below takes it: an
+// instruction-level mirror of upstream's REAL runtime kernels
+// (`av1_quantize_fp_avx2`/`_32x32`/`_64x64`), which differ from the C scalar
+// in i16-lane edge cases. See the `_v3` body's docs.
+#[magetypes(define(i32x8), neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn quantize_fp_impl(
     token: Token,
@@ -153,10 +155,26 @@ fn quantize_fp_impl(
     );
     for ci in 0..n / 8 {
         let first = ci == 0;
-        let thr_v = if first { mk(thr_c[0], thr_c[1], true) } else { thr_ac };
-        let rnd_v = if first { mk(rounding[0], rounding[1], true) } else { rnd_ac };
-        let qnt_v = if first { mk(quant[0] as i32, quant[1] as i32, true) } else { qnt_ac };
-        let dqv_v = if first { mk(dequant[0] as i32, dequant[1] as i32, true) } else { dqv_ac };
+        let thr_v = if first {
+            mk(thr_c[0], thr_c[1], true)
+        } else {
+            thr_ac
+        };
+        let rnd_v = if first {
+            mk(rounding[0], rounding[1], true)
+        } else {
+            rnd_ac
+        };
+        let qnt_v = if first {
+            mk(quant[0] as i32, quant[1] as i32, true)
+        } else {
+            qnt_ac
+        };
+        let dqv_v = if first {
+            mk(dequant[0] as i32, dequant[1] as i32, true)
+        } else {
+            dqv_ac
+        };
 
         let c = i32x8::from_slice(token, &coeff[ci * 8..ci * 8 + 8]);
         // sign = c >> 31 (all-ones for negative); abs = (c ^ sign) - sign (wrapping).
@@ -224,4 +242,213 @@ fn quantize_fp_impl(
 
     let mx = eob_v.to_array().into_iter().max().unwrap_or(0);
     mx as u16
+}
+
+/// x86-64/AVX2 tier: an instruction-level mirror of upstream's REAL runtime
+/// kernels — `av1_quantize_fp_avx2`, `av1_quantize_fp_32x32_avx2` and
+/// `av1_quantize_fp_64x64_avx2` (`av1/encoder/x86/av1_quantize_avx2.c`) — the
+/// functions an AVX2 libaom build actually dispatches to through RTCD.
+///
+/// This is deliberately NOT bit-identical to the scalar port on the full i32
+/// domain, because the C avx2 kernel is not bit-identical to `av1_quantize_fp_c`
+/// there either — libaom's ENCODER is not arch-bit-exact, and the byte gates
+/// run real `aomenc` on x86-64 where this avx2 kernel is what executes. The
+/// edge cases where the two C variants differ are mirrored exactly:
+///
+/// * `packs_epi32` SATURATES each input coeff to i16 (scalar reads full i32);
+/// * `abs_epi16` maps the saturated -32768 back to -32768;
+/// * `adds_epi16` saturates `abs + round` (scalar clamps64 to the same bound);
+/// * `dq` is a `mullo_epi16` product — i16-WRAPPED where the scalar keeps the
+///   full i32 product (a real, if narrow, C-scalar-vs-avx2 divergence for
+///   |q*dequant| >= 2^15, unreachable under the production quantizer tables
+///   where |q*dequant| <= 32767 by the `quant = (1<<16)/dequant` relation);
+/// * ls=1 uses `mulhi_epu16` (unsigned) and `dq = (abs_q*dequant mod 2^16)>>1`;
+/// * ls=2 gates `tmp_rnd` with `& mask`, computes q/dq through the
+///   mulhi<<k | mullo>>k reconstruction, and derives the eob nz mask from
+///   `dq != 0` (the `psign` zeroing quirk), not `abs_q > 0`;
+/// * the gate is `abs > (dequant >> (1+ls)) - 1` in i16 — which for odd
+///   dequant admits the boundary `abs = dequant>>1` that the scalar's
+///   `(abs << (1+ls)) >= dequant` rejects (still eob/q-inert on production
+///   params: that lane quantizes to 0).
+///
+/// Chunk shape: 16 i16 lanes per iteration built by `packs_epi32` on two
+/// i32x8 loads (giving C's [c0-3, c8-11 | c4-7, c12-15] lane order); the
+/// sign-extend + unpack store dance writes i32 lanes back in natural order,
+/// and `permute4x64(iscan, 0xD8)` aligns the eob gather to the same lanes.
+/// `n % 16 != 0` (never on the encode path — every fp txb area is a multiple
+/// of 16) falls back to the scalar transcription rather than over-reading,
+/// which is what C's `while (n_coeffs > 0)` loop would do.
+///
+/// Differential: `tests/all/quantize_fp_avx2_diff.rs` pins this tier against
+/// the exported `av1_quantize_fp{,_32x32,_64x64}_avx2` symbols over the FULL
+/// i32 coeff / i16 table domain — the strongest oracle available, since the
+/// mirror target is the dispatched C kernel itself.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn quantize_fp_impl_v3(
+    _t: archmage::X64V3Token,
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    round: &[i16; 2],
+    log_scale: i32,
+    scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    use archmage::intrinsics::x86_64::*;
+
+    let n = coeff.len();
+    if n == 0
+        || n % 16 != 0
+        || log_scale < 0
+        || log_scale > 2
+        || iscan.len() < n
+        || qcoeff.len() < n
+        || dqcoeff.len() < n
+    {
+        return crate::quant::av1_quantize_fp_no_qmatrix(
+            quant, dequant, round, log_scale, scan, coeff, qcoeff, dqcoeff,
+        );
+    }
+
+    // init_qp (av1_quantize_avx2.c:30-55): the C param rows are
+    // int16_t[8] with ac replicated through lane 7, so the 16-byte load +
+    // unpackhi_epi64 broadcast yields [dc, ac x15] for chunk 0 and
+    // [ac x16] after update_qp. Built here as broadcast+blend pairs: the dc
+    // lane lives only in chunk 0's lane 0.
+    let rt = |x: i16| -> i16 {
+        // _mm_add_epi16 (wrapping) + _mm_srai_epi16 for log_scale > 0.
+        if log_scale > 0 {
+            x.wrapping_add(1i16 << (log_scale - 1)) >> log_scale
+        } else {
+            x
+        }
+    };
+    let qt = |x: i16| -> i16 {
+        // slli_epi16 by log_scale — only applied when log_scale == 1.
+        if log_scale == 1 {
+            x << 1
+        } else {
+            x
+        }
+    };
+    // [dc, ac x15] / [ac x16] pairs. vpinsrw on a ymm touches ONLY lane 0 of
+    // the low half (the imm has no half-select) — blend_epi16 would hit lane
+    // 8 too, which is coeff index 4 in the packs lane order.
+    let mk = |dc: i16, ac: i16| -> (__m256i, __m256i) {
+        (
+            _mm256_insert_epi16::<0>(_mm256_set1_epi16(ac), dc),
+            _mm256_set1_epi16(ac),
+        )
+    };
+    let (rnd0, rnd_a) = mk(rt(round[0]), rt(round[1]));
+    let (qnt0, qnt_a) = mk(qt(quant[0]), qt(quant[1]));
+    let (dqt0, dqt_a) = mk(dequant[0], dequant[1]);
+    // threshold = (dequant >> (1+log_scale)) - 1, i16 arithmetic — C
+    // computes it vector-side with the same ops.
+    let sh = _mm_cvtsi32_si128(1 + log_scale);
+    let one = _mm256_set1_epi16(1);
+    let thr0 = _mm256_sub_epi16(_mm256_sra_epi16(dqt0, sh), one);
+    let thr_a = _mm256_sub_epi16(_mm256_sra_epi16(dqt_a, sh), one);
+
+    // View every buffer as fixed-width blocks over EXACTLY n elements —
+    // truncating first lets LLVM see every `c8[2i]`/`q8[2i+1]`/`i16v[i]`
+    // index is in-bounds for i < n/16, folding the bounds checks a
+    // try_into-per-slice leaves behind. n % 16 == 0 was checked above, so
+    // the as_chunks remainders are empty.
+    let c8 = coeff[..n].as_chunks::<8>().0;
+    let q8 = qcoeff[..n].as_chunks_mut::<8>().0;
+    let d8 = dqcoeff[..n].as_chunks_mut::<8>().0;
+    let i16v = iscan[..n].as_chunks::<16>().0;
+
+    let zero = _mm256_setzero_si256();
+    let mut eob_v = zero;
+
+    // C's `quantize_fp` helper, one 16-coeff chunk. The first chunk runs the
+    // [dc, ac x15] params; chunks after it run [ac x16] — C peels the same
+    // way (the dc lane lives only in chunk 0).
+    macro_rules! chunk {
+        ($i:expr, $r_v:expr, $q_v:expr, $d_v:expr, $thr_v:expr) => {{
+            let i = $i;
+            // load_coefficients_avx2: packs_epi32 keeps C's permuted lane
+            // order.
+            let c = _mm256_packs_epi32(
+                _mm256_loadu_si256(&c8[2 * i]),
+                _mm256_loadu_si256(&c8[2 * i + 1]),
+            );
+            let abs = _mm256_abs_epi16(c);
+            let mask = _mm256_cmpgt_epi16(abs, $thr_v);
+
+            if _mm256_movemask_epi8(mask) == 0 {
+                // write_zero x2 per array.
+                _mm256_storeu_si256(&mut q8[2 * i], zero);
+                _mm256_storeu_si256(&mut q8[2 * i + 1], zero);
+                _mm256_storeu_si256(&mut d8[2 * i], zero);
+                _mm256_storeu_si256(&mut d8[2 * i + 1], zero);
+            } else {
+                let (q16, dq16, nz);
+                if log_scale == 0 {
+                    // quantize_fp_16.
+                    let tmp_rnd = _mm256_adds_epi16(abs, $r_v);
+                    let abs_q = _mm256_mulhi_epi16(tmp_rnd, $q_v);
+                    q16 = _mm256_sign_epi16(abs_q, c);
+                    dq16 = _mm256_mullo_epi16(q16, $d_v);
+                    nz = _mm256_cmpgt_epi16(abs_q, zero);
+                } else if log_scale == 1 {
+                    // quantize_fp_32x32.
+                    let tmp_rnd = _mm256_adds_epi16(abs, $r_v);
+                    let abs_q = _mm256_mulhi_epu16(tmp_rnd, $q_v);
+                    q16 = _mm256_sign_epi16(abs_q, c);
+                    let abs_dq =
+                        _mm256_srli_epi16::<1>(_mm256_mullo_epi16(abs_q, $d_v));
+                    dq16 = _mm256_sign_epi16(abs_dq, c);
+                    nz = _mm256_cmpgt_epi16(abs_q, zero);
+                } else {
+                    // quantize_fp_64x64.
+                    let tmp_rnd = _mm256_and_si256(_mm256_adds_epi16(abs, $r_v), mask);
+                    let qh = _mm256_slli_epi16::<2>(_mm256_mulhi_epi16(tmp_rnd, $q_v));
+                    let ql = _mm256_srli_epi16::<14>(_mm256_mullo_epi16(tmp_rnd, $q_v));
+                    let abs_q = _mm256_or_si256(qh, ql);
+                    let dqh = _mm256_slli_epi16::<14>(_mm256_mulhi_epi16(abs_q, $d_v));
+                    let dql = _mm256_srli_epi16::<2>(_mm256_mullo_epi16(abs_q, $d_v));
+                    let abs_dq = _mm256_or_si256(dqh, dql);
+                    q16 = _mm256_sign_epi16(abs_q, c);
+                    dq16 = _mm256_sign_epi16(abs_dq, c);
+                    // The z_mask quirk: eob tracks dq != 0, not abs_q > 0.
+                    let z_mask = _mm256_cmpeq_epi16(dq16, zero);
+                    nz = _mm256_cmpeq_epi16(z_mask, zero);
+                }
+
+                // store_coefficients_avx2: sign-extend i16 lanes to i32,
+                // unpack un-permutes the packs lane order back to natural.
+                let qs = _mm256_srai_epi16::<15>(q16);
+                _mm256_storeu_si256(&mut q8[2 * i], _mm256_unpacklo_epi16(q16, qs));
+                _mm256_storeu_si256(&mut q8[2 * i + 1], _mm256_unpackhi_epi16(q16, qs));
+                let ds = _mm256_srai_epi16::<15>(dq16);
+                _mm256_storeu_si256(&mut d8[2 * i], _mm256_unpacklo_epi16(dq16, ds));
+                _mm256_storeu_si256(&mut d8[2 * i + 1], _mm256_unpackhi_epi16(dq16, ds));
+
+                // get_max_lane_eob: permute4x64(0xD8) aligns iscan to the
+                // packed lane order; iscan+1 is kept where the lane is
+                // nonzero.
+                let isc = _mm256_permute4x64_epi64::<0xD8>(_mm256_loadu_si256(&i16v[i]));
+                let plus1 = _mm256_sub_epi16(isc, nz);
+                eob_v = _mm256_max_epi16(eob_v, _mm256_and_si256(plus1, nz));
+            }
+        }};
+    }
+
+    chunk!(0, rnd0, qnt0, dqt0, thr0);
+    for i in 1..n / 16 {
+        chunk!(i, rnd_a, qnt_a, dqt_a, thr_a);
+    }
+
+    // quant_gather_eob's minpos fold equals a plain max: every lane holds
+    // iscan+1 (>= 0) or 0, and all-zero yields 0 either way.
+    let mut ea = [0i16; 16];
+    let ea_ref: &mut [i16; 16] = &mut ea;
+    _mm256_storeu_si256(ea_ref, eob_v);
+    ea.into_iter().max().unwrap_or(0) as u16
 }

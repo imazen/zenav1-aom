@@ -99,6 +99,7 @@ mod qm_level_diff;
 mod quantize_b_adaptive_diff;
 mod quantize_b_diff;
 mod quantize_dc_diff;
+mod quantize_fp_avx2_diff;
 mod quantize_fp_diff;
 mod quantize_fp_simd_diff;
 mod quantize_qm_diff;

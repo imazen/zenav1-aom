@@ -6629,6 +6629,55 @@ extern "C" {
         iscan: *const i16,
     );
 }
+// The REAL avx2 runtime kernels — what an x86-64 libaom build dispatches to.
+// NOT bit-identical to the `_c` variants on the full i32 domain (i16-lane
+// packs saturation, i16-wrapped dq products, the ls=2 `dq != 0` eob quirk);
+// the port's v3 tier mirrors them.
+#[cfg(target_arch = "x86_64")]
+extern "C" {
+    pub fn av1_quantize_fp_avx2(
+        coeff: *const i32,
+        n: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+    pub fn av1_quantize_fp_32x32_avx2(
+        coeff: *const i32,
+        n: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+    pub fn av1_quantize_fp_64x64_avx2(
+        coeff: *const i32,
+        n: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+}
 
 /// Reference `av1_quantize_fp` family. `log_scale` selects 0/1/2. Returns
 /// (qcoeff, dqcoeff, eob).
@@ -6668,6 +6717,79 @@ pub fn ref_quantize_fp(
             dummy.as_ptr(),
         )
     }
+    (qcoeff, dqcoeff, eob)
+}
+
+/// Reference `av1_quantize_fp` family — the REAL avx2 kernels
+/// (`av1_quantize_fp_avx2`/`_32x32_avx2`/`_64x64_avx2` by `log_scale`), what
+/// an x86-64 libaom build dispatches to. Requires AVX2 at runtime — callers
+/// must gate on `X64V3Token::summon().is_some()`. `n` must be a multiple of
+/// 16 (the kernel's own assumption; it does not bounds-check). Returns
+/// (qcoeff, dqcoeff, eob).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_quantize_fp_avx2(
+    log_scale: i32,
+    coeff: &[i32],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    scan: &[i16],
+    iscan: &[i16],
+) -> (Vec<i32>, Vec<i32>, u16) {
+    let n = coeff.len();
+    // The kernel uses ALIGNED vmovdqa loads/stores on coeff, qcoeff and
+    // dqcoeff (production buffers are DECLARE_ALIGNED(32)); a plain Vec<i32>
+    // only guarantees 4-byte alignment and segfaults. iscan goes through a
+    // vpermq memory operand, which does not require alignment.
+    #[repr(align(32))]
+    #[derive(Clone, Copy)]
+    struct A32([i32; 8]);
+    let mut coeff_a = vec![A32([0; 8]); n.div_ceil(8)];
+    let mut qcoeff_a = vec![A32([0; 8]); n.div_ceil(8)];
+    let mut dqcoeff_a = vec![A32([0; 8]); n.div_ceil(8)];
+    let cp = coeff_a.as_mut_ptr().cast::<i32>();
+    unsafe { std::ptr::copy_nonoverlapping(coeff.as_ptr(), cp, n) };
+    let mut eob: u16 = 0;
+    let dummy = vec![0i16; n.max(2)];
+    // The avx2 kernel loads a FULL 16 bytes from each param pointer — the
+    // production layout is int16_t[8] rows with ac replicated through lane 7
+    // (av1_quantize.h's `// 8: SIMD width` comment). Replicate that layout;
+    // a 2-element buffer would leak adjacent memory into lanes 2-7.
+    let round8: [i16; 8] =
+        [round[0], round[1], round[1], round[1], round[1], round[1], round[1], round[1]];
+    let quant8: [i16; 8] =
+        [quant[0], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1]];
+    let dequant8: [i16; 8] = [
+        dequant[0], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1],
+        dequant[1],
+    ];
+    let f: QuantFpFn = match log_scale {
+        0 => av1_quantize_fp_avx2,
+        1 => av1_quantize_fp_32x32_avx2,
+        2 => av1_quantize_fp_64x64_avx2,
+        _ => unreachable!(),
+    };
+    unsafe {
+        f(
+            cp,
+            n as isize,
+            dummy.as_ptr(),
+            round8.as_ptr(),
+            quant8.as_ptr(),
+            dummy.as_ptr(),
+            qcoeff_a.as_mut_ptr().cast::<i32>(),
+            dqcoeff_a.as_mut_ptr().cast::<i32>(),
+            dequant8.as_ptr(),
+            &mut eob,
+            scan.as_ptr(),
+            iscan.as_ptr(),
+        )
+    }
+    let qp = qcoeff_a.as_ptr().cast::<i32>();
+    let dp = dqcoeff_a.as_ptr().cast::<i32>();
+    let qcoeff: Vec<i32> = (0..n).map(|i| unsafe { *qp.add(i) }).collect();
+    let dqcoeff: Vec<i32> = (0..n).map(|i| unsafe { *dp.add(i) }).collect();
     (qcoeff, dqcoeff, eob)
 }
 

@@ -1,12 +1,18 @@
-//! SIMD-vs-scalar differential for `av1_quantize_fp_no_qmatrix_dispatch`
-//! (Gate-3 parity rule 1: integer SIMD MUST be bit-identical to the scalar
-//! port — qcoeff, dqcoeff, AND eob — at every dispatch tier).
+//! SIMD-tier differential for `av1_quantize_fp_no_qmatrix_dispatch`
+//! (Gate-3 parity rule 1, refined: integer SIMD MUST be bit-identical to
+//! THE C KERNEL REAL libaom DISPATCHES TO on that architecture — which on
+//! x86-64 is `av1_quantize_fp{,_32x32,_64x64}_avx2`, not the scalar `_c`).
 //!
-//! The scalar port is itself C-differentially validated
-//! (`quantize_fp_diff.rs`), so SIMD == scalar here transitively pins SIMD ==
-//! C. Every case runs under `archmage::testing::for_each_token_permutation`,
-//! which re-executes the dispatch with each SIMD tier disabled down to
-//! scalar-only — proving the incant fallback chain AND the vector kernel.
+//! The v3 tier is an instruction-level mirror of the real C AVX2 kernels and
+//! deliberately differs from the scalar port on the adversarial domain
+//! (packs_epi32 input saturation, i16-wrapped dq, the ls=2 `dq != 0` eob
+//! quirk) — exactly where C-avx2 differs from C-scalar. So this test picks
+//! its oracle by live tier: v3-live permutations compare against the exported
+//! C avx2 symbols; every other tier (scalar pin, wasm128, aarch64 neon)
+//! compares against the scalar port, which is itself C-differentially
+//! validated (`quantize_fp_diff.rs`). The v3 arm duplicates
+//! `quantize_fp_avx2_diff.rs` under the permutation harness so the incant
+//! fallback chain is exercised against the real kernel too.
 //!
 //! Domain: FULL adversarial i32 coefficients (including i32::MIN/MAX) and
 //! full-range i16 tables (including zero/negative values that
@@ -19,8 +25,8 @@ use aom_dsp::quant::av1_quantize_fp_no_qmatrix;
 use aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch;
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -57,6 +63,7 @@ fn perm_pair(rng: &mut Rng, n: usize) -> (Vec<i16>, Vec<i16>) {
 #[allow(clippy::too_many_arguments)]
 fn assert_case(
     label: &str,
+    v3_live: bool,
     quant: &[i16; 2],
     dequant: &[i16; 2],
     round: &[i16; 2],
@@ -66,19 +73,53 @@ fn assert_case(
     coeff: &[i32],
 ) {
     let n = coeff.len();
-    let mut q_ref = vec![0i32; n];
-    let mut dq_ref = vec![0i32; n];
-    let eob_ref = av1_quantize_fp_no_qmatrix(
-        quant, dequant, round, log_scale, scan, coeff, &mut q_ref, &mut dq_ref,
-    );
     let mut q_got = vec![0i32; n];
     let mut dq_got = vec![0i32; n];
     let eob_got = av1_quantize_fp_no_qmatrix_dispatch(
-        quant, dequant, round, log_scale, scan, iscan, coeff, &mut q_got, &mut dq_got,
+        quant,
+        dequant,
+        round,
+        log_scale,
+        scan,
+        iscan,
+        coeff,
+        &mut q_got,
+        &mut dq_got,
     );
-    assert_eq!(eob_got, eob_ref, "{label}: eob");
-    assert_eq!(q_got, q_ref, "{label}: qcoeff\ncoeff={coeff:?}");
-    assert_eq!(dq_got, dq_ref, "{label}: dqcoeff\ncoeff={coeff:?}");
+    #[cfg(target_arch = "x86_64")]
+    if v3_live {
+        // The v3 tier mirrors the REAL exported avx2 kernel (see module doc);
+        // n is always a multiple of 16 in this test, as that kernel requires.
+        let (q_ref, dq_ref, eob_ref) =
+            aom_sys_ref::ref_quantize_fp_avx2(log_scale, coeff, round, quant, dequant, scan, iscan);
+        assert_eq!(eob_got, eob_ref, "{label}: eob (vs C-avx2)");
+        assert_eq!(q_got, q_ref, "{label}: qcoeff (vs C-avx2)\ncoeff={coeff:?}");
+        assert_eq!(
+            dq_got, dq_ref,
+            "{label}: dqcoeff (vs C-avx2)\ncoeff={coeff:?}"
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    debug_assert!(!v3_live, "the v3 token is a stub off x86-64");
+    let _ = v3_live;
+    {
+        let mut q_ref = vec![0i32; n];
+        let mut dq_ref = vec![0i32; n];
+        let eob_ref = av1_quantize_fp_no_qmatrix(
+            quant,
+            dequant,
+            round,
+            log_scale,
+            scan,
+            coeff,
+            &mut q_ref,
+            &mut dq_ref,
+        );
+        assert_eq!(eob_got, eob_ref, "{label}: eob");
+        assert_eq!(q_got, q_ref, "{label}: qcoeff\ncoeff={coeff:?}");
+        assert_eq!(dq_got, dq_ref, "{label}: dqcoeff\ncoeff={coeff:?}");
+    }
 }
 
 #[test]
@@ -115,10 +156,11 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
         // Per-architecture: this family's vector path is X64V3 on x86-64 and
         // Neon on aarch64. Testing only X64V3Token counts every aarch64
         // permutation as scalar (that token is a stub off x86).
+        let v3_live = !cfg!(target_arch = "aarch64") && archmage::X64V3Token::summon().is_some();
         if if cfg!(target_arch = "aarch64") {
             archmage::NeonToken::summon().is_some()
         } else {
-            archmage::X64V3Token::summon().is_some()
+            v3_live
         } {
             simd_perms += 1;
         }
@@ -137,6 +179,7 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
                         .collect();
                     assert_case(
                         &format!("[{tier}] prod n={n} ls={ls} rep={rep}"),
+                        v3_live,
                         &quant,
                         &dequant,
                         &round,
@@ -154,6 +197,7 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
                     let coeff: Vec<i32> = (0..n).map(|_| rng.next() as i32).collect();
                     assert_case(
                         &format!("[{tier}] adv n={n} ls={ls} rep={rep}"),
+                        v3_live,
                         &quant,
                         &dequant,
                         &round,
@@ -171,6 +215,7 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
                 let mut edge = vec![0i32; n];
                 assert_case(
                     &format!("[{tier}] zeros n={n} ls={ls}"),
+                    v3_live,
                     &quant,
                     &dequant,
                     &round,
@@ -189,6 +234,7 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
                 edge[n / 2 + 1] = ((dequant[1] as i32) << 3) - 1;
                 assert_case(
                     &format!("[{tier}] extremes n={n} ls={ls}"),
+                    v3_live,
                     &quant,
                     &dequant,
                     &round,
@@ -207,7 +253,11 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(
         report.permutations_run >= 2,

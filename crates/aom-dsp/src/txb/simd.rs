@@ -18,7 +18,7 @@
 
 use archmage::prelude::*;
 
-use crate::txb::{TX_PAD_BOTTOM, TX_PAD_END, TX_PAD_HOR, TxClass};
+use crate::txb::{TX_PAD_HOR, TxClass};
 
 /// Scalar tier = the transcribed port, verbatim.
 pub(crate) fn txb_init_levels_impl_scalar(
@@ -41,7 +41,7 @@ pub(crate) fn txb_init_levels_impl(
 ) {
     let stride = height + TX_PAD_HOR;
     let tail = stride * width;
-    levels[tail..tail + TX_PAD_BOTTOM * stride + TX_PAD_END].fill(0);
+    levels[tail..tail + crate::txb::TX_PAD_BOTTOM * stride + crate::txb::TX_PAD_END].fill(0);
 
     let zero = i32x8::zero(token);
     let cap = i32x8::splat(token, i8::MAX as i32);
@@ -132,7 +132,53 @@ pub(crate) fn txb_init_levels_impl_v3(
 
     let stride = height + TX_PAD_HOR;
     let tail = stride * width;
-    levels[tail..tail + TX_PAD_BOTTOM * stride + TX_PAD_END].fill(0);
+    // The tail pad is 48..160 bytes (4*stride+16, stride in {8,12,20,36}).
+    // A dynamic fill lowers to a memset PLT call per invocation — and a
+    // STORE LOOP gets re-idiomized into one — so this is straight-line
+    // stores, count fixed per height.
+    let zero128 = _mm_setzero_si128();
+    macro_rules! zt {
+        ($off:expr) => {
+            _mm_storeu_si128::<[u8; 16]>(
+                (&mut levels[tail + $off..tail + $off + 16]).try_into().unwrap(),
+                zero128,
+            )
+        };
+    }
+    match height {
+        4 => {
+            zt!(0);
+            zt!(16);
+            zt!(32);
+        }
+        8 => {
+            zt!(0);
+            zt!(16);
+            zt!(32);
+            zt!(48);
+        }
+        16 => {
+            zt!(0);
+            zt!(16);
+            zt!(32);
+            zt!(48);
+            zt!(64);
+            zt!(80);
+        }
+        _ => {
+            // height == 32, stride 36, tail 160B.
+            zt!(0);
+            zt!(16);
+            zt!(32);
+            zt!(48);
+            zt!(64);
+            zt!(80);
+            zt!(96);
+            zt!(112);
+            zt!(128);
+            zt!(144);
+        }
+    }
 
     let zero = _mm256_setzero_si256();
     let cap127 = _mm256_set1_epi16(127);
@@ -169,10 +215,11 @@ pub(crate) fn txb_init_levels_impl_v3(
                 let o3: &mut [u8; 8] =
                     (&mut levels[ls + 3 * stride..ls + 3 * stride + 8]).try_into().unwrap();
                 _mm_storeu_si64(o3, _mm_srli_si128(r1, 8));
-                levels[ls + 8..ls + 12].fill(0);
-                levels[ls + stride + 8..ls + stride + 12].fill(0);
-                levels[ls + 2 * stride + 8..ls + 2 * stride + 12].fill(0);
-                levels[ls + 3 * stride + 8..ls + 3 * stride + 12].fill(0);
+                let zp = &0u32.to_ne_bytes();
+                levels[ls + 8..ls + 12].copy_from_slice(zp);
+                levels[ls + stride + 8..ls + stride + 12].copy_from_slice(zp);
+                levels[ls + 2 * stride + 8..ls + 2 * stride + 12].copy_from_slice(zp);
+                levels[ls + 3 * stride + 8..ls + 3 * stride + 12].copy_from_slice(zp);
                 cf += 32;
                 ls += 4 * stride;
             }
@@ -204,8 +251,9 @@ pub(crate) fn txb_init_levels_impl_v3(
                 let o1: &mut [u8; 16] =
                     (&mut levels[ls + stride..ls + stride + 16]).try_into().unwrap();
                 _mm_storeu_si128(o1, _mm256_extracti128_si256(r, 1));
-                levels[ls + 16..ls + 20].fill(0);
-                levels[ls + stride + 16..ls + stride + 20].fill(0);
+                let zp = &0u32.to_ne_bytes();
+                levels[ls + 16..ls + 20].copy_from_slice(zp);
+                levels[ls + stride + 16..ls + stride + 20].copy_from_slice(zp);
                 cf += 32;
                 ls += 2 * stride;
             }
@@ -220,7 +268,7 @@ pub(crate) fn txb_init_levels_impl_v3(
                 let r = _mm256_shuffle_epi32(_mm256_permute4x64_epi64(v, 0xd8), 0xd8);
                 let out: &mut [u8; 32] = (&mut levels[ls..ls + 32]).try_into().unwrap();
                 _mm256_storeu_si256(out, r);
-                levels[ls + 32..ls + 36].fill(0);
+                levels[ls + 32..ls + 36].copy_from_slice(&0u32.to_ne_bytes());
                 cf += 32;
                 ls += stride;
             }
