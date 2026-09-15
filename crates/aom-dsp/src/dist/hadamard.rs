@@ -98,14 +98,9 @@ pub fn hadamard_4x4(src: &[i16], src_stride: usize) -> [i32; 16] {
 /// eob and nothing else, which reads as a near-tie for four sessions), so it is
 /// preserved by construction here rather than by a separate pass.
 pub fn hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = crate::dispatch::scalar_forced();
-        if let Some(c) = archmage::incant!(hadamard_8x8_avx2(src, src_stride), [v3, scalar]) {
-            return c;
-        }
-    }
-    hadamard_8x8_scalar_core(src, src_stride)
+    let mut coeff = [0i32; 64];
+    hadamard_8x8_into(src, src_stride, &mut coeff);
+    coeff
 }
 
 /// AVX2/SSE2 `aom_hadamard_8x8_sse2`'s shape: the eight ROW loads are
@@ -135,7 +130,8 @@ fn hadamard_8x8_avx2_scalar(
     _t: archmage::ScalarToken,
     _src: &[i16],
     _src_stride: usize,
-) -> Option<[i32; 64]> {
+    _out: &mut [i32; 64],
+) -> Option<()> {
     None
 }
 
@@ -145,7 +141,8 @@ fn hadamard_8x8_avx2(
     _token: Token,
     src: &[i16],
     src_stride: usize,
-) -> Option<[i32; 64]> {
+    out: &mut [i32; 64],
+) -> Option<()> {
     use archmage::intrinsics::x86_64::*;
 
     // The eight-point butterfly of `hadamard_col8`, lane-parallel over 8 columns.
@@ -220,13 +217,12 @@ fn hadamard_8x8_avx2(
     // so transpose first and run the identical network again.
     let u = col8(transpose(col8(v)));
 
-    let mut coeff = [0i32; 64];
     for (i, ui) in u.iter().enumerate() {
         let wide = _mm256_cvtepi16_epi32(*ui);
-        let dst: &mut [i32; 8] = (&mut coeff[i * 8..i * 8 + 8]).try_into().ok()?;
+        let dst: &mut [i32; 8] = (&mut out[i * 8..i * 8 + 8]).try_into().ok()?;
         _mm256_storeu_si256(dst, wide);
     }
-    Some(coeff)
+    Some(())
 }
 
 /// The transcribed scalar core — the differential's reference and the
@@ -249,10 +245,19 @@ fn hadamard_8x8_scalar_core(src: &[i16], src_stride: usize) -> [i32; 64] {
     coeff
 }
 
-/// [`hadamard_8x8`] into a caller-provided buffer — identical values; the
-/// 256-byte body is small enough that the move is already inline stores.
+/// [`hadamard_8x8`] into a caller-provided buffer — identical values. The
+/// AVX2 tier writes `out` in place so the 256-byte result never moves through
+/// an `Option<[i32; 64]>` return.
 pub fn hadamard_8x8_into(src: &[i16], src_stride: usize, out: &mut [i32; 64]) {
-    *out = hadamard_8x8(src, src_stride);
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = crate::dispatch::scalar_forced();
+        if let Some(()) = archmage::incant!(hadamard_8x8_avx2(src, src_stride, out), [v3, scalar])
+        {
+            return;
+        }
+    }
+    *out = hadamard_8x8_scalar_core(src, src_stride);
 }
 
 /// [`hadamard_16x16`] into a caller-provided buffer — identical values, but no
@@ -387,16 +392,23 @@ fn highbd_col8_second_pass(src: &[i16], stride: usize, out: &mut [i32]) {
     out[5] = c3 - c7;
 }
 
-/// `aom_highbd_hadamard_8x8_c`: 8-point column pass (i16) then row pass (i32).
-pub fn highbd_hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
+/// [`highbd_hadamard_8x8`] into a caller-provided buffer — identical values;
+/// the second pass writes `out` rows directly so the 256-byte result never
+/// moves through a `copy_from_slice`.
+pub fn highbd_hadamard_8x8_into(src: &[i16], src_stride: usize, out: &mut [i32; 64]) {
     let mut buffer = [0i16; 64];
     for idx in 0..8 {
         highbd_col8_first_pass(&src[idx..], src_stride, &mut buffer[idx * 8..idx * 8 + 8]);
     }
-    let mut buffer2 = [0i32; 64];
     for idx in 0..8 {
-        highbd_col8_second_pass(&buffer[idx..], 8, &mut buffer2[idx * 8..idx * 8 + 8]);
+        highbd_col8_second_pass(&buffer[idx..], 8, &mut out[idx * 8..idx * 8 + 8]);
     }
+}
+
+/// `aom_highbd_hadamard_8x8_c`: 8-point column pass (i16) then row pass (i32).
+pub fn highbd_hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
+    let mut buffer2 = [0i32; 64];
+    highbd_hadamard_8x8_into(src, src_stride, &mut buffer2);
     buffer2
 }
 
@@ -404,8 +416,10 @@ pub fn highbd_hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
 pub fn highbd_hadamard_16x16_into(src: &[i16], src_stride: usize, out: &mut [i32; 256]) {
     for idx in 0..4 {
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
-        let sub = highbd_hadamard_8x8(&src[off..], src_stride);
-        out[idx * 64..idx * 64 + 64].copy_from_slice(&sub);
+        highbd_hadamard_8x8_into(&src[off..], src_stride, (&mut out
+            [idx * 64..idx * 64 + 64])
+            .try_into()
+            .unwrap());
     }
     for idx in 0..64 {
         let (a0, a1, a2, a3) = (out[idx], out[idx + 64], out[idx + 128], out[idx + 192]);

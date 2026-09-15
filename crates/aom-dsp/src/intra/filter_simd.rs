@@ -102,7 +102,28 @@ pub(crate) fn filter_intra_predict_high_impl(
     let mut prev = [0u16; 33];
     let mut row0 = [0u16; 33];
     let mut row1 = [0u16; 33];
-    prev[..bw + 1].copy_from_slice(&above[..bw + 1]);
+    // Runtime-length `copy_from_slice` lowers to a `memcpy` call (~20-40 Ir of
+    // call overhead for an 8..66-byte copy); with `bw ∈ {4,8,16,32}` a literal
+    // length compiles to inline vector moves. The `_` arm keeps the general
+    // path (and its panics) for any future shape.
+    macro_rules! row_copy {
+        ($d:expr, $s:expr) => {
+            match bw {
+                4 => dst[$d..$d + 4].copy_from_slice(&$s[1..5]),
+                8 => dst[$d..$d + 8].copy_from_slice(&$s[1..9]),
+                16 => dst[$d..$d + 16].copy_from_slice(&$s[1..17]),
+                32 => dst[$d..$d + 32].copy_from_slice(&$s[1..33]),
+                _ => dst[$d..$d + bw].copy_from_slice(&$s[1..1 + bw]),
+            }
+        };
+    }
+    match bw + 1 {
+        5 => prev[..5].copy_from_slice(&above[..5]),
+        9 => prev[..9].copy_from_slice(&above[..9]),
+        17 => prev[..17].copy_from_slice(&above[..17]),
+        33 => prev[..33].copy_from_slice(&above[..33]),
+        n => prev[..n].copy_from_slice(&above[..n]),
+    }
 
     let mut r = 1;
     while r < bh + 1 {
@@ -131,9 +152,14 @@ pub(crate) fn filter_intra_predict_high_impl(
             }
             c += 4;
         }
-        dst[(r - 1) * dst_stride..(r - 1) * dst_stride + bw].copy_from_slice(&row0[1..bw + 1]);
-        dst[r * dst_stride..r * dst_stride + bw].copy_from_slice(&row1[1..bw + 1]);
-        prev = row1;
+        row_copy!((r - 1) * dst_stride, row0);
+        row_copy!(r * dst_stride, row1);
+        // [u16; 33] is above LLVM's memcpy-inline threshold; chunked const-size
+        // moves keep this off the call path.
+        for (p, v) in prev.as_chunks_mut::<8>().0.iter_mut().zip(row1.as_chunks::<8>().0) {
+            p.copy_from_slice(v);
+        }
+        prev[32] = row1[32];
         r += 2;
     }
     true

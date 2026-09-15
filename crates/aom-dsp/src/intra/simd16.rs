@@ -204,7 +204,7 @@ fn smooth_impl(
     let mut above_s = [0u16; MAX_W];
     let mut sww_s = [0u16; MAX_W];
     let mut below_term_s = [0u16; MAX_H];
-    above_s[..bw].copy_from_slice(&above_row[..bw]);
+    super::copy_edge(&mut above_s, above_row, bw);
     for (d, &w) in sww_s[..bw].iter_mut().zip(sw_w[..bw].iter()) {
         *d = u16::from(w);
     }
@@ -239,9 +239,13 @@ fn smooth_impl(
             // floor((A+B)/2), which is libaom's truncating vhaddq_u16.
             let half = (a & b) + (a ^ b).shr_logical_const::<1>();
             let out = (half + round).shr_logical_const::<8>();
-            out.store(&mut buf);
             let row = r * stride;
-            dst[row + c..row + c + n].copy_from_slice(&buf[..n]);
+            if n == 16 {
+                out.store((&mut dst[row + c..row + c + 16]).try_into().unwrap());
+            } else {
+                out.store(&mut buf);
+                super::copy_edge(&mut dst[row + c..], &buf, n);
+            }
         }
         c += 16;
     }
@@ -295,7 +299,7 @@ fn smooth_v_impl(
     let below = below as u16;
     let mut above_s = [0u16; MAX_W];
     let mut below_term_s = [0u16; MAX_H];
-    above_s[..bw].copy_from_slice(&above_row[..bw]);
+    super::copy_edge(&mut above_s, above_row, bw);
     for (d, &w) in below_term_s[..bh].iter_mut().zip(sw_h[..bh].iter()) {
         *d = (SCALE - u16::from(w)) * below;
     }
@@ -316,7 +320,7 @@ fn smooth_v_impl(
                 out.store((&mut dst[row + c..row + c + 16]).try_into().unwrap());
             } else {
                 out.store(&mut buf);
-                dst[row + c..row + c + n].copy_from_slice(&buf[..n]);
+                super::copy_edge(&mut dst[row + c..], &buf, n);
             }
         }
         c += 16;
@@ -386,9 +390,13 @@ fn smooth_h_impl(
             let left_r_v = u16x16::splat(token, left[r]);
             let p = w_v * left_r_v + tr_term;
             let out = (p + round).shr_logical_const::<8>();
-            out.store(&mut buf);
             let row = r * stride;
-            dst[row + c..row + c + n].copy_from_slice(&buf[..n]);
+            if n == 16 {
+                out.store((&mut dst[row + c..row + c + 16]).try_into().unwrap());
+            } else {
+                out.store(&mut buf);
+                super::copy_edge(&mut dst[row + c..], &buf, n);
+            }
         }
         c += 16;
     }

@@ -268,10 +268,11 @@ pub fn predict_highbd(
         }
         DC_128 => fill16(dst, (128u32 << (bd - 8)) as u16),
         V => {
-            // Copy the above row into every output row (memcpy).
+            // Copy the above row into every output row — the const-size
+            // `copy_edge` arms keep this off the `memcpy` call path.
             let a = &above.0[1..1 + bw];
             for r in 0..bh {
-                dst[r * stride..r * stride + bw].copy_from_slice(a);
+                copy_edge(&mut dst[r * stride..], a, bw);
             }
         }
         H => {
@@ -539,7 +540,7 @@ fn assemble_nd_edges(recon: &[u16], g: &NdEdge, above_row: &mut [u16], left_col:
     }
     if n_top_px > 0 {
         let aoff = ref_off - ref_stride;
-        above_row[1..1 + n_top_px].copy_from_slice(&recon[aoff..aoff + n_top_px]);
+        copy_edge(&mut above_row[1..], &recon[aoff..], n_top_px);
         let last = above_row[n_top_px];
         for e in above_row[1 + n_top_px..1 + txwpx].iter_mut() {
             *e = last;
@@ -948,6 +949,23 @@ struct DirEdge {
     base: i32,
 }
 
+/// `copy_from_slice` specialized on the reachable edge-copy lengths. Tx widths
+/// are `{4,8,16,32,64}` and partial edges only occur at frame borders, so the
+/// match keeps the common copies on inline vector moves instead of a `memcpy`
+/// call (~90-175 Ir of call overhead on a ≤128-byte copy).
+#[inline]
+fn copy_edge<T: Copy>(dst: &mut [T], src: &[T], n: usize) {
+    match n {
+        0 => {}
+        4 => dst[..4].copy_from_slice(&src[..4]),
+        8 => dst[..8].copy_from_slice(&src[..8]),
+        16 => dst[..16].copy_from_slice(&src[..16]),
+        32 => dst[..32].copy_from_slice(&src[..32]),
+        64 => dst[..64].copy_from_slice(&src[..64]),
+        _ => dst[..n].copy_from_slice(&src[..n]),
+    }
+}
+
 /// Assemble the directional intra reference edges — libaom's
 /// `highbd_build_directional_and_filter_intra_predictors` edge assembly
 /// (reconintra.c): whole-buffer `base±1` defaults, then the real above / left
@@ -1017,13 +1035,12 @@ fn assemble_dir_edges(recon: &[u16], g: &DirEdge, above_data: &mut [u16], left_d
         let num_top = txwpx + if n_topright_px >= 0 { txhpx } else { 0 };
         if n_top_px > 0 {
             let aoff = ref_off - ref_stride;
-            above_data[P..P + n_top_px].copy_from_slice(&recon[aoff..aoff + n_top_px]);
+            copy_edge(&mut above_data[P..], &recon[aoff..], n_top_px);
             let mut i = n_top_px;
             if n_topright_px > 0 {
                 // n_top_px == txwpx here (C assert): the real row is full.
                 let s = aoff + txwpx;
-                above_data[P + txwpx..P + txwpx + n_topright_px as usize]
-                    .copy_from_slice(&recon[s..s + n_topright_px as usize]);
+                copy_edge(&mut above_data[P + txwpx..], &recon[s..], n_topright_px as usize);
                 i += n_topright_px as usize;
             }
             if i < num_top {
@@ -1703,7 +1720,7 @@ fn assemble_nd_edges_u8(recon: &[u8], g: &NdEdge, above_row: &mut [u8], left_col
     }
     if n_top_px > 0 {
         let aoff = ref_off - ref_stride;
-        above_row[1..1 + n_top_px].copy_from_slice(&recon[aoff..aoff + n_top_px]);
+        copy_edge(&mut above_row[1..], &recon[aoff..], n_top_px);
         let last = above_row[n_top_px];
         for e in above_row[1 + n_top_px..1 + txwpx].iter_mut() {
             *e = last;
@@ -1900,12 +1917,11 @@ fn assemble_dir_edges_u8(recon: &[u8], g: &DirEdge, above_data: &mut [u8], left_
         let num_top = txwpx + if n_topright_px >= 0 { txhpx } else { 0 };
         if n_top_px > 0 {
             let aoff = ref_off - ref_stride;
-            above_data[P..P + n_top_px].copy_from_slice(&recon[aoff..aoff + n_top_px]);
+            copy_edge(&mut above_data[P..], &recon[aoff..], n_top_px);
             let mut i = n_top_px;
             if n_topright_px > 0 {
                 let s = aoff + txwpx;
-                above_data[P + txwpx..P + txwpx + n_topright_px as usize]
-                    .copy_from_slice(&recon[s..s + n_topright_px as usize]);
+                copy_edge(&mut above_data[P + txwpx..], &recon[s..], n_topright_px as usize);
                 i += n_topright_px as usize;
             }
             if i < num_top {
@@ -2111,7 +2127,7 @@ fn filter_intra_predict_u8(
     }
 
     for r in 0..bh {
-        dst[r * dst_stride..r * dst_stride + bw].copy_from_slice(&buf[r + 1][1..bw + 1]);
+        copy_edge(&mut dst[r * dst_stride..], &buf[r + 1][1..], bw);
     }
 }
 
