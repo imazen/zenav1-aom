@@ -37,6 +37,33 @@ fn block_error_differential() {
     }
 }
 
+/// The port's v3 kernel mirrors `av1_block_error_avx2` itself — including its
+/// `packs_epi32` i32->i16 saturation — so the two agree on the FULL i32 domain
+/// where `_c` does not. This pins the port against the dispatched kernel.
+#[test]
+fn block_error_matches_c_avx2_full_domain() {
+    let mut rng = Rng(0x_b10c_e770_a0c2_5ed0);
+    for &n in &[16usize, 64, 256, 1024] {
+        for i in 0..4000 {
+            // Full i32 magnitudes, plus periodic saturation-boundary hits.
+            let coeff: Vec<i32> = (0..n)
+                .map(|j| {
+                    if (i + j) % 97 == 0 {
+                        // -2^31, -32768, 32767, +2^31-1 in rotation.
+                        [i32::MIN, -32768, 32767, i32::MAX][(i / 97) & 3]
+                    } else {
+                        rng.next() as i32
+                    }
+                })
+                .collect();
+            let dqcoeff: Vec<i32> = (0..n).map(|_| rng.next() as i32).collect();
+            let got = block_error(&coeff, &dqcoeff);
+            let want = c::ref_block_error_simd(&coeff, &dqcoeff);
+            assert_eq!(got, want, "block_error vs dispatched C kernel n={n} i={i}");
+        }
+    }
+}
+
 #[test]
 fn highbd_block_error_differential() {
     let mut rng = Rng(0x_b10c_e770_c057_0b11);

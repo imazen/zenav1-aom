@@ -270,6 +270,7 @@ pub fn variance_4x4_units(
 }
 
 /// `aom_highbd_<bd>_variance<W>x<H>_c`: returns (variance, sse). `bd` ∈ {8,10,12}.
+#[inline]
 pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize, bd: u8) -> (u32, u32) {
     let (sse_long, sum_long) = highbd_variance64(a, a_stride, b, b_stride, w, h);
     // bd-dependent normalisation (ROUND_POWER_OF_TWO), matching libaom
@@ -290,10 +291,20 @@ pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w
     // rounded terms drive it negative), while the 10/12-bit variants compute
     // an i64 var and CLAMP `(var >= 0) ? var : 0` — the bd normalisation can
     // round sse below sum^2/n for near-flat differences.
-    let var = if bd == 8 {
-        sse.wrapping_sub(((i64::from(sum) * i64::from(sum)) / (w * h) as i64) as u32)
+    // `sum*sum` is always >= 0 and `w*h` is a power of two on every real
+    // block — a shift is bit-identical to the i64 division there (nonneg
+    // dividend). The generic div remains for hypothetical non-pow2 callers.
+    let n = (w * h) as u64;
+    let sumsq = i64::from(sum) * i64::from(sum);
+    let mean_sq = if n.is_power_of_two() {
+        sumsq >> n.trailing_zeros()
     } else {
-        let v = i64::from(sse) - (i64::from(sum) * i64::from(sum)) / (w * h) as i64;
+        sumsq / n as i64
+    };
+    let var = if bd == 8 {
+        sse.wrapping_sub(mean_sq as u32)
+    } else {
+        let v = i64::from(sse) - mean_sq;
         if v >= 0 { v as u32 } else { 0 }
     };
     (var, sse)

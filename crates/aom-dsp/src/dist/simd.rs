@@ -111,8 +111,18 @@ pub fn variance_u16_simd(
 ///
 /// `dqcoeff` is sliced to `coeff.len()` so a short `dqcoeff` panics exactly
 /// where the indexed form panicked.
-#[autoversion]
 pub fn block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    incant!(
+        block_error_impl(coeff, dqcoeff),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// The transcribed port body — the scalar tier and every non-x86 tier's
+/// out-of-envelope fallback share it, so `n % 16 != 0` and a short `dqcoeff`
+/// behave identically at every tier.
+fn block_error_scalar_body(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
     let n = coeff.len();
     let dq = &dqcoeff[..n];
     let mut error = 0i64;
@@ -123,6 +133,88 @@ pub fn block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
         sqcoeff += c.wrapping_mul(c) as i64;
     }
     (error, sqcoeff)
+}
+
+/// Scalar tier = the transcribed port body, verbatim.
+fn block_error_impl_scalar(
+    _t: archmage::ScalarToken,
+    coeff: &[i32],
+    dqcoeff: &[i32],
+) -> (i64, i64) {
+    block_error_scalar_body(coeff, dqcoeff)
+}
+
+/// Non-x86 tiers = the same loop — under the tier's target features LLVM
+/// lowers it to the widening-multiply shape.
+#[magetypes(neon, wasm128, -scalar)]
+fn block_error_impl(_t: Token, coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+    block_error_scalar_body(coeff, dqcoeff)
+}
+
+/// v3 mirror of `av1_block_error_avx2` (error_intrin_avx2.c:154) — the kernel
+/// RTCD actually dispatches at bd8 on x86-64. Per 16 coefficients:
+/// `packs_epi32` saturates i32->i16, `sub_epi16` wraps, `madd_epi16` sums the
+/// i16 product pairs into i32, and `unpack_epi32` zero-extends into the i64
+/// accumulators — ~17 instructions per 16 coefficients where the scalar
+/// shape pays ~4 per element.
+///
+/// Bit-exactness: identical to the scalar port whenever every coefficient
+/// fits in i16 and every madd pair-sum fits in i32 — both hold on real
+/// inputs (quantized bd8 coefficients). Outside that domain C's kernel
+/// saturates where the scalar wraps; the port mirrors the DISPATCHED kernel
+/// (same convention as `block_error_lp_impl_v3`), and the differential's
+/// 14-bit domain exercises the shared region. `n % 16 != 0` or a short
+/// `dqcoeff` takes the scalar transcription — same values, same panic.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn block_error_impl_v3(
+    _t: archmage::X64V3Token,
+    coeff: &[i32],
+    dqcoeff: &[i32],
+) -> (i64, i64) {
+    use archmage::intrinsics::x86_64::*;
+
+    let n = coeff.len();
+    if n % 16 != 0 || n == 0 {
+        return block_error_scalar_body(coeff, dqcoeff);
+    }
+    // C's read_coeff: two i32 ymm loads -> packs_epi32 -> lane-unscramble.
+    let read = |s: &[i32]| -> __m256i {
+        let x0: &[i32; 8] = s[..8].try_into().unwrap();
+        let x1: &[i32; 8] = s[8..16].try_into().unwrap();
+        _mm256_permute4x64_epi64(
+            _mm256_packs_epi32(_mm256_loadu_si256(x0), _mm256_loadu_si256(x1)),
+            0xd8,
+        )
+    };
+
+    let dq = &dqcoeff[..n];
+    let zero = _mm256_setzero_si256();
+    let mut sse = zero;
+    let mut ssz = zero;
+    let (c16, _) = coeff.as_chunks::<16>();
+    let (d16, _) = dq.as_chunks::<16>();
+    for q in 0..c16.len() {
+        let cv = read(&c16[q]);
+        let dv = read(&d16[q]);
+        let diff = _mm256_sub_epi16(dv, cv);
+        let e = _mm256_madd_epi16(diff, diff);
+        let s = _mm256_madd_epi16(cv, cv);
+        sse = _mm256_add_epi64(sse, _mm256_unpacklo_epi32(e, zero));
+        sse = _mm256_add_epi64(sse, _mm256_unpackhi_epi32(e, zero));
+        ssz = _mm256_add_epi64(ssz, _mm256_unpacklo_epi32(s, zero));
+        ssz = _mm256_add_epi64(ssz, _mm256_unpackhi_epi32(s, zero));
+    }
+
+    // C's epilogue: fold each 128-bit lane's qwords, then the two lanes.
+    let fold = |v: __m256i| -> i64 {
+        let v = _mm256_add_epi64(v, _mm256_srli_si256::<8>(v));
+        let lo = _mm256_castsi256_si128(v);
+        let hi = _mm256_extracti128_si256::<1>(v);
+        let s = _mm_add_epi64(lo, hi);
+        _mm_cvtsi128_si64(s)
+    };
+    (fold(sse), fold(ssz))
 }
 
 /// `aom_sum_squares_2d_i16` — the residual energy over a `width x height`

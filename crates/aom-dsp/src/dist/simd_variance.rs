@@ -243,6 +243,56 @@ pub(crate) fn highbd_variance64_impl_v3(
         // 256 keeps headroom and no real caller exceeds 128.
         return crate::dist::highbd_variance64_scalar(a, a_stride, b, b_stride, w, h);
     }
+    if w == 4 && h <= 128 {
+        // The dominant encode-time call shape (4-wide txb tails through
+        // `dist_block_px_domain_into`): C answers it with `aom_variance4x4`
+        // — a ~50-instruction dedicated kernel — while the generic strip
+        // machinery below costs ~260/call. This arm is C's `variance4_sse2`
+        // shape: two rows per xmm, one sub + two madds per pair, i32-lane
+        // accumulators.
+        //
+        // Exactness: the xv lane bound is h/2 * 2*4095^2 < 2^31, i.e.
+        // h <= 128 — already the largest real block height; taller inputs
+        // take the generic arm below (its strip loop has the same bound per
+        // strip but re-folds into u64 every 32 rows). The i64 fold
+        // sign-extends each lane, so sv's negative sums are exact too —
+        // unlike C's i16-lane `sum` fold, which assumes u8 pixels.
+        let ld = |p: &[u16], off: usize| -> __m128i {
+            let r: &[u16; 4] = p[off..off + 4].try_into().unwrap();
+            _mm_loadu_si64(r)
+        };
+        let ones128 = _mm_set1_epi16(1);
+        let mut sv = _mm_setzero_si128();
+        let mut xv = sv;
+        let mut y = 0usize;
+        while y + 2 <= h {
+            let d = _mm_sub_epi16(
+                _mm_unpacklo_epi64(ld(a, y * a_stride), ld(a, y * a_stride + a_stride)),
+                _mm_unpacklo_epi64(ld(b, y * b_stride), ld(b, y * b_stride + b_stride)),
+            );
+            sv = _mm_add_epi32(sv, _mm_madd_epi16(d, ones128));
+            xv = _mm_add_epi32(xv, _mm_madd_epi16(d, d));
+            y += 2;
+        }
+        if y < h {
+            // Odd tail row (unreachable for real block heights).
+            let d = _mm_sub_epi16(ld(a, y * a_stride), ld(b, y * b_stride));
+            sv = _mm_add_epi32(sv, _mm_madd_epi16(d, ones128));
+            xv = _mm_add_epi32(xv, _mm_madd_epi16(d, d));
+        }
+        let s64 = _mm_add_epi64(
+            _mm_cvtepi32_epi64(sv),
+            _mm_cvtepi32_epi64(_mm_srli_si128::<8>(sv)),
+        );
+        let x64 = _mm_add_epi64(
+            _mm_cvtepi32_epi64(xv),
+            _mm_cvtepi32_epi64(_mm_srli_si128::<8>(xv)),
+        );
+        let tsum = _mm_cvtsi128_si64(s64) + _mm_extract_epi64::<1>(s64);
+        let tsse = (_mm_cvtsi128_si64(x64) + _mm_extract_epi64::<1>(x64)) as u64;
+        return (tsse, tsum);
+    }
+
     let ones = _mm256_set1_epi16(1);
     let mut tsum: i64 = 0;
     let mut tsse: u64 = 0;

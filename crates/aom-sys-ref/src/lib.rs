@@ -390,6 +390,12 @@ unsafe extern "C" {
         dqcoeff: *const i16,
         block_size: isize,
     ) -> i64;
+    pub fn av1_block_error_avx2(
+        coeff: *const i32,
+        dqcoeff: *const i32,
+        block_size: isize,
+        ssz: *mut i64,
+    ) -> i64;
     #[allow(clippy::too_many_arguments)]
     pub fn av1_quantize_lp_sse2(
         coeff: *const i16,
@@ -5614,6 +5620,34 @@ pub fn ref_block_error(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
         )
     };
     (err, ssz)
+}
+
+/// The specialised tier of `av1_block_error` on this target, else `_c`.
+/// `block_size` must be a multiple of 16 for the AVX2 kernel — which is also
+/// the whole reachable domain (transform areas), so no fallback size exists.
+///
+/// Note the kernel's `packs_epi32` SATURATES i32->i16, so it diverges from
+/// `av1_block_error_c` on |coeff| > 32767 — this pin compares against the
+/// dispatched kernel, not the scalar.
+pub fn ref_block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        assert_eq!(coeff.len(), dqcoeff.len());
+        assert!(coeff.len() % 16 == 0);
+        if std::arch::is_x86_feature_detected!("avx2") {
+            let mut ssz = 0i64;
+            let err = unsafe {
+                av1_block_error_avx2(
+                    coeff.as_ptr(),
+                    dqcoeff.as_ptr(),
+                    coeff.len() as isize,
+                    &mut ssz,
+                )
+            };
+            return (err, ssz);
+        }
+    }
+    ref_block_error(coeff, dqcoeff)
 }
 
 /// Reference `av1_highbd_block_error_c` (highbd transform-domain distortion).
