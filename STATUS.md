@@ -1,5 +1,24 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Ship cell under the user's 1.40× bar — median 1.384× (Gate 3, 2026-09-15)
+
+1024² cq27 `--cpu-used 3` (the zenavif preset), 10 interleaved port/C
+pairs, byte-identical 40,237 B every rep: **median 1.384×** (port
+~2207 ms / C ~1597 ms), 9/10 pairs < 1.40 — met but thin (~1% margin vs
+±1.5% run noise). Landings: HOG per-SB Sobel+bin gradient cache (C
+`pixel_gradient_info`, −470M Ir at 512² s0), z2_left band-major 8×8 tile
+transpose + Bresenham column geometry, filter_intra_edge interior
+chunking (356 Ir/call, was 419), `txb_init_levels` comptime pad stores,
+4×4 fused transform guards moved to in-body vector max-reduce + `[i8;12]`
+array-eq `sr_*` checks, `optimize_txb` monomorphized on `tx_class`
+(C's `UPDATE_COEFF_*_CASE` structure) + `two_coeff_cost_simple` forced
+inline. Named residual gaps: the u16-at-bd8 tax (C's `av1_lowbd_*` u8
+kernels at bd8 — restoration ~800M vs ~380M and `highbd_variance64` ~113M
+vs ~16M at 196² s0; the u8 path exists but the encoder never routes to
+it) and safe-Rust bounds-check/min-max overhead in the trellis
+(`forbid(unsafe_code)`). Record:
+`benchmarks/encoder_ship_cell_1_40_2026-09-15.md`.
+
 ## `pack_leaf` replays retained leaf payloads — the pack re-encode is gone (Gate 3, 2026-09-15)
 
 `pack_leaf` re-ran `encode_b_intra_dry` on every committed leaf — 3,312
