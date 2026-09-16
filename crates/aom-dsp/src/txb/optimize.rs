@@ -268,7 +268,49 @@ fn optimize_txb_core(
     qmatrix: Option<&[u8]>,
     levels: &mut [u8; TX_PAD_2D],
 ) -> OptimizeResult {
-    let tx_class = TX_TYPE_TO_CLASS[tx_type];
+    // C's UPDATE_COEFF_EOB_CASE/UPDATE_COEFF_SIMPLE_CASE switches monomorphize
+    // the trellis on `tx_class` (txb_rdopt.c) — every per-coefficient
+    // `get_nz_mag`/`get_br_ctx`/`get_nz_map_ctx_from_stats` then folds its
+    // `match tx_class` at compile time instead of branching per coefficient.
+    match TX_TYPE_TO_CLASS[tx_type] {
+        TxClass::TwoD => optimize_txb_run::<0>(
+            tx_size, qcoeff, dqcoeff, tcoeff, eob_in, dequant, rdmult, dc_sign_ctx,
+            txb_skip_ctx, sharpness, scan, t, iqmatrix, qmatrix, levels,
+        ),
+        TxClass::Horiz => optimize_txb_run::<1>(
+            tx_size, qcoeff, dqcoeff, tcoeff, eob_in, dequant, rdmult, dc_sign_ctx,
+            txb_skip_ctx, sharpness, scan, t, iqmatrix, qmatrix, levels,
+        ),
+        TxClass::Vert => optimize_txb_run::<2>(
+            tx_size, qcoeff, dqcoeff, tcoeff, eob_in, dequant, rdmult, dc_sign_ctx,
+            txb_skip_ctx, sharpness, scan, t, iqmatrix, qmatrix, levels,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn optimize_txb_run<const TXC: u8>(
+    tx_size: usize,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+    tcoeff: &[i32],
+    eob_in: usize,
+    dequant: [i16; 2],
+    rdmult: i64,
+    dc_sign_ctx: usize,
+    txb_skip_ctx: usize,
+    sharpness: i32,
+    scan: &[i16],
+    t: &CoeffCostTables,
+    iqmatrix: Option<&[u8]>,
+    qmatrix: Option<&[u8]>,
+    levels: &mut [u8; TX_PAD_2D],
+) -> OptimizeResult {
+    let tx_class = match TXC {
+        0 => TxClass::TwoD,
+        1 => TxClass::Horiz,
+        _ => TxClass::Vert,
+    };
     let bhl = txb_bhl(tx_size);
     let width = txb_wide(tx_size);
     let height = txb_high(tx_size);
@@ -349,7 +391,7 @@ fn optimize_txb_core(
             si -= 1;
             continue;
         }
-        let v = get_dqv(dequant, scan[s] as usize, iqmatrix);
+        let v = get_dqv(dequant, ci, iqmatrix);
         let mut lower_level = false;
         let abs_qc = qc.abs();
         let (tqc, dqc) = (tcoeff[ci], dqcoeff[ci]);
@@ -510,7 +552,7 @@ fn optimize_txb_core(
             si -= 1;
             continue;
         }
-        let v = get_dqv(dequant, scan[s] as usize, iqmatrix);
+        let v = get_dqv(dequant, ci, iqmatrix);
         let dist = cdist(abs_tqc, abs_dqc, ci);
         let rd = rdcost(rdmult, rate as i64, dist);
         let abs_qc_low = abs_qc - 1;

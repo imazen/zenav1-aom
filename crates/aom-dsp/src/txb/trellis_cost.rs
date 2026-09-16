@@ -63,7 +63,7 @@ pub fn br_cost_with_diff(level: i32, lps: &[i32], diff: &mut i32) -> i32 {
 /// `get_two_coeff_cost_simple` (scan_idx not DC and not eob-1). Returns
 /// `(cost, cost_low)` where `cost_low` is the cost of coding `abs_qc-1`.
 #[allow(clippy::too_many_arguments)]
-#[inline]
+#[inline(always)]
 pub fn two_coeff_cost_simple(
     ci: usize,
     abs_qc: i32,
