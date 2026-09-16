@@ -1154,15 +1154,19 @@ fn z3_cols_impl(
                     // stay <= pad + max_base_y (see Bounds above).
                     let b0 = pad + bases[k] + r0 * base_inc;
                     let (v0, v1) = if up == 0 {
-                        let a: &[u16; 8] = edge[b0..b0 + 8].try_into().unwrap();
-                        let b: &[u16; 8] = edge[b0 + 1..b0 + 9].try_into().unwrap();
+                        // One window sized to the old code's largest access
+                        // (`b0 + 9`) — the `w[..8]`/`w[1..9]` bounds fold.
+                        let w: &[u16; 9] = edge[b0..b0 + 9].try_into().unwrap();
+                        let a: &[u16; 8] = w[..8].try_into().unwrap();
+                        let b: &[u16; 8] = w[1..9].try_into().unwrap();
                         (_mm_loadu_si128(a), _mm_loadu_si128(b))
                     } else {
                         // Taps step by 2 down the edge: one contiguous
                         // 16-element read + even/odd lane extraction, the
                         // same trick as C's HighbdEvenOddMaskx4 pshufb.
-                        let lo: &[u16; 8] = edge[b0..b0 + 8].try_into().unwrap();
-                        let hi: &[u16; 8] = edge[b0 + 8..b0 + 16].try_into().unwrap();
+                        let w: &[u16; 16] = edge[b0..b0 + 16].try_into().unwrap();
+                        let lo: &[u16; 8] = w[..8].try_into().unwrap();
+                        let hi: &[u16; 8] = w[8..16].try_into().unwrap();
                         let lo = _mm_loadu_si128(lo);
                         let hi = _mm_loadu_si128(hi);
                         (
@@ -1195,9 +1199,11 @@ fn z3_cols_impl(
                 }
             });
             let rows = transpose(cols);
+            // One band window (end = the old per-row checks' largest access)
+            // buys out 8 store range checks; `rr*stride` folds on `rr < 8`.
+            let band = &mut dst[r0 * stride + c0..(r0 + 7) * stride + c0 + 8];
             for (rr, row) in rows.iter().enumerate() {
-                let t: &mut [u16; 8] = (&mut dst
-                    [(r0 + rr) * stride + c0..(r0 + rr) * stride + c0 + 8])
+                let t: &mut [u16; 8] = (&mut band[rr * stride..rr * stride + 8])
                     .try_into()
                     .unwrap();
                 _mm_storeu_si128(t, *row);
