@@ -243,6 +243,60 @@ pub(crate) fn highbd_variance64_impl_v3(
         // 256 keeps headroom and no real caller exceeds 128.
         return crate::dist::highbd_variance64_scalar(a, a_stride, b, b_stride, w, h);
     }
+    if w == 4 && h == 4 {
+        // Two-thirds of all calls at encode time (aom_variance4x4_sse2 is
+        // C's most-called variance kernel at --cpu-used 3). One range check
+        // per plane buys out every inner subslice: on `v` of len `3*s + 4`
+        // the `v[k*s .. k*s+4]` bounds for literal k < 4 fold to `k <= 3`.
+        // Flat compares, not Option chains — they stay inlined.
+        if a_stride <= (usize::MAX - 4) / 3
+            && b_stride <= (usize::MAX - 4) / 3
+            && 3 * a_stride + 4 <= a.len()
+            && 3 * b_stride + 4 <= b.len()
+        {
+            let (sa, sb) = (3 * a_stride + 4, 3 * b_stride + 4);
+            let (av, bv) = (&a[..sa], &b[..sb]);
+            {
+                let ra = |k: usize| -> __m128i {
+                    let r: &[u16; 4] = av[k * a_stride..k * a_stride + 4].try_into().unwrap();
+                    _mm_loadu_si64(r)
+                };
+                let rb = |k: usize| -> __m128i {
+                    let r: &[u16; 4] = bv[k * b_stride..k * b_stride + 4].try_into().unwrap();
+                    _mm_loadu_si64(r)
+                };
+                let d01 = _mm_sub_epi16(
+                    _mm_unpacklo_epi64(ra(0), ra(1)),
+                    _mm_unpacklo_epi64(rb(0), rb(1)),
+                );
+                let d23 = _mm_sub_epi16(
+                    _mm_unpacklo_epi64(ra(2), ra(3)),
+                    _mm_unpacklo_epi64(rb(2), rb(3)),
+                );
+                let d = _mm256_set_m128i(d23, d01);
+                let sv = _mm256_madd_epi16(d, _mm256_set1_epi16(1));
+                let xv = _mm256_madd_epi16(d, d);
+                // Fold: sv i32 lanes -> i64 (sign-extend); xv lanes are
+                // non-negative and each < 2*4095^2 < 2^26 per row-pair.
+                let s128 =
+                    _mm_add_epi32(_mm256_castsi256_si128(sv), _mm256_extracti128_si256::<1>(sv));
+                let x128 =
+                    _mm_add_epi32(_mm256_castsi256_si128(xv), _mm256_extracti128_si256::<1>(xv));
+                let s64 = _mm_add_epi64(
+                    _mm_cvtepi32_epi64(s128),
+                    _mm_cvtepi32_epi64(_mm_srli_si128::<8>(s128)),
+                );
+                let x64 = _mm_add_epi64(
+                    _mm_cvtepi32_epi64(x128),
+                    _mm_cvtepi32_epi64(_mm_srli_si128::<8>(x128)),
+                );
+                let tsum = _mm_cvtsi128_si64(s64) + _mm_extract_epi64::<1>(s64);
+                let tsse = (_mm_cvtsi128_si64(x64) + _mm_extract_epi64::<1>(x64)) as u64;
+                return (tsse, tsum);
+            }
+        }
+        // Stride degenerate (impossible for real callers) — generic arm.
+    }
     if w == 4 && h <= 128 {
         // The dominant encode-time call shape (4-wide txb tails through
         // `dist_block_px_domain_into`): C answers it with `aom_variance4x4`

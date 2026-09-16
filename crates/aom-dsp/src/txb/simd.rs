@@ -388,27 +388,25 @@ fn nz_map_ctx_body(
 
     // The three tile shapes of load_levels_*x5_sse2. `base` is the tile's
     // padded-buffer offset; each lane-vector gathers one neighbour plane.
+    // One range check per tile load buys out the per-row checks: on a
+    // `k_max*stride + N` window each `w[k*stride .. k*stride+N]` bound folds
+    // to `k <= k_max`. The window end is the old code's largest access, so
+    // the panic domain is unchanged.
     let t4 = |base: usize, off: usize| -> __m128i {
-        let r0: &[u8; 4] = levels[base + off..base + off + 4].try_into().unwrap();
-        let r1: &[u8; 4] = levels[base + off + stride..base + off + stride + 4]
-            .try_into()
-            .unwrap();
-        let r2: &[u8; 4] = levels[base + off + 2 * stride..base + off + 2 * stride + 4]
-            .try_into()
-            .unwrap();
-        let r3: &[u8; 4] = levels[base + off + 3 * stride..base + off + 3 * stride + 4]
-            .try_into()
-            .unwrap();
+        let w = &levels[base + off..base + off + 3 * stride + 4];
+        let r0: &[u8; 4] = w[..4].try_into().unwrap();
+        let r1: &[u8; 4] = w[stride..stride + 4].try_into().unwrap();
+        let r2: &[u8; 4] = w[2 * stride..2 * stride + 4].try_into().unwrap();
+        let r3: &[u8; 4] = w[3 * stride..3 * stride + 4].try_into().unwrap();
         _mm_unpacklo_epi64(
             _mm_unpacklo_epi32(_mm_loadu_si32(r0), _mm_loadu_si32(r1)),
             _mm_unpacklo_epi32(_mm_loadu_si32(r2), _mm_loadu_si32(r3)),
         )
     };
     let t8 = |base: usize, off: usize| -> __m128i {
-        let r0: &[u8; 8] = levels[base + off..base + off + 8].try_into().unwrap();
-        let r1: &[u8; 8] = levels[base + off + stride..base + off + stride + 8]
-            .try_into()
-            .unwrap();
+        let w = &levels[base + off..base + off + stride + 8];
+        let r0: &[u8; 8] = w[..8].try_into().unwrap();
+        let r1: &[u8; 8] = w[stride..stride + 8].try_into().unwrap();
         _mm_unpacklo_epi64(_mm_loadu_si64(r0), _mm_loadu_si64(r1))
     };
     let t16 = |base: usize, off: usize| -> __m128i {
@@ -716,8 +714,10 @@ fn nz_map_ctx_body(
 
     // Scatter scan[..eob] — positions past eob keep their prior contents
     // (scalar-C contract; the differential harness byte-compares the tail).
-    for i in 0..eob {
-        let p = scan[i] as usize;
+    // The `scan[..eob]` pre-slice is the old loop's own OOB domain
+    // (first failing `scan[i]` panicked at the same `eob > scan.len()`).
+    for &p16 in &scan[..eob] {
+        let p = p16 as usize;
         coeff_contexts[p] = ctx[p];
     }
     // EOB bucket overrides the computed context (get_nz_map_ctx's is_eob arm;

@@ -202,28 +202,27 @@ fn min3(v: u8) -> i32 {
 /// `tx_class` / `bhl` work out of `read_txb_body`'s reverse scan.
 #[inline(always)]
 fn get_nz_mag(levels: &[u8], base: usize, bhl: u32, tx_class: TxClass) -> i32 {
-    let bhl = bhl as usize;
-    // { 0, 1 } then { 1, 0 }
-    let mut mag = min3(levels[base + (1 << bhl) + TX_PAD_HOR]);
-    mag += min3(levels[base + 1]);
+    let s = (1usize << bhl) + TX_PAD_HOR;
+    // One range-checked window per call replaces the per-access checks: every
+    // read is `base + k` for `k <= max_d`, so `base + max_d + 1 <= len` is
+    // exactly the old code's largest-index check — the panic domain is
+    // unchanged. The inner `w[..]` accesses then fold: `s >= 5` because
+    // `1 << bhl >= 1`, so `k*s < k*s + 1` and the literal `w[k]` (k <= 4)
+    // checks reduce to `4 < 2s+1` / `4 < s.max(4)+1`, both provable.
     match tx_class {
         TxClass::TwoD => {
-            mag += min3(levels[base + (1 << bhl) + TX_PAD_HOR + 1]); // { 1, 1 }
-            mag += min3(levels[base + (2 << bhl) + (2 << TX_PAD_HOR_LOG2)]); // { 0, 2 }
-            mag += min3(levels[base + 2]); // { 2, 0 }
+            let w = &levels[base..base + 2 * s + 1];
+            min3(w[s]) + min3(w[1]) + min3(w[s + 1]) + min3(w[2 * s]) + min3(w[2])
         }
         TxClass::Vert => {
-            mag += min3(levels[base + 2]); // { 2, 0 }
-            mag += min3(levels[base + 3]); // { 3, 0 }
-            mag += min3(levels[base + 4]); // { 4, 0 }
+            let w = &levels[base..base + s.max(4) + 1];
+            min3(w[s]) + min3(w[1]) + min3(w[2]) + min3(w[3]) + min3(w[4])
         }
         TxClass::Horiz => {
-            mag += min3(levels[base + (2 << bhl) + (2 << TX_PAD_HOR_LOG2)]); // { 0, 2 }
-            mag += min3(levels[base + (3 << bhl) + (3 << TX_PAD_HOR_LOG2)]); // { 0, 3 }
-            mag += min3(levels[base + (4 << bhl) + (4 << TX_PAD_HOR_LOG2)]); // { 0, 4 }
+            let w = &levels[base..base + 4 * s + 1];
+            min3(w[s]) + min3(w[1]) + min3(w[2 * s]) + min3(w[3 * s]) + min3(w[4 * s])
         }
     }
-    mag
 }
 
 /// `get_br_ctx` (txb_common.h): coefficient base-range context, transposed
@@ -237,10 +236,12 @@ pub fn get_br_ctx(levels: &[u8], c: usize, bhl: u32, tx_class: TxClass) -> i32 {
     let row = c - (col << bhl);
     let stride = (1usize << bhl) + TX_PAD_HOR;
     let pos = col * stride + row;
-    let mut mag = levels[pos + 1] as i32 + levels[pos + stride] as i32;
+    // Windowed like `get_nz_mag`: one range check at the class's largest
+    // delta; `stride >= 5` makes every `w[..]` below fold.
     match tx_class {
         TxClass::TwoD => {
-            mag += levels[pos + stride + 1] as i32;
+            let w = &levels[pos..pos + stride + 2];
+            let mut mag = w[1] as i32 + w[stride] as i32 + w[stride + 1] as i32;
             mag = ((mag + 1) >> 1).min(6);
             if c == 0 {
                 return mag;
@@ -248,9 +249,11 @@ pub fn get_br_ctx(levels: &[u8], c: usize, bhl: u32, tx_class: TxClass) -> i32 {
             if row < 2 && col < 2 {
                 return mag + 7;
             }
+            mag + 14
         }
         TxClass::Horiz => {
-            mag += levels[pos + (stride << 1)] as i32;
+            let w = &levels[pos..pos + 2 * stride + 1];
+            let mut mag = w[1] as i32 + w[stride] as i32 + w[2 * stride] as i32;
             mag = ((mag + 1) >> 1).min(6);
             if c == 0 {
                 return mag;
@@ -258,9 +261,11 @@ pub fn get_br_ctx(levels: &[u8], c: usize, bhl: u32, tx_class: TxClass) -> i32 {
             if col == 0 {
                 return mag + 7;
             }
+            mag + 14
         }
         TxClass::Vert => {
-            mag += levels[pos + 2] as i32;
+            let w = &levels[pos..pos + stride + 1];
+            let mut mag = w[1] as i32 + w[stride] as i32 + w[2] as i32;
             mag = ((mag + 1) >> 1).min(6);
             if c == 0 {
                 return mag;
@@ -268,9 +273,9 @@ pub fn get_br_ctx(levels: &[u8], c: usize, bhl: u32, tx_class: TxClass) -> i32 {
             if row == 0 {
                 return mag + 7;
             }
+            mag + 14
         }
     }
-    mag + 14
 }
 
 /// `nz_map_ctx_offset_1d` (txb_common.h): SIG_COEF_CONTEXTS_2D=26 based.
