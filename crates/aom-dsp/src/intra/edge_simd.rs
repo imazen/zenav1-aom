@@ -210,6 +210,138 @@ fn filter_intra_edge_impl_x86(token: Token, p: &mut [u16], sz: usize, taps: [i32
     }
 }
 
+/// `av1_highbd_filter_intra_edge_sse4_1`: the read-ahead sliding window C's
+/// real SSE4 kernel uses — no snapshot. `in0`/`in8` hold ORIGINAL samples
+/// loaded 16 elements ahead of the store frontier, so in-place writes never
+/// reach data a later output still needs. `buf[off..off+sz]` is the edge;
+/// `buf[off-1]` is C's `p[-1]` slot and `buf[off+sz..]` is read/write slack —
+/// the kernel writes `buf[off-1] = buf[off]` and splats
+/// `buf[off+sz..off+sz+8]` exactly like C's `p[-1] = p[0]` /
+/// `storeu(&p[sz], last)` side effects.
+///
+/// Arithmetic mirrors C lane-for-lane: `mullo_epi16` on packed tap pairs
+/// wraps mod 2^16, but taps sum to 16 and samples are `<= 4095`, so the true
+/// sum `<= 16 * 4095 + 8 < 2^16` — the low 16 bits are exact and
+/// `srli_epi16(4)` on them is the scalar `(s + 8) >> 4`.
+pub(crate) fn filter_intra_edge_at_run(buf: &mut [u16], off: usize, sz: usize, taps: [i32; 5]) {
+    let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
+    #[cfg(target_arch = "x86_64")]
+    {
+        incant!(
+            filter_intra_edge_at_impl_x86(buf, off, sz, taps),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    filter_intra_edge_at_fallback(buf, off, sz, taps)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn filter_intra_edge_at_fallback(buf: &mut [u16], off: usize, sz: usize, taps: [i32; 5]) {
+    super::edge::filter_intra_edge_scalar_inplace(&mut buf[off..off + sz], sz, taps);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn filter_intra_edge_at_impl_x86_scalar(
+    _t: archmage::ScalarToken,
+    buf: &mut [u16],
+    off: usize,
+    sz: usize,
+    taps: [i32; 5],
+) {
+    super::edge::filter_intra_edge_scalar_inplace(&mut buf[off..off + sz], sz, taps);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn filter_intra_edge_at_impl_x86_v3(
+    _t: archmage::X64V3Token,
+    buf: &mut [u16],
+    off: usize,
+    sz: usize,
+    taps: [i32; 5],
+) {
+    use archmage::intrinsics::x86_64::*;
+
+    // Slack the sliding window needs: buf[off-1] written, reads ahead reach
+    // `in + 16 <= off + sz + 15`, and the tail splat writes 8 past the edge.
+    if sz < 2 || off < 1 || buf.len() < off + sz + 16 {
+        super::edge::filter_intra_edge_scalar_inplace(&mut buf[off..off + sz], sz, taps);
+        return;
+    }
+
+    let ld = |buf: &[u16], b: usize| -> __m128i {
+        let s: &[u16; 8] = buf[b..b + 8].try_into().unwrap();
+        _mm_loadu_si128(s)
+    };
+    let st = |buf: &mut [u16], b: usize, v: __m128i| {
+        let d: &mut [u16; 8] = (&mut buf[b..b + 8]).try_into().unwrap();
+        _mm_storeu_si128(d, v);
+    };
+
+    // C: `p[-1] = p[0]; storeu(&p[sz], set1(p[sz-1]))`.
+    buf[off - 1] = buf[off];
+    st(buf, off + sz, _mm_set1_epi16(buf[off + sz - 1] as i16));
+
+    // C: `in = (strength == 3) ? p - 1 : p` — the 5-tap window reads one
+    // earlier. taps[0] != 0 selects it.
+    let mut i_in = if taps[0] != 0 { off - 1 } else { off };
+    let mut out = off + 1;
+    let mut len = sz - 1;
+
+    let iden = _mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7);
+    let eight = _mm_set1_epi16(8);
+    // Tap pairs packed as i16 lanes like C's `kern` rows: 3-tap folds the
+    // {0,4,8,4,0} taps onto the (t1, t2) pair; 5-tap uses (t0, t1) with the
+    // middle three taps summed before the multiply.
+    let pair = |a: i32, b: i32| -> __m128i {
+        _mm_set1_epi32(((a as u16 as u32) | ((b as u16 as u32) << 16)) as i32)
+    };
+    let mut in0 = ld(buf, i_in);
+    let mut in8 = ld(buf, i_in + 8);
+    let five_tap = taps[0] != 0;
+    let coef = if five_tap {
+        pair(taps[0], taps[1])
+    } else {
+        pair(taps[1], taps[2])
+    };
+    while len > 0 {
+        let n_out = len.min(8);
+        let in1 = _mm_alignr_epi8::<2>(in8, in0);
+        let in2 = _mm_alignr_epi8::<4>(in8, in0);
+        let d = if five_tap {
+            let in3 = _mm_alignr_epi8::<6>(in8, in0);
+            let in4 = _mm_alignr_epi8::<8>(in8, in0);
+            let in04 = _mm_add_epi16(in0, in4);
+            let in123 = _mm_add_epi16(_mm_add_epi16(in1, in2), in3);
+            let d0 = _mm_mullo_epi16(_mm_unpacklo_epi16(in04, in123), coef);
+            let d1 = _mm_mullo_epi16(_mm_unpackhi_epi16(in04, in123), coef);
+            _mm_hadd_epi16(d0, d1)
+        } else {
+            let in02 = _mm_add_epi16(in0, in2);
+            let d0 = _mm_mullo_epi16(_mm_unpacklo_epi16(in02, in1), coef);
+            let d1 = _mm_mullo_epi16(_mm_unpackhi_epi16(in02, in1), coef);
+            _mm_hadd_epi16(d0, d1)
+        };
+        let d = _mm_srli_epi16::<4>(_mm_add_epi16(d, eight));
+        // Masked tail: lanes >= n_out keep the destination's current bytes.
+        let prev = ld(buf, out);
+        let mask = _mm_cmpgt_epi16(_mm_set1_epi16(n_out as i16), iden);
+        st(buf, out, _mm_blendv_epi8(prev, d, mask));
+        i_in += 8;
+        in0 = in8;
+        out += 8;
+        len -= n_out;
+        // C loads `in[8]` unconditionally — its caller's array has unbounded
+        // slack. The port's slack is exactly 16, so the last iteration's
+        // never-used read-ahead is skipped (a load is value-transparent).
+        if len > 0 {
+            in8 = ld(buf, i_in + 8);
+        }
+    }
+}
+
 /// Scalar tier for the x86 dispatch — same in-place walk as the generic tier.
 #[cfg(target_arch = "x86_64")]
 fn filter_intra_edge_impl_x86_scalar(

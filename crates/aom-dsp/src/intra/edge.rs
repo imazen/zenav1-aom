@@ -154,16 +154,34 @@ pub fn filter_corner_high(above: &mut [u16], left: &mut [u16]) {
     left[0] = s;
 }
 
+const FILTER_KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
+
 /// `av1_highbd_filter_intra_edge_c`: highbd (u16) 5-tap edge low-pass. Same as
 /// the lowbd filter but 16-bit (no clip needed — outputs stay in range).
 pub fn highbd_filter_intra_edge(p: &mut [u16], sz: usize, strength: i32) {
     if strength == 0 {
         return;
     }
-    const KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
-    let filt = (strength - 1) as usize;
-    let taps = KERNEL[filt];
+    let taps = FILTER_KERNEL[(strength - 1) as usize];
     filter_intra_edge_dispatch(p, sz, taps);
+}
+
+/// [`highbd_filter_intra_edge`] on a caller-held padded edge buffer:
+/// `buf[off..off + sz]` is the edge. When the buffer also provides
+/// `buf[off - 1]` plus 16 elements of slack after `buf[off + sz]` — the
+/// production `above_data`/`left_data` layout always does — the v3 kernel
+/// mirrors `av1_highbd_filter_intra_edge_sse4_1`'s read-ahead sliding window,
+/// including its side-effect writes (`buf[off-1] = buf[off]` and a
+/// `buf[off+sz..off+sz+8]` splat of the last sample, exactly what C's
+/// `p[-1] = p[0]` / `p[sz..]` stores do to the caller's array). Tight
+/// buffers take the snapshot kernel instead; the edge region is identical
+/// either way.
+pub fn highbd_filter_intra_edge_at(buf: &mut [u16], off: usize, sz: usize, strength: i32) {
+    if strength == 0 {
+        return;
+    }
+    let taps = FILTER_KERNEL[(strength - 1) as usize];
+    super::edge_simd::filter_intra_edge_at_run(buf, off, sz, taps);
 }
 
 /// The in-place rolling-window walk — the pre-SIMD body of

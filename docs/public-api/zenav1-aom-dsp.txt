@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1837 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1838 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            622
+#   free functions                            623
 #   inherent methods                           97
 #   struct fields                             706
 #   enum variants                              13
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1794
+#   aom_dsp                        1795
 
-## items (1761 lines)
+## items (1762 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1347,6 +1347,7 @@ pub fn aom_dsp::intra::edge::filter_corner(&mut [u8], &mut [u8])
 pub fn aom_dsp::intra::edge::filter_corner_high(&mut [u16], &mut [u16])
 pub fn aom_dsp::intra::edge::filter_intra_edge(&mut [u8], usize, i32)
 pub fn aom_dsp::intra::edge::highbd_filter_intra_edge(&mut [u16], usize, i32)
+pub fn aom_dsp::intra::edge::highbd_filter_intra_edge_at(&mut [u16], usize, usize, i32)
 pub fn aom_dsp::intra::edge::highbd_upsample_intra_edge(&mut [u16], usize, usize, u8)
 pub fn aom_dsp::intra::edge::upsample_intra_edge(&mut [u8], usize, usize)
 pub fn aom_dsp::intra::edge::use_upsample(i32, i32, i32, i32) -> i32

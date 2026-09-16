@@ -1279,11 +1279,7 @@ fn plan_dir_intra_high(
                     filter_type,
                 );
                 let n_px = n_top_px + 1 + if need_right { txhpx } else { 0 };
-                edge::highbd_filter_intra_edge(
-                    &mut above_data[DIR_PAD - 1..DIR_PAD - 1 + n_px],
-                    n_px,
-                    strength,
-                );
+                edge::highbd_filter_intra_edge_at(above_data, DIR_PAD - 1, n_px, strength);
             }
             if need_left && n_left_px > 0 {
                 let strength = edge::edge_filter_strength(
@@ -1293,11 +1289,7 @@ fn plan_dir_intra_high(
                     filter_type,
                 );
                 let n_px = n_left_px + 1 + if need_bottom { txwpx } else { 0 };
-                edge::highbd_filter_intra_edge(
-                    &mut left_data[DIR_PAD - 1..DIR_PAD - 1 + n_px],
-                    n_px,
-                    strength,
-                );
+                edge::highbd_filter_intra_edge_at(left_data, DIR_PAD - 1, n_px, strength);
             }
         }
         upsample_above = edge::use_upsample(txwpx as i32, txhpx as i32, p_angle - 90, filter_type);

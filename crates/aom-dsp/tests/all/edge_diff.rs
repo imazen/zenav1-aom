@@ -100,6 +100,46 @@ fn highbd_filter_intra_edge_byte_identical() {
 }
 
 #[test]
+fn highbd_filter_intra_edge_at_byte_identical() {
+    // The slack-buffered entry (C's SSE4 sliding-window shape): the edge
+    // region must match the scalar C oracle byte-for-byte, and the kernel's
+    // C-faithful side-effect writes land at buf[off-1] / buf[off+sz..+8].
+    let mut rng = Rng(0x_5a1d_1ab1_e000_7777);
+    const OFF: usize = 15; // production DIR_PAD - 1
+    for &bd in &[8u8, 10, 12] {
+        let max = (1u32 << bd) - 1;
+        for sz in 2..=129usize {
+            for strength in 0..=3 {
+                for _ in 0..40 {
+                    let n = OFF + sz + 16;
+                    let mut a: Vec<u16> =
+                        (0..n).map(|_| (rng.next() as u32 & max) as u16).collect();
+                    let orig = a.clone();
+                    let mut b: Vec<u16> = a[OFF..OFF + sz].to_vec();
+                    aom_dsp::intra::edge::highbd_filter_intra_edge_at(&mut a, OFF, sz, strength);
+                    c::ref_highbd_filter_intra_edge(&mut b, 0, sz, strength);
+                    assert_eq!(
+                        &a[OFF..OFF + sz],
+                        b.as_slice(),
+                        "hbd filter_at edge bd={bd} sz={sz} s={strength}"
+                    );
+                    if strength != 0 {
+                        // C-SSE4 side effects: p[-1] = p[0], p[sz..sz+8] splat.
+                        assert_eq!(a[OFF - 1], orig[OFF], "p[-1] write");
+                        assert!(
+                            a[OFF + sz..OFF + sz + 8]
+                                .iter()
+                                .all(|&v| v == orig[OFF + sz - 1]),
+                            "tail splat"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn highbd_upsample_intra_edge_byte_identical() {
     let mut rng = Rng(0x_86bd_c057_0000_4444);
     const OFF: usize = 4;

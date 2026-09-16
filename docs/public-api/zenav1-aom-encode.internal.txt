@@ -10,24 +10,24 @@
 ## summary
 #
 #   pub modules                                80
-#   pub types (struct/enum/trait/alias)       278
+#   pub types (struct/enum/trait/alias)       281
 #   pub consts/statics                        639
-#   free functions                            617
-#   inherent methods                          927
-#   struct fields                            1929
+#   free functions                            619
+#   inherent methods                          942
+#   struct fields                            1932
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1089
-#   auto-trait-complete types                 259
-#   auto-trait exceptions                       8
+#   trait roster entries (type × trait)      1106
+#   auto-trait-complete types                 261
+#   auto-trait exceptions                       9
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4617
+#   aom_encode                     4640
 #   u16                               3
 #   u8                                3
 
-## items (4609 lines)
+## items (4632 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -293,6 +293,7 @@ pub aom_encode::encode_sb::SsimRdmult::pre_rdmult: i32
 pub aom_encode::encode_sb::TileCtxState::above_ectx: [alloc::vec::Vec<i8>; 3]
 pub aom_encode::encode_sb::TileCtxState::above_pctx: alloc::vec::Vec<i8>
 pub aom_encode::encode_sb::TileCtxState::above_tctx: alloc::vec::Vec<u8>
+pub aom_encode::encode_sb::TileCtxState::hog_grad: core::cell::RefCell<aom_encode::hog::HogGradCache>
 pub aom_encode::encode_sb::TileCtxState::left_ectx: [[i8; 32]; 3]
 pub aom_encode::encode_sb::TileCtxState::left_pctx: [i8; 32]
 pub aom_encode::encode_sb::TileCtxState::left_tctx: [u8; 32]
@@ -379,6 +380,8 @@ pub aom_encode::global_motion::WarpErrorParams::subsampling_y: usize
 pub aom_encode::grain_table::GrainTableEntry::end_time: i64
 pub aom_encode::grain_table::GrainTableEntry::params: aom_dsp::entropy::header::FilmGrainParams
 pub aom_encode::grain_table::GrainTableEntry::start_time: i64
+pub aom_encode::hog::HogGradCache::uv: aom_encode::hog::HogGradSlot
+pub aom_encode::hog::HogGradCache::y: aom_encode::hog::HogGradSlot
 pub aom_encode::inter_costs::InterFrameCdfs::drl: [[u16; 3]; 3]
 pub aom_encode::inter_costs::InterFrameCdfs::intra_inter: [[u16; 3]; 4]
 pub aom_encode::inter_costs::InterFrameCdfs::newmv: [[u16; 3]; 6]
@@ -2973,12 +2976,29 @@ pub fn aom_encode::grain_table::GrainTableEntry::fmt(&self, &mut core::fmt::Form
 pub fn aom_encode::grain_table::lookup(&[aom_encode::grain_table::GrainTableEntry], i64, &mut aom_dsp::entropy::header::FilmGrainParams) -> bool
 pub fn aom_encode::grain_table::read_film_grain_table(&[u8]) -> core::result::Result<alloc::vec::Vec<aom_encode::grain_table::GrainTableEntry>, alloc::string::String>
 pub fn aom_encode::grain_table::write_film_grain_table(&[aom_encode::grain_table::GrainTableEntry]) -> alloc::vec::Vec<u8>
+pub fn aom_encode::hog::HogGradCache::assert_fields_are_eq(&self)
+pub fn aom_encode::hog::HogGradCache::clone(&self) -> aom_encode::hog::HogGradCache
+pub fn aom_encode::hog::HogGradCache::default() -> aom_encode::hog::HogGradCache
+pub fn aom_encode::hog::HogGradCache::eq(&self, &aom_encode::hog::HogGradCache) -> bool
+pub fn aom_encode::hog::HogGradCache::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::hog::HogGradPx::assert_fields_are_eq(&self)
+pub fn aom_encode::hog::HogGradPx::clone(&self) -> aom_encode::hog::HogGradPx
+pub fn aom_encode::hog::HogGradPx::default() -> aom_encode::hog::HogGradPx
+pub fn aom_encode::hog::HogGradPx::eq(&self, &aom_encode::hog::HogGradPx) -> bool
+pub fn aom_encode::hog::HogGradPx::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::hog::HogGradSlot::assert_fields_are_eq(&self)
+pub fn aom_encode::hog::HogGradSlot::clone(&self) -> aom_encode::hog::HogGradSlot
+pub fn aom_encode::hog::HogGradSlot::default() -> aom_encode::hog::HogGradSlot
+pub fn aom_encode::hog::HogGradSlot::eq(&self, &aom_encode::hog::HogGradSlot) -> bool
+pub fn aom_encode::hog::HogGradSlot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::hog::generate_hog(&[u16], usize, usize, usize, usize) -> [f32; 32]
+pub fn aom_encode::hog::generate_hog_uv_cached(&mut aom_encode::hog::HogGradCache, &[u16], usize, usize, i32, i32, i32, usize, usize, usize, usize) -> [f32; 32]
+pub fn aom_encode::hog::generate_hog_y_cached(&mut aom_encode::hog::HogGradCache, &[u16], usize, usize, i32, i32, i32, usize, usize) -> [f32; 32]
 pub fn aom_encode::hog::get_hist_bin_idx(i32, i32) -> usize
 pub fn aom_encode::hog::hog_nn_predict(&[f32; 32], bool) -> [f32; 8]
 pub fn aom_encode::hog::nn_output_prec_reduce(&mut [f32])
-pub fn aom_encode::hog::prune_intra_mode_with_hog_uv(&[u16], usize, usize, usize, usize, usize, i32, i32, f32, &mut [bool; 13])
-pub fn aom_encode::hog::prune_intra_mode_with_hog_y(&[u16], usize, usize, usize, i32, i32, f32, &mut [bool; 13])
+pub fn aom_encode::hog::prune_intra_mode_with_hog_uv(&[u16], usize, usize, usize, usize, usize, i32, i32, i32, i32, i32, f32, &mut [bool; 13], &mut aom_encode::hog::HogGradCache)
+pub fn aom_encode::hog::prune_intra_mode_with_hog_y(&[u16], usize, usize, usize, i32, i32, i32, i32, i32, f32, &mut [bool; 13], &mut aom_encode::hog::HogGradCache)
 pub fn aom_encode::inter_costs::InterFrameCdfs::absorb_single_ref_blob(&mut self, &aom_encode::inter_costs::SingleRefCtx, &[[u16; 3]; 16])
 pub fn aom_encode::inter_costs::InterFrameCdfs::assert_fields_are_eq(&self)
 pub fn aom_encode::inter_costs::InterFrameCdfs::clone(&self) -> aom_encode::inter_costs::InterFrameCdfs
@@ -4442,6 +4462,9 @@ pub struct aom_encode::frame_source::FrameRateUpdate
 pub struct aom_encode::frame_source::TimeStamps
 pub struct aom_encode::global_motion::WarpErrorParams<'a>
 pub struct aom_encode::grain_table::GrainTableEntry
+pub struct aom_encode::hog::HogGradCache
+pub struct aom_encode::hog::HogGradPx
+pub struct aom_encode::hog::HogGradSlot
 pub struct aom_encode::inter_costs::InterFrameCdfs
 pub struct aom_encode::inter_costs::InterModeCosts
 pub struct aom_encode::inter_costs::SingleRefCtx
@@ -4639,7 +4662,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (240 types)
+## trait impls (243 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4691,6 +4714,9 @@ aom_encode::firstpass::UpdateFirstpassStatsParams: Clone, Copy, Debug, TrivialCl
 aom_encode::frame_source::FrameRateUpdate: Clone, Copy, Debug, PartialEq, TrivialClone
 aom_encode::frame_source::TimeStamps: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
 aom_encode::grain_table::GrainTableEntry: Clone, Debug
+aom_encode::hog::HogGradCache: Clone, Debug, Default, Eq, PartialEq
+aom_encode::hog::HogGradPx: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
+aom_encode::hog::HogGradSlot: Clone, Debug, Default, Eq, PartialEq
 aom_encode::inter_costs::InterFrameCdfs: Clone, Debug, Default, Eq, PartialEq
 aom_encode::inter_costs::InterModeCosts: Clone, Debug, Eq, PartialEq
 aom_encode::inter_costs::SingleRefCtx: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
@@ -4884,7 +4910,8 @@ u8: aom_encode::temporal_filter::TfPixel, aom_encode::temporal_filter::TfPixelMu
 
 ## auto traits
 
-259 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+261 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+aom_encode::encode_sb::TileCtxState: !Freeze !RefUnwindSafe !Sync
 aom_encode::inter_pred_enc::PixelsMut<'a>: !UnwindSafe
 aom_encode::intra_uv_rd::CflPredict<'a>: !UnwindSafe
 aom_encode::intrabc_search::IntrabcLeafArgs<'a>: !RefUnwindSafe !Send !Sync !UnwindSafe
