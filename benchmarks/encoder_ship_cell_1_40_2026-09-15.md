@@ -7,27 +7,57 @@ CDEF off). Interleaved port/C pairs, single-threaded, byte-verified
 
 ## Result
 
-10 rotated pairs after the batch below:
+Refresh after the second batch (through `9386d02`), same cell — C's own
+clock ran ~3% slower this round so ratios are the honest unit:
 
 | pair | port ms | C ms | ratio |
 |---|---|---|---|
-| 1 | 2227.6 | 1594.5 | 1.397 |
-| 2 | 2205.5 | 1591.6 | 1.386 |
-| 3 | 2209.4 | 1596.6 | 1.384 |
-| 4 | 2199.2 | 1598.4 | 1.376 |
-| 5 | 2238.0 | 1587.7 | 1.410 |
-| 6 | 2203.8 | 1593.2 | 1.383 |
-| 7 | 2199.7 | 1601.2 | 1.374 |
-| 8 | 2205.0 | 1623.8 | 1.358 |
-| 9 | 2240.9 | 1605.4 | 1.396 |
-| 10 | 2233.9 | 1615.6 | 1.383 |
+| 1 | 2234.9 | 1635.1 | 1.367 |
+| 2 | 2227.7 | 1643.3 | 1.356 |
+| 3 | 2225.0 | 1640.4 | 1.356 |
+| 4 | 2239.6 | 1645.3 | 1.361 |
+| 5 | 2223.9 | 1632.8 | 1.362 |
+| 6 | 2223.3 | 1650.8 | 1.347 |
+| 7 | 2237.3 | 1638.7 | 1.365 |
+| 8 | 2286.4 | 1640.0 | 1.394 |
+| 9 | 2239.2 | 1636.6 | 1.368 |
+| 10 | 2228.6 | 1647.5 | 1.353 |
 
-Median pair ratio **≈1.384×** (9/10 pairs < 1.40; port median 2207 ms /
-C median 1597 ms = 1.382×). The user's ≤1.40× ask is met at this cell
-with ~1% margin — inside the observed ±1.5% run noise, so treat 1.40 as
-met-but-thin, not banked.
+Median pair ratio **≈1.36×** (9/10 pairs < 1.37; port median ~2233 ms /
+C median ~1641 ms = 1.360×). The ≤1.40× ask now carries ~3% margin —
+still within run noise, but two batches deeper than the 1.384 reading.
 
-## What landed in this batch (all byte-identical at the ship cell)
+### Earlier batch (through `5c9bf6e`)
+
+10 rotated pairs, median pair ratio **≈1.384×** (9/10 pairs < 1.40;
+port median 2207 ms / C median 1597 ms = 1.382×), same cell.
+
+## What landed in the second batch (all byte-identical at the ship cell)
+
+Branch tip `9386d02`. Ir deltas measured at 512² cq27 s3 callgrind:
+
+- `a939780` `txb_init_levels` `as_chunks` bodies — per-iter
+  `checked_sub` bounds checks killed (~172→~131 Ir/call).
+- `745a2cd` `filter_intra_edge` sliding-window kernel — C
+  `av1_highbd_filter_intra_edge_sse4_1` mirror via slack-aware
+  `highbd_filter_intra_edge_at` (370→97 Ir/call).
+- `1e5490a` `block_error` instruction-level `av1_block_error_avx2`
+  mirror (packs→madd→widen, bug-compatible full-domain incl.
+  saturation) + dedicated `w==4`/`h==4` variance arm.
+- `9be086a` `nz_map_contexts` windowed tile loads — one pre-slice per
+  tile whose end equals the old largest access (same panic domain);
+  372→90M Ir.
+- `8bc0c70` `z3_cols` windowed edge taps + banded dst stores — same
+  window trick; 387→205M Ir.
+- `9386d02` **fwd 16×16 at 16 lanes** — `lowbd_fwd_txfm2d_16x16_avx2`
+  shape composed from the existing `run_fwd1d_i16` kernels plus a
+  verbatim `transpose_16bit_16x16_avx2` port, replacing the two 8-lane
+  halves. Same `FWD16_I16_BOUND` gate so the accept/decline domain is
+  unchanged; ~383M→~77M Ir inclusive. C's own AVX2 8×8 is `__m128i`
+  internally, so 16×16 was the last real lane-width gap in fwd square
+  transforms.
+
+## What landed in the first batch (all byte-identical at the ship cell)
 
 Branch tip `5c9bf6e`. Per-landing Ir measured at `196² cq32 s0`
 profiling-profile callgrind (debug-line attribution now available via
@@ -56,7 +86,31 @@ profiling-profile callgrind (debug-line attribution now available via
   `#[inline(always)] two_coeff_cost_simple` (was a real call, ~82M Ir/enc)
   and `get_dqv` reusing the loaded `ci`. −131M Ir at 196² s0.
 
-## Residual gap map (196² s0 cq32, per encode, port − C)
+## Residual gap map (512² s3 cq27 callgrind, post-`9386d02`)
+
+The remaining ~36% is now diffuse — no single kernel dominates. Named
+mechanisms:
+
+- **u16-at-bd8 tax** (the big structural one): `lpf_impl_v3` (~33M),
+  `highbd_variance64` residual, and the restoration u16 kernels all run
+  8-lane u16 where C runs 16-lane u8 `aom_lpf_*`/`aom_variance*`. C also
+  batches loop-filter edges via `_dual`/`_quad` kernels (port: 879K
+  calls vs C ~190K at 512²). Fix is plane-storage conversion or
+  transpose-gather kernel rewrites — a program, not a lever.
+- **`quantize_fp_impl_v3`** (~88M): already a tight C mirror at
+  ~212 vs ~180 Ir/call — thin residual.
+- **`build_directional_intra_high_in_place`** (~87M @ 44/call): mostly
+  the two 160-element `above_data`/`left_data` fills, matching C's
+  own behaviour.
+- **Driver layers**: `av1_fwd_txfm2d_into` (67M @ 20/call),
+  `av1_inv_txfm2d_add_into` (29M), `get_txb_ctx_general` (8M) — table
+  lookups and dispatch, already specialised.
+- **`optimize_txb_scratch`** (~44M): coefficient-context helpers already
+  windowed; residual is `min3`/cmp chains inherent to safe Rust.
+- **memcpy/memset class** (~215M): allocator/copy traffic through PLT —
+  the ~4× allocator-call surplus noted in earlier records.
+
+### Earlier residual map (196² s0 cq32, per encode, port − C)
 
 `optimize_txb_core` family ~1.07G vs C ~0.93G — still the biggest named
 kernel gap, now diffuse: `cmp.rs` min/max chains ~170M/enc inside it and
