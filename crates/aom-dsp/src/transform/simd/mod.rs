@@ -3443,10 +3443,21 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
     lr_flip: bool,
 ) -> bool {
     let _ = crate::dispatch::scalar_forced();
-    // The i16 whole-block kernel — C's `av1_lowbd_fwd_txfm2d_16x16_sse2`
-    // shape — is exact under its input bound; out-of-range or unmapped types
-    // take the i32 fused path below, which is always correct.
+    // The i16 whole-block kernel — C's `lowbd_fwd_txfm2d_16x16_avx2` shape —
+    // is exact under its input bound; out-of-range or unmapped types take
+    // the i32 fused path below, which is always correct. The 16-lane twin
+    // shares `FWD16_I16_BOUND`, so its declines mean the 8-lane would too —
+    // it stays only as the non-v3 tier.
     if let (Some(kc), Some(kr)) = (fwd16_kernel(txfm_type_col), fwd16_kernel(txfm_type_row)) {
+        #[cfg(target_arch = "x86_64")]
+        if incant!(
+            fwd_16x16_fused_i16_w16(
+                kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
+            ),
+            [v3, scalar]
+        ) {
+            return true;
+        }
         if incant!(
             fwd_16x16_fused_i16(
                 kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
@@ -5421,6 +5432,149 @@ fn fwd_16x16_fused_i16(
                 _ => return false,
             }
         }
+    }
+    true
+}
+
+/// Scalar twin — declines, routing the caller to the i32 fused path.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn fwd_16x16_fused_i16_w16_scalar(
+    _t: archmage::ScalarToken,
+    _kc: Fwd16,
+    _kr: Fwd16,
+    _input: &[i16],
+    _output: &mut [i32],
+    _stride: usize,
+    _cos_bit_col: i32,
+    _cos_bit_row: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
+}
+
+/// 16-lane fused 16x16 — C's `lowbd_fwd_txfm2d_16x16_avx2` shape. The whole
+/// block lives in 16 `i16x16` registers (register = transform position, lane =
+/// the parallel axis), each pass runs [`lowbd16_fwd::run_fwd1d_i16`] once, and
+/// the between-pass layout change is `transpose_16bit_16x16_avx2` — half the
+/// vector ops of the 8-lane halves loop in [`fwd_16x16_fused_i16`], on kernels
+/// already proven bit-identical to the same scalar reference within `M*`.
+/// Same `FWD16_I16_BOUND` gate, so the accept/decline domain is unchanged and
+/// the two widths produce identical bytes on it.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x16, i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn fwd_16x16_fused_i16_w16(
+    t: Token,
+    kc: Fwd16,
+    kr: Fwd16,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    use lowbd16_fwd::{run_fwd1d_i16_v3, Fwd1dI16};
+    use prims16::{mulhrs16, widen_hi, widen_lo};
+    let _ = t;
+
+    let k16 = |k: Fwd16| -> Fwd1dI16 {
+        match k {
+            Fwd16::Dct => Fwd1dI16::Dct16,
+            Fwd16::Adst => Fwd1dI16::Adst16,
+            Fwd16::Idtx => Fwd1dI16::Idtx16,
+        }
+    };
+
+    // `load_buffer_16bit_to_16bit_avx2` + `round_shift_16bit_w16(shift[0]=2)`
+    // = `slli 2`; the max-abs bound runs on the pre-shift values, exactly as
+    // the 8-lane version does.
+    let bound = FWD16_I16_BOUND[fwd16_idx(kc)][fwd16_idx(kr)];
+    let mut mx = _mm256_setzero_si256();
+    let mut rows = [i16x16::zero(t); 16];
+    for (r, v) in rows.iter_mut().enumerate() {
+        let src = if ud_flip { 15 - r } else { r };
+        let row: &[i16; 16] = match input
+            .get(src * stride..src * stride + 16)
+            .and_then(|s| s.try_into().ok())
+        {
+            Some(a) => a,
+            None => return false,
+        };
+        let rv = _mm256_loadu_si256(row);
+        mx = _mm256_max_epu16(mx, _mm256_abs_epi16(rv));
+        *v = i16x16::from_repr(t, _mm256_slli_epi16::<2>(rv));
+    }
+    let over = _mm256_subs_epu16(mx, _mm256_set1_epi16(bound));
+    if _mm256_testz_si256(over, over) == 0 {
+        return false;
+    }
+
+    // Column pass; `round_shift_16bit_w16(shift[1] = -2)` is `adds(_, 2)` +
+    // `srai 2` — `mulhrs16(v, 1<<13)` == `(v + 2) >> 2` exactly (rshift_mul's
+    // proof covers bit 2).
+    let mut col = [i16x16::zero(t); 16];
+    incant!(
+        run_fwd1d_i16(k16(kc), &rows, &mut col, cos_bit_col),
+        [v3, neon]
+    );
+
+    // `transpose_16bit_16x16_avx2` verbatim: LOADL/LOADR gather the 128-lane
+    // halves (permute2x128), then two `transpose2_8x8_avx2` networks.
+    let cw: [__m256i; 16] = core::array::from_fn(|i| mulhrs16(t, col[i], 1 << 13).into_repr());
+    let mut tt = [_mm256_setzero_si256(); 16];
+    for i in 0..8 {
+        tt[i] = _mm256_permute2x128_si256::<0x20>(cw[i], cw[i + 8]);
+        tt[8 + i] = _mm256_permute2x128_si256::<0x31>(cw[i], cw[i + 8]);
+    }
+    let tr8x8 = |m: &[__m256i; 8]| -> [__m256i; 8] {
+        let mut tt2 = [_mm256_setzero_si256(); 8];
+        let mut uu = [_mm256_setzero_si256(); 8];
+        for i in 0..4 {
+            tt2[2 * i] = _mm256_unpacklo_epi16(m[2 * i], m[2 * i + 1]);
+            tt2[2 * i + 1] = _mm256_unpackhi_epi16(m[2 * i], m[2 * i + 1]);
+        }
+        for i in 0..2 {
+            uu[i] = _mm256_unpacklo_epi32(tt2[i], tt2[i + 2]);
+            uu[i + 2] = _mm256_unpackhi_epi32(tt2[i], tt2[i + 2]);
+            uu[i + 4] = _mm256_unpacklo_epi32(tt2[i + 4], tt2[i + 6]);
+            uu[i + 6] = _mm256_unpackhi_epi32(tt2[i + 4], tt2[i + 6]);
+        }
+        let mut o = [_mm256_setzero_si256(); 8];
+        for i in 0..2 {
+            o[2 * i] = _mm256_unpacklo_epi64(uu[2 * i], uu[2 * i + 4]);
+            o[2 * i + 1] = _mm256_unpackhi_epi64(uu[2 * i], uu[2 * i + 4]);
+            o[2 * i + 4] = _mm256_unpacklo_epi64(uu[2 * i + 1], uu[2 * i + 5]);
+            o[2 * i + 5] = _mm256_unpackhi_epi64(uu[2 * i + 1], uu[2 * i + 5]);
+        }
+        o
+    };
+    let tlo = tr8x8(<&[__m256i; 8]>::try_from(&tt[..8]).unwrap());
+    let thi = tr8x8(<&[__m256i; 8]>::try_from(&tt[8..]).unwrap());
+    let mut buf = [i16x16::zero(t); 16];
+    for i in 0..8 {
+        buf[i] = i16x16::from_repr(t, tlo[i]);
+        buf[8 + i] = i16x16::from_repr(t, thi[i]);
+    }
+    // lr_flip reverses the register axis (register = column here).
+    if lr_flip {
+        buf.reverse();
+    }
+
+    // Row pass; shift[2] == 0 for 16x16 — widen straight into the output.
+    let mut outv = [i16x16::zero(t); 16];
+    incant!(
+        run_fwd1d_i16(k16(kr), &buf, &mut outv, cos_bit_row),
+        [v3, neon]
+    );
+    for (i, v) in outv.iter().enumerate() {
+        let base = i * 16;
+        widen_lo(t, *v).store((&mut output[base..base + 8]).try_into().unwrap());
+        widen_hi(t, *v).store((&mut output[base + 8..base + 16]).try_into().unwrap());
     }
     true
 }
