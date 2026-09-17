@@ -1,5 +1,56 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Threaded vs threaded C: within 10% at 4t/8t on row-tile geometry (2026-09-16)
+
+`e7cdd08` — the honest threaded-C baseline exists now: a SEPARATE
+libaom v3.14.1 `aomenc` built from `upstream/` with multithread ON
+(the in-repo oracle is `CONFIG_MULTITHREAD=0` + `g_threads=1` — it can
+gate bytes, not threaded wall time). Ship cell 1024x1024 cq27
+`--cpu-used 3`, allintra, cdef off, restoration on, sb64; C arm
+`aomenc --allintra --good --tile-rows=N --threads=T`, port arm
+`eprof_x86` with the same row-tile geometry — all numbers below are
+one-session interleaved medians on a 7900X (earlier figures were
+polluted by a concurrent build; treat these as the record):
+
+| arm | serial | 4 threads | 8 threads |
+|---|---|---|---|
+| C row-mt (no tiles) | 1754 | 680 | 577 |
+| C row tiles, like-for-like | — | 607.6 (16 rows) | 441.5 (8 rows) |
+| C best tile config | — | 597 (4x4) | 413.1 (4x4) |
+| **port** | ~2230 | **666.5 (16 rows)** | **435.9 (8 rows)** |
+
+Ratios: **4t 1.097x** vs same-geometry C (1.12x vs C's 4x4 best);
+**8t 0.988x vs same-geometry C — faster than C — and 1.055x vs C's
+best config.** The user's <=1.10x bar is met at both thread counts on
+the like-for-like contract, and at 8t against every C geometry.
+
+What landed to get there (all byte-identical, `forbid(unsafe_code)`
+intact): phase-1 + phase-2 bands now pull off a shared mutex cursor —
+dynamic scheduling instead of static interleave (a worker that draws a
+cheap row takes the next one); loop-restoration search threaded by
+tile-row ranges with private `RscState`/cloned `PlaneCtx` and
+commutative totals merge (`LrSearchInput::threads`);
+`build_lf_mi_grid_mt` SB-row banding; `pick_filter_level_mt` — U/V on
+workers plus the sequential luma chain's independent low/high trial
+pairs on a second worker (4t sees Y(2)+U(1)+V(1)). Phase-1 scaling
+2097 -> 342 ms at 8t = 6.13x; the residual ~10% inefficiency is
+worker-boundary setup + memory, not scheduling. Heaptrack peak heap
+112.9M at 8t vs ~74M serial — the +40M is the LR workers' `PlaneCtx`
+clones (~5M/worker transient, bounded linear-in-workers, documented
+here rather than refactored: splitting `PlaneCtx` into shared/mutable
+halves is the follow-up if it ever matters).
+
+What is NOT matched: C's square-tile (4x4) parallelism. Column tiles
+interleave within every plane row, so `split_at_mut` row-banding can't
+express them under `forbid(unsafe_code)` — closing that last ~5-10%
+needs per-tile owned recon buffers + stitching or a different access
+model. Documented, not pursued: at 8t we're already at parity, and at
+4t the like-for-like bar is met.
+
+`AOM_TIME_PHASES=1` now eprints per-phase spans (phase-1, lf_pick,
+deblock, cdef, lr_search, pack2, assemble) — the instrumented
+breakdown that drove the tail work.
+
 ## Phase-1 tile walk is threaded by row bands + bd8 lpf runs the u8 kernels (2026-09-16)
 
 `6ada3da` — `KeyFrameConfig::threads` (default 1, serial path byte-untouched).
