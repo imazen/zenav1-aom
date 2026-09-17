@@ -160,12 +160,6 @@ pub(crate) fn sse_u16_u8_impl_v3(
     h: usize,
 ) -> i64 {
     use archmage::intrinsics::x86_64::*;
-    // `incant!` routes v3 machines straight here — the generic impl's guards
-    // don't run. w==4 is too narrow to amortise the hadd tree (and the
-    // caller's own guard passes it through), so delegate like the generic.
-    if w == 4 {
-        return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, w, h);
-    }
     // Two-hadd tree: hadd(x,x) pairs each 128 half; hadd again folds the two
     // pair-sums of each half into lane 0; lo+hi adds the halves — lane 0 is
     // the strip total. i32 all the way (per-lane bound <= 8*2*255^2 < 2^25).
@@ -185,6 +179,10 @@ pub(crate) fn sse_u16_u8_impl_v3(
     // every inner bounds check); the generic loop stays for the other
     // assert-permitted multiples of 8.
     match w {
+        // w==4 is ~half the call volume (4-wide txbs) — a scalar walk costs
+        // ~14 Ir/px vs ~1.3 packed. The generic tiers still take the scalar
+        // route for it.
+        4 => return sse_u16_u8_w4_v3(_t, a, a_stride, b, b_stride, h),
         8 => return sse_u16_u8_rows_v3::<8>(_t, a, a_stride, b, b_stride, h),
         16 => return sse_u16_u8_rows_v3::<16>(_t, a, a_stride, b, b_stride, h),
         32 => return sse_u16_u8_rows_v3::<32>(_t, a, a_stride, b, b_stride, h),
@@ -285,6 +283,71 @@ fn sse_u16_u8_rows_v3<const W: usize>(
         rb += b_stride;
     }
     reduce(xv)
+}
+
+/// The w==4 arm of [`sse_u16_u8_impl_v3`]: each 4-px row is too narrow for
+/// the hadd tree, so four strided rows pack into one 8-lane i16 op pair
+/// (`loadu_si64` x4 + `unpacklo_epi64` for the u16 src, `loadu_si32` x4 +
+/// `unpacklo_epi32`/`cvtepu8_epi16` for the u8 recon) — the same row-pair
+/// packing `sum_squares_2d_i16`'s 4xn kernel uses. h is a power of two >= 4
+/// in every production call; the `h % 4` tail and the undersized-buffer
+/// corner keep the scalar walk (semantics identical — the math is exact
+/// i16/i32, no saturation anywhere). One upfront `(h-1)*stride + 4` region
+/// check covers every row access.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn sse_u16_u8_w4_v3(
+    _t: archmage::X64V3Token,
+    a: &[u16],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    h: usize,
+) -> i64 {
+    use archmage::intrinsics::x86_64::*;
+    if h == 0 {
+        return 0;
+    }
+    if h % 4 != 0
+        || a.len() < (h - 1) * a_stride + 4
+        || b.len() < (h - 1) * b_stride + 4
+    {
+        return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, 4, h);
+    }
+    let (aa, bb) = (&a[..(h - 1) * a_stride + 4], &b[..(h - 1) * b_stride + 4]);
+    let la = |o: usize| -> __m128i {
+        let r: &[u16; 4] = aa[o..o + 4].try_into().unwrap();
+        _mm_loadu_si64(r)
+    };
+    let lb = |o: usize| -> __m128i {
+        let r: &[u8; 4] = bb[o..o + 4].try_into().unwrap();
+        _mm_loadu_si32(r)
+    };
+    let mut acc = _mm_setzero_si128();
+    let (mut ra, mut rb) = (0usize, 0usize);
+    for _ in 0..h / 4 {
+        // i32 lanes gain (h/4) * 2 * 255^2 <= 2.1M at h=64 — no wrap.
+        let d01 = _mm_sub_epi16(
+            _mm_unpacklo_epi64(la(ra), la(ra + a_stride)),
+            _mm_cvtepu8_epi16(_mm_unpacklo_epi32(lb(rb), lb(rb + b_stride))),
+        );
+        let d23 = _mm_sub_epi16(
+            _mm_unpacklo_epi64(la(ra + 2 * a_stride), la(ra + 3 * a_stride)),
+            _mm_cvtepu8_epi16(_mm_unpacklo_epi32(
+                lb(rb + 2 * b_stride),
+                lb(rb + 3 * b_stride),
+            )),
+        );
+        acc = _mm_add_epi32(
+            acc,
+            _mm_add_epi32(_mm_madd_epi16(d01, d01), _mm_madd_epi16(d23, d23)),
+        );
+        ra += 4 * a_stride;
+        rb += 4 * b_stride;
+    }
+    let s = _mm_add_epi32(acc, _mm_srli_si128::<8>(acc));
+    let s = _mm_add_epi32(s, _mm_srli_si128::<4>(s));
+    i64::from(_mm_cvtsi128_si32(s) as u32)
 }
 
 /// Scalar tier for [`crate::dist::sse`] — the transcribed u8 SSE walk.

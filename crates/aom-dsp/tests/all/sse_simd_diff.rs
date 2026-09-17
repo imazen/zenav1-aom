@@ -32,6 +32,9 @@ impl Rng {
 const DIMS: &[(usize, usize)] = &[
     (4, 4),
     (4, 16),
+    (4, 64),
+    (4, 2),  // w4 arm's h % 4 != 0 scalar-tail route
+    (4, 6),
     (8, 4),
     (8, 8),
     (8, 32),
