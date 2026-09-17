@@ -675,8 +675,8 @@ use crate::{
     xform_quant_optimize_split_into,
 };
 use aom_dsp::txb::{
-    CoeffCostSet, CoeffCostTables, TxTypeCosts, cost_coeffs_txb, cost_coeffs_txb_laplacian,
-    get_tx_type_cost,
+    CoeffCostSet, CoeffCostTables, TxTypeCosts, cost_coeffs_txb_laplacian,
+    cost_coeffs_txb_scratch, get_tx_type_cost,
 };
 
 /// `tx_size_2d[TX_SIZES_ALL]` (av1/common/common_data.h): pel count per tx.
@@ -1807,6 +1807,12 @@ pub fn search_tx_type_intra_into(
     let mut best_rd = i64::MAX;
     let mut evaluated_mask = 0u16;
 
+    // `cost_coeffs_txb_scratch`'s buffers — grow-only once for the whole
+    // candidate loop (C declares both uninitialized; the kernels overwrite
+    // every entry the rate loop reads — see `XformQuantScratch::levels`).
+    scratch.xq.levels.resize(aom_dsp::txb::TX_PAD_2D, 0);
+    scratch.xq.cost_ctx.resize(32 * 32, 0);
+
     // Iterate in txk_map order (tx_search.c:2199: `tx_type = txk_map[idx]`) —
     // the natural 0..16 order unless the est-rd prune reordered it. The order
     // is byte-load-bearing: ties keep the FIRST winner, and the adaptive-txb /
@@ -1923,7 +1929,7 @@ pub fn search_tx_type_intra_into(
                 inp.bctx.above,
                 inp.bctx.left,
             );
-            let rate = cost_coeffs_txb(
+            let rate = cost_coeffs_txb_scratch(
                 &scratch.xq.qcoeff,
                 xq.eob as usize,
                 tx_size,
@@ -1931,6 +1937,8 @@ pub fn search_tx_type_intra_into(
                 txb_skip_ctx as usize,
                 dc_sign_ctx as usize,
                 inp.coeff_costs,
+                &mut scratch.xq.levels,
+                &mut scratch.xq.cost_ctx,
             ) + if xq.eob > 0 {
                 get_tx_type_cost(
                     inp.tx_type_costs,

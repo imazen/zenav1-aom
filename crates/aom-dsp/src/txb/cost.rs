@@ -115,6 +115,46 @@ pub fn cost_coeffs_txb(
     dc_sign_ctx: usize,
     t: &CoeffCostTables,
 ) -> i32 {
+    let mut levels_buf = [0u8; TX_PAD_2D];
+    let mut coeff_contexts = [0i8; 32 * 32];
+    cost_coeffs_txb_scratch(
+        qcoeff,
+        eob,
+        tx_size,
+        tx_type,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        t,
+        &mut levels_buf,
+        &mut coeff_contexts,
+    )
+}
+
+/// [`cost_coeffs_txb`] with caller-owned scratch. C declares `levels_buf` /
+/// `coeff_contexts` uninitialized (`av1_cost_coeffs_txb`, txb_rdopt.c) — the
+/// kernels that follow overwrite every entry the rate loop reads:
+/// `txb_init_levels` writes the whole padded footprint `get_br_ctx` /
+/// `get_nz_map_ctx` touch (and runs whenever `eob > 1`, the only case those
+/// readers execute — `get_br_ctx_eob` is position-only), and
+/// `get_nz_map_contexts` writes `coeff_contexts[scan[i]]` for exactly the
+/// `i < eob` positions the loop reads. Stale contents are therefore never
+/// observed, so a reused buffer is byte-identical to a zeroed one — this
+/// removes ~2.3 KB of per-call stack memset from the tx-type search's
+/// per-candidate rate evaluation. `levels` must be at least `TX_PAD_2D`;
+/// `coeff_contexts` at least `width * height` (callers pass the max,
+/// `32 * 32`).
+#[allow(clippy::too_many_arguments)]
+pub fn cost_coeffs_txb_scratch(
+    qcoeff: &[i32],
+    eob: usize,
+    tx_size: usize,
+    tx_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    t: &CoeffCostTables,
+    levels_buf: &mut [u8],
+    coeff_contexts: &mut [i8],
+) -> i32 {
     if eob == 0 {
         return t.txb_skip[txb_skip_ctx * 2 + 1];
     }
@@ -124,16 +164,14 @@ pub fn cost_coeffs_txb(
     let height = txb_high(tx_size);
     let sc = scan(tx_size, tx_type);
 
-    let mut levels_buf = [0u8; TX_PAD_2D];
     if eob > 1 {
-        txb_init_levels(qcoeff, width, height, &mut levels_buf);
+        txb_init_levels(qcoeff, width, height, &mut levels_buf[..TX_PAD_2D]);
     }
 
     let mut cost = t.txb_skip[txb_skip_ctx * 2]; // [txb_skip_ctx][0]
     cost += eob_cost(eob, t, tx_class);
 
-    let mut coeff_contexts = [0i8; 32 * 32];
-    get_nz_map_contexts(&levels_buf, sc, eob, tx_size, tx_class, &mut coeff_contexts);
+    get_nz_map_contexts(levels_buf, sc, eob, tx_size, tx_class, coeff_contexts);
 
     // c == eob - 1 (the EOB coefficient)
     let mut c = eob - 1;
@@ -174,7 +212,7 @@ pub fn cost_coeffs_txb(
             cost += t.base[coeff_ctx * 8 + level.min(3) as usize];
             cost += COST_LIT1;
             if level > NUM_BASE_LEVELS as i32 {
-                let ctx = get_br_ctx(&levels_buf, pos, bhl, tx_class) as usize;
+                let ctx = get_br_ctx(levels_buf, pos, bhl, tx_class) as usize;
                 cost += br_cost(
                     level,
                     &t.lps[ctx * LPS_STRIDE..ctx * LPS_STRIDE + LPS_STRIDE],
@@ -197,7 +235,7 @@ pub fn cost_coeffs_txb(
             let sign01 = usize::from(v < 0);
             cost += t.dc_sign[dc_sign_ctx * 2 + sign01];
             if level > NUM_BASE_LEVELS as i32 {
-                let ctx = get_br_ctx(&levels_buf, pos, bhl, tx_class) as usize;
+                let ctx = get_br_ctx(levels_buf, pos, bhl, tx_class) as usize;
                 cost += br_cost(
                     level,
                     &t.lps[ctx * LPS_STRIDE..ctx * LPS_STRIDE + LPS_STRIDE],

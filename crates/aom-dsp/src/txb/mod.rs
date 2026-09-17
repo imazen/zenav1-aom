@@ -26,7 +26,9 @@ pub use write::{
 mod read;
 pub use read::{dequant_txb, read_coeffs_txb, read_coeffs_txb_full, tx_scale};
 mod cost;
-pub use cost::{CoeffCostTables, cost_coeffs_txb, cost_coeffs_txb_laplacian};
+pub use cost::{
+    CoeffCostTables, cost_coeffs_txb, cost_coeffs_txb_laplacian, cost_coeffs_txb_scratch,
+};
 mod prob_cost;
 pub use prob_cost::{cost_symbol, cost_tokens_from_cdf};
 mod fill;

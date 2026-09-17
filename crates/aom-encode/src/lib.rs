@@ -403,8 +403,15 @@ pub struct XformQuantScratch {
     /// The trellis's padded levels map (`TX_PAD_2D`). `txb_init_levels`
     /// overwrites every byte the trellis reads (C declares it uninitialized),
     /// so this is grow-only — it removes a 1.3 KB memset per `optimize_txb`
-    /// call from the RD walk.
+    /// call from the RD walk. Shared with `cost_coeffs_txb_scratch`, which
+    /// has the same write-before-read contract.
     pub levels: Vec<u8>,
+    /// `cost_coeffs_txb`'s coefficient-context map (`32 * 32` i8).
+    /// `get_nz_map_contexts` writes exactly the `scan[i]`, `i < eob` entries
+    /// the rate loop reads (C declares it uninitialized), so this is
+    /// grow-only like `levels` — it removes a 1 KB memset per
+    /// per-candidate rate evaluation in the tx-type search.
+    pub cost_ctx: Vec<i8>,
     /// The inverse transform's row-pass / input-expansion scratch for the
     /// `if (*eob) av1_inverse_transform_block` that follows quantize on the
     /// encode path (see `InvTxfmScratch`: fully rewritten before every read).
