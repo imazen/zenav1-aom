@@ -300,7 +300,7 @@ fn get_nz_map_ctx_from_stats(
     stats: i32,
     coeff_idx: usize,
     bhl: u32,
-    tx_size: usize,
+    nz_off: &[i8],
     tx_class: TxClass,
 ) -> i32 {
     if tx_class == TxClass::TwoD && coeff_idx == 0 {
@@ -308,7 +308,7 @@ fn get_nz_map_ctx_from_stats(
     }
     let ctx = ((stats + 1) >> 1).min(4);
     match tx_class {
-        TxClass::TwoD => ctx + tables::nz_map_ctx_offset(tx_size)[coeff_idx] as i32,
+        TxClass::TwoD => ctx + nz_off[coeff_idx] as i32,
         TxClass::Horiz => {
             let col = coeff_idx >> bhl;
             ctx + nz_map_ctx_offset_1d(col)
@@ -348,7 +348,7 @@ fn get_nz_map_ctx(
         return 3;
     }
     let stats = get_nz_mag(levels, get_padded_idx(coeff_idx, bhl), bhl, tx_class);
-    get_nz_map_ctx_from_stats(stats, coeff_idx, bhl, tx_size, tx_class)
+    get_nz_map_ctx_from_stats(stats, coeff_idx, bhl, nz_map_ctx_offset(tx_size), tx_class)
 }
 
 /// `get_lower_levels_ctx` (txb_common.h): base context from neighbour stats.
@@ -361,11 +361,11 @@ pub(crate) fn get_lower_levels_ctx(
     levels: &[u8],
     coeff_idx: usize,
     bhl: u32,
-    tx_size: usize,
+    nz_off: &[i8],
     tx_class: TxClass,
 ) -> i32 {
     let stats = get_nz_mag(levels, get_padded_idx(coeff_idx, bhl), bhl, tx_class);
-    get_nz_map_ctx_from_stats(stats, coeff_idx, bhl, tx_size, tx_class)
+    get_nz_map_ctx_from_stats(stats, coeff_idx, bhl, nz_off, tx_class)
 }
 
 /// `get_lower_levels_ctx_eob`.
@@ -399,7 +399,7 @@ pub(crate) fn get_lower_levels_ctx_general(
     if is_last {
         return get_lower_levels_ctx_eob(bhl, width, scan_idx);
     }
-    get_lower_levels_ctx(levels, coeff_idx, bhl, tx_size, tx_class)
+    get_lower_levels_ctx(levels, coeff_idx, bhl, nz_map_ctx_offset(tx_size), tx_class)
 }
 
 /// `get_padded_idx` re-export for the optimize module.

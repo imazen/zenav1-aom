@@ -334,6 +334,10 @@ fn optimize_txb_run<const TXC: u8>(
     let dqcoeff = &mut dqcoeff[..n];
     let iqmatrix = iqmatrix.map(|q| &q[..n]);
     let qmatrix = qmatrix.map(|q| &q[..n]);
+    // `nz_map_ctx_offset(tx_size)` resolved once and sliced to `n`: the table
+    // length is `n_coeffs` for every tx_size, so under `assert!(ci < n)` the
+    // per-coefficient `nz_off[ci]` loads are check-free.
+    let nz_off = &crate::txb::nz_map_ctx_offset(tx_size)[..n];
     let cdist =
         |tqc: i32, dqc: i32, ci: usize| -> i64 { get_coeff_dist(tqc, dqc, shift, qmatrix, ci) };
     let base0 = |ctx: usize| -> i32 { t.base[ctx * 8] };
@@ -400,7 +404,7 @@ fn optimize_txb_run<const TXC: u8>(
         let ci = scan[s] as usize;
         assert!(ci < n); // scan is a 0..n permutation
         let qc = qcoeff[ci];
-        let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, tx_size, tx_class) as usize;
+        let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, nz_off, tx_class) as usize;
         if qc == 0 {
             accu_rate += base0(coeff_ctx);
             si -= 1;
@@ -554,7 +558,7 @@ fn optimize_txb_run<const TXC: u8>(
         let ci = scan[s] as usize;
         assert!(ci < n); // scan is a 0..n permutation
         let qc = qcoeff[ci];
-        let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, tx_size, tx_class) as usize;
+        let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, nz_off, tx_class) as usize;
         if qc == 0 {
             accu_rate += base0(coeff_ctx);
             si -= 1;
