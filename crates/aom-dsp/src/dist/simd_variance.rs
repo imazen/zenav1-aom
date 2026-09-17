@@ -178,45 +178,41 @@ pub(crate) fn sse_u16_u8_impl_v3(
         );
         i64::from(_mm_extract_epi32::<0>(both) as u32)
     };
-    let mut tsse: i64 = 0;
-    // Same strip derivation as `highbd_variance64_impl_v3`: a lane gains at
-    // most 2*255^2 per madd; 8 lanes in the hadd tree bound the total adds
-    // per lane at 8, so a strip is 8/ceil(w/16) rows (w>=128 -> per-row).
-    let strip = (8 / w.div_ceil(16)).max(1);
-    let mut y = 0usize;
-    while y < h {
-        let yend = (y + strip).min(h);
-        let mut xv = _mm256_setzero_si256();
-        for yy in y..yend {
-            let (ra, rb) = (yy * a_stride, yy * b_stride);
-            for c in (0..w).step_by(16) {
-                if c + 16 <= w {
-                    let av: &[u16; 16] = a[ra + c..ra + c + 16].try_into().unwrap();
-                    let bv: &[u8; 16] = b[rb + c..rb + c + 16].try_into().unwrap();
-                    let d = _mm256_sub_epi16(
-                        _mm256_loadu_si256(av),
-                        _mm256_cvtepu8_epi16(_mm_loadu_si128(bv)),
-                    );
-                    xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
-                } else {
-                    let av: &[u16; 8] = a[ra + c..ra + c + 8].try_into().unwrap();
-                    let bv: &[u8; 8] = b[rb + c..rb + c + 8].try_into().unwrap();
-                    let d = _mm_sub_epi16(
-                        _mm_loadu_si128(av),
-                        _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
-                    );
-                    let sq = _mm_madd_epi16(d, d);
-                    xv = _mm256_add_epi32(
-                        xv,
-                        _mm256_castsi128_si256(sq),
-                    );
-                }
+    // C's `aom_sse` accumulates one ymm over the whole block and reduces once:
+    // blocks are <= 64x64 so a lane gains at most 64*4*2*255^2 < 2^25 — no
+    // strip machinery needed. One checked slice per row gives `ar`/`br` a
+    // proven len of `w`, so the `c + 16 <= w` guard folds the per-chunk
+    // bounds checks away.
+    let mut xv = _mm256_setzero_si256();
+    for yy in 0..h {
+        let (ra, rb) = (yy * a_stride, yy * b_stride);
+        let ar = &a[ra..ra + w];
+        let br = &b[rb..rb + w];
+        for c in (0..w).step_by(16) {
+            if c + 16 <= w {
+                let av: &[u16; 16] = ar[c..c + 16].try_into().unwrap();
+                let bv: &[u8; 16] = br[c..c + 16].try_into().unwrap();
+                let d = _mm256_sub_epi16(
+                    _mm256_loadu_si256(av),
+                    _mm256_cvtepu8_epi16(_mm_loadu_si128(bv)),
+                );
+                xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
+            } else {
+                let av: &[u16; 8] = ar[c..c + 8].try_into().unwrap();
+                let bv: &[u8; 8] = br[c..c + 8].try_into().unwrap();
+                let d = _mm_sub_epi16(
+                    _mm_loadu_si128(av),
+                    _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
+                );
+                let sq = _mm_madd_epi16(d, d);
+                xv = _mm256_add_epi32(
+                    xv,
+                    _mm256_castsi128_si256(sq),
+                );
             }
         }
-        tsse += reduce(xv);
-        y = yend;
     }
-    tsse
+    reduce(xv)
 }
 
 /// Scalar tier for [`crate::dist::variance_4x4_units`] — delegates to the
