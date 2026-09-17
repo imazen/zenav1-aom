@@ -252,9 +252,12 @@ fn lpf_impl(
     };
 
     // Scatter helper values into `buf` for taps `ks` — direct indexing so the
-    // (immutable) `load` closure's borrow has ended by this point.
+    // (immutable) `load` closure's borrow has ended by this point. `c` is taken
+    // as an argument (like `load!`): a free `c` would resolve with def-site
+    // hygiene under the `magetypes` tier expansion and not see the loop local.
     macro_rules! store {
-        ($($k:expr => $v:expr),+ $(,)?) => {{
+        ($c:expr, $($k:expr => $v:expr),+ $(,)?) => {{
+            let c = $c;
             $(
                 let a = ($v).to_array();
                 buf[(c + ($k) * ts) as usize] = a[0] as u16;
@@ -276,7 +279,7 @@ fn lpf_impl(
             let oq1 = load!(c, 1);
             let mask = fmask2(op1, op0, oq0, oq1);
             let (n1, n0, m0, m1) = filter4(op1, op0, oq0, oq1, mask);
-            store!(-2 => n1, -1 => n0, 0 => m0, 1 => m1);
+            store!(c, -2 => n1, -1 => n0, 0 => m0, 1 => m1);
         }
         6 => {
             // taps p2(-3) p1(-2) p0(-1) q0(0) q1(1) q2(2)
@@ -299,7 +302,7 @@ fn lpf_impl(
             let o_p0 = i32x4::blend(use_wide, w_p0, f_p0);
             let o_q0 = i32x4::blend(use_wide, w_q0, f_q0);
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
-            store!(-2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1);
+            store!(c, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1);
         }
         8 => {
             // taps p3(-4) p2(-3) p1(-2) p0(-1) q0(0) q1(1) q2(2) q3(3)
@@ -329,7 +332,7 @@ fn lpf_impl(
             let o_q0 = i32x4::blend(use_wide, w_q0, f_q0);
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
             let o_q2 = i32x4::blend(use_wide, w_q2, q2);
-            store!(-3 => o_p2, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1, 2 => o_q2);
+            store!(c, -3 => o_p2, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1, 2 => o_q2);
         }
         14 => {
             // taps p6(-7)..p0(-1), q0(0)..q6(6)
@@ -400,7 +403,7 @@ fn lpf_impl(
             let o_q4 = i32x4::blend(use14, w14_q4, q4);
             let o_q5 = i32x4::blend(use14, w14_q5, q5);
             store!(
-                -6 => o_p5, -5 => o_p4, -4 => o_p3, -3 => o_p2, -2 => o_p1, -1 => o_p0,
+                c, -6 => o_p5, -5 => o_p4, -4 => o_p3, -3 => o_p2, -2 => o_p1, -1 => o_p0,
                 0 => o_q0, 1 => o_q1, 2 => o_q2, 3 => o_q3, 4 => o_q4, 5 => o_q5,
             );
         }

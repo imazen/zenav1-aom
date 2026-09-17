@@ -98,7 +98,7 @@ fn quantize_fp_impl_scalar(
 // instruction-level mirror of upstream's REAL runtime kernels
 // (`av1_quantize_fp_avx2`/`_32x32`/`_64x64`), which differ from the C scalar
 // in i16-lane edge cases. See the `_v3` body's docs.
-#[magetypes(define(i32x8), neon, wasm128, -scalar)]
+#[magetypes(define(i32x8), wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn quantize_fp_impl(
     token: Token,
@@ -547,7 +547,7 @@ fn quantize_lp_impl_scalar(
 /// inverse-permutation identity `max_{tmp!=0} iscan[rc]+1 == scan-order eob`).
 /// LLVM lowers the per-lane math under the tier's target features; the
 /// raster walk removes the scan-order serial dependence C's scalar has.
-#[magetypes(neon, wasm128, -scalar)]
+#[magetypes(wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn quantize_lp_impl(
     _t: Token,
@@ -687,4 +687,316 @@ fn quantize_lp_impl_v3(
     let e = _mm_max_epi16(e, _mm_shufflelo_epi16::<0xe>(e));
     let e = _mm_max_epi16(e, _mm_shufflelo_epi16::<0x1>(e));
     _mm_extract_epi16::<1>(e) as u16
+}
+
+// ---------------------------------------------------------------------------
+// aarch64 NEON tier — a verbatim transcription of `av1_quantize_fp_neon` /
+// `_32x32_neon` / `_64x64_neon` and `av1_quantize_lp_neon`
+// (av1/encoder/arm/quantize_neon.c).
+//
+// This is NOT the AVX2 body on NEON registers: C's NEON kernel is a
+// different algorithm — `vqdmulhq` (doubling, saturating mulhi) with a
+// compensating shift where AVX2 uses `mulhi`; a TRUNCATING `vmovn`
+// i32->i16 narrow where AVX2's `packs` saturates; a backward zbin
+// pre-scan + memset for `log_scale > 0`; `eob = max(iscan[nz]) + 1` with a
+// -1 sentinel where AVX2 keeps `iscan + 1` masked; and 8-lane chunks, not
+// 16. All of those differences are real on the adversarial domain, so the
+// tier oracle is the exported C NEON symbol, not the C scalar port.
+//
+// Layout notes: `qcoeff`/`dqcoeff` are `tran_low_t` (i32) buffers — loads
+// truncate pairs of i32 lanes through `vmovn`, stores sign-extend through
+// `vmovl`. The `[i16; 2]` param pairs expand to C's int16_t[8] rows
+// ([dc, ac x7]); the fp path's AC param vector is the lane-1 broadcast the
+// C code makes after chunk 0.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn quantize_fp_impl_neon(
+    t: NeonToken,
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    round: &[i16; 2],
+    log_scale: i32,
+    scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let _ = t;
+    use archmage::intrinsics::aarch64::*;
+
+    let n = coeff.len();
+    // Chunk requirements: the ls=0 body peels 8 then do-whiles (n >= 16 or
+    // it would overread); the logscale body asserts n_coeffs > 16 and scans
+    // backward in 16-coeff groups — n % 16 != 0 would under-read, while
+    // n == 16 runs the assert-violating-but-defined path the shipped kernel
+    // actually executes (the assert is NDEBUG-compiled out in the oracle).
+    // Malformed shapes take the scalar port, same policy as the v3 mirror.
+    if n % 8 != 0
+        || n < 16
+        || (log_scale > 0 && n % 16 != 0)
+        || iscan.len() < n
+        || qcoeff.len() < n
+        || dqcoeff.len() < n
+    {
+        return crate::quant::av1_quantize_fp_no_qmatrix(
+            quant, dequant, round, log_scale, scan, coeff, qcoeff, dqcoeff,
+        );
+    }
+
+    let zero = vdupq_n_s16(0);
+    let neg1 = vdupq_n_s16(-1);
+    // C loads the int16_t[8] param rows — [dc, ac x7] — then broadcasts lane
+    // 1 (the ac value) after chunk 0.
+    let mut v_quant = vsetq_lane_s16::<0>(quant[0], vdupq_n_s16(quant[1]));
+    let mut v_dequant = vsetq_lane_s16::<0>(dequant[0], vdupq_n_s16(dequant[1]));
+    let mut v_round = vsetq_lane_s16::<0>(round[0], vdupq_n_s16(round[1]));
+    let mut eobmax = neg1;
+
+    // `load_tran_low_to_s16q` (mem_neon.h) — TRUNCATING vmovn narrow.
+    let load8 = |c: &[i32]| -> int16x8_t {
+        vcombine_s16(
+            vmovn_s32(vld1q_s32(<&[i32; 4]>::try_from(&c[..4]).unwrap())),
+            vmovn_s32(vld1q_s32(<&[i32; 4]>::try_from(&c[4..8]).unwrap())),
+        )
+    };
+    // `store_s16q_to_tran_low` — sign-extending vmovl.
+    let store8 = |dst: &mut [i32], v: int16x8_t| {
+        vst1q_s32(
+            <&mut [i32; 4]>::try_from(&mut dst[..4]).unwrap(),
+            vmovl_s16(vget_low_s16(v)),
+        );
+        vst1q_s32(
+            <&mut [i32; 4]>::try_from(&mut dst[4..8]).unwrap(),
+            vmovl_s16(vget_high_s16(v)),
+        )
+    };
+    // `get_max_lane_eob`: nz lanes contribute iscan, else -1.
+    let lane_eob = |iscan8: &[i16; 8], eobmax: int16x8_t, mask: uint16x8_t| -> int16x8_t {
+        vmaxq_s16(eobmax, vbslq_s16(mask, vld1q_s16(iscan8), neg1))
+    };
+
+    let i8v = iscan[..n].as_chunks::<8>().0;
+    let mut chunks_done = 0usize;
+    let mut nonzero_count = n;
+
+    macro_rules! chunk {
+        // quantize_fp_8 — the ls=0 core.
+        (fp8, $i:expr) => {{
+            let i = $i;
+            let c = load8(&coeff[i * 8..]);
+            let sign = vshrq_n_s16::<15>(c);
+            let abs = vabsq_s16(c);
+            let tmp = vqaddq_s16(abs, v_round);
+            let tmp2 = vshrq_n_s16::<1>(vqdmulhq_s16(tmp, v_quant));
+            let nz = vcgtq_s16(tmp2, zero);
+            let qc = vsubq_s16(veorq_s16(tmp2, sign), sign);
+            let dqc = vmulq_s16(qc, v_dequant);
+            store8(&mut qcoeff[i * 8..], qc);
+            store8(&mut dqcoeff[i * 8..], dqc);
+            eobmax = lane_eob(&i8v[i], eobmax, nz);
+        }};
+        // quantize_fp_logscale_8 — the ls=1 core (also reached at ls=0 in
+        // no_qmatrix form, but the dispatched ls=0 kernel is fp8 above).
+        (ls8, $i:expr, $ls:expr) => {{
+            let i = $i;
+            let c = load8(&coeff[i * 8..]);
+            let sign = vshrq_n_s16::<15>(c);
+            let abs = vabsq_s16(c);
+            let mask = vcgeq_s16(
+                abs,
+                vshlq_s16(v_dequant, vdupq_n_s16((-(1 + $ls)) as i16)),
+            );
+            let tmp = vandq_s16(
+                vqaddq_s16(abs, v_round),
+                vreinterpretq_s16_u16(mask),
+            );
+            let tmp2 = vqdmulhq_s16(vshlq_s16(tmp, vdupq_n_s16(($ls - 1) as i16)), v_quant);
+            let nz = vcgtq_s16(tmp2, zero);
+            let qc = vsubq_s16(veorq_s16(tmp2, sign), sign);
+            let abs_dq = vshlq_u16(
+                vreinterpretq_u16_s16(vmulq_s16(tmp2, v_dequant)),
+                vdupq_n_s16((-$ls) as i16),
+            );
+            let dqc = vsubq_s16(
+                veorq_s16(vreinterpretq_s16_u16(abs_dq), sign),
+                sign,
+            );
+            store8(&mut qcoeff[i * 8..], qc);
+            store8(&mut dqcoeff[i * 8..], dqc);
+            eobmax = lane_eob(&i8v[i], eobmax, nz);
+        }};
+        // quantize_fp_logscale2_8 — the ls=2 core (wider product kept as
+        // shifted hi|lo halves instead of a vqdmulh shortcut).
+        (ls2, $i:expr) => {{
+            let i = $i;
+            let c = load8(&coeff[i * 8..]);
+            let sign = vshrq_n_s16::<15>(c);
+            let abs = vabsq_s16(c);
+            let mask = vcgeq_u16(
+                vshlq_n_u16::<1>(vreinterpretq_u16_s16(abs)),
+                vshrq_n_u16::<2>(vreinterpretq_u16_s16(v_dequant)),
+            );
+            let tmp = vandq_s16(
+                vqaddq_s16(abs, v_round),
+                vreinterpretq_s16_u16(mask),
+            );
+            let tmp2 = vorrq_s16(
+                vshlq_n_s16::<1>(vqdmulhq_s16(tmp, v_quant)),
+                vreinterpretq_s16_u16(vshrq_n_u16::<14>(vreinterpretq_u16_s16(
+                    vmulq_s16(tmp, v_quant),
+                ))),
+            );
+            let nz = vcgtq_s16(tmp2, zero);
+            let qc = vsubq_s16(veorq_s16(tmp2, sign), sign);
+            let abs_dq = vorrq_s16(
+                vshlq_n_s16::<13>(vqdmulhq_s16(tmp2, v_dequant)),
+                vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(
+                    vmulq_s16(tmp2, v_dequant),
+                ))),
+            );
+            let dqc = vsubq_s16(veorq_s16(abs_dq, sign), sign);
+            store8(&mut qcoeff[i * 8..], qc);
+            store8(&mut dqcoeff[i * 8..], dqc);
+            eobmax = lane_eob(&i8v[i], eobmax, nz);
+        }};
+    }
+
+    if log_scale == 0 {
+        // av1_quantize_fp_neon: chunk 0 with the dc row, the rest on the ac
+        // broadcast.
+        chunk!(fp8, 0);
+        v_quant = vdupq_lane_s16::<1>(vget_low_s16(v_quant));
+        v_dequant = vdupq_lane_s16::<1>(vget_low_s16(v_dequant));
+        v_round = vdupq_lane_s16::<1>(vget_low_s16(v_round));
+        for i in 1..n / 8 {
+            chunk!(fp8, i);
+        }
+        let _ = &mut chunks_done;
+    } else {
+        // quantize_fp_no_qmatrix_neon: scale the round first, then a backward
+        // zbin pre-scan dropping trailing all-below-threshold 16-groups.
+        v_round = vqrdmulhq_n_s16(v_round, (1i32 << (15 - log_scale)) as i16);
+        let zbin = vdupq_lane_s16::<1>(vget_low_s16(vshlq_s16(
+            v_dequant,
+            vdupq_n_s16((-(1 + log_scale)) as i16),
+        )));
+        let mut i = n;
+        while i > 0 {
+            let a = vabsq_s16(load8(&coeff[i - 8..i]));
+            let b = vabsq_s16(load8(&coeff[i - 16..i - 8]));
+            let ma = vcgeq_s16(a, zbin);
+            let mb = vcgeq_s16(b, zbin);
+            // horizontal_long_add_u16x8 == 0: neither 8-group has a lane at
+            // or above the zbin threshold.
+            if vaddlvq_u16(ma) + vaddlvq_u16(mb) == 0 {
+                nonzero_count -= 16;
+            } else {
+                break;
+            }
+            i -= 16;
+        }
+        qcoeff[nonzero_count..n].fill(0);
+        dqcoeff[nonzero_count..n].fill(0);
+
+        if log_scale == 2 {
+            chunk!(ls2, 0);
+        } else {
+            chunk!(ls8, 0, log_scale);
+        }
+        v_quant = vdupq_lane_s16::<1>(vget_low_s16(v_quant));
+        v_dequant = vdupq_lane_s16::<1>(vget_low_s16(v_dequant));
+        v_round = vdupq_lane_s16::<1>(vget_low_s16(v_round));
+        for i in 1..nonzero_count / 8 {
+            if log_scale == 2 {
+                chunk!(ls2, i);
+            } else {
+                chunk!(ls8, i, log_scale);
+            }
+        }
+        let _ = &mut chunks_done;
+    }
+
+    // get_max_eob: vmaxvq + 1; all-zero nz leaves the -1 sentinel -> eob 0.
+    (vmaxvq_s16(eobmax) as u16).wrapping_add(1)
+}
+
+/// aarch64 NEON tier for `av1_quantize_lp_dispatch` — verbatim
+/// `av1_quantize_lp_neon` (i16 in, i16 out, 8-lane chunks, `qdmulh >> 1`,
+/// `eob = max(iscan[nz]) + 1`). The `[i16; 8]` param rows load as-is —
+/// chunk 0 runs the literal row, AC chunks run the lane-1 broadcast.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn quantize_lp_impl_neon(
+    t: NeonToken,
+    round_fp: &[i16; 8],
+    quant_fp: &[i16; 8],
+    dequant: &[i16; 8],
+    scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i16],
+    n_coeffs: usize,
+    qcoeff: &mut [i16],
+    dqcoeff: &mut [i16],
+) -> u16 {
+    let _ = t;
+    use archmage::intrinsics::aarch64::*;
+
+    let n = n_coeffs;
+    // C peels 8 then do-whiles; n < 16 or n % 8 != 0 would overread.
+    if n < 16
+        || n % 8 != 0
+        || coeff.len() < n
+        || iscan.len() < n
+        || qcoeff.len() < n
+        || dqcoeff.len() < n
+    {
+        return crate::quant::av1_quantize_lp(
+            coeff, n_coeffs, round_fp, quant_fp, qcoeff, dqcoeff, dequant, scan, iscan,
+        );
+    }
+
+    let zero = vdupq_n_s16(0);
+    let neg1 = vdupq_n_s16(-1);
+    let mut v_quant = vld1q_s16(quant_fp);
+    let mut v_dequant = vld1q_s16(dequant);
+    let mut v_round = vld1q_s16(round_fp);
+    let mut eobmax = neg1;
+
+    let c8 = coeff[..n].as_chunks::<8>().0;
+    let q8 = qcoeff[..n].as_chunks_mut::<8>().0;
+    let d8 = dqcoeff[..n].as_chunks_mut::<8>().0;
+    let i8v = iscan[..n].as_chunks::<8>().0;
+
+    macro_rules! chunk {
+        ($i:expr) => {{
+            let i = $i;
+            // quantize_lp_8.
+            let c = vld1q_s16(&c8[i]);
+            let sign = vshrq_n_s16::<15>(c);
+            let abs = vabsq_s16(c);
+            let tmp = vqaddq_s16(abs, v_round);
+            let tmp2 = vshrq_n_s16::<1>(vqdmulhq_s16(tmp, v_quant));
+            let nz = vcgtq_s16(tmp2, zero);
+            let qc = vsubq_s16(veorq_s16(tmp2, sign), sign);
+            let dqc = vmulq_s16(qc, v_dequant);
+            vst1q_s16(&mut q8[i], qc);
+            vst1q_s16(&mut d8[i], dqc);
+            eobmax = vmaxq_s16(eobmax, vbslq_s16(nz, vld1q_s16(&i8v[i]), neg1));
+        }};
+    }
+
+    chunk!(0);
+    v_quant = vdupq_lane_s16::<1>(vget_low_s16(v_quant));
+    v_dequant = vdupq_lane_s16::<1>(vget_low_s16(v_dequant));
+    v_round = vdupq_lane_s16::<1>(vget_low_s16(v_round));
+    for i in 1..n / 8 {
+        chunk!(i);
+    }
+
+    (vmaxvq_s16(eobmax) as u16).wrapping_add(1)
 }

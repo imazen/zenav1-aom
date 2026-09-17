@@ -198,7 +198,7 @@ pub fn aom_quantize_b_no_qmatrix(
             zbin, round, quant, quant_shift, dequant, log_scale, scan, iscan, coeff, qcoeff,
             dqcoeff
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -1423,4 +1423,196 @@ pub fn av1_quantize_lp(
         }
     }
     (eob + 1) as u16
+}
+
+/// aarch64 NEON tier for [`aom_quantize_b_no_qmatrix`] — a verbatim
+/// transcription of `aom_quantize_b_neon` / `_32x32_neon` / `_64x64_neon`
+/// (`av1/encoder/arm/quantize_neon.c`). C's NEON kernel is a different
+/// algorithm from the AVX2 mirror above: `vqdmulh`/`vsraq` accumulation
+/// instead of the i32-lane `mullo`/`mul_epi32` chain, `vmovn` truncating
+/// loads, the all-AC vector broadcast with the DC lane inserted only when
+/// the chunk-0 gate fires, and `eob = max(iscan[nz]) + 1` with a -1
+/// sentinel. `quant_shift` is halved up-front at `log_scale == 0`
+/// (`>> 1` before the `vqdmulh`, which doubles internally).
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn quantize_b_impl_neon(
+    t: archmage::NeonToken,
+    zbin: &[i16; 2],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    quant_shift: &[i16; 2],
+    dequant: &[i16; 2],
+    log_scale: i32,
+    scan: &[i16],
+    iscan: &[i16],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let _ = t;
+    use archmage::intrinsics::aarch64::*;
+
+    let n = coeff.len();
+    // C peels chunk 0 then strides 8; a %8 tail would be silently skipped
+    // (production n is always a multiple of 8). Malformed shapes take the
+    // scalar port, same policy as the v3 mirror.
+    if n < 8 || n % 8 != 0 || iscan.len() < n || qcoeff.len() < n || dqcoeff.len() < n {
+        return quantize_b_scalar(
+            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+        );
+    }
+    let _ = scan;
+
+    // `load_tran_low_to_s16q` — TRUNCATING vmovn narrow (mem_neon.h).
+    let load8 = |c: &[i32]| -> int16x8_t {
+        vcombine_s16(
+            vmovn_s32(vld1q_s32(<&[i32; 4]>::try_from(&c[..4]).unwrap())),
+            vmovn_s32(vld1q_s32(<&[i32; 4]>::try_from(&c[4..8]).unwrap())),
+        )
+    };
+    // `store_s16q_to_tran_low` — sign-extending vmovl.
+    let store8 = |dst: &mut [i32], v: int16x8_t| {
+        vst1q_s32(
+            <&mut [i32; 4]>::try_from(&mut dst[..4]).unwrap(),
+            vmovl_s16(vget_low_s16(v)),
+        );
+        vst1q_s32(
+            <&mut [i32; 4]>::try_from(&mut dst[4..8]).unwrap(),
+            vmovl_s16(vget_high_s16(v)),
+        )
+    };
+
+    let zero = vdupq_n_s16(0);
+    let mut eobmax = vdupq_n_s16(-1);
+
+    // Per-class constants: C's zbins/rounds are ROUND_POWER_OF_TWO'd by
+    // log_scale (a no-op at ls=0); quant_shift is halved only at ls=0 (the
+    // vqdmulh it feeds doubles internally).
+    let zbins = [
+        round_power_of_two(zbin[0] as i32, log_scale) as i16,
+        round_power_of_two(zbin[1] as i32, log_scale) as i16,
+    ];
+    let rounds = [
+        round_power_of_two(round[0] as i32, log_scale) as i16,
+        round_power_of_two(round[1] as i32, log_scale) as i16,
+    ];
+    let qsh = if log_scale == 0 {
+        [quant_shift[0] >> 1, quant_shift[1] >> 1]
+    } else {
+        *quant_shift
+    };
+    let v_zbins_a = vdupq_n_s16(zbins[1]);
+    let v_round_a = vdupq_n_s16(rounds[1]);
+    let v_dequant_a = vdupq_n_s16(dequant[1]);
+    let v_quant_a = vdupq_n_s16(quant[1]);
+    let v_qshift_a = vdupq_n_s16(qsh[1]);
+    let v_zbins0 = vsetq_lane_s16::<0>(zbins[0], v_zbins_a);
+
+    // Chunk 0: gate on the DC-lane zbin vector; on fire, splice the DC
+    // constants into lane 0 of the AC broadcasts (exactly C's vsetq order).
+    {
+        let c = load8(&coeff[..8]);
+        let abs = vabsq_s16(c);
+        let cond = vcgeq_s16(abs, v_zbins0);
+        let nz_check = vget_lane_u64::<0>(vreinterpret_u64_u8(vmovn_u16(cond)));
+        if nz_check != 0 {
+            let r0 = vsetq_lane_s16::<0>(rounds[0], v_round_a);
+            let q0 = vsetq_lane_s16::<0>(quant[0], v_quant_a);
+            let dq0 = vsetq_lane_s16::<0>(dequant[0], v_dequant_a);
+            let qs0 = vsetq_lane_s16::<0>(qsh[0], v_qshift_a);
+            // Inline the kernel with the spliced vectors.
+            let sign = vreinterpretq_s16_u16(vcltq_s16(c, zero));
+            let mut tmp = vqaddq_s16(abs, r0);
+            tmp = vsraq_n_s16::<1>(tmp, vqdmulhq_s16(tmp, q0));
+            if log_scale == 2 {
+                let ones =
+                    vandq_s16(vshrq_n_s16::<14>(vmulq_s16(tmp, qs0)), vdupq_n_s16(1));
+                tmp = vqdmulhq_s16(tmp, qs0);
+                tmp = vaddq_s16(vshlq_s16(tmp, vdupq_n_s16(1)), ones);
+            } else {
+                tmp = vqdmulhq_s16(tmp, qs0);
+            }
+            let qc = vbslq_s16(cond, vsubq_s16(veorq_s16(tmp, sign), sign), zero);
+            let dq_raw = if log_scale == 1 {
+                vreinterpretq_s16_u16(vhaddq_u16(
+                    vreinterpretq_u16_s16(vmulq_s16(tmp, dq0)),
+                    vdupq_n_u16(0),
+                ))
+            } else if log_scale == 2 {
+                vorrq_s16(
+                    vshlq_n_s16::<13>(vqdmulhq_s16(tmp, dq0)),
+                    vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(
+                        vmulq_s16(tmp, dq0),
+                    ))),
+                )
+            } else {
+                vmulq_s16(tmp, dq0)
+            };
+            let dqc = vbslq_s16(cond, vsubq_s16(veorq_s16(dq_raw, sign), sign), zero);
+            store8(&mut qcoeff[..8], qc);
+            store8(&mut dqcoeff[..8], dqc);
+            let nz_mask = vandq_u16(vcgtq_s16(tmp, zero), cond);
+            let isc = vld1q_s16(<&[i16; 8]>::try_from(&iscan[..8]).unwrap());
+            let m = vmaxq_s16(isc, eobmax);
+            eobmax = vbslq_s16(nz_mask, m, eobmax);
+        } else {
+            store8(&mut qcoeff[..8], zero);
+            store8(&mut dqcoeff[..8], zero);
+        }
+    }
+
+    // AC chunks: gate on the all-AC zbin broadcast.
+    for i in 1..n / 8 {
+        let c = load8(&coeff[i * 8..]);
+        let abs = vabsq_s16(c);
+        let cond = vcgeq_s16(abs, v_zbins_a);
+        let nz_check = vget_lane_u64::<0>(vreinterpret_u64_u8(vmovn_u16(cond)));
+        if nz_check != 0 {
+            let sign = vreinterpretq_s16_u16(vcltq_s16(c, zero));
+            let mut tmp = vqaddq_s16(abs, v_round_a);
+            tmp = vsraq_n_s16::<1>(tmp, vqdmulhq_s16(tmp, v_quant_a));
+            if log_scale == 2 {
+                let ones = vandq_s16(
+                    vshrq_n_s16::<14>(vmulq_s16(tmp, v_qshift_a)),
+                    vdupq_n_s16(1),
+                );
+                tmp = vqdmulhq_s16(tmp, v_qshift_a);
+                tmp = vaddq_s16(vshlq_s16(tmp, vdupq_n_s16(1)), ones);
+            } else {
+                tmp = vqdmulhq_s16(tmp, v_qshift_a);
+            }
+            let qc = vbslq_s16(cond, vsubq_s16(veorq_s16(tmp, sign), sign), zero);
+            let dq_raw = if log_scale == 1 {
+                vreinterpretq_s16_u16(vhaddq_u16(
+                    vreinterpretq_u16_s16(vmulq_s16(tmp, v_dequant_a)),
+                    vdupq_n_u16(0),
+                ))
+            } else if log_scale == 2 {
+                vorrq_s16(
+                    vshlq_n_s16::<13>(vqdmulhq_s16(tmp, v_dequant_a)),
+                    vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(
+                        vmulq_s16(tmp, v_dequant_a),
+                    ))),
+                )
+            } else {
+                vmulq_s16(tmp, v_dequant_a)
+            };
+            let dqc = vbslq_s16(cond, vsubq_s16(veorq_s16(dq_raw, sign), sign), zero);
+            store8(&mut qcoeff[i * 8..], qc);
+            store8(&mut dqcoeff[i * 8..], dqc);
+            let nz_mask = vandq_u16(vcgtq_s16(tmp, zero), cond);
+            let isc =
+                vld1q_s16(<&[i16; 8]>::try_from(&iscan[i * 8..i * 8 + 8]).unwrap());
+            let m = vmaxq_s16(isc, eobmax);
+            eobmax = vbslq_s16(nz_mask, m, eobmax);
+        } else {
+            store8(&mut qcoeff[i * 8..], zero);
+            store8(&mut dqcoeff[i * 8..], zero);
+        }
+    }
+
+    // get_max_eob: vmaxvq + 1; all-zero nz leaves the -1 sentinel -> eob 0.
+    (vmaxvq_s16(eobmax) as u16).wrapping_add(1)
 }

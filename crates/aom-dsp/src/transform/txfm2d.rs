@@ -397,7 +397,7 @@ fn fwd_txfm2d_4x4_fused(input: &[i16], output: &mut [i32], stride: usize, tx_typ
     // The SSE2-shaped fused kernel — C's `av1_lowbd_fwd_txfm2d_4x4_sse2`: i16
     // lanes, `madd` kernels, in-register transpose. Runtime-gated on the
     // input bound; declines to the scalar fusion below.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if crate::transform::simd::try_fwd_txfm2d_4x4_fused(
         txfm_type_col,
         txfm_type_row,
@@ -483,7 +483,7 @@ pub fn av1_fwd_txfm2d_into(
     // KB-PERF-16's reverted SCALAR 8x8 fusion it keeps both vector passes and
     // removes only the driver; it declines to the generic path on anything it
     // is not proven for.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if tx_size == TX_8X8_IDX
         && FWD_SHIFT[TX_8X8_IDX] == [2, -1, 0]
         && get_rect_tx_log_ratio(8, 8) == 0
@@ -509,7 +509,7 @@ pub fn av1_fwd_txfm2d_into(
     // The 16x16 specialisation — same shape as the 8x8 pair, 5.62 % of forward
     // transforms at the shipping preset. Declines to the generic driver on
     // anything it is not proven for.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if tx_size == TX_16X16_IDX
         && FWD_SHIFT[TX_16X16_IDX] == [2, -2, 0]
         && get_rect_tx_log_ratio(16, 16) == 0
@@ -538,7 +538,7 @@ pub fn av1_fwd_txfm2d_into(
     // `get_fwd_txfm_cfg` rather than hand-derived tables so it cannot drift.
     // 8x16 / 16x8 — 9.02 % of forwards, rectangular but with BOTH dimensions
     // >= 8, so no padding and none of KB-PERF-28's per-lane glue.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if (tx_size == 7 || tx_size == 8) && FWD_SHIFT[tx_size] == [2, -2, 0] {
         let c = get_fwd_txfm_cfg(tx_type, tx_size);
         let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
@@ -560,7 +560,7 @@ pub fn av1_fwd_txfm2d_into(
             }
         }
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if (tx_size == TX_4X8_IDX || tx_size == TX_8X4_IDX)
         && FWD_SHIFT[tx_size] == [2, -1, 0]
     {

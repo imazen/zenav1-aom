@@ -309,7 +309,7 @@ fn inv_txfm2d_add_4x4_fused(
     // The i16 fused whole-block kernel — the port's counterpart of
     // `lowbd_inv_txfm2d_add_4x4_ssse3`. Statically gated on the 16-bit stage
     // bounds (bd 8 only); declines to the scalar fusion below.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if crate::transform::simd::try_inv_txfm2d_4x4_fused(
         txfm_type_row,
         txfm_type_col,
@@ -379,7 +379,7 @@ pub fn av1_inv_txfm2d_add_into(
     // The SIMD-preserving 8x8 specialisation — KB-PERF-23's twin, 26.96 % of
     // inverse transforms at the shipping preset. Declines to the generic driver
     // on anything it is not proven for.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if (tx_size == 5 || tx_size == 6) && INV_SHIFT[tx_size] == [0, -4] {
         let c48 = get_inv_txfm_cfg(tx_type, tx_size);
         let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
@@ -409,7 +409,7 @@ pub fn av1_inv_txfm2d_add_into(
     // The fused 8x16 / 16x8 inverse — KB-PERF-30, 9.52 % of inverse transforms
     // at the shipping preset. `INV_SHIFT` is 8x8's `[-1, -4]` here, not
     // 4x8/8x4's `[0, -4]` and not 16x16's `[-2, -4]`; checked, not assumed.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if (tx_size == 7 || tx_size == 8) && INV_SHIFT[tx_size] == [-1, -4] {
         let c816 = get_inv_txfm_cfg(tx_type, tx_size);
         let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
@@ -436,7 +436,7 @@ pub fn av1_inv_txfm2d_add_into(
             }
         }
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if tx_size == 2 && INV_SHIFT[2] == [-2, -4] && get_rect_tx_log_ratio(16, 16) == 0 {
         let cfg16 = get_inv_txfm_cfg(tx_type, 2);
         if cfg16.valid {
@@ -460,7 +460,7 @@ pub fn av1_inv_txfm2d_add_into(
             }
         }
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if tx_size == 1 && INV_SHIFT[1] == [-1, -4] && get_rect_tx_log_ratio(8, 8) == 0 {
         let cfg8 = get_inv_txfm_cfg(tx_type, 1);
         if cfg8.valid {

@@ -32,5 +32,6 @@ pub mod par;
 pub mod quant;
 pub mod recon;
 pub mod restore;
+mod sse_neon;
 pub mod transform;
 pub mod txb;

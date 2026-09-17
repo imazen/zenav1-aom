@@ -1,5 +1,79 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## aarch64 encode reaches Gate 3: 1.47× C via verbatim NEON quantize + wiener + fwd-txfm twins (2026-09-17)
+
+First aarch64-apple-darwin run of the encoder gates on this branch —
+HEAD did not even compile (`loopfilter/simd.rs` `store!` referenced
+`c` as a free variable under `magetypes` hygiene; aarch64-gated so CI
+never saw it). Serial baseline on M4 Pro, `1024x1024 cq27 s3`:
+**port 2226 ms vs C 1258 ms = 1.77×**; this landing brings it to
+**1892 ms vs 1292 ms = 1.47×**, byte-identical (40237 B both arms).
+
+**Mechanism — `sse_neon` shim (`aom_dsp::sse_neon`, new).** The fused
+i16 txfm bodies were verbatim SSE2 transcriptions on
+`archmage::intrinsics::x86_64`, which does not exist on aarch64. The
+shim re-exports the real intrinsics on x86_64 and supplies the same
+names over NEON on aarch64 (`#[target_feature(enable="neon")]` free
+fns — legal under `forbid(unsafe_code)`; loads/stores go through
+canonical byte-array copies that LLVM folds to single `ld1`/`st1`).
+That un-gated the fused path per-tier unchanged and bought
+2226→2000 ms. But shimmed SSE2 on NEON still loses ~3-5× to C's native
+NEON (constants materialize as `ldp`+`sub`+`bfi` scalar chains vs C's
+immediate lane ops), so the shim is the bootstrap, not the landing.
+
+**Verbatim C-NEON twins.** Where C's NEON kernel is a *different
+algorithm* than its AVX2 one (quantize fp/lp/b: `vqdmulhq` +
+shift-compensation vs i32-lane; fwd txfm: `vmull_lane`/`vmlal_lane`/
+`vqrshrn` butterflies vs the SSE2 `_mm_mulhrs` shape), the shared-body
+trick cannot work — each got a `#[arcane]`-over-`NeonToken` twin
+transcribed line-for-line from `upstream/`:
+
+- `quant/simd.rs`: `quantize_fp_impl_neon`, `quantize_lp_impl_neon` —
+  bit-identical to `av1_quantize_fp_neon`/`av1_quantize_lp_neon` on
+  45k+60k adversarial cases (new oracles `ref_quantize_fp_neon`,
+  `ref_quantize_lp_simd` pick the per-arch C tier).
+- `quant/mod.rs`: `quantize_b_impl_neon` (incl. the 32x32/64x64
+  variants) — bit-identical to `aom_quantize_b_neon` on 30k cases.
+- `restore/wiener.rs`: verbatim `wiener_convolve_neon.c` twin —
+  ~45 ms end-to-end.
+- `transform/simd/fwd_neon.rs` (new): verbatim
+  `av1_fwd_txfm2d_neon.c` — 4x4, 8x8, 4x8/8x4, 8x16/16x8, 16x16 fused
+  drivers + the x4/x8 butterfly, transpose, flip, fdct/fadst/fidentity
+  kernels. Per-shape accept bounds preserved (e.g. 8x8 declines at
+  |in|>511, not 512 — the perm-diff gatespike caught that).
+  Microbenches went from 3-6× C to parity (4x4: 61→7 ns vs C 11;
+  8x8: 77→35 vs C 28; rects ≈1.0-1.2× C).
+
+**Differential rule that made this safe:** on aarch64 the port's NEON
+tier is now compared against the REAL C NEON kernel, not scalar C —
+C's own tiers disagree with each other out of domain, so NEON-vs-NEON
+is the only honest oracle on this arch (aom-sys-ref gained
+`ref_quantize_fp_neon` / quantize-b NEON wrappers).
+
+**Pre-existing aarch64 failures, unchanged by this diff** (HEAD never
+compiled here, so these are first-run latent bugs, logged not fixed):
+`block_error_matches_c_avx2_full_domain`,
+`highbd_filter_intra_edge_at_byte_identical`,
+`highbd_quantize_b_differential`,
+`highbd_quantize_b_simd_bit_identical_to_c_at_every_tier` (garbage at
+pinned `i32::MIN` lanes — C signed-overflow UB compiled differently
+for aarch64 than the port mirrors), plus `encode_limits_and_estimate`
+under-stating measured peak 6.4 MB vs 11.7 MB at 256x256 (allocator
+accounting is arch-dependent; the estimate formula needs an aarch64
+calibration pass).
+
+**Gates run:** `cargo test --release -p zenav1-aom-dsp --test all`
+(401 pass / the 4 above); `just gate-encode` (aom-encode +
+aom-bench integration targets — all pass except the two named
+pre-existing failures); x86_64 `cargo check` clean. eprof byte gates:
+40237 B both arms, cq27 s3 1024².
+
+**Remaining aarch64 levers, ranked by last sample:** fwd_txfm residual
+(~150 ms — the 4x16/16x4/32x32+ shapes still take the generic pass
+path; C NEON has fused kernels through 32x32), search_tx (~150 ms),
+intra_pred (~90 ms), var_dist (~40 ms), `cnn.rs` conv_valid (x86-only,
+C NEON exists at `cnn_avx2`→`cnn_neon.c`, ~1144 lines).
+
 ## Thread curve, content matrix, rayon backend (2026-09-16, `74fa859`)
 
 Full same-session sweep vs the threaded aomenc, row-tile geometry,
