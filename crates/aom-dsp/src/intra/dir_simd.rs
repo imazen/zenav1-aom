@@ -65,18 +65,17 @@
 //! (`base_y` is not affine in `c`) handled by `z2_left_gather`'s per-lane
 //! scalar loads with vector index/blend math.
 //!
-//! Runs shorter than [`MIN_VEC_RUN`] stay scalar: a 4-wide block cannot fill
-//! enough of a vector to pay for the round trip.
+//! Runs shorter than a full lane batch stay scalar: below an 8-wide row /
+//! 8-deep column the batch front-matter costs more than the scalar
+//! multiply-adds it would displace (measured — the 4-wide admissions were
+//! tried and reverted). `z1_rows_impl`'s 4-lane arm still covers the
+//! n_act % 8 tail of an admitted row.
 
 use archmage::prelude::*;
 
 /// The largest edge sample for which every i16 lane intermediate is exact.
 /// `32 * 1023 + 16 = 32752 <= i16::MAX`; `32 * 1024 = 32768` is not.
 pub(crate) const I16_TAP_MAX: u16 = 1023;
-
-/// Shortest run given to the vector kernel. Below this the array round trip
-/// costs more than the 16 scalar multiply-adds it replaces.
-pub(crate) const MIN_VEC_RUN: usize = 8;
 
 /// `true` if every sample in `edge[lo..=hi]` is inside the i16 lane bound.
 /// `O(hi - lo)` — the caller's spans are `O(bw + bh)` against `O(bw * bh)` of
@@ -923,8 +922,9 @@ fn z1_rows_impl(
             return;
         }
         // Columns with `base0 + c*inc < max_base_x` interpolate (the scalar's
-        // per-column `if`); `ceil` because the tap index steps by `inc`.
-        let n_act = bw.min(((max_base_x - base0 + inc_i - 1) / inc_i) as usize);
+        // per-column `if`); `ceil` because the tap index steps by `inc`. The
+        // divide is a shift — `inc` is `1 << up` by construction.
+        let n_act = bw.min(((max_base_x - base0 + inc_i - 1) >> up) as usize);
         let sv = _mm_set1_epi16(shift as i16);
         let start = (pad as i32 + base0) as usize;
         let drow = &mut dst[r * stride..r * stride + bw];
@@ -955,6 +955,33 @@ fn z1_rows_impl(
             let t: &mut [u16; 8] = (&mut drow[i..i + 8]).try_into().unwrap();
             _mm_storeu_si128(t, res);
             i += 8;
+        }
+        // 4-lane arm — the n_act % 8 tail of a wider row. (bw==4 blocks
+        // still take the scalar route: measured, a 4-wide row's front-
+        // matter costs more than the four scalar multiply-adds it would
+        // replace.) Same two-tap recipe at half width; the loads stay
+        // inside the gate's `hi` bound exactly as the 8-lane arm's do.
+        while i + 4 <= n_act {
+            let s = start + i * inc;
+            let (v0, v1) = if up == 0 {
+                let a: &[u16; 4] = edge[s..s + 4].try_into().unwrap();
+                let b: &[u16; 4] = edge[s + 1..s + 5].try_into().unwrap();
+                (_mm_loadu_si64(a), _mm_loadu_si64(b))
+            } else {
+                let lo: &[u16; 8] = edge[s..s + 8].try_into().unwrap();
+                let lo = _mm_loadu_si128(lo);
+                (_mm_shuffle_epi8(lo, ev), _mm_shuffle_epi8(lo, od))
+            };
+            let res = _mm_srai_epi16::<5>(_mm_add_epi16(
+                _mm_add_epi16(
+                    _mm_slli_epi16::<5>(v0),
+                    _mm_mullo_epi16(_mm_sub_epi16(v1, v0), sv),
+                ),
+                sixteen,
+            ));
+            let t: &mut [u16; 4] = (&mut drow[i..i + 4]).try_into().unwrap();
+            _mm_storeu_si64(t, res);
+            i += 4;
         }
         if i < n_act {
             let mut base = base0 + (i * inc) as i32;
@@ -997,7 +1024,7 @@ fn z1_rows_impl_scalar(
 }
 
 /// One-`incant!` z1 entry — called from `super::dir::z1_high` only under the
-/// `z1_vec_applies` gate (`up <= 1`, `bw >= MIN_VEC_RUN`, taps `<= I16_TAP_MAX`).
+/// `z1_vec_applies` gate (`up <= 1`, `bw >= 4`, taps `<= I16_TAP_MAX`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn z1_rows(
     dst: &mut [u16],
@@ -1142,7 +1169,8 @@ fn z3_cols_impl(
                 0
             } else {
                 // Rows are active while base + r*base_inc < max_base_y.
-                bh.min(((max_base_y - base) as usize + base_inc - 1) / base_inc)
+                // Same pow2 shift — `base_inc` is `1 << up`.
+                bh.min((((max_base_y - base) as usize + base_inc - 1) >> up) as usize)
             };
         }
         let mut r0 = 0usize;
@@ -1301,7 +1329,7 @@ fn z3_cols_body_scalar(
 }
 
 /// One-`incant!` z3 entry — called from `super::dir::z3_high` only under the
-/// `z3_vec_applies` gate (`up <= 1`, `bh >= MIN_VEC_RUN`, taps `<= I16_TAP_MAX`).
+/// `z3_vec_applies` gate (`up <= 1`, `bh >= 4`, taps `<= I16_TAP_MAX`).
 pub(crate) fn z3_cols(
     dst: &mut [u16],
     stride: usize,

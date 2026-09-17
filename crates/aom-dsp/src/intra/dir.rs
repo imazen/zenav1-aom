@@ -190,7 +190,7 @@ pub fn z3(dst: &mut [u8], stride: usize, bw: usize, bh: usize, left: &EdgeRef, u
 // references the differentials compare against (`tests/dir_simd_diff.rs`) and
 // are exactly the C transcriptions they always were.
 
-use crate::intra::dir_simd::{MIN_VEC_RUN, span_fits_i16, z1_rows};
+use crate::intra::dir_simd::{span_fits_i16, z1_rows};
 
 /// The z1 vector-path predicate, named so the driver and the reach test cannot
 /// drift apart (`dir_simd::reach`). `up <= 1`: `up == 1` makes the taps
@@ -199,8 +199,11 @@ use crate::intra::dir_simd::{MIN_VEC_RUN, span_fits_i16, z1_rows};
 /// bound.
 pub(crate) fn z1_vec_applies(above: &EdgeRef16, bw: usize, bh: usize, up: i32) -> bool {
     let max_base_x = (((bw + bh) as i32) - 1) << up;
+    // bw >= 8 measured: a 4-wide row's per-row vector front-matter (n_act,
+    // splat, row-slice) costs more than the four scalar multiply-adds it
+    // replaces, at every bh.
     (0..=1).contains(&up)
-        && bw >= MIN_VEC_RUN
+        && bw >= 8
         && span_fits_i16(above.data(), above.idx(0), above.idx(max_base_x))
 }
 
@@ -216,8 +219,13 @@ pub(crate) fn z2_vec_applies(above: &EdgeRef16, bw: usize, up_above: i32) -> boo
 /// The z3 vector-path predicate.
 pub(crate) fn z3_vec_applies(left: &EdgeRef16, bw: usize, bh: usize, up: i32) -> bool {
     let max_base_y = ((bw + bh) as i32 - 1) << up;
+    // bw >= 8 && bh >= 8 measured: below either floor the batch machinery
+    // (per-column base/shift/n_act + band transpose + gate's own span scan)
+    // costs more than the scalar columns it displaces — a 4-wide or
+    // 4-short block falls through to the same scalar walk regardless.
     (0..=1).contains(&up)
-        && bh >= MIN_VEC_RUN
+        && bw >= 8
+        && bh >= 8
         && span_fits_i16(left.data(), left.idx(0), left.idx(max_base_y))
 }
 
@@ -543,14 +551,15 @@ mod reach {
         }
         // 19 shapes x {up=0, up=1}. All three kernels admit `up <= 1` via the
         // pshufb even/odd deinterleave, so every ceiling is 38.
-        // z1/z3 additionally need the vectorized dimension >= MIN_VEC_RUN: the
-        // THREE shapes with bw == 4 ((4,4), (4,8), (4,16)) decline for z1, and
-        // the three with bh == 4 ((4,4), (8,4), (16,4)) for z3 — in BOTH up
-        // arms. z2 has no width floor — the run length varies per row
-        // and the length test is per-run inside the kernel.
+        // z1 needs bw >= 8 and z3 needs BOTH dims >= 8 (measured: below
+        // the floors the batch machinery costs more than the scalar walk
+        // it displaces). z1 declines the THREE bw == 4 shapes, z3 the
+        // FIVE with bw == 4 OR bh == 4 — in BOTH up arms. z2 never had
+        // a width floor — the run length varies per row and the length
+        // test is per-run inside the kernel.
         assert_eq!((z1n, z1d), (32, 3), "z1 admitted/declined at bd8");
         assert_eq!(z2n, 38, "z2 admitted at bd8 (up <= 1, no width floor)");
-        assert_eq!((z3n, z3d), (32, 3), "z3 admitted/declined at bd8");
+        assert_eq!((z3n, z3d), (28, 5), "z3 admitted/declined at bd8");
     }
 
     #[test]
