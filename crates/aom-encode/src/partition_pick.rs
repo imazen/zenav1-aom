@@ -1271,7 +1271,29 @@ fn leaf_pick_sb_modes(
         winner_mode: wm_cfg.as_ref(),
         palette: palette_cfg,
     };
-    let mut var_cache = Block4x4VarInfo::sb_cache(env.sb_size);
+    // `x->src_var_info_of_4x4_sub_blocks` (encodeframe.c): C allocates + inits
+    // the variance cache ONCE PER SUPERBLOCK and shares it across every leaf
+    // of the SB; allocating per leaf here was ~25k alloc+init passes per 1MP
+    // encode. The entries are pure functions of the SOURCE pixels at a
+    // position, so reuse across the SB's leaves is value-identical — but they
+    // are indexed by position WITHIN the SB, so a cache carried into a
+    // different SB must be re-initialised (a stale entry is a wrong value,
+    // not a missed reuse). The cache lives on `tile` (TileCtxState::var_cache)
+    // so it is scoped to the ENCODE, not the thread — a same-thread next
+    // frame can never see this frame's entries. Take-out/put-back keeps a
+    // nested leaf call reentrant: it sees an empty cell, runs on a fresh
+    // cache, and whichever put-back lands last wins — correctness never
+    // depends on the carry.
+    let sb_mi = MI_SIZE_WIDE_B[env.sb_size] as i32;
+    let (sb_r, sb_c) = (mi_row.div_euclid(sb_mi), mi_col.div_euclid(sb_mi));
+    let n_var = MI_SIZE_WIDE_B[env.sb_size] * MI_SIZE_HIGH_B[env.sb_size];
+    let mut vc = core::mem::take(&mut *tile.var_cache.borrow_mut());
+    if vc.sb != (sb_r, sb_c) || vc.entries.len() != n_var {
+        vc.entries.clear();
+        vc.entries.resize(n_var, Block4x4VarInfo::init());
+        vc.sb = (sb_r, sb_c);
+    }
+    let mut var_cache = vc.entries;
 
     // Chroma args (num_planes > 1).
     let ref_off_uv = chroma_plane_offset(
@@ -1824,6 +1846,13 @@ fn leaf_pick_sb_modes(
             ibc_args.as_ref(),
             inter_args.as_ref(),
         )
+    };
+    // Put the per-SB variance cache back — its only consumer was the
+    // intra-mode search above. The SB key travels with the Vec so the next
+    // leaf of this SB (or a nested call on another) re-validates it.
+    *tile.var_cache.borrow_mut() = crate::encode_sb::SbVarCache {
+        sb: (sb_r, sb_c),
+        entries: var_cache,
     };
 
     if part_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {

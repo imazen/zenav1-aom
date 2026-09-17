@@ -303,6 +303,7 @@ fn filter_plane(
 
     // --- the unit walk (foreach_rest_unit_in_plane) ---
     let mut wiener_scratch = WienerScratch::new();
+    let mut stripe_scratch = StripeScratch::default();
     let unit_size = lr.unit_size[plane];
     let (hu, _vu) = lr.plane_units(plane, ss_x, ss_y);
     let ext_size = unit_size * 3 / 2;
@@ -354,6 +355,7 @@ fn filter_plane(
                 (v_start, v_end, x0, x0 + w),
                 optimized_lr,
                 &mut wiener_scratch,
+                &mut stripe_scratch,
             );
             x0 += w;
             j += 1;
@@ -369,6 +371,15 @@ fn filter_plane(
         );
     }
     Ok(())
+}
+
+/// Per-plane scratch for `filter_unit`'s saved boundary rows — C allocates
+/// `tmp_buf` once in `av1_loop_restoration_filter_plane`; pooling keeps the
+/// per-stripe `to_vec`s (~6 allocs/unit) off the hot path.
+#[derive(Default)]
+pub(crate) struct StripeScratch {
+    above: [Vec<u16>; RESTORATION_BORDER],
+    below: [Vec<u16>; RESTORATION_BORDER],
 }
 
 /// `av1_loop_restoration_filter_unit`: the per-unit stripe loop with boundary
@@ -387,17 +398,17 @@ pub(crate) fn filter_unit(
     limits: (i32, i32, i32, i32),
     optimized_lr: bool,
     wiener_scratch: &mut WienerScratch,
+    stripe_scratch: &mut StripeScratch,
 ) {
     let (v_start, v_end, h_start, h_end) = limits;
     let unit_h = (v_end - v_start) as usize;
     let unit_w = (h_end - h_start) as usize;
 
     if rui.restoration_type == RESTORE_NONE {
-        // copy_rest_unit
+        // copy_rest_unit — src/dst are distinct buffers, no staging row.
         for r in 0..unit_h {
             let s = at(w_stride, (v_start + r as i32) as isize, h_start as isize);
-            let row = src[s..s + unit_w].to_vec();
-            dst[s..s + unit_w].copy_from_slice(&row);
+            dst[s..s + unit_w].copy_from_slice(&src[s..s + unit_w]);
         }
         return;
     }
@@ -436,8 +447,10 @@ pub(crate) fn filter_unit(
         // duplicate the ±2nd row into the ±3rd), saving the originals.
         let line_width = unit_w + 2 * RESTORATION_EXTRA_HORZ;
         let data_x0 = h_start as isize - RESTORATION_EXTRA_HORZ as isize;
-        let mut tmp_above: [Vec<u16>; RESTORATION_BORDER] = Default::default();
-        let mut tmp_below: [Vec<u16>; RESTORATION_BORDER] = Default::default();
+        // Saved boundary rows: pooled per-plane scratch — each was a fresh
+        // `to_vec` per stripe per unit (~6 allocs/unit).
+        let tmp_above = &mut stripe_scratch.above;
+        let tmp_below = &mut stripe_scratch.below;
         let stripe_end = rs_v_start + h as i32;
         if !optimized_lr {
             if copy_above {
@@ -451,7 +464,9 @@ pub(crate) fn filter_unit(
                     // (h_start - 4) is buffer index h_start + row*stride.
                     let buf0 = buf_row * rsb.stride + h_start as usize;
                     let d = at(w_stride, rs_v_start as isize + i_off, data_x0);
-                    *tmp = src[d..d + line_width].to_vec();
+                    tmp.clear();
+                    tmp.resize(line_width, 0);
+                    tmp.copy_from_slice(&src[d..d + line_width]);
                     src[d..d + line_width].copy_from_slice(&rsb.above[buf0..buf0 + line_width]);
                 }
             }
@@ -461,7 +476,9 @@ pub(crate) fn filter_unit(
                     let buf_row = rsb_row + bi.min(RESTORATION_CTX_VERT - 1);
                     let buf0 = buf_row * rsb.stride + h_start as usize;
                     let d = at(w_stride, (stripe_end + bi as i32) as isize, data_x0);
-                    *tmp = src[d..d + line_width].to_vec();
+                    tmp.clear();
+                    tmp.resize(line_width, 0);
+                    tmp.copy_from_slice(&src[d..d + line_width]);
                     src[d..d + line_width].copy_from_slice(&rsb.below[buf0..buf0 + line_width]);
                 }
             }
@@ -469,16 +486,18 @@ pub(crate) fn filter_unit(
             if copy_above {
                 let d = at(w_stride, rs_v_start as isize - 3, data_x0);
                 let s = at(w_stride, rs_v_start as isize - 2, data_x0);
-                tmp_above[0] = src[d..d + line_width].to_vec();
-                let row = src[s..s + line_width].to_vec();
-                src[d..d + line_width].copy_from_slice(&row);
+                tmp_above[0].clear();
+                tmp_above[0].resize(line_width, 0);
+                tmp_above[0].copy_from_slice(&src[d..d + line_width]);
+                src.copy_within(s..s + line_width, d);
             }
             if copy_below {
                 let d = at(w_stride, stripe_end as isize + 2, data_x0);
                 let s = at(w_stride, stripe_end as isize + 1, data_x0);
-                tmp_below[2] = src[d..d + line_width].to_vec();
-                let row = src[s..s + line_width].to_vec();
-                src[d..d + line_width].copy_from_slice(&row);
+                tmp_below[2].clear();
+                tmp_below[2].resize(line_width, 0);
+                tmp_below[2].copy_from_slice(&src[d..d + line_width]);
+                src.copy_within(s..s + line_width, d);
             }
         }
 

@@ -296,7 +296,7 @@ pub struct TxbEncode {
 /// written by this pass).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodeIntraPlaneOutcome {
-    pub txbs: Vec<TxbEncode>,
+    pub txbs: TxbsVec,
     /// First `max_blocks_wide` entries are the walk's final ctx; the tail is
     /// the zero init. Fixed arrays — two `Vec`s per call were ~100k
     /// alloc+memset+memcpy hits per 1 MP encode.
@@ -344,6 +344,83 @@ thread_local! {
         core::cell::RefCell::new(Vec::new());
     static RESIDUAL_POOL_UV: core::cell::RefCell<Vec<i16>> =
         core::cell::RefCell::new(Vec::new());
+    /// Backing storage of dropped `TxbsVec`s. A losing partition candidate's
+    /// `EncodeIntraPlaneOutcome`s die by the ten-thousand per encode and each
+    /// carried an exact-capacity `Vec` — pooling the buffer turns the
+    /// alloc/free pair into a pop/push. Bounded (threads × 32 vecs × a leaf's
+    /// txb count) and per-thread, so zero contention under tile threading.
+    static TXBS_POOL: core::cell::RefCell<Vec<Vec<TxbEncode>>> =
+        core::cell::RefCell::new(Vec::new());
+}
+
+/// A `Vec<TxbEncode>` whose allocation returns to [`TXBS_POOL`] on drop.
+/// Derefs to `Vec`, so `out.txbs[k]` / `&out.txbs` / `.len()` all read the
+/// same; `Clone` draws a pooled buffer rather than a fresh allocation.
+pub struct TxbsVec(Vec<TxbEncode>);
+
+impl TxbsVec {
+    /// Pool-pop or fresh — the pooled Vec is `clear()`ed, so contents are
+    /// identical to `Vec::new()` either way.
+    pub fn new() -> Self {
+        Self(TXBS_POOL.with(|p| p.borrow_mut().pop()).unwrap_or_default())
+    }
+    /// `Vec::with_capacity` — a pooled Vec keeps its capacity (`reserve` only
+    /// grows it), so the exact-fit walk alloc happens at most once per size.
+    pub fn with_capacity(n: usize) -> Self {
+        let mut v = Self::new();
+        v.0.reserve(n);
+        v
+    }
+}
+
+impl Default for TxbsVec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::ops::Deref for TxbsVec {
+    type Target = Vec<TxbEncode>;
+    fn deref(&self) -> &Vec<TxbEncode> {
+        &self.0
+    }
+}
+impl core::ops::DerefMut for TxbsVec {
+    fn deref_mut(&mut self) -> &mut Vec<TxbEncode> {
+        &mut self.0
+    }
+}
+impl Drop for TxbsVec {
+    fn drop(&mut self) {
+        let mut v = core::mem::take(&mut self.0);
+        if v.capacity() > 0 {
+            v.clear();
+            TXBS_POOL.with(|p| {
+                let mut p = p.borrow_mut();
+                if p.len() < 32 {
+                    p.push(v);
+                }
+            });
+        }
+    }
+}
+impl Clone for TxbsVec {
+    fn clone(&self) -> Self {
+        let mut v = Self::new();
+        v.0.clone_from(&self.0);
+        v
+    }
+}
+impl PartialEq for TxbsVec {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for TxbsVec {}
+impl core::fmt::Debug for TxbsVec {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// `av1_encode_intra_block_plane(cpi, x, bsize, AOM_PLANE_Y, dry_run,
@@ -408,8 +485,9 @@ pub fn encode_intra_block_plane_y(
     let mut residual: Vec<i16> = RESIDUAL_POOL_Y.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut xq = XQ_POOL_Y.with(|c| core::mem::take(&mut *c.borrow_mut()));
     // The walk appends exactly ceil(w/txw) * ceil(h/txh) txbs — reserve once
-    // instead of paying the log-growth realloc chain per leaf.
-    let mut txbs: Vec<TxbEncode> = Vec::with_capacity(
+    // instead of paying the log-growth realloc chain per leaf. `TxbsVec`
+    // pools the backing store across the many dropped leaf candidates.
+    let mut txbs = TxbsVec::with_capacity(
         blocks_wide_visible.div_ceil(txw_unit) * blocks_high_visible.div_ceil(txh_unit),
     );
     // `av1_foreach_transformed_block_in_plane` mu-64 chunk walk (encodemb.c:
@@ -823,7 +901,7 @@ pub fn encode_intra_block_plane_uv(
         RESIDUAL_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
     let mut xq = XQ_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));
     // Exact-capacity reserve — see the luma twin.
-    let mut txbs: Vec<TxbEncode> = Vec::with_capacity(
+    let mut txbs = TxbsVec::with_capacity(
         blocks_wide_visible.div_ceil(txw_unit) * blocks_high_visible.div_ceil(txh_unit),
     );
     // mu-64 chunk walk (see `encode_intra_block_plane_y`). The chroma unit is

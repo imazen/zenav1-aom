@@ -96,7 +96,7 @@ use crate::intra_uv_rd::{
     UV_CFL_PRED, UvRdEnv, av1_get_tx_size_uv, chroma_plane_offset, is_chroma_reference,
 };
 use crate::partition::PartRdStats;
-use crate::encode_intra::TxbEncode;
+use crate::encode_intra::{TxbEncode, TxbsVec};
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B, TXS_H, TXS_W, max_block_units};
 use aom_dsp::entropy::partition::{PALATTE_BSIZE_CTXS, PALETTE_Y_MODE_CONTEXTS, get_plane_block_size, update_ext_partition_context};
 use aom_dsp::intra::cfl::CflCtx;
@@ -165,7 +165,33 @@ pub struct TileCtxState {
     /// `RefCell` because the partition walk threads `&TileCtxState`; the
     /// borrow never spans a call that can re-enter it.
     pub hog_grad: std::cell::RefCell<crate::hog::HogGradCache>,
+    /// `x->src_var_info_of_4x4_sub_blocks` (encodeframe.c) — the per-SB
+    /// source-variance cache C `aom_calloc`s once per superblock
+    /// (`init_src_var_info_of_4x4_sub_blocks`) and shares across every leaf
+    /// of that SB. Keyed by `(sb_r, sb_c)` and re-initialised when the key
+    /// (or size) changes; living on the per-tile ctx makes it frame-scoped
+    /// by construction (a TLS pool keyed on SB coords alone silently served
+    /// the previous frame's entries to a same-thread next encode). Entries
+    /// are pure functions of source pixels at a position, so reuse within
+    /// the SB is value-identical. Same `RefCell` discipline as `hog_grad`.
+    pub var_cache: std::cell::RefCell<SbVarCache>,
 }
+
+/// The `(sb_r, sb_c)` key + entry vec behind [`TileCtxState::var_cache`]
+/// (`Block4x4VarInfo` carries an `f64`, so a bare tuple would break
+/// `TileCtxState`'s `Eq` derive — the wrapper holds the impl here).
+#[derive(Clone, Debug, Default)]
+pub struct SbVarCache {
+    pub sb: (i32, i32),
+    pub entries: Vec<crate::intra_rd::Block4x4VarInfo>,
+}
+
+impl PartialEq for SbVarCache {
+    fn eq(&self, other: &Self) -> bool {
+        self.sb == other.sb && self.entries == other.entries
+    }
+}
+impl Eq for SbVarCache {}
 
 /// `ALIGN_POWER_OF_TWO(mi_cols, MAX_MIB_SIZE_LOG2)` (aom_ports/mem.h:68;
 /// `MAX_MIB_SIZE_LOG2` = 5): round the tile MI width up to a whole superblock
@@ -215,6 +241,10 @@ impl TileCtxState {
             above_tctx: vec![aom_dsp::entropy::partition::TXFM_CTX_INIT; aligned],
             left_tctx: [aom_dsp::entropy::partition::TXFM_CTX_INIT; 32],
             hog_grad: std::cell::RefCell::new(crate::hog::HogGradCache::default()),
+            var_cache: std::cell::RefCell::new(SbVarCache {
+                sb: (-1, -1),
+                entries: Vec::new(),
+            }),
         }
     }
 }
@@ -1107,12 +1137,12 @@ pub fn encode_b_intra_dry(
                 state.left_ectx[plane][lu..lu + pmh].fill(0);
             }
             u_out = Some(EncodeIntraPlaneOutcome {
-                txbs: Vec::new(),
+                txbs: TxbsVec::new(),
                 ta: [0i8; 32],
                 tl: [0i8; 32],
             });
             v_out = Some(EncodeIntraPlaneOutcome {
-                txbs: Vec::new(),
+                txbs: TxbsVec::new(),
                 ta: [0i8; 32],
                 tl: [0i8; 32],
             });
@@ -1132,7 +1162,7 @@ pub fn encode_b_intra_dry(
             is_chroma_ref,
             store_y: false,
             y: EncodeIntraPlaneOutcome {
-                txbs: Vec::new(),
+                txbs: TxbsVec::new(),
                 ta: [0i8; 32],
                 tl: [0i8; 32],
             },
@@ -1219,12 +1249,12 @@ pub fn encode_b_intra_dry(
                 state.left_ectx[plane][lu..lu + pmh].fill(0);
             }
             u_out = Some(EncodeIntraPlaneOutcome {
-                txbs: Vec::new(),
+                txbs: TxbsVec::new(),
                 ta: [0i8; 32],
                 tl: [0i8; 32],
             });
             v_out = Some(EncodeIntraPlaneOutcome {
-                txbs: Vec::new(),
+                txbs: TxbsVec::new(),
                 ta: [0i8; 32],
                 tl: [0i8; 32],
             });
@@ -1242,7 +1272,7 @@ pub fn encode_b_intra_dry(
             is_chroma_ref,
             store_y: false,
             y: EncodeIntraPlaneOutcome {
-                txbs: Vec::new(),
+                txbs: TxbsVec::new(),
                 ta: [0i8; 32],
                 tl: [0i8; 32],
             },
@@ -2471,7 +2501,7 @@ fn ibc_encode_block_inter_y(
     tl: &mut [i8],
     pers_a: &mut [i8],
     pers_l: &mut [i8],
-    out: &mut Vec<TxbEncode>,
+    out: &mut TxbsVec,
     tx_type_map: &mut [u8],
     map_stride: usize,
     inter_tx_size: &[usize; 16],
@@ -2698,7 +2728,7 @@ fn encode_b_intrabc_coeff(
     } else {
         &mut winner.tx_type_map
     };
-    let mut y_txbs: Vec<TxbEncode> = Vec::new();
+    let mut y_txbs = TxbsVec::new();
     let mu_w = MI_SIZE_WIDE_B[12].min(mi_w); // BLOCK_64X64
     let mu_h = MI_SIZE_HIGH_B[12].min(mi_h);
     let mut idy = 0usize;
@@ -2829,7 +2859,7 @@ fn encode_b_intrabc_coeff(
                 max_blocks_wide: cvis_w,
                 max_blocks_high: cvis_h,
             };
-            let mut txbs: Vec<TxbEncode> = Vec::new();
+            let mut txbs = TxbsVec::new();
             let cmu_w = (MI_SIZE_WIDE_B[12] >> env.ss_x).min(pmw);
             let cmu_h = (MI_SIZE_HIGH_B[12] >> env.ss_y).min(pmh);
             let mut cidy = 0usize;

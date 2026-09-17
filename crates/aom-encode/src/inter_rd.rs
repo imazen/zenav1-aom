@@ -208,7 +208,10 @@ fn sse_visible(
 }
 
 /// Residual (src − pred) over the FULL block, invisible tail zero-filled —
-/// `av1_subtract_plane`'s shape, which `predict_skip_txfm` consumes.
+/// `av1_subtract_plane`'s shape, which `predict_skip_txfm` consumes. `out` is
+/// caller scratch: cleared and re-zeroed to `w*h` so a carried-over buffer
+/// holds exactly what a fresh `vec![0; w*h]` would (the invisible tail IS
+/// read downstream).
 fn residual_full(
     src: &[u16],
     src_off: usize,
@@ -218,15 +221,16 @@ fn residual_full(
     h: usize,
     vis_w: usize,
     vis_h: usize,
-) -> Vec<i16> {
-    let mut out = vec![0i16; w * h];
+    out: &mut Vec<i16>,
+) {
+    out.clear();
+    out.resize(w * h, 0);
     for r in 0..vis_h {
         for c in 0..vis_w {
             out[r * w + c] = (i32::from(src[src_off + r * src_stride + c])
                 - i32::from(pred[r * w + c])) as i16;
         }
     }
-    out
 }
 
 /// `set_skip_txfm`'s distortion scaling (`tx_search.c:245-281`):
@@ -241,6 +245,30 @@ fn scale_dist(sse: i64, bd: u8) -> i64 {
     scaled << 4
 }
 
+thread_local! {
+    /// Per-call scratch for [`rd_pick_inter_mode_sb`], pooled per thread like
+    /// `XQ_POOL_*`/`RESIDUAL_POOL_*` in `encode_intra` (the call sites are two
+    /// deep inside the recursive partition walk — a threaded parameter would
+    /// need `&mut` through `rd_pick` and `partition_pick`). Per-thread keeps
+    /// this zero-contention under any future tile threading; each buffer is
+    /// small (≤ 64×64 samples ≈ 8 KiB) so the threads×mem product stays
+    /// trivial. `pred`/`cpred` are only ever READ in the region the copy
+    /// writes, so they need no re-zero; `residual` is re-zeroed per call (the
+    /// invisible tail is consumed).
+    static IRD_SCRATCH: core::cell::RefCell<IrdScratch> =
+        core::cell::RefCell::new(IrdScratch {
+            pred: Vec::new(),
+            cpred: Vec::new(),
+            residual: Vec::new(),
+        });
+}
+
+struct IrdScratch {
+    pred: Vec<u16>,
+    cpred: Vec<u16>,
+    residual: Vec<i16>,
+}
+
 /// `av1_rd_pick_inter_mode_sb` reduced to the §3 single-reference, SKIP-only,
 /// search-free-mode envelope (see the module docs for exactly what is in and
 /// out of scope).
@@ -250,6 +278,14 @@ fn scale_dist(sse: i64, bd: u8) -> i64 {
 /// later rung) or the reference read would leave the plane. `None` means the
 /// caller keeps its intra winner.
 pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<InterBest> {
+    return IRD_SCRATCH.with(|c| rd_pick_inter_mode_sb_inner(a, best_rd_in, &mut *c.borrow_mut()));
+}
+
+fn rd_pick_inter_mode_sb_inner(
+    a: &InterLeafArgs,
+    best_rd_in: i64,
+    scratch: &mut IrdScratch,
+) -> Option<InterBest> {
     let bw = crate::tx_search::BLK_W_B[a.bsize];
     let bh = crate::tx_search::BLK_H_B[a.bsize];
     let mi_w = crate::tx_search::MI_SIZE_WIDE_B[a.bsize];
@@ -273,11 +309,19 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
     // an exact RD tie. NEARMV is only available when the scan produced a
     // second stack entry (C's `ref_mv_count` gate in `handle_inter_mode`'s
     // DRL setup).
-    let mut cands: Vec<(i32, (i32, i32))> = vec![(NEARESTMV, a.nearest_mv)];
+    // Fixed-size candidate list (≤ 3 entries — no Vec): NEARESTMV → [NEARMV]
+    // → GLOBALMV.
+    let mut cands = [(0i32, (0i32, 0i32)); 3];
+    let mut n_cands = 0usize;
+    cands[n_cands] = (NEARESTMV, a.nearest_mv);
+    n_cands += 1;
     if a.ref_mv_count > 1 {
-        cands.push((NEARMV, a.near_mv));
+        cands[n_cands] = (NEARMV, a.near_mv);
+        n_cands += 1;
     }
-    cands.push((GLOBALMV, a.global_mv));
+    cands[n_cands] = (GLOBALMV, a.global_mv);
+    n_cands += 1;
+    let cands = &cands[..n_cands];
 
     let px_x = a.mi_col as usize * 4;
     let px_y = a.mi_row as usize * 4;
@@ -286,10 +330,12 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
     //     candidate shares the identical co-located-copy prediction) ---
     //
     // LUMA: only the VISIBLE extent is differenced — C's `set_skip_txfm` sse
-    // and the residual clip to `max_block_wide/high` at frame edges. `pred_y`
-    // stays zero in the invisible tail, matching `av1_subtract_plane`'s
-    // zero-filled tail.
-    let mut pred_y = vec![0u16; bw * bh];
+    // and the residual clip to `max_block_wide/high` at frame edges. The
+    // invisible tail is never read (`sse_visible`/`residual_full` both clip),
+    // so the pooled buffer needs no re-zero.
+    let pred_y = &mut scratch.pred;
+    pred_y.clear();
+    pred_y.resize(bw * bh, 0);
     copy_colocated(
         &a.ref_frame.y,
         a.ref_frame.stride,
@@ -299,7 +345,7 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
         px_y,
         vis_w,
         vis_h,
-        &mut pred_y,
+        pred_y,
         bw,
     );
     let luma_sse = sse_visible(a.src_y, a.off_y, a.stride, &pred_y, bw, vis_w, vis_h);
@@ -313,8 +359,10 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
     // the frame-visible part. `a.off_uv` is the covering-position source
     // offset (`chroma_plane_offset`); the ref read mirrors it.
     let mut chroma_sse: i64 = 0;
-    // Per-plane (sse, plane_bsize, num_samples) for the curvefit model.
-    let mut chroma_model: Vec<(i64, usize, i32)> = Vec::new();
+    // Per-plane (sse, plane_bsize, num_samples) for the curvefit model — at
+    // most U and V, so a fixed array (the per-call Vec was a grow chain).
+    let mut chroma_model = [(0i64, 0usize, 0i32); 2];
+    let mut n_chroma_model = 0usize;
     if !a.monochrome && a.is_chroma_ref {
         let plane_bsize =
             aom_dsp::entropy::partition::get_plane_block_size(a.bsize, a.ss_x, a.ss_y);
@@ -338,8 +386,12 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
         // Covering position (chroma-reference mi base: mi - (mi & ss)).
         let cpx_x = (((a.mi_col - (a.mi_col & a.ss_x as i32)) as usize) * 4) >> a.ss_x;
         let cpx_y = (((a.mi_row - (a.mi_row & a.ss_y as i32)) as usize) * 4) >> a.ss_y;
+        // One pooled prediction buffer serves both planes — `sse_visible`
+        // only reads the `cvis` region `copy_colocated` just wrote.
+        let cpred = &mut scratch.cpred;
+        cpred.clear();
+        cpred.resize(cw_full * ch_full, 0);
         for (plane_ref, plane_src) in [(&a.ref_frame.u, a.src_u), (&a.ref_frame.v, a.src_v)] {
-            let mut cpred = vec![0u16; cw_full * ch_full];
             copy_colocated(
                 plane_ref,
                 a.ref_frame.stride_uv,
@@ -349,12 +401,13 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
                 cpx_y,
                 cvis_w,
                 cvis_h,
-                &mut cpred,
+                cpred,
                 cw_full,
             );
-            let sse = sse_visible(plane_src, a.off_uv, a.stride, &cpred, cw_full, cvis_w, cvis_h);
+            let sse = sse_visible(plane_src, a.off_uv, a.stride, cpred, cw_full, cvis_w, cvis_h);
             chroma_sse += sse;
-            chroma_model.push((sse, plane_bsize, (cvis_w * cvis_h) as i32));
+            chroma_model[n_chroma_model] = (sse, plane_bsize, (cvis_w * cvis_h) as i32);
+            n_chroma_model += 1;
         }
     }
 
@@ -376,7 +429,7 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
         );
         rate_sum += i64::from(r);
         dist_sum += d;
-        for &(sse, plane_bsize, ns) in &chroma_model {
+        for &(sse, plane_bsize, ns) in &chroma_model[..n_chroma_model] {
             let (r, d) = crate::interp_rd::model_rd_with_curvfit(
                 plane_bsize,
                 sse,
@@ -400,9 +453,20 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
     );
 
     // --- SKIP gate: C's own `predict_skip_txfm` fast path ---
-    let residual = residual_full(a.src_y, a.off_y, a.stride, &pred_y, bw, bh, vis_w, vis_h);
+    residual_full(
+        a.src_y,
+        a.off_y,
+        a.stride,
+        &pred_y,
+        bw,
+        bh,
+        vis_w,
+        vis_h,
+        &mut scratch.residual,
+    );
+    let residual = &scratch.residual[..];
     let skips = crate::intrabc_search::predict_skip_txfm(
-        &residual,
+        residual,
         bw,
         bh,
         a.bsize,
@@ -413,7 +477,7 @@ pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<Inter
     );
 
     let mut best: Option<InterBest> = None;
-    for (mode, mv) in cands {
+    for &(mode, mv) in cands {
         // rung 1 codes only the zero-MV predictor exactly (a plain co-located
         // copy). A nonzero candidate MV needs the MC path (sub-step 2e) and is
         // rung 2 — decline rather than mispredict.

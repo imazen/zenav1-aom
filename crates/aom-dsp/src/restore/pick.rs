@@ -2425,6 +2425,7 @@ struct PlaneCtx<'a> {
     flt0: Vec<i32>,
     flt1: Vec<i32>,
     wiener_scratch: crate::restore::wiener::WienerScratch,
+    stripe_scratch: crate::restore::frame::StripeScratch,
 }
 
 impl<'a> PlaneCtx<'a> {
@@ -2484,6 +2485,7 @@ impl<'a> PlaneCtx<'a> {
             flt0: vec![0i32; RESTORATION_UNITPELS_MAX],
             flt1: vec![0i32; RESTORATION_UNITPELS_MAX],
             wiener_scratch: crate::restore::wiener::WienerScratch::new(),
+            stripe_scratch: crate::restore::frame::StripeScratch::default(),
         }
     }
 
@@ -2564,6 +2566,7 @@ impl<'a> PlaneCtx<'a> {
             limits,
             false,
             &mut self.wiener_scratch,
+            &mut self.stripe_scratch,
         );
         self.sse_dst(limits)
     }
