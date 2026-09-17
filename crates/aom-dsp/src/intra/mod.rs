@@ -518,8 +518,11 @@ fn assemble_nd_edges(recon: &[u16], g: &NdEdge, above_row: &mut [u16], left_col:
     }
     if n_left_px > 0 {
         let loff = ref_off - 1;
-        for i in 0..n_left_px {
-            left_col[1 + i] = recon[loff + i * ref_stride]; // strided gather (scalar)
+        // Strided gather (scalar): the dst pre-slice folds the per-iter
+        // `left_col` bounds check; the `recon` read keeps its own.
+        let dst = &mut left_col[1..1 + n_left_px];
+        for (i, d) in dst.iter_mut().enumerate() {
+            *d = recon[loff + i * ref_stride];
         }
         let last = left_col[n_left_px]; // == C left_col[n_left_px - 1]
         for e in left_col[1 + n_left_px..1 + txhpx].iter_mut() {
@@ -1000,16 +1003,21 @@ fn assemble_dir_edges(recon: &[u16], g: &DirEdge, above_data: &mut [u16], left_d
         let num_left = txhpx + if n_bottomleft_px >= 0 { txwpx } else { 0 };
         if n_left_px > 0 {
             let loff = ref_off - 1;
-            for i in 0..n_left_px {
-                left_data[P + i] = recon[loff + i * ref_stride]; // strided gather (scalar)
+            // Strided gather (scalar): the dst pre-slice folds the per-iter
+            // `left_data` bounds check; the `recon` read keeps its own.
+            let dst = &mut left_data[P..P + n_left_px];
+            for (i, d) in dst.iter_mut().enumerate() {
+                *d = recon[loff + i * ref_stride];
             }
             let mut i = n_left_px;
             if n_bottomleft_px > 0 {
                 // n_left_px == txhpx here (C assert): the real column is full.
-                for k in txhpx..txhpx + n_bottomleft_px as usize {
-                    left_data[P + k] = recon[loff + k * ref_stride];
+                let nbl = n_bottomleft_px as usize;
+                let dst = &mut left_data[P + txhpx..P + txhpx + nbl];
+                for (k, d) in dst.iter_mut().enumerate() {
+                    *d = recon[loff + (txhpx + k) * ref_stride];
                 }
-                i = txhpx + n_bottomleft_px as usize;
+                i = txhpx + nbl;
             }
             if i < num_left {
                 let last = left_data[P + i - 1];
@@ -1692,8 +1700,11 @@ fn assemble_nd_edges_u8(recon: &[u8], g: &NdEdge, above_row: &mut [u8], left_col
     }
     if n_left_px > 0 {
         let loff = ref_off - 1;
-        for i in 0..n_left_px {
-            left_col[1 + i] = recon[loff + i * ref_stride];
+        // Strided gather (scalar): the dst pre-slice folds the per-iter
+        // `left_col` bounds check; the `recon` read keeps its own.
+        let dst = &mut left_col[1..1 + n_left_px];
+        for (i, d) in dst.iter_mut().enumerate() {
+            *d = recon[loff + i * ref_stride];
         }
         let last = left_col[n_left_px];
         for e in left_col[1 + n_left_px..1 + txhpx].iter_mut() {
@@ -1881,15 +1892,21 @@ fn assemble_dir_edges_u8(recon: &[u8], g: &DirEdge, above_data: &mut [u8], left_
         let num_left = txhpx + if n_bottomleft_px >= 0 { txwpx } else { 0 };
         if n_left_px > 0 {
             let loff = ref_off - 1;
-            for i in 0..n_left_px {
-                left_data[P + i] = recon[loff + i * ref_stride];
+            // Strided gather (scalar): the dst pre-slice folds the per-iter
+            // `left_data` bounds check; the `recon` read keeps its own.
+            let dst = &mut left_data[P..P + n_left_px];
+            for (i, d) in dst.iter_mut().enumerate() {
+                *d = recon[loff + i * ref_stride];
             }
             let mut i = n_left_px;
             if n_bottomleft_px > 0 {
-                for k in txhpx..txhpx + n_bottomleft_px as usize {
-                    left_data[P + k] = recon[loff + k * ref_stride];
+                // n_left_px == txhpx here (C assert): the real column is full.
+                let nbl = n_bottomleft_px as usize;
+                let dst = &mut left_data[P + txhpx..P + txhpx + nbl];
+                for (k, d) in dst.iter_mut().enumerate() {
+                    *d = recon[loff + (txhpx + k) * ref_stride];
                 }
-                i = txhpx + n_bottomleft_px as usize;
+                i = txhpx + nbl;
             }
             if i < num_left {
                 let last = left_data[P + i - 1];
