@@ -321,6 +321,19 @@ fn optimize_txb_run<const TXC: u8>(
     if eob > 1 {
         txb_init_levels(qcoeff, width, height, levels);
     }
+    // Bounds-check elimination on the coefficient arrays: `ci` below is a
+    // scan-table position, always `< n_coeffs` on a valid scan. `assert!(ci < n)`
+    // preserves the original panic-on-malformed-input contract exactly (the
+    // first `qcoeff[ci]` would panic anyway) while letting LLVM fold the four
+    // or five `ci`-indexed loads that follow each scan read. The sibling
+    // arrays and qmatrix options are re-sliced to `n` so their `ci`-indexed
+    // loads fold the same way (a shorter array was already an OOB panic on
+    // the same index).
+    let n = qcoeff.len();
+    let tcoeff = &tcoeff[..n];
+    let dqcoeff = &mut dqcoeff[..n];
+    let iqmatrix = iqmatrix.map(|q| &q[..n]);
+    let qmatrix = qmatrix.map(|q| &q[..n]);
     let cdist =
         |tqc: i32, dqc: i32, ci: usize| -> i64 { get_coeff_dist(tqc, dqc, shift, qmatrix, ci) };
     let base0 = |ctx: usize| -> i32 { t.base[ctx * 8] };
@@ -332,6 +345,7 @@ fn optimize_txb_run<const TXC: u8>(
 
     let mut si = eob as isize - 1;
     let ci0 = scan[si as usize] as usize;
+    assert!(ci0 < n); // scan is a 0..n permutation (see the `n` note above)
     let qc0 = qcoeff[ci0];
     let abs_qc0 = qc0.abs();
     let sign0 = (qc0 < 0) as i32;
@@ -384,6 +398,7 @@ fn optimize_txb_run<const TXC: u8>(
     while si >= 0 && nz_num <= max_nz_num {
         let s = si as usize;
         let ci = scan[s] as usize;
+        assert!(ci < n); // scan is a 0..n permutation
         let qc = qcoeff[ci];
         let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, tx_size, tx_class) as usize;
         if qc == 0 {
@@ -492,6 +507,7 @@ fn optimize_txb_run<const TXC: u8>(
         }
         if (sharpness == 0 || new_eob >= 5) && rd_new_eob < rd {
             for &lc in nz_ci.iter().take(nz_num) {
+                assert!(lc < n); // nz_ci holds only asserted scan positions
                 levels[padded_idx(lc, bhl)] = 0;
                 qcoeff[lc] = 0;
                 dqcoeff[lc] = 0;
@@ -523,6 +539,7 @@ fn optimize_txb_run<const TXC: u8>(
         let rd_new_eob = rdcost(rdmult, skip_cost as i64, 0);
         if rd_new_eob < rd {
             for &ci in nz_ci.iter().take(nz_num) {
+                assert!(ci < n); // nz_ci holds only asserted scan positions
                 qcoeff[ci] = 0;
                 dqcoeff[ci] = 0;
             }
@@ -535,6 +552,7 @@ fn optimize_txb_run<const TXC: u8>(
     while si >= 1 {
         let s = si as usize;
         let ci = scan[s] as usize;
+        assert!(ci < n); // scan is a 0..n permutation
         let qc = qcoeff[ci];
         let coeff_ctx = get_lower_levels_ctx(levels, ci, bhl, tx_size, tx_class) as usize;
         if qc == 0 {
@@ -636,6 +654,10 @@ fn update_coeff_general(
     qmatrix: Option<&[u8]>,
 ) {
     let ci = scan[si] as usize;
+    // Same `assert!(ci < n)` contract as `optimize_txb_core`: the slices here
+    // are the caller's `n`-re-sliced views, so this folds every `ci`-indexed
+    // load below while keeping the malformed-scan panic.
+    assert!(ci < qcoeff.len());
     let qc = qcoeff[ci];
     let coeff_ctx =
         get_lower_levels_ctx_general(is_last, si, bhl, width, levels, ci, tx_size, tx_class)
@@ -644,7 +666,7 @@ fn update_coeff_general(
         *accu_rate += t.base[coeff_ctx * 8];
         return;
     }
-    let v = get_dqv(dequant, scan[si] as usize, iqmatrix);
+    let v = get_dqv(dequant, ci, iqmatrix);
     let sign = (qc < 0) as i32;
     let abs_qc = qc.abs();
     let (tqc, dqc) = (tcoeff[ci], dqcoeff[ci]);
