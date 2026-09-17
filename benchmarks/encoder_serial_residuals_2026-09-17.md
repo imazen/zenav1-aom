@@ -13,9 +13,19 @@ Cell: the real `photo_512` witness (`/home/lilith/tmp/real/photo_512.yuv`,
 | `6c50baf` | intra dir-pred audit: z3 `bw>=8 && bh>=8` floor restored (narrow admissions measured+reverted), pow2 `n_act` shift, z1 4-lane `n_act%8` tail | 13.774G → **13.769G** (−5M) |
 | `1e8abf6` | `assemble_{nd,dir}_edges{,_u8}` strided left-edge gather: dst pre-slice folds the write-side bounds check | 13.769G → **13.754G** (−15M) |
 | `825d994` | lpf `_n` batching — one dispatch + batch span-check + shared setup per `nseg∈{2,4}` run | 13.754G → **13.755G** (kernel cluster −10M, net flat) |
+| `80a742d` | `optimize_txb_core`: `assert!(ci < n)` once per scan read + sibling arrays re-sliced to `n` — folds the 4–5 `ci`-indexed bounds checks per scan position | 13.755G → **13.729G** (−26M) |
+| `8e8f54a` | `nz_map_ctx_offset(tx_size)` resolved once per txb and passed as `&[i8]` through `get_lower_levels_ctx` — the 24-arm match + slice construction + `nz_off[ci]` check had been rebuilt per coefficient | 13.729G → **13.392G** (−337M) |
 
-Cumulative serial session: 13.950G → **13.755G** ≈ **1.465×** C (Ir).
-Wall ≈ 395–400 ms vs C ~295–298 ms (~1.34×).
+Cumulative serial session: 13.950G → **13.392G** ≈ **1.426×** C (Ir).
+Wall ≈ 390–395 ms vs C ~295–298 ms (~1.32×).
+
+The `nz_map_ctx_offset` landing is a lesson in profile attribution:
+the helper's *self* cost was only 78.7M, but it is `#[inline(always)]`
+and its real cost — a 24-arm `match` per coefficient visit plus the
+slice ptr+len rebuild plus the `nz_off[ci]` bounds check — was smeared
+across `cmp.rs` (−227M) and `tables.rs` (−92M) attribution. Hoisting a
+tiny `#[inline(always)]` match helper out of a per-element loop can be
+worth several times its annotated self cost.
 
 ## Measured rejections this round
 
@@ -30,6 +40,14 @@ Wall ≈ 395–400 ms vs C ~295–298 ms (~1.34×).
   cycle): per-row `n_act`/splat/slice setup (~55 Ir) exceeds the ~48 Ir
   of scalar multiply-adds it replaces on 4-wide work; +10M → reverted
   gates, kept the pow2-shift and the `n_act%8` tail arm.
+- **SmallVec for `XformQuantScratch.levels`/`cost_ctx`** (pooled
+  scratch, `SmallVec<[u8;1536]>`/`[i8;1024]`): +153M vs the asserted
+  no-SmallVec baseline — the tagged inline-vs-spilled check on every
+  `resize`/deref in hot loops costs far more than the one-time
+  allocation it saves. `Vec` grow-only stays. SmallVec remains correct
+  where the container is short-lived and commonly small
+  (`TxbCoeffPair`, `TxbWinners`); it is wrong for long-lived pooled
+  scratch whose per-access cost dominates.
 
 ## Threaded re-measure (real 1024² photo, cq27 s3, tiles=2 → 16 tiles)
 
@@ -56,10 +74,13 @@ Named, bounded, and no cheap lever found:
   quad AVX2) — ~23M of C's ~68M lpf cost. Port equivalent is a ~800-line
   internals port for an estimated ~15–25M (0.1–0.2 % of total). Bounded
   and documented; not pursued at this ROI.
-- **`optimize_txb` cluster** ~2.9G vs C 2.62G: the residual is diffuse —
-  `search_tx_type_intra_into` self ~390M is per-candidate front-matter
-  (mask checks, txk_map init, ctx setup), no single lever; the rest is
-  the documented u16-at-bd8 structural tax + safe-Rust trellis checks.
+- **`optimize_txb` cluster** ~2.8G inclusive vs C's `av1_optimize_txb`
+  4.19G — the port's trellis is now ~1.5× *faster* than C; the residual
+  moved to the orchestration side. `search_tx_type_intra_into` self
+  ~390M is per-candidate front-matter (mask checks, txk_map init, ctx
+  setup), no single lever; the rest is the documented u16-at-bd8
+  structural tax + safe-Rust per-scan-position asserts (~54M, the
+  `ci < n` invariant guards — they buy back ~100M+ of folded checks).
 - **transforms / quantize / txb helpers**: all C-mirrored; remaining
   gaps are per-call overhead grinds (~1.3–2×/call) inside
   byte-identical kernels.
