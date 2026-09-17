@@ -72,443 +72,181 @@ fn rpot_u32(v: u32, n: u32) -> u32 {
 }
 
 
-/// The VERTICAL half of `boxsum1`/`boxsum2`, vectorized over `j`.
+/// Build the two SGR integral images over the `[-3, +3)`-extended source —
+/// `integral_images_highbd` (selfguided_sse4.c): `ii_sum[y][x]` is the sum of
+/// `src[0..y][0..x]`, `ii_sq[y][x]` the sum of squares. Row 0 and column 0
+/// are zero, so the planes have `(height + 1) x (width + 1)` live cells.
 ///
-/// # Why this exists
+/// # Bit-exactness under i32 wraparound
 ///
-/// `benchmarks/encoder_x86_profile_2026-09-08.md`: the loop-restoration search
-/// is 26 % of the speed-0 encode-time gap to libaom and had no SIMD anywhere.
-/// After the `compute_stats` and `pixel_proj_error` tiers landed, the box-sum
-/// was the largest scalar item left in the stage (13.3 ms of a 455 ms encode).
+/// A cell of `ii_sq` can exceed `i32::MAX` at high bit depth (a 70x70 unit at
+/// bd12 holds up to ~8.2e10), so every accumulation is `wrapping_*`. The
+/// four-corner `boxsum_ii` lookup takes DIFFERENCES of these cells; wraparound
+/// cancels mod 2^32, and every true `(2r+1)^2` box sum is below 2^31, so the
+/// wrapped arithmetic yields exactly the sum the old rolling-window boxsum
+/// computed — just evaluated in a different (associativity-irrelevant) order.
 ///
-/// # Bit-exact, and it also fixes an access pattern
+/// # Why this replaced the rolling boxsum
 ///
-/// Every output is an INDEPENDENT sum of `2r + 1` source rows at one column, so
-/// vectorizing across `j` reorders nothing: lane `j` performs exactly the scalar
-/// tier's adds in exactly its order. What changes besides the width is the walk
-/// — the scalar form is column-OUTER and strides by `src_stride` on every step,
-/// so it re-reads each row `width` times with no locality; this form carries a
-/// strip of 8 columns down the rows at once. The tail (`width % 8`) stays
-/// scalar and shares the same code as before via `boxsum_vert_scalar_cols`.
-#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
+/// The C scalar reference runs a vertical then a horizontal sliding window
+/// per boxsum array (two passes for A and two for B, over an i32 staging
+/// plane the C never materialises). C's SSE4/AVX2 kernels instead build the
+/// two integral images in ONE pass over the raw pixel plane and get every
+/// box sum from four corner loads. This ports that structure.
 #[allow(clippy::too_many_arguments)]
-fn boxsum_vert_impl(
-    token: Token,
-    src: &[i32],
-    src_off: usize,
-    width: usize,
-    height: usize,
-    src_stride: usize,
-    sqr: bool,
-    dst: &mut [i32],
-    dst_stride: usize,
-    r5: bool,
-) {
-    let ld = |s: &[i32], o: usize| -> i32x8 {
-        let v = i32x8::from_slice(token, &s[o..o + 8]);
-        if sqr { v * v } else { v }
-    };
-    let st = |d: &mut [i32], o: usize, v: i32x8| {
-        let t: &mut [i32; 8] = (&mut d[o..o + 8]).try_into().unwrap();
-        v.store(t);
-    };
-
-    let mut j = 0usize;
-    while j + 8 <= width {
-        if r5 {
-            let mut a = ld(src, src_off + j);
-            let mut b = ld(src, src_off + src_stride + j);
-            let mut c = ld(src, src_off + 2 * src_stride + j);
-            let mut d = ld(src, src_off + 3 * src_stride + j);
-            let mut e = ld(src, src_off + 4 * src_stride + j);
-            st(dst, j, a + b + c);
-            st(dst, dst_stride + j, a + b + c + d);
-            let mut i = 2;
-            while i < height - 3 {
-                st(dst, i * dst_stride + j, a + b + c + d + e);
-                a = b;
-                b = c;
-                c = d;
-                d = e;
-                e = ld(src, src_off + (i + 3) * src_stride + j);
-                i += 1;
-            }
-            st(dst, i * dst_stride + j, a + b + c + d + e);
-            st(dst, (i + 1) * dst_stride + j, b + c + d + e);
-            st(dst, (i + 2) * dst_stride + j, c + d + e);
-        } else {
-            let mut a = ld(src, src_off + j);
-            let mut b = ld(src, src_off + src_stride + j);
-            let mut c = ld(src, src_off + 2 * src_stride + j);
-            st(dst, j, a + b);
-            let mut i = 1;
-            while i < height - 2 {
-                st(dst, i * dst_stride + j, a + b + c);
-                a = b;
-                b = c;
-                c = ld(src, src_off + (i + 2) * src_stride + j);
-                i += 1;
-            }
-            st(dst, i * dst_stride + j, a + b + c);
-            st(dst, (i + 1) * dst_stride + j, b + c);
-        }
-        j += 8;
-    }
-    boxsum_vert_scalar_cols(
-        src, src_off, j, width, height, src_stride, sqr, dst, dst_stride, r5,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn boxsum_vert_impl_scalar(
+fn integral_image_impl_scalar(
     _t: archmage::ScalarToken,
-    src: &[i32],
+    src: &[u16],
     src_off: usize,
-    width: usize,
-    height: usize,
     src_stride: usize,
-    sqr: bool,
-    dst: &mut [i32],
-    dst_stride: usize,
-    r5: bool,
-) {
-    boxsum_vert_scalar_cols(
-        src, src_off, 0, width, height, src_stride, sqr, dst, dst_stride, r5,
-    );
-}
-
-/// The scalar vertical pass over columns `j0..width` — the transcribed port,
-/// verbatim, and the reference the vector tier is compared against.
-#[allow(clippy::too_many_arguments)]
-fn boxsum_vert_scalar_cols(
-    src: &[i32],
-    src_off: usize,
-    j0: usize,
     width: usize,
     height: usize,
-    src_stride: usize,
-    sqr: bool,
-    dst: &mut [i32],
-    dst_stride: usize,
-    r5: bool,
+    ii_sq: &mut [i32],
+    ii_sum: &mut [i32],
+    ii_stride: usize,
 ) {
-    let sq = |v: i32| if sqr { v * v } else { v };
-    for j in j0..width {
-        if r5 {
-            let mut a = sq(src[src_off + j]);
-            let mut b = sq(src[src_off + src_stride + j]);
-            let mut c = sq(src[src_off + 2 * src_stride + j]);
-            let mut d = sq(src[src_off + 3 * src_stride + j]);
-            let mut e = sq(src[src_off + 4 * src_stride + j]);
-            dst[j] = a + b + c;
-            dst[dst_stride + j] = a + b + c + d;
-            let mut i = 2;
-            while i < height - 3 {
-                dst[i * dst_stride + j] = a + b + c + d + e;
-                a = b;
-                b = c;
-                c = d;
-                d = e;
-                e = sq(src[src_off + (i + 3) * src_stride + j]);
-                i += 1;
-            }
-            dst[i * dst_stride + j] = a + b + c + d + e;
-            dst[(i + 1) * dst_stride + j] = b + c + d + e;
-            dst[(i + 2) * dst_stride + j] = c + d + e;
-        } else {
-            let mut a = sq(src[src_off + j]);
-            let mut b = sq(src[src_off + src_stride + j]);
-            let mut c = sq(src[src_off + 2 * src_stride + j]);
-            dst[j] = a + b;
-            let mut i = 1;
-            while i < height - 2 {
-                dst[i * dst_stride + j] = a + b + c;
-                a = b;
-                b = c;
-                c = sq(src[src_off + (i + 2) * src_stride + j]);
-                i += 1;
-            }
-            dst[i * dst_stride + j] = a + b + c;
-            dst[(i + 1) * dst_stride + j] = b + c;
-        }
-    }
-}
-
-/// Dispatch the vertical pass.
-#[allow(clippy::too_many_arguments)]
-fn boxsum_vert(
-    src: &[i32],
-    src_off: usize,
-    width: usize,
-    height: usize,
-    src_stride: usize,
-    sqr: bool,
-    dst: &mut [i32],
-    dst_stride: usize,
-    r5: bool,
-) {
-    archmage::incant!(
-        boxsum_vert_impl(
-            src, src_off, width, height, src_stride, sqr, dst, dst_stride, r5
-        ),
-        [v3, neon, wasm128, scalar]
-    )
-}
-
-/// The HORIZONTAL half of `boxsum1`/`boxsum2`, vectorized over `j`.
-///
-/// # Why this exists
-///
-/// After `boxsum_vert_impl` and `ab_row_impl` landed, the scalar rolling
-/// window here was the largest remaining mass in `calculate_intermediate`
-/// (~87M Ir at the 196x196 cq27 speed-3 probe).
-///
-/// # Bit-exactness
-///
-/// Every output is an INDEPENDENT sum of the ORIGINAL row values, but the
-/// scalar tier reads back positions it has already written — `out[j]` needs
-/// `dst[j+2]` which a vector store to `dst[j..j+8]` would clobber for the
-/// next chunk. So the vector tier software-pipelines: each chunk's source
-/// vectors are loaded BEFORE the previous chunk's store lands, and the
-/// scalar tail is seeded with a snapshot of the one cell range the last
-/// store overwrote. Each lane still sums the same source elements the
-/// scalar lane does, in the same left-to-right order — no reassociation,
-/// identical `i32` add semantics. Interior positions that don't fill a
-/// chunk plus the shrunken edge sums stay scalar (the rolling `a..e` /
-/// `a..c` window, which only ever reads original values).
-#[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
-fn boxsum_horz_impl(
-    token: Token,
-    dst: &mut [i32],
-    dst_stride: usize,
-    width: usize,
-    height: usize,
-    r5: bool,
-) {
-    // No row copy: the scalar tier's read-back (it reads `dst` positions it
-    // has already written) is handled by software pipelining instead — each
-    // chunk's source vectors for the NEXT iteration are loaded BEFORE this
-    // iteration's store, so every lane still sums the same original row
-    // values the scalar lane does, and the scalar tail re-reads at most the
-    // last store's final two/one cells, which `sv` snapshots. This drops the
-    // per-call `vec![width]` and the per-row `copy_from_slice` the old
-    // `scratch` buffer cost.
+    ii_sq[..width + 1].fill(0);
+    ii_sum[..width + 1].fill(0);
     for i in 0..height {
-        let row = i * dst_stride;
-        if r5 {
-            // Original s[0..4] — the edge writes can't land until the first
-            // vector chunk has loaded s[0..10).
-            let (s0, s1, s2, s3) = (dst[row], dst[row + 1], dst[row + 2], dst[row + 3]);
-            let mut j = 2;
-            // Original s[jv-2], s[jv-1] — the only clobbered cells the tail
-            // can read (it reads s[j-2..j+2] for j >= jv). Defaults cover the
-            // never-ran case: jv = 2, reads s[0]/s[1].
-            let (mut ta, mut tb) = (s0, s1);
-            if j + 8 <= width - 3 {
-                let mut w0 = i32x8::from_slice(token, &dst[row + j - 2..row + j + 6]);
-                let mut w1 = i32x8::from_slice(token, &dst[row + j - 1..row + j + 7]);
-                let mut w2 = i32x8::from_slice(token, &dst[row + j..row + j + 8]);
-                let mut w3 = i32x8::from_slice(token, &dst[row + j + 1..row + j + 9]);
-                let mut w4 = i32x8::from_slice(token, &dst[row + j + 2..row + j + 10]);
-                loop {
-                    let v = w0 + w1 + w2 + w3 + w4;
-                    // Chunk j+8 reads s[j+6..j+18]; this store writes
-                    // dst[j..j+8] — overlapping at j+6/j+7, so the loads (and
-                    // the tail snapshot) run first. j+18 <= width holds
-                    // whenever a next chunk exists (j + 16 <= width - 3).
-                    let more = j + 16 <= width - 3;
-                    if more {
-                        w0 = i32x8::from_slice(token, &dst[row + j + 6..row + j + 14]);
-                        w1 = i32x8::from_slice(token, &dst[row + j + 7..row + j + 15]);
-                        w2 = i32x8::from_slice(token, &dst[row + j + 8..row + j + 16]);
-                        w3 = i32x8::from_slice(token, &dst[row + j + 9..row + j + 17]);
-                        w4 = i32x8::from_slice(token, &dst[row + j + 10..row + j + 18]);
-                    } else {
-                        ta = dst[row + j + 6];
-                        tb = dst[row + j + 7];
-                    }
-                    v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
-                    j += 8;
-                    if !more {
-                        break;
-                    }
-                }
-            }
-            dst[row] = s0 + s1 + s2;
-            dst[row + 1] = s0 + s1 + s2 + s3;
-            // Tail: the scalar tier's rolling window. a/b are the snapshotted
-            // originals (s[j-2], s[j-1] — the cells the last vector store
-            // clobbered); c/d/e read positions >= j — never stored (vector
-            // stores end at j, and tail stores trail the e-load by 3).
-            let mut a = ta;
-            let mut b = tb;
-            let mut c = dst[row + j];
-            let mut d = dst[row + j + 1];
-            let mut e = dst[row + j + 2];
-            while j < width - 3 {
-                dst[row + j] = a + b + c + d + e;
-                a = b;
-                b = c;
-                c = d;
-                d = e;
-                e = dst[row + j + 3];
-                j += 1;
-            }
-            dst[row + j] = a + b + c + d + e;
-            dst[row + j + 1] = b + c + d + e;
-            dst[row + j + 2] = c + d + e;
-        } else {
-            let (s0, s1) = (dst[row], dst[row + 1]);
-            let mut j = 1;
-            // Original s[j-1] at the tail's start — the last vector store's
-            // final cell. Default covers the never-ran case (j = 1 → s[0]).
-            let mut ta = s0;
-            if j + 8 <= width - 2 {
-                let mut w0 = i32x8::from_slice(token, &dst[row + j - 1..row + j + 7]);
-                let mut w1 = i32x8::from_slice(token, &dst[row + j..row + j + 8]);
-                let mut w2 = i32x8::from_slice(token, &dst[row + j + 1..row + j + 9]);
-                loop {
-                    let v = w0 + w1 + w2;
-                    // Chunk j+8 reads s[j+7..j+17]; the store writes
-                    // dst[j..j+8] — overlapping at j+7, loads first. Next
-                    // chunk exists iff j + 16 <= width - 2.
-                    let more = j + 16 <= width - 2;
-                    if more {
-                        w0 = i32x8::from_slice(token, &dst[row + j + 7..row + j + 15]);
-                        w1 = i32x8::from_slice(token, &dst[row + j + 8..row + j + 16]);
-                        w2 = i32x8::from_slice(token, &dst[row + j + 9..row + j + 17]);
-                    } else {
-                        ta = dst[row + j + 7];
-                    }
-                    v.store((&mut dst[row + j..row + j + 8]).try_into().unwrap());
-                    j += 8;
-                    if !more {
-                        break;
-                    }
-                }
-            }
-            dst[row] = s0 + s1;
-            // Same rolling window as the scalar tier's: `a` is the snapshot,
-            // b/c read positions >= j — never stored (the c-load leads the
-            // tail stores by 2).
-            let mut a = ta;
-            let mut b = dst[row + j];
-            let mut c = dst[row + j + 1];
-            while j < width - 2 {
-                dst[row + j] = a + b + c;
-                a = b;
-                b = c;
-                c = dst[row + j + 2];
-                j += 1;
-            }
-            dst[row + j] = a + b + c;
-            dst[row + j + 1] = b + c;
+        let (above, cur) = (i * ii_stride, (i + 1) * ii_stride);
+        let s0 = src_off + i * src_stride;
+        ii_sq[cur] = 0;
+        ii_sum[cur] = 0;
+        let mut rs = 0i32;
+        let mut rq = 0i32;
+        for x in 0..width {
+            let v = src[s0 + x] as i32;
+            rs = rs.wrapping_add(v);
+            rq = rq.wrapping_add(v.wrapping_mul(v));
+            ii_sum[cur + 1 + x] = ii_sum[above + 1 + x].wrapping_add(rs);
+            ii_sq[cur + 1 + x] = ii_sq[above + 1 + x].wrapping_add(rq);
         }
     }
 }
 
-/// Scalar tier = the transcribed port, verbatim.
-fn boxsum_horz_impl_scalar(
-    _t: archmage::ScalarToken,
-    dst: &mut [i32],
-    dst_stride: usize,
+/// x86-64/AVX2 body for [`integral_image`] — a transcription of
+/// `integral_images_highbd` (selfguided_sse4.c): four i32 lanes per step, the
+/// horizontal prefix computed by `scan_32` (byte-shift + add) plus the
+/// `ldiff` carry. `_mm_madd_epi16(x, x)` squares each lane — the source
+/// values are pixels (`<= (1 << bit_depth) - 1 <= 4095`), so the u16 lanes
+/// are i16-positive and the madd result is the exact square.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn integral_image_impl_v3(
+    _t: archmage::X64V3Token,
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
     width: usize,
     height: usize,
-    r5: bool,
+    ii_sq: &mut [i32],
+    ii_sum: &mut [i32],
+    ii_stride: usize,
 ) {
+    use archmage::intrinsics::x86_64::*;
+    ii_sq[..width + 1].fill(0);
+    ii_sum[..width + 1].fill(0);
     for i in 0..height {
-        let row = i * dst_stride;
-        if r5 {
-            let mut a = dst[row];
-            let mut b = dst[row + 1];
-            let mut c = dst[row + 2];
-            let mut d = dst[row + 3];
-            let mut e = dst[row + 4];
-            dst[row] = a + b + c;
-            dst[row + 1] = a + b + c + d;
-            let mut j = 2;
-            while j < width - 3 {
-                dst[row + j] = a + b + c + d + e;
-                a = b;
-                b = c;
-                c = d;
-                d = e;
-                e = dst[row + j + 3];
-                j += 1;
-            }
-            dst[row + j] = a + b + c + d + e;
-            dst[row + j + 1] = b + c + d + e;
-            dst[row + j + 2] = c + d + e;
-        } else {
-            let mut a = dst[row];
-            let mut b = dst[row + 1];
-            let mut c = dst[row + 2];
-            dst[row] = a + b;
-            let mut j = 1;
-            while j < width - 2 {
-                dst[row + j] = a + b + c;
-                a = b;
-                b = c;
-                c = dst[row + j + 2];
-                j += 1;
-            }
-            dst[row + j] = a + b + c;
-            dst[row + j + 1] = b + c;
+        let (above, cur) = (i * ii_stride, (i + 1) * ii_stride);
+        let s0 = src_off + i * src_stride;
+        ii_sq[cur] = 0;
+        ii_sum[cur] = 0;
+        // Tight row spans (`width` source cells, `width + 1` ii cells — the
+        // stride is larger), so `span[j + c]` under `j + 4 <= width` is
+        // provably in bounds and no per-load check survives into the loop.
+        let srow = &src[s0..s0 + width];
+        let (sm_a, sm_c) = ii_sum.split_at_mut(cur);
+        let abv1 = &sm_a[above..above + width + 1];
+        let dst1 = &mut sm_c[..width + 1];
+        let (sq_a, sq_c) = ii_sq.split_at_mut(cur);
+        let abv2 = &sq_a[above..above + width + 1];
+        let dst2 = &mut sq_c[..width + 1];
+        let mut ldiff1 = _mm_setzero_si128();
+        let mut ldiff2 = _mm_setzero_si128();
+        let mut j = 0usize;
+        while j + 4 <= width {
+            let above1: &[i32; 4] = abv1[1 + j..5 + j].try_into().unwrap();
+            let above1 = _mm_loadu_si128(above1);
+            let above2: &[i32; 4] = abv2[1 + j..5 + j].try_into().unwrap();
+            let above2 = _mm_loadu_si128(above2);
+
+            let x1 = _mm_set_epi32(
+                srow[j + 3] as i32,
+                srow[j + 2] as i32,
+                srow[j + 1] as i32,
+                srow[j] as i32,
+            );
+            let x2 = _mm_madd_epi16(x1, x1);
+
+            let x01 = _mm_add_epi32(x1, _mm_slli_si128::<4>(x1));
+            let sc1 = _mm_add_epi32(x01, _mm_slli_si128::<8>(x01));
+            let y01 = _mm_add_epi32(x2, _mm_slli_si128::<4>(x2));
+            let sc2 = _mm_add_epi32(y01, _mm_slli_si128::<8>(y01));
+
+            let row1 = _mm_add_epi32(_mm_add_epi32(sc1, above1), ldiff1);
+            let row2 = _mm_add_epi32(_mm_add_epi32(sc2, above2), ldiff2);
+
+            let d1: &mut [i32; 4] = (&mut dst1[1 + j..5 + j]).try_into().unwrap();
+            _mm_storeu_si128(d1, row1);
+            let d2: &mut [i32; 4] = (&mut dst2[1 + j..5 + j]).try_into().unwrap();
+            _mm_storeu_si128(d2, row2);
+
+            ldiff1 = _mm_shuffle_epi32::<0xff>(_mm_sub_epi32(row1, above1));
+            ldiff2 = _mm_shuffle_epi32::<0xff>(_mm_sub_epi32(row2, above2));
+            j += 4;
+        }
+        // Column tail: continue the running prefix. `cur - above` at column
+        // `j` recovers the horizontal prefix through source column `j - 1`
+        // (for `j == 0` both cells are zero, so the seed is 0 either way).
+        let mut rs = dst1[j].wrapping_sub(abv1[j]);
+        let mut rq = dst2[j].wrapping_sub(abv2[j]);
+        for x in j..width {
+            let v = srow[x] as i32;
+            rs = rs.wrapping_add(v);
+            rq = rq.wrapping_add(v.wrapping_mul(v));
+            dst1[1 + x] = abv1[1 + x].wrapping_add(rs);
+            dst2[1 + x] = abv2[1 + x].wrapping_add(rq);
         }
     }
 }
 
-/// Dispatch the horizontal pass.
-fn boxsum_horz(dst: &mut [i32], dst_stride: usize, width: usize, height: usize, r5: bool) {
-    archmage::incant!(
-        boxsum_horz_impl(dst, dst_stride, width, height, r5),
-        [v3, neon, wasm128, scalar]
-    )
-}
-
-/// `boxsum1` — windowed 3x3 sums (or sums of squares) over `src` (dims
-/// `width x height` at `src_stride`, offset `src_off`) into `dst`.
+/// Dispatch the integral-image build.
 #[allow(clippy::too_many_arguments)]
-fn boxsum1(
-    src: &[i32],
+fn integral_image(
+    src: &[u16],
     src_off: usize,
+    src_stride: usize,
     width: usize,
     height: usize,
-    src_stride: usize,
-    sqr: bool,
-    dst: &mut [i32],
-    dst_stride: usize,
+    ii_sq: &mut [i32],
+    ii_sum: &mut [i32],
+    ii_stride: usize,
 ) {
-    // Vertical sum over 3-pixel regions, from src into dst.
-    boxsum_vert(
-        src, src_off, width, height, src_stride, sqr, dst, dst_stride, false,
+    #[cfg(target_arch = "x86_64")]
+    {
+        archmage::incant!(
+            integral_image_impl(
+                src, src_off, src_stride, width, height, ii_sq, ii_sum, ii_stride
+            ),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    integral_image_impl_scalar(
+        archmage::ScalarToken::summon().unwrap(),
+        src,
+        src_off,
+        src_stride,
+        width,
+        height,
+        ii_sq,
+        ii_sum,
+        ii_stride,
     );
-    // Horizontal sum over 3-pixel regions of dst.
-    boxsum_horz(dst, dst_stride, width, height, false);
 }
 
-/// `boxsum2` — windowed 5x5 sums (or sums of squares).
-#[allow(clippy::too_many_arguments)]
-fn boxsum2(
-    src: &[i32],
-    src_off: usize,
-    width: usize,
-    height: usize,
-    src_stride: usize,
-    sqr: bool,
-    dst: &mut [i32],
-    dst_stride: usize,
-) {
-    boxsum_vert(
-        src, src_off, width, height, src_stride, sqr, dst, dst_stride, true,
-    );
-    boxsum_horz(dst, dst_stride, width, height, true);
-}
-
-/// `calculate_intermediate_result`: boxsums over the extended block, then the
-/// blended A (edge-strength) / B (offset) arrays including a 1-pixel ring,
-/// at rows stepped by 2 for the fast (r=2) pass. Returns `(a_buf, b_buf,
-/// buf_stride, origin_offset)`.
 /// One `(A, B)` cell of the SGR intermediate — the loop body of
 /// `av1_selfguided_restoration_c`'s A/B pass.
 ///
@@ -543,20 +281,50 @@ fn ab_one(
     (a_out, b_out)
 }
 
-/// Scalar tier = the transcribed port, verbatim.
+/// Raw box sums out of the integral images — `boxsum_from_ii`
+/// (selfguided_sse4.c). For a `(2r+1)`-sided window centred at
+/// extended-source pixel `(y, x)` the sum is
+/// `ii[y+r+1][x+r+1] - ii[y-r][x+r+1] - ii[y+r+1][x-r] + ii[y-r][x-r]`.
+/// Shared VERBATIM by the scalar tier and by the vector tier's column tail.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn ab_row_impl_scalar(
+fn boxsum_ii_px(ii: &[i32], yt: usize, yb: usize, x: usize, r: usize) -> i32 {
+    (ii[yb + x + r + 1].wrapping_sub(ii[yt + x + r + 1]))
+        .wrapping_sub(ii[yb + x - r].wrapping_sub(ii[yt + x - r]))
+}
+
+/// Scalar tier of the fused pass — the transcribed boxsum feeding `ab_one`.
+#[allow(clippy::too_many_arguments)]
+fn calc_ab_row_impl_scalar(
     _t: archmage::ScalarToken,
-    a_row: &mut [i32],
-    b_row: &mut [i32],
+    ii_sq: &[i32],
+    ii_sum: &[i32],
+    ii_stride: usize,
+    y: usize,
+    x0: usize,
+    count: usize,
+    r: usize,
     n: u32,
     s: u32,
     one_by_x: u32,
     shift_a: u32,
     shift_b: u32,
+    a_row: &mut [i32],
+    b_row: &mut [i32],
 ) {
-    for t in 0..a_row.len() {
-        let (a_out, b_out) = ab_one(a_row[t], b_row[t], n, s, one_by_x, shift_a, shift_b);
+    let yt = (y - r) * ii_stride;
+    let yb = (y + r + 1) * ii_stride;
+    for t in 0..count {
+        let x = x0 + t;
+        let (a_out, b_out) = ab_one(
+            boxsum_ii_px(ii_sq, yt, yb, x, r),
+            boxsum_ii_px(ii_sum, yt, yb, x, r),
+            n,
+            s,
+            one_by_x,
+            shift_a,
+            shift_b,
+        );
         a_row[t] = a_out;
         b_row[t] = b_out;
     }
@@ -658,18 +426,47 @@ const _: () = assert!(SGRPROJ_RECIP_BITS == 12);
 /// The lookup itself was never the cost, which is the point: it is one
 /// operation of about twenty here, and eight scalar loads through a stack round
 /// trip cost less than leaving the other nineteen scalar.
+/// Vector tier of the fused pass — `calc_ab` (selfguided_sse4.c): the
+/// four-corner `boxsum_from_ii` feeds the A/B transform directly, so the raw
+/// box sums never touch memory. Lanes are columns `j` of one A/B row.
+///
+/// The eight corner spans are re-sliced to exactly `count` elements up front,
+/// so every `span[j..j + 8]` under the `j + 8 <= count` loop guard is
+/// provably in bounds — no per-load check survives into the loop (the crate
+/// is `#![forbid(unsafe_code)]`, so elimination has to be structural).
 #[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn ab_row_impl(
+fn calc_ab_row_impl(
     token: Token,
-    a_row: &mut [i32],
-    b_row: &mut [i32],
+    ii_sq: &[i32],
+    ii_sum: &[i32],
+    ii_stride: usize,
+    y: usize,
+    x0: usize,
+    count: usize,
+    r: usize,
     n: u32,
     s: u32,
     one_by_x: u32,
     shift_a: u32,
     shift_b: u32,
+    a_row: &mut [i32],
+    b_row: &mut [i32],
 ) {
+    let yt = (y - r) * ii_stride;
+    let yb = (y + r + 1) * ii_stride;
+    let xl = x0 - r;
+    let xr = x0 + r + 1;
+    let sq_tl = &ii_sq[yt + xl..yt + xl + count];
+    let sq_tr = &ii_sq[yt + xr..yt + xr + count];
+    let sq_bl = &ii_sq[yb + xl..yb + xl + count];
+    let sq_br = &ii_sq[yb + xr..yb + xr + count];
+    let sm_tl = &ii_sum[yt + xl..yt + xl + count];
+    let sm_tr = &ii_sum[yt + xr..yt + xr + count];
+    let sm_bl = &ii_sum[yb + xl..yb + xl + count];
+    let sm_br = &ii_sum[yb + xr..yb + xr + count];
+    let a_row = &mut a_row[..count];
+    let b_row = &mut b_row[..count];
     // The two `ROUND_POWER_OF_TWO` shifts are frame-level constants but not
     // COMPILE-time ones, and this vocabulary has only const-generic shifts
     // (no `shr_logical_uniform` in 0.9.28). `bit_depth` is 8, 10 or 12, so
@@ -695,11 +492,16 @@ fn ab_row_impl(
     // u32 bit patterns — the unsigned compare `saturating_sub` needs.
     let bias = i32x8::splat(token, i32::MIN);
 
-    let len = a_row.len();
     let mut o = 0usize;
-    while o + 8 <= len {
-        let a_raw = i32x8::from_slice(token, &a_row[o..o + 8]);
-        let b_raw = i32x8::from_slice(token, &b_row[o..o + 8]);
+    while o + 8 <= count {
+        let a_raw = (i32x8::from_slice(token, &sq_br[o..o + 8])
+            - i32x8::from_slice(token, &sq_tr[o..o + 8]))
+            - (i32x8::from_slice(token, &sq_bl[o..o + 8])
+                - i32x8::from_slice(token, &sq_tl[o..o + 8]));
+        let b_raw = (i32x8::from_slice(token, &sm_br[o..o + 8])
+            - i32x8::from_slice(token, &sm_tr[o..o + 8]))
+            - (i32x8::from_slice(token, &sm_bl[o..o + 8])
+                - i32x8::from_slice(token, &sm_tl[o..o + 8]));
 
         // a = ROUND_POWER_OF_TWO(a_raw, shift_a), b likewise, in u32.
         let xa = a_raw + half_a;
@@ -746,37 +548,56 @@ fn ab_row_impl(
     }
 
     // Column tail: the shared scalar body, so the tiers cannot drift.
-    for t in o..len {
-        let (a_out, b_out) = ab_one(a_row[t], b_row[t], n, s, one_by_x, shift_a, shift_b);
+    for t in o..count {
+        let x = x0 + t;
+        let (a_out, b_out) = ab_one(
+            boxsum_ii_px(ii_sq, yt, yb, x, r),
+            boxsum_ii_px(ii_sum, yt, yb, x, r),
+            n,
+            s,
+            one_by_x,
+            shift_a,
+            shift_b,
+        );
         a_row[t] = a_out;
         b_row[t] = b_out;
     }
 }
 
-/// `av1_selfguided_restoration_c`'s A/B pass over one row of the ring.
+/// `calc_ab` over one row of the ring — fused boxsum + A/B transform.
 #[allow(clippy::too_many_arguments)]
-fn ab_row(
-    a_row: &mut [i32],
-    b_row: &mut [i32],
+fn calc_ab_row(
+    ii_sq: &[i32],
+    ii_sum: &[i32],
+    ii_stride: usize,
+    y: usize,
+    x0: usize,
+    count: usize,
+    r: usize,
     n: u32,
     s: u32,
     one_by_x: u32,
     shift_a: u32,
     shift_b: u32,
+    a_row: &mut [i32],
+    b_row: &mut [i32],
 ) {
     archmage::incant!(
-        ab_row_impl(a_row, b_row, n, s, one_by_x, shift_a, shift_b),
+        calc_ab_row_impl(
+            ii_sq, ii_sum, ii_stride, y, x0, count, r, n, s, one_by_x, shift_a, shift_b,
+            a_row, b_row
+        ),
         [v3, neon, wasm128, scalar]
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn calculate_intermediate(
-    dgd: &[i32],
-    dgd_origin: usize,
+    ii_sq: &[i32],
+    ii_sum: &[i32],
+    ii_stride: usize,
     width: usize,
     height: usize,
-    dgd_stride: usize,
     bit_depth: i32,
     ep: usize,
     radius_idx: usize,
@@ -785,35 +606,20 @@ fn calculate_intermediate(
     b_buf: &mut Vec<i32>,
 ) -> (usize, usize) {
     let (rads, ss) = SGR_PARAMS[ep];
-    let r = rads[radius_idx];
+    let r = rads[radius_idx] as usize;
     let width_ext = width + 2 * SGRPROJ_BORDER_HORZ;
     let height_ext = height + 2 * SGRPROJ_BORDER_VERT;
     // "Adjusting the stride of A and B here appears to avoid bad cache
     // effects" — must match the C exactly (it changes nothing numerically,
-    // but keep the layout for clarity).
-    let buf_stride = ((width_ext + 3) & !3) + 16;
+    // but keep the layout for clarity). The integral images share it.
+    let buf_stride = ii_stride;
+    debug_assert_eq!(buf_stride, ((width_ext + 3) & !3) + 16);
     let step = if pass == 0 { 1 } else { 2 };
-    // `resize` without clear: every cell `ab_row` reads was written by the
-    // boxsum pair above it (read rows 2..h+4 and cols 2..w+4 sit inside the
-    // written 0..h_ext x 0..w_ext), so stale pool contents are unreachable —
+    // `resize` without clear: every cell `ab_row` reads was written by
+    // `boxsum_ii_row` just above it, so stale pool contents are unreachable —
     // the same guarantee C gets from `aom_malloc`.
     a_buf.resize(buf_stride * (height_ext + 1), 0);
     b_buf.resize(buf_stride * (height_ext + 1), 0);
-
-    let ext_off = dgd_origin - dgd_stride * SGRPROJ_BORDER_VERT - SGRPROJ_BORDER_HORZ;
-    let bx = |s: &mut [i32], sqr: bool| {
-        if r == 1 {
-            boxsum1(
-                dgd, ext_off, width_ext, height_ext, dgd_stride, sqr, s, buf_stride,
-            );
-        } else {
-            boxsum2(
-                dgd, ext_off, width_ext, height_ext, dgd_stride, sqr, s, buf_stride,
-            );
-        }
-    };
-    bx(b_buf, false);
-    bx(a_buf, true);
 
     let org = SGRPROJ_BORDER_VERT * buf_stride + SGRPROJ_BORDER_HORZ;
     // A[] / B[] with a 1-pixel ring: i in -1 ..= height, j in -1 ..= width.
@@ -823,35 +629,46 @@ fn calculate_intermediate(
     let shift_a = 2 * (bit_depth - 8) as u32;
     let shift_b = (bit_depth - 8) as u32;
     // `k` is contiguous in `j`, so each row of the ring is one contiguous run
-    // of `width + 2` cells in each buffer (j = -1 ..= width).
+    // of `width + 2` cells in each buffer (j = -1 ..= width). Only the rows
+    // the A/B pass touches get box sums — the integral image makes skipped
+    // rows free, where the old vert/horz boxsum had to cover the plane.
     let count = width + 2;
     let mut i: i32 = -1;
     while i < height as i32 + 1 {
         let k0 = (org as i32 + i * buf_stride as i32 - 1) as usize;
-        ab_row(
-            &mut a_buf[k0..k0 + count],
-            &mut b_buf[k0..k0 + count],
+        let y = (SGRPROJ_BORDER_VERT as i32 + i) as usize;
+        calc_ab_row(
+            ii_sq,
+            ii_sum,
+            ii_stride,
+            y,
+            2,
+            count,
+            r,
             n,
             s,
             one_by_x,
             shift_a,
             shift_b,
+            &mut a_buf[k0..k0 + count],
+            &mut b_buf[k0..k0 + count],
         );
         i += step;
     }
     (buf_stride, org)
 }
 
-/// Per-thread SGR work buffers — C's `rst->tmpbuf` equivalent. Every buffer's
-/// read set is provably overwritten earlier in the same call (the `ab_row`
-/// ring reads only cells `boxsum` wrote; `sgr_widen` fills all of `dgd32`;
-/// `flt`'s `rads[i] > 0` read guard is also its write guard), so pooled
-/// buffers are resized WITHOUT re-zeroing — C's uninitialized-`malloc`
-/// semantics, kept exact. This was the `alloc_zeroed`/`calloc` memset class's
-/// top site (~56M Ir per 196x196 s3 rep).
+/// Per-thread SGR work buffers — C's `rst->tmpbuf`/`buf` equivalent. Every
+/// buffer's read set is provably overwritten earlier in the same call (the
+/// `ab_row` ring reads only cells `boxsum_ii_row` wrote; `integral_image`
+/// writes all of `ii`; `flt`'s `rads[i] > 0` read guard is also its write
+/// guard), so pooled buffers are resized WITHOUT re-zeroing — C's
+/// uninitialized-`malloc` semantics, kept exact. This was the
+/// `alloc_zeroed`/`calloc` memset class's top site (~56M Ir per 196x196 s3
+/// rep).
 #[derive(Default)]
 struct SgrTlsScratch {
-    dgd32: Vec<i32>,
+    ii: [Vec<i32>; 2],
     ab: [Vec<i32>; 2],
     flt: [Vec<i32>; 2],
 }
@@ -859,7 +676,7 @@ struct SgrTlsScratch {
 thread_local! {
     static SGR_TLS: core::cell::RefCell<SgrTlsScratch> = const {
         core::cell::RefCell::new(SgrTlsScratch {
-            dgd32: Vec::new(),
+            ii: [Vec::new(), Vec::new()],
             ab: [Vec::new(), Vec::new()],
             flt: [Vec::new(), Vec::new()],
         })
@@ -869,11 +686,14 @@ thread_local! {
 /// `selfguided_restoration_fast_internal` (the r=2 pass, A/B at odd rows).
 #[allow(clippy::too_many_arguments)]
 fn selfguided_fast(
-    dgd: &[i32],
-    dgd_origin: usize,
+    dgd: &[u16],
+    dgd_off: usize,
+    dgd_stride: usize,
+    ii_sq: &[i32],
+    ii_sum: &[i32],
+    ii_stride: usize,
     width: usize,
     height: usize,
-    dgd_stride: usize,
     dst: &mut [i32],
     dst_stride: usize,
     bit_depth: i32,
@@ -882,21 +702,24 @@ fn selfguided_fast(
 ) {
     let [a, b] = ab;
     let (bs, org) = calculate_intermediate(
-        dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 0, 1, a, b,
+        ii_sq, ii_sum, ii_stride, width, height, bit_depth, ep, 0, 1, a, b,
     );
     sgr_final_fast(
-        a, b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
+        a, b, org, bs, dgd, dgd_off, dgd_stride, dst, dst_stride, width, height,
     );
 }
 
 /// `selfguided_restoration_internal` (the r=1 pass, every row).
 #[allow(clippy::too_many_arguments)]
 fn selfguided_full(
-    dgd: &[i32],
-    dgd_origin: usize,
+    dgd: &[u16],
+    dgd_off: usize,
+    dgd_stride: usize,
+    ii_sq: &[i32],
+    ii_sum: &[i32],
+    ii_stride: usize,
     width: usize,
     height: usize,
-    dgd_stride: usize,
     dst: &mut [i32],
     dst_stride: usize,
     bit_depth: i32,
@@ -905,101 +728,11 @@ fn selfguided_full(
 ) {
     let [a, b] = ab;
     let (bs, org) = calculate_intermediate(
-        dgd, dgd_origin, width, height, dgd_stride, bit_depth, ep, 1, 0, a, b,
+        ii_sq, ii_sum, ii_stride, width, height, bit_depth, ep, 1, 0, a, b,
     );
     sgr_final_full(
-        a, b, org, bs, dgd, dgd_origin, dgd_stride, dst, dst_stride, width, height,
+        a, b, org, bs, dgd, dgd_off, dgd_stride, dst, dst_stride, width, height,
     );
-}
-
-/// The u16 -> i32 bordered widening at the top of `selfguided_restoration` —
-/// `dgd32[i][j] = dgd[dgd_off + (i-3)*dgd_stride + (j-3)]` over the whole
-/// `(height + 6) x (width + 6)` plane. Per row the read is CONTIGUOUS and the
-/// write is contiguous, so each row is a `cvtepu16_epi32` widen of
-/// `dgd32_stride` elements — this was ~61M Ir of per-element index math at the
-/// 196x196 cq27 speed-3 probe. One dispatch for the whole plane; the row-range
-/// slice `src[s0..s0 + w]` keeps the same out-of-range panic the scalar's
-/// per-element `dgd[src_idx]` had (the `as usize` wrap is identical too).
-#[archmage::magetypes(define(i32x8), v3, -scalar)]
-fn sgr_widen_impl(
-    _t: Token,
-    src: &[u16],
-    src_stride: usize,
-    src_origin: isize,
-    dst: &mut [i32],
-    dst_stride: usize,
-    w: usize,
-    h: usize,
-) {
-    use archmage::intrinsics::x86_64::*;
-    for i in 0..h {
-        let s0 = (src_origin + i as isize * src_stride as isize) as usize;
-        let s = &src[s0..s0 + w];
-        let d = &mut dst[i * dst_stride..i * dst_stride + w];
-        let mut j = 0;
-        while j + 8 <= w {
-            let a: &[u16; 8] = s[j..j + 8].try_into().unwrap();
-            let v = _mm256_cvtepu16_epi32(_mm_loadu_si128(a));
-            let t: &mut [i32; 8] = (&mut d[j..j + 8]).try_into().unwrap();
-            _mm256_storeu_si256(t, v);
-            j += 8;
-        }
-        while j < w {
-            d[j] = s[j] as i32;
-            j += 1;
-        }
-    }
-}
-
-/// Scalar tier — the transcribed port loop, verbatim.
-#[cfg(target_arch = "x86_64")]
-#[allow(clippy::too_many_arguments)]
-fn sgr_widen_impl_scalar(
-    _t: archmage::ScalarToken,
-    src: &[u16],
-    src_stride: usize,
-    src_origin: isize,
-    dst: &mut [i32],
-    dst_stride: usize,
-    w: usize,
-    h: usize,
-) {
-    for i in 0..h {
-        for j in 0..w {
-            let src_idx =
-                (src_origin + i as isize * src_stride as isize + j as isize) as usize;
-            dst[i * dst_stride + j] = src[src_idx] as i32;
-        }
-    }
-}
-
-/// Dispatch the bordered widen — one `incant!` per `selfguided_restoration`.
-#[allow(clippy::too_many_arguments)]
-fn sgr_widen(
-    src: &[u16],
-    src_stride: usize,
-    src_origin: isize,
-    dst: &mut [i32],
-    dst_stride: usize,
-    w: usize,
-    h: usize,
-) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        archmage::incant!(
-            sgr_widen_impl(src, src_stride, src_origin, dst, dst_stride, w, h),
-            [v3, scalar]
-        );
-        return;
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    for i in 0..h {
-        for j in 0..w {
-            let src_idx =
-                (src_origin + i as isize * src_stride as isize + j as isize) as usize;
-            dst[i * dst_stride + j] = src[src_idx] as i32;
-        }
-    }
 }
 
 /// `cross_sum` / `cross_sum_fast_*` (selfguided_sse4.c): the weighted
@@ -1039,7 +772,7 @@ fn sgr_final_full_impl(
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[i32],
+    dgd: &[u16],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1054,40 +787,56 @@ fn sgr_final_full_impl(
         let k0 = org + i * bs;
         let l0 = dgd_origin + i * dgd_stride;
         let m0 = i * dst_stride;
+        // Tight row spans: every tap of the 3x3 ring is an `x[j + c..j + c + 8]`
+        // access under `j + 8 <= width` against a `width + 2`-cell slice, so no
+        // per-load bounds check survives into the loop (`#![forbid(unsafe_code)]`
+        // means elimination has to be structural). `x_c[x + 1]` is row `i`
+        // centred on `j`; `x_u`/`x_d` the rows above/below.
+        let a_c = &a[k0 - 1..k0 + width + 1];
+        let a_u = &a[k0 - bs - 1..k0 - bs + width + 1];
+        let a_d = &a[k0 + bs - 1..k0 + bs + width + 1];
+        let b_c = &b[k0 - 1..k0 + width + 1];
+        let b_u = &b[k0 - bs - 1..k0 - bs + width + 1];
+        let b_d = &b[k0 + bs - 1..k0 + bs + width + 1];
+        let drow = &dgd[l0..l0 + width];
+        let dout = &mut dst[m0..m0 + width];
         let mut j = 0;
         while j + 8 <= width {
-            let k = k0 + j;
             // cross_sum = 4*(fours + threes) - threes (the C factorization —
             // identical wrap-i32 result to 4*fours + 3*threes).
-            let fa = i32x8::from_slice(token, &a[k - 1..k + 7])
-                + i32x8::from_slice(token, &a[k..k + 8])
-                + i32x8::from_slice(token, &a[k + 1..k + 9])
-                + i32x8::from_slice(token, &a[k - bs..k - bs + 8])
-                + i32x8::from_slice(token, &a[k + bs..k + bs + 8]);
-            let ta = i32x8::from_slice(token, &a[k - 1 - bs..k + 7 - bs])
-                + i32x8::from_slice(token, &a[k + 1 - bs..k + 9 - bs])
-                + i32x8::from_slice(token, &a[k - 1 + bs..k + 7 + bs])
-                + i32x8::from_slice(token, &a[k + 1 + bs..k + 9 + bs]);
+            let fa = i32x8::from_slice(token, &a_c[j..j + 8])
+                + i32x8::from_slice(token, &a_c[j + 1..j + 9])
+                + i32x8::from_slice(token, &a_c[j + 2..j + 10])
+                + i32x8::from_slice(token, &a_u[j + 1..j + 9])
+                + i32x8::from_slice(token, &a_d[j + 1..j + 9]);
+            let ta = i32x8::from_slice(token, &a_u[j..j + 8])
+                + i32x8::from_slice(token, &a_u[j + 2..j + 10])
+                + i32x8::from_slice(token, &a_d[j..j + 8])
+                + i32x8::from_slice(token, &a_d[j + 2..j + 10]);
             let va = (fa + ta) * c4 - ta;
-            let fb = i32x8::from_slice(token, &b[k - 1..k + 7])
-                + i32x8::from_slice(token, &b[k..k + 8])
-                + i32x8::from_slice(token, &b[k + 1..k + 9])
-                + i32x8::from_slice(token, &b[k - bs..k - bs + 8])
-                + i32x8::from_slice(token, &b[k + bs..k + bs + 8]);
-            let tb = i32x8::from_slice(token, &b[k - 1 - bs..k + 7 - bs])
-                + i32x8::from_slice(token, &b[k + 1 - bs..k + 9 - bs])
-                + i32x8::from_slice(token, &b[k - 1 + bs..k + 7 + bs])
-                + i32x8::from_slice(token, &b[k + 1 + bs..k + 9 + bs]);
+            let fb = i32x8::from_slice(token, &b_c[j..j + 8])
+                + i32x8::from_slice(token, &b_c[j + 1..j + 9])
+                + i32x8::from_slice(token, &b_c[j + 2..j + 10])
+                + i32x8::from_slice(token, &b_u[j + 1..j + 9])
+                + i32x8::from_slice(token, &b_d[j + 1..j + 9]);
+            let tb = i32x8::from_slice(token, &b_u[j..j + 8])
+                + i32x8::from_slice(token, &b_u[j + 2..j + 10])
+                + i32x8::from_slice(token, &b_d[j..j + 8])
+                + i32x8::from_slice(token, &b_d[j + 2..j + 10]);
             let vb = (fb + tb) * c4 - tb;
-            let src = i32x8::from_slice(token, &dgd[l0 + j..l0 + j + 8]);
+            let src = i32x8::from_array(
+                token,
+                core::array::from_fn(|t| drow[j + t] as i32),
+            );
             let w = (va * src + vb + rnd).shr_arithmetic_const::<9>();
-            w.store((&mut dst[m0 + j..m0 + j + 8]).try_into().unwrap());
+            w.store((&mut dout[j..j + 8]).try_into().unwrap());
             j += 8;
         }
         while j < width {
             let k = k0 + j;
-            let v = sgr_final_px(a, k, bs, 0) * dgd[l0 + j] + sgr_final_px(b, k, bs, 0);
-            dst[m0 + j] = rpot_i32(v, SH);
+            let v = sgr_final_px(a, k, bs, 0) * drow[j] as i32
+                + sgr_final_px(b, k, bs, 0);
+            dout[j] = rpot_i32(v, SH);
             j += 1;
         }
     }
@@ -1101,7 +850,7 @@ fn sgr_final_full_impl_scalar(
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[i32],
+    dgd: &[u16],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1113,7 +862,8 @@ fn sgr_final_full_impl_scalar(
     for i in 0..height {
         for j in 0..width {
             let k = org + i * bs + j;
-            let v = sgr_final_px(a, k, bs, 0) * dgd[dgd_origin + i * dgd_stride + j]
+            let v = sgr_final_px(a, k, bs, 0)
+                * dgd[dgd_origin + i * dgd_stride + j] as i32
                 + sgr_final_px(b, k, bs, 0);
             dst[i * dst_stride + j] = rpot_i32(v, SH);
         }
@@ -1131,7 +881,7 @@ fn sgr_final_fast_impl(
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[i32],
+    dgd: &[u16],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1148,60 +898,76 @@ fn sgr_final_fast_impl(
         let k0 = org + i * bs;
         let l0 = dgd_origin + i * dgd_stride;
         let m0 = i * dst_stride;
+        // Tight row spans, same argument as `sgr_final_full_impl`: `x_c[x + 1]`
+        // is row `i` centred on `j`, `x_u`/`x_d` the rows above/below, each
+        // slice `width + 2` cells so `x[j + c..j + c + 8]` under
+        // `j + 8 <= width` is provably in bounds.
+        let a_c = &a[k0 - 1..k0 + width + 1];
+        let a_u = &a[k0 - bs - 1..k0 - bs + width + 1];
+        let a_d = &a[k0 + bs - 1..k0 + bs + width + 1];
+        let b_c = &b[k0 - 1..k0 + width + 1];
+        let b_u = &b[k0 - bs - 1..k0 - bs + width + 1];
+        let b_d = &b[k0 + bs - 1..k0 + bs + width + 1];
+        let drow = &dgd[l0..l0 + width];
+        let dout = &mut dst[m0..m0 + width];
         let mut j = 0;
         if i & 1 == 0 {
             // even row: sixes = x_t + x_b, fives = the four corners;
             // cross = 6*sixes + 5*fives = 5*(fives + sixes) + sixes.
             while j + 8 <= width {
-                let k = k0 + j;
-                let sa = i32x8::from_slice(token, &a[k - bs..k - bs + 8])
-                    + i32x8::from_slice(token, &a[k + bs..k + bs + 8]);
-                let fa = i32x8::from_slice(token, &a[k - 1 - bs..k + 7 - bs])
-                    + i32x8::from_slice(token, &a[k - 1 + bs..k + 7 + bs])
-                    + i32x8::from_slice(token, &a[k + 1 - bs..k + 9 - bs])
-                    + i32x8::from_slice(token, &a[k + 1 + bs..k + 9 + bs]);
+                let sa = i32x8::from_slice(token, &a_u[j + 1..j + 9])
+                    + i32x8::from_slice(token, &a_d[j + 1..j + 9]);
+                let fa = i32x8::from_slice(token, &a_u[j..j + 8])
+                    + i32x8::from_slice(token, &a_d[j..j + 8])
+                    + i32x8::from_slice(token, &a_u[j + 2..j + 10])
+                    + i32x8::from_slice(token, &a_d[j + 2..j + 10]);
                 let va = (fa + sa) * c5 + sa;
-                let sb = i32x8::from_slice(token, &b[k - bs..k - bs + 8])
-                    + i32x8::from_slice(token, &b[k + bs..k + bs + 8]);
-                let fb = i32x8::from_slice(token, &b[k - 1 - bs..k + 7 - bs])
-                    + i32x8::from_slice(token, &b[k - 1 + bs..k + 7 + bs])
-                    + i32x8::from_slice(token, &b[k + 1 - bs..k + 9 - bs])
-                    + i32x8::from_slice(token, &b[k + 1 + bs..k + 9 + bs]);
+                let sb = i32x8::from_slice(token, &b_u[j + 1..j + 9])
+                    + i32x8::from_slice(token, &b_d[j + 1..j + 9]);
+                let fb = i32x8::from_slice(token, &b_u[j..j + 8])
+                    + i32x8::from_slice(token, &b_d[j..j + 8])
+                    + i32x8::from_slice(token, &b_u[j + 2..j + 10])
+                    + i32x8::from_slice(token, &b_d[j + 2..j + 10]);
                 let vb = (fb + sb) * c5 + sb;
-                let src = i32x8::from_slice(token, &dgd[l0 + j..l0 + j + 8]);
+                let src = i32x8::from_array(
+                    token,
+                    core::array::from_fn(|t| drow[j + t] as i32),
+                );
                 let w = (va * src + vb + rnd_even).shr_arithmetic_const::<9>();
-                w.store((&mut dst[m0 + j..m0 + j + 8]).try_into().unwrap());
+                w.store((&mut dout[j..j + 8]).try_into().unwrap());
                 j += 8;
             }
             while j < width {
                 let k = k0 + j;
-                let v =
-                    sgr_final_px(a, k, bs, 1) * dgd[l0 + j] + sgr_final_px(b, k, bs, 1);
-                dst[m0 + j] = rpot_i32(v, SH_EVEN);
+                let v = sgr_final_px(a, k, bs, 1) * drow[j] as i32
+                    + sgr_final_px(b, k, bs, 1);
+                dout[j] = rpot_i32(v, SH_EVEN);
                 j += 1;
             }
         } else {
             // odd row: sixes = x, fives = x_l + x_r.
             while j + 8 <= width {
-                let k = k0 + j;
-                let sa = i32x8::from_slice(token, &a[k..k + 8]);
-                let fa = i32x8::from_slice(token, &a[k - 1..k + 7])
-                    + i32x8::from_slice(token, &a[k + 1..k + 9]);
+                let sa = i32x8::from_slice(token, &a_c[j + 1..j + 9]);
+                let fa = i32x8::from_slice(token, &a_c[j..j + 8])
+                    + i32x8::from_slice(token, &a_c[j + 2..j + 10]);
                 let va = (fa + sa) * c5 + sa;
-                let sb = i32x8::from_slice(token, &b[k..k + 8]);
-                let fb = i32x8::from_slice(token, &b[k - 1..k + 7])
-                    + i32x8::from_slice(token, &b[k + 1..k + 9]);
+                let sb = i32x8::from_slice(token, &b_c[j + 1..j + 9]);
+                let fb = i32x8::from_slice(token, &b_c[j..j + 8])
+                    + i32x8::from_slice(token, &b_c[j + 2..j + 10]);
                 let vb = (fb + sb) * c5 + sb;
-                let src = i32x8::from_slice(token, &dgd[l0 + j..l0 + j + 8]);
+                let src = i32x8::from_array(
+                    token,
+                    core::array::from_fn(|t| drow[j + t] as i32),
+                );
                 let w = (va * src + vb + rnd_odd).shr_arithmetic_const::<8>();
-                w.store((&mut dst[m0 + j..m0 + j + 8]).try_into().unwrap());
+                w.store((&mut dout[j..j + 8]).try_into().unwrap());
                 j += 8;
             }
             while j < width {
                 let k = k0 + j;
-                let v =
-                    sgr_final_px(a, k, bs, 2) * dgd[l0 + j] + sgr_final_px(b, k, bs, 2);
-                dst[m0 + j] = rpot_i32(v, SH_ODD);
+                let v = sgr_final_px(a, k, bs, 2) * drow[j] as i32
+                    + sgr_final_px(b, k, bs, 2);
+                dout[j] = rpot_i32(v, SH_ODD);
                 j += 1;
             }
         }
@@ -1216,7 +982,7 @@ fn sgr_final_fast_impl_scalar(
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[i32],
+    dgd: &[u16],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1233,14 +999,14 @@ fn sgr_final_fast_impl_scalar(
         if i & 1 == 0 {
             for j in 0..width {
                 let k = k_row + j;
-                let v = sgr_final_px(a, k, bs, 1) * dgd[l_row + j]
+                let v = sgr_final_px(a, k, bs, 1) * dgd[l_row + j] as i32
                     + sgr_final_px(b, k, bs, 1);
                 dst[m_row + j] = rpot_i32(v, SH_EVEN);
             }
         } else {
             for j in 0..width {
                 let k = k_row + j;
-                let v = sgr_final_px(a, k, bs, 2) * dgd[l_row + j]
+                let v = sgr_final_px(a, k, bs, 2) * dgd[l_row + j] as i32
                     + sgr_final_px(b, k, bs, 2);
                 dst[m_row + j] = rpot_i32(v, SH_ODD);
             }
@@ -1255,7 +1021,7 @@ fn sgr_final_full(
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[i32],
+    dgd: &[u16],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1278,7 +1044,7 @@ fn sgr_final_fast(
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[i32],
+    dgd: &[u16],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1294,9 +1060,12 @@ fn sgr_final_fast(
     );
 }
 
-/// `av1_selfguided_restoration_c`: stage the `[-3, +3)`-extended source into
-/// an i32 buffer, then run the enabled passes into `flt0` (r\[0\]=2 fast) and
-/// `flt1` (r\[1\]=1 full), both at `flt_stride = width`.
+/// `av1_selfguided_restoration`: build the two integral images over the
+/// `[-3, +3)`-extended source (`integral_images_highbd` — C never widens to a
+/// staging plane, it reads the pixel plane directly), then run the enabled
+/// passes into `flt0` (r\[0\]=2 fast) and `flt1` (r\[1\]=1 full), both at
+/// `flt_stride = width`. `ii[0]` holds the square sums (C's `C`), `ii[1]`
+/// the plain sums (C's `D`).
 #[allow(clippy::too_many_arguments)]
 pub fn selfguided_restoration(
     dgd: &[u16],
@@ -1310,35 +1079,43 @@ pub fn selfguided_restoration(
     ep: usize,
     bit_depth: i32,
 ) {
-    let dgd32_stride = width + 2 * SGRPROJ_BORDER_HORZ;
+    let width_ext = width + 2 * SGRPROJ_BORDER_HORZ;
+    let height_ext = height + 2 * SGRPROJ_BORDER_VERT;
+    // Same "avoid bad cache effects" stride the A/B layout uses; the integral
+    // images share it (needs `>= width_ext + 1` columns, always true).
+    let ii_stride = ((width_ext + 3) & !3) + 16;
     // `mem::take` out of the TLS pool (no borrow held across the calls below —
     // `apply_selfguided_restoration` nests through this) and put back at the
     // end. See [`SgrTlsScratch`] for why dirty reuse is exact.
     let mut s = SGR_TLS.with(|c| core::mem::take(&mut *c.borrow_mut()));
-    s.dgd32
-        .resize(dgd32_stride * (height + 2 * SGRPROJ_BORDER_VERT), 0);
-    let src_origin = dgd_off as isize
+    let [ii_sq, ii_sum] = &mut s.ii;
+    ii_sq.resize(ii_stride * (height_ext + 1), 0);
+    ii_sum.resize(ii_stride * (height_ext + 1), 0);
+    let ext_off = dgd_off as isize
         - SGRPROJ_BORDER_VERT as isize * dgd_stride as isize
         - SGRPROJ_BORDER_HORZ as isize;
-    sgr_widen(
+    integral_image(
         dgd,
+        ext_off as usize,
         dgd_stride,
-        src_origin,
-        &mut s.dgd32,
-        dgd32_stride,
-        dgd32_stride,
-        height + 2 * SGRPROJ_BORDER_VERT,
+        width_ext,
+        height_ext,
+        ii_sq,
+        ii_sum,
+        ii_stride,
     );
-    let origin = SGRPROJ_BORDER_VERT * dgd32_stride + SGRPROJ_BORDER_HORZ;
     let (rads, _) = SGR_PARAMS[ep];
     debug_assert!(!(rads[0] == 0 && rads[1] == 0));
     if rads[0] > 0 {
         selfguided_fast(
-            &s.dgd32,
-            origin,
+            dgd,
+            dgd_off,
+            dgd_stride,
+            &s.ii[0],
+            &s.ii[1],
+            ii_stride,
             width,
             height,
-            dgd32_stride,
             flt0,
             flt_stride,
             bit_depth,
@@ -1348,11 +1125,14 @@ pub fn selfguided_restoration(
     }
     if rads[1] > 0 {
         selfguided_full(
-            &s.dgd32,
-            origin,
+            dgd,
+            dgd_off,
+            dgd_stride,
+            &s.ii[0],
+            &s.ii[1],
+            ii_stride,
             width,
             height,
-            dgd32_stride,
             flt1,
             flt_stride,
             bit_depth,
