@@ -113,6 +113,7 @@ mod recon_lowbd_diff;
 mod sad_simd;
 mod scale_diff;
 mod set_q_index_diff;
+mod sse_simd_diff;
 mod subtract_diff;
 mod sum_squares_diff;
 mod trellis_cost_diff;

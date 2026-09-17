@@ -180,9 +180,17 @@ pub(crate) fn sse_u16_u8_impl_v3(
     };
     // C's `aom_sse` accumulates one ymm over the whole block and reduces once:
     // blocks are <= 64x64 so a lane gains at most 64*4*2*255^2 < 2^25 — no
-    // strip machinery needed. One checked slice per row gives `ar`/`br` a
-    // proven len of `w`, so the `c + 16 <= w` guard folds the per-chunk
-    // bounds checks away.
+    // strip machinery needed. Every tx width is a power of two, so the hot
+    // widths monomorphise into `sse_u16_u8_rows_v3` (const-W row slices fold
+    // every inner bounds check); the generic loop stays for the other
+    // assert-permitted multiples of 8.
+    match w {
+        8 => return sse_u16_u8_rows_v3::<8>(_t, a, a_stride, b, b_stride, h),
+        16 => return sse_u16_u8_rows_v3::<16>(_t, a, a_stride, b, b_stride, h),
+        32 => return sse_u16_u8_rows_v3::<32>(_t, a, a_stride, b, b_stride, h),
+        64 => return sse_u16_u8_rows_v3::<64>(_t, a, a_stride, b, b_stride, h),
+        _ => {}
+    }
     let mut xv = _mm256_setzero_si256();
     for yy in 0..h {
         let (ra, rb) = (yy * a_stride, yy * b_stride);
@@ -202,6 +210,179 @@ pub(crate) fn sse_u16_u8_impl_v3(
                 let bv: &[u8; 8] = br[c..c + 8].try_into().unwrap();
                 let d = _mm_sub_epi16(
                     _mm_loadu_si128(av),
+                    _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
+                );
+                let sq = _mm_madd_epi16(d, d);
+                xv = _mm256_add_epi32(
+                    xv,
+                    _mm256_castsi128_si256(sq),
+                );
+            }
+        }
+    }
+    reduce(xv)
+}
+
+/// Const-width row loop for [`sse_u16_u8_impl_v3`] — one upfront region check
+/// (`(h-1)*stride + W` covers every access) replaces the per-row slice checks,
+/// and `&[u16; W]`/`&[u8; W]` row views carry the len in the type so the
+/// chunk guard + every `try_into` fold at compile time: W=8 emits only the
+/// xmm arm, W%16==0 only ymm, fully unrolled.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn sse_u16_u8_rows_v3<const W: usize>(
+    _t: archmage::X64V3Token,
+    a: &[u16],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    h: usize,
+) -> i64 {
+    use archmage::intrinsics::x86_64::*;
+    if h == 0 {
+        return 0;
+    }
+    let (need_a, need_b) = ((h - 1) * a_stride + W, (h - 1) * b_stride + W);
+    if a.len() < need_a || b.len() < need_b {
+        return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, W, h);
+    }
+    let (aa, bb) = (&a[..need_a], &b[..need_b]);
+    let reduce = |xv: __m256i| -> i64 {
+        let p1 = _mm256_hadd_epi32(xv, xv);
+        let p2 = _mm256_hadd_epi32(p1, p1);
+        let both = _mm_add_epi32(
+            _mm256_castsi256_si128(p2),
+            _mm256_extracti128_si256::<1>(p2),
+        );
+        i64::from(_mm_extract_epi32::<0>(both) as u32)
+    };
+    let mut xv = _mm256_setzero_si256();
+    let (mut ra, mut rb) = (0usize, 0usize);
+    for _ in 0..h {
+        let ar: &[u16; W] = aa[ra..ra + W].try_into().unwrap();
+        let br: &[u8; W] = bb[rb..rb + W].try_into().unwrap();
+        for c in (0..W).step_by(16) {
+            if c + 16 <= W {
+                let av: &[u16; 16] = ar[c..c + 16].try_into().unwrap();
+                let bv: &[u8; 16] = br[c..c + 16].try_into().unwrap();
+                let d = _mm256_sub_epi16(
+                    _mm256_loadu_si256(av),
+                    _mm256_cvtepu8_epi16(_mm_loadu_si128(bv)),
+                );
+                xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
+            } else {
+                let av: &[u16; 8] = ar[c..c + 8].try_into().unwrap();
+                let bv: &[u8; 8] = br[c..c + 8].try_into().unwrap();
+                let d = _mm_sub_epi16(
+                    _mm_loadu_si128(av),
+                    _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
+                );
+                let sq = _mm_madd_epi16(d, d);
+                xv = _mm256_add_epi32(xv, _mm256_castsi128_si256(sq));
+            }
+        }
+        ra += a_stride;
+        rb += b_stride;
+    }
+    reduce(xv)
+}
+
+/// Scalar tier for [`crate::dist::sse`] — the transcribed u8 SSE walk.
+pub(crate) fn sse_u8_impl_scalar(
+    _t: archmage::ScalarToken,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    crate::dist::sse_scalar(a, a_stride, b, b_stride, w, h)
+}
+
+/// u8 x u8 SSE (`aom_sse`) — same square-accumulate shape as
+/// [`sse_u16_u8_impl`] with both sides u8. Per-lane row bound identical
+/// (|diff| <= 255, w <= 128), so the wrapping u32 reduce is exact.
+#[magetypes(define(i32x8), neon, wasm128, -scalar)]
+pub(crate) fn sse_u8_impl(
+    token: Token,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    if w == 4 {
+        return crate::dist::sse_scalar(a, a_stride, b, b_stride, w, h);
+    }
+    assert!(w >= 8 && w % 8 == 0, "block widths are powers of two");
+    let widen = |s: &[u8]| -> i32x8 {
+        let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
+        i32x8::from_array(token, arr)
+    };
+    let mut tsse: i64 = 0;
+    for y in 0..h {
+        let ra = y * a_stride;
+        let rb = y * b_stride;
+        let mut sse_v = i32x8::zero(token);
+        for c in (0..w).step_by(8) {
+            let d = widen(&a[ra + c..ra + c + 8]) - widen(&b[rb + c..rb + c + 8]);
+            sse_v = sse_v + d * d;
+        }
+        tsse += i64::from(sse_v.reduce_add() as u32);
+    }
+    tsse
+}
+
+/// x86-64/AVX2 body for `sse_u8` — the lowbd `aom_sse` shape: 16 `u8` lanes
+/// widened by `cvtepu8_epi16` on both sides, `sub_epi16`, `madd_epi16(d, d)`,
+/// one ymm accumulate over the whole block (lane bound 64*2*2*255^2 < 2^25),
+/// one hadd-tree reduce. Byte-identical to `sse_scalar`: the math is exact
+/// at every width the dispatcher routes here (w % 8 == 0, w >= 8).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+pub(crate) fn sse_u8_impl_v3(
+    _t: archmage::X64V3Token,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    use archmage::intrinsics::x86_64::*;
+    if w == 4 {
+        return crate::dist::sse_scalar(a, a_stride, b, b_stride, w, h);
+    }
+    let reduce = |xv: __m256i| -> i64 {
+        let p1 = _mm256_hadd_epi32(xv, xv);
+        let p2 = _mm256_hadd_epi32(p1, p1);
+        let both = _mm_add_epi32(
+            _mm256_castsi256_si128(p2),
+            _mm256_extracti128_si256::<1>(p2),
+        );
+        i64::from(_mm_extract_epi32::<0>(both) as u32)
+    };
+    let mut xv = _mm256_setzero_si256();
+    for yy in 0..h {
+        let (ra, rb) = (yy * a_stride, yy * b_stride);
+        let ar = &a[ra..ra + w];
+        let br = &b[rb..rb + w];
+        for c in (0..w).step_by(16) {
+            if c + 16 <= w {
+                let av: &[u8; 16] = ar[c..c + 16].try_into().unwrap();
+                let bv: &[u8; 16] = br[c..c + 16].try_into().unwrap();
+                let d = _mm256_sub_epi16(
+                    _mm256_cvtepu8_epi16(_mm_loadu_si128(av)),
+                    _mm256_cvtepu8_epi16(_mm_loadu_si128(bv)),
+                );
+                xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
+            } else {
+                let av: &[u8; 8] = ar[c..c + 8].try_into().unwrap();
+                let bv: &[u8; 8] = br[c..c + 8].try_into().unwrap();
+                let d = _mm_sub_epi16(
+                    _mm_cvtepu8_epi16(_mm_loadu_si64(av)),
                     _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
                 );
                 let sq = _mm_madd_epi16(d, d);

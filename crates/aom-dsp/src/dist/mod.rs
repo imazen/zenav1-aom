@@ -31,6 +31,17 @@ pub fn sad(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: us
 
 /// `aom_sse_c`: sum of squared errors over a generic w×h region (RD distortion).
 pub fn sse(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> i64 {
+    if crate::dispatch::scalar_forced() || w % 8 != 0 {
+        return sse_scalar(a, a_stride, b, b_stride, w, h);
+    }
+    archmage::incant!(
+        crate::dist::simd_variance::sse_u8_impl(a, a_stride, b, b_stride, w, h),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// `aom_sse_c` transcription — the scalar walk [`sse`] dispatches away from.
+pub fn sse_scalar(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> i64 {
     let mut sse: i64 = 0;
     for y in 0..h {
         for x in 0..w {
@@ -73,6 +84,10 @@ pub fn sse_u16_u8(a: &[u16], a_stride: usize, b: &[u8], b_stride: usize, w: usiz
 }
 
 /// The scalar transcription (the reference twin — never SIMD-routed).
+/// `inline(never)`: the dispatchers early-return to this for w==4, and
+/// inlining it into an arcane body lets LLVM auto-vectorise the 4-wide
+/// scalar loop into i64-lane mulch slower than the call it replaces.
+#[inline(never)]
 pub fn sse_u16_u8_scalar(
     a: &[u16],
     a_stride: usize,
