@@ -74,7 +74,7 @@
 use crate::encode_sb::{LeafWinner, SbTree};
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B};
 use aom_dsp::loopfilter::frame::{
-    LfFrameBuf, LfMi, LfMiGrid, LfParams, MAX_LOOP_FILTER, loop_filter_frame,
+    LfFrameBuf, LfMi, LfMiGrid, LfParams, MAX_LOOP_FILTER, loop_filter_frame_opt,
 };
 
 /// `av1_set_default_ref_deltas`/`av1_set_default_mode_deltas`
@@ -167,14 +167,14 @@ pub struct LoopFilterLevels {
 /// One loop-filter trial (`try_filter_frame`, picklpf.c, MINUS the
 /// MT/YV12-buffer plumbing): clone only the plane under test (the other two
 /// are never dereferenced — see the `plane_start`/`plane_end` gating note
-/// below), apply [`loop_filter_frame`] at the given levels, return the SSE
+/// below), apply [`loop_filter_frame_opt`] at the given levels, return the SSE
 /// vs source. This port always starts each trial from the untouched
 /// original reconstruction (no persistent "restore the unfiltered frame"
 /// dance is needed since nothing here mutates shared state between trials).
 ///
 /// Passing a same-sized real slice for the OTHER two planes (rather than a
 /// tiny dummy) would also be correct but wasteful; a 1-element dummy is
-/// safe because [`loop_filter_frame`]'s `plane_start`/`plane_end` gate
+/// safe because [`loop_filter_frame_opt`]'s `plane_start`/`plane_end` gate
 /// (`planes_to_lf`) skips the entire per-plane loop body — including the
 /// `match plane { .. }` buffer selection — for any plane outside
 /// `[plane_start, plane_end)`, so the dummy is provably never indexed.
@@ -233,7 +233,7 @@ fn try_filter_plane(
                 ss_y: f.ss_y,
                 bd: f.bd,
             };
-            loop_filter_frame(&mut buf, &grid, &p, 0, 1);
+            loop_filter_frame_opt(&mut buf, &grid, &p, 0, 1);
             sse_plane(
                 f.src_y,
                 f.stride,
@@ -259,7 +259,7 @@ fn try_filter_plane(
                 ss_y: f.ss_y,
                 bd: f.bd,
             };
-            loop_filter_frame(&mut buf, &grid, &p, 1, 2);
+            loop_filter_frame_opt(&mut buf, &grid, &p, 1, 2);
             sse_plane(f.src_u, f.stride, &buf.u[..], f.stride, uv_w, uv_h)
         }
         _ => {
@@ -278,7 +278,7 @@ fn try_filter_plane(
                 ss_y: f.ss_y,
                 bd: f.bd,
             };
-            loop_filter_frame(&mut buf, &grid, &p, 2, 3);
+            loop_filter_frame_opt(&mut buf, &grid, &p, 2, 3);
             sse_plane(f.src_v, f.stride, &buf.v[..], f.stride, uv_w, uv_h)
         }
     }

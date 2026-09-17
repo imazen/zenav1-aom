@@ -130,7 +130,7 @@ use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
 use aom_dsp::entropy::obu::write_obu_header;
 use aom_dsp::entropy::partition::KfFrameContext;
 use aom_dsp::entropy::wb::WriteBitBuffer;
-use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame};
+use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame_opt};
 use aom_dsp::quant::av1_dc_quant_qtx;
 use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, pick_filter_restoration};
@@ -3767,7 +3767,7 @@ pub fn encode_key_frame_with(
                 ss_y: cfg.ss_y,
                 bd: i32::from(bd),
             };
-            loop_filter_frame(&mut buf, &grid, &params, 0, cfg.num_planes());
+            loop_filter_frame_opt(&mut buf, &grid, &params, 0, cfg.num_planes());
         }
     }
 

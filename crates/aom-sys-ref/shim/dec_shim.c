@@ -1084,7 +1084,7 @@ int shim_lf_filter_frame(
     const int8_t *ref_deltas, const int8_t *mode_deltas, int delta_lf_present,
     int delta_lf_multi, const int32_t *lossless /*[8]*/, int seg_enabled,
     const int32_t *seg_active, const int32_t *seg_data, int plane_start,
-    int plane_end) {
+    int plane_end, int lpf_opt) {
   const int ncells = mi_rows * grid_stride;
   MB_MODE_INFO *cells = (MB_MODE_INFO *)calloc(ncells, sizeof(*cells));
   MB_MODE_INFO **grid = (MB_MODE_INFO **)calloc(ncells, sizeof(*grid));
@@ -1168,6 +1168,8 @@ int shim_lf_filter_frame(
     av1_loop_filter_frame_init(cm, plane_start, plane_end);
 
     struct macroblockd_plane pd[MAX_MB_PLANE];
+    AV1_DEBLOCKING_PARAMETERS params_buf[MAX_MIB_SIZE];
+    TX_SIZE tx_buf[MAX_MIB_SIZE];
     memset(pd, 0, sizeof(pd));
     for (int mi_row = 0; mi_row < mi_rows; mi_row += MAX_MIB_SIZE) {
       for (int plane = 0; plane < MAX_MB_PLANE; plane++) {
@@ -1192,10 +1194,36 @@ int shim_lf_filter_frame(
               uint16_t *base = plane == 0 ? y : (plane == 1 ? u : v);
               p->dst.buf = CONVERT_TO_BYTEPTR(base) + (ptrdiff_t)py * stride + px;
             }
-            if (dir == 0)
-              av1_filter_block_plane_vert(cm, xd, plane, p, mi_row, mi_col);
-            else
-              av1_filter_block_plane_horz(cm, xd, plane, p, mi_row, mi_col);
+            /* lpf_opt drives the encoder-side dual/quad path
+             * (thread_common.c:292-303, 335-344 with lpf_opt_level=1 —
+             * joint_filter_chroma=false, one plane per call). */
+            if (dir == 0) {
+              if (lpf_opt) {
+                if (plane == AOM_PLANE_Y)
+                  av1_filter_block_plane_vert_opt(cm, xd, p, mi_row, mi_col,
+                                                  params_buf, tx_buf,
+                                                  MAX_MIB_SIZE_LOG2);
+                else
+                  av1_filter_block_plane_vert_opt_chroma(
+                      cm, xd, p, mi_row, mi_col, params_buf, tx_buf, plane,
+                      /*joint_filter_chroma=*/false, MAX_MIB_SIZE_LOG2);
+              } else {
+                av1_filter_block_plane_vert(cm, xd, plane, p, mi_row, mi_col);
+              }
+            } else {
+              if (lpf_opt) {
+                if (plane == AOM_PLANE_Y)
+                  av1_filter_block_plane_horz_opt(cm, xd, p, mi_row, mi_col,
+                                                  params_buf, tx_buf,
+                                                  MAX_MIB_SIZE_LOG2);
+                else
+                  av1_filter_block_plane_horz_opt_chroma(
+                      cm, xd, p, mi_row, mi_col, params_buf, tx_buf, plane,
+                      /*joint_filter_chroma=*/false, MAX_MIB_SIZE_LOG2);
+              } else {
+                av1_filter_block_plane_horz(cm, xd, plane, p, mi_row, mi_col);
+              }
+            }
           }
         }
       }

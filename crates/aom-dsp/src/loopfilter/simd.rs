@@ -59,9 +59,16 @@
 
 use archmage::prelude::*;
 
-/// Dispatch entry for one 4-position deblock edge segment (highbd `u16` path).
-/// `ts` = tap stride, `step` = position advance; the axis is encoded by the
-/// caller ([`crate::loopfilter::highbd::horizontal`] / [`crate::loopfilter::highbd::vertical`]).
+/// Dispatch entry for `nseg` adjacent 4-position deblock edge segments (highbd
+/// `u16` path). `ts` = tap stride, `step` = position advance; the axis is
+/// encoded by the caller ([`crate::loopfilter::highbd::horizontal`] /
+/// [`crate::loopfilter::highbd::vertical`]). `nseg` > 1 is C's
+/// `_dual`/`_quad` batching (`av1_loopfilter.c` `use_filter_type`): the
+/// segments are positions `center + s*4*step` for `s in 0..nseg`, all sharing
+/// this call's limits — C applies the first segment's `lfthr` to the whole
+/// batch, which the geometry criterion (same prediction block) guarantees
+/// equal. Per-segment arithmetic is unchanged, so batching cannot move a
+/// pixel versus `nseg` single calls.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lpf(
     width: u32,
@@ -73,15 +80,16 @@ pub(crate) fn lpf(
     li: u8,
     th: u8,
     bd: i32,
+    nseg: usize,
 ) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
-        lpf_impl(width, buf, center, ts, step, bl, li, th, bd),
+        lpf_impl(width, buf, center, ts, step, bl, li, th, bd, nseg),
         [v3, neon, wasm128, scalar]
     )
 }
 
-/// Scalar tier = the untouched highbd transcription, verbatim.
+/// Scalar tier = the untouched highbd transcription, verbatim, per segment.
 #[allow(clippy::too_many_arguments)]
 fn lpf_impl_scalar(
     _t: archmage::ScalarToken,
@@ -94,8 +102,12 @@ fn lpf_impl_scalar(
     li: u8,
     th: u8,
     bd: i32,
+    nseg: usize,
 ) {
-    crate::loopfilter::highbd::lpf_scalar(width, buf, center, ts, step, bl, li, th, bd);
+    for s in 0..nseg {
+        let cs = (center as isize + s as isize * 4 * step) as usize;
+        crate::loopfilter::highbd::lpf_scalar(width, buf, cs, ts, step, bl, li, th, bd);
+    }
 }
 
 #[magetypes(define(i32x4), neon, wasm128, -scalar)]
@@ -111,6 +123,7 @@ fn lpf_impl(
     li: u8,
     th: u8,
     bd: i32,
+    nseg: usize,
 ) {
     let shift = bd - 8;
     let bias: i32 = 0x80 << shift;
@@ -129,20 +142,25 @@ fn lpf_impl(
     let rpo3 = |v: i32x4| (v + 4).shr_logical_const::<3>();
     let rpo4 = |v: i32x4| (v + 8).shr_logical_const::<4>();
 
-    let c = center as isize;
-    // Gather tap `k` (offset k*ts from center) across the 4 edge positions
-    // (offset l*step, l in 0..4) into one i32x4 lane vector.
-    let load = |k: isize| -> i32x4 {
-        i32x4::from_array(
-            token,
-            [
-                buf[(c + k * ts) as usize] as i32,
-                buf[(c + step + k * ts) as usize] as i32,
-                buf[(c + 2 * step + k * ts) as usize] as i32,
-                buf[(c + 3 * step + k * ts) as usize] as i32,
-            ],
-        )
-    };
+    let c0 = center as isize;
+    // Gather tap `k` (offset k*ts from segment center `c`) across the 4 edge
+    // positions (offset l*step, l in 0..4) into one i32x4 lane vector.
+    // Defined per segment so `c` binds the loop-local shadow.
+    macro_rules! load {
+        ($c:expr, $k:expr) => {{
+            let c = $c;
+            let k = $k;
+            i32x4::from_array(
+                token,
+                [
+                    buf[(c + k * ts) as usize] as i32,
+                    buf[(c + step + k * ts) as usize] as i32,
+                    buf[(c + 2 * step + k * ts) as usize] as i32,
+                    buf[(c + 3 * step + k * ts) as usize] as i32,
+                ],
+            )
+        }};
+    }
 
     // filter4: taps p1(-2) p0(-1) q0(0) q1(1); `mask` is the filter_mask lane
     // mask (all-ones = filter). Returns (op1', op0', oq0', oq1').
@@ -247,25 +265,27 @@ fn lpf_impl(
         }};
     }
 
-    match width {
+    for s in 0..nseg {
+        let c = c0 + s as isize * 4 * step;
+        match width {
         4 => {
             // taps p1(-2) p0(-1) q0(0) q1(1)
-            let op1 = load(-2);
-            let op0 = load(-1);
-            let oq0 = load(0);
-            let oq1 = load(1);
+            let op1 = load!(c, -2);
+            let op0 = load!(c, -1);
+            let oq0 = load!(c, 0);
+            let oq1 = load!(c, 1);
             let mask = fmask2(op1, op0, oq0, oq1);
             let (n1, n0, m0, m1) = filter4(op1, op0, oq0, oq1, mask);
             store!(-2 => n1, -1 => n0, 0 => m0, 1 => m1);
         }
         6 => {
             // taps p2(-3) p1(-2) p0(-1) q0(0) q1(1) q2(2)
-            let p2 = load(-3);
-            let p1 = load(-2);
-            let p0 = load(-1);
-            let q0 = load(0);
-            let q1 = load(1);
-            let q2 = load(2);
+            let p2 = load!(c, -3);
+            let p1 = load!(c, -2);
+            let p0 = load!(c, -1);
+            let q0 = load!(c, 0);
+            let q1 = load!(c, 1);
+            let q2 = load!(c, 2);
             let mask = fmask6(p2, p1, p0, q0, q1, q2);
             let flat = flat3(p2, p1, p0, q0, q1, q2);
             let use_wide = flat & mask;
@@ -283,14 +303,14 @@ fn lpf_impl(
         }
         8 => {
             // taps p3(-4) p2(-3) p1(-2) p0(-1) q0(0) q1(1) q2(2) q3(3)
-            let p3 = load(-4);
-            let p2 = load(-3);
-            let p1 = load(-2);
-            let p0 = load(-1);
-            let q0 = load(0);
-            let q1 = load(1);
-            let q2 = load(2);
-            let q3 = load(3);
+            let p3 = load!(c, -4);
+            let p2 = load!(c, -3);
+            let p1 = load!(c, -2);
+            let p0 = load!(c, -1);
+            let q0 = load!(c, 0);
+            let q1 = load!(c, 1);
+            let q2 = load!(c, 2);
+            let q3 = load!(c, 3);
             let mask = fmask8(p3, p2, p1, p0, q0, q1, q2, q3);
             let flat = flat4(p3, p2, p1, p0, q0, q1, q2, q3);
             let use_wide = flat & mask;
@@ -313,20 +333,20 @@ fn lpf_impl(
         }
         14 => {
             // taps p6(-7)..p0(-1), q0(0)..q6(6)
-            let p6 = load(-7);
-            let p5 = load(-6);
-            let p4 = load(-5);
-            let p3 = load(-4);
-            let p2 = load(-3);
-            let p1 = load(-2);
-            let p0 = load(-1);
-            let q0 = load(0);
-            let q1 = load(1);
-            let q2 = load(2);
-            let q3 = load(3);
-            let q4 = load(4);
-            let q5 = load(5);
-            let q6 = load(6);
+            let p6 = load!(c, -7);
+            let p5 = load!(c, -6);
+            let p4 = load!(c, -5);
+            let p3 = load!(c, -4);
+            let p2 = load!(c, -3);
+            let p1 = load!(c, -2);
+            let p0 = load!(c, -1);
+            let q0 = load!(c, 0);
+            let q1 = load!(c, 1);
+            let q2 = load!(c, 2);
+            let q3 = load!(c, 3);
+            let q4 = load!(c, 4);
+            let q5 = load!(c, 5);
+            let q6 = load!(c, 6);
 
             let mask = fmask8(p3, p2, p1, p0, q0, q1, q2, q3);
             let flat = flat4(p3, p2, p1, p0, q0, q1, q2, q3);
@@ -384,7 +404,8 @@ fn lpf_impl(
                 0 => o_q0, 1 => o_q1, 2 => o_q2, 3 => o_q3, 4 => o_q4, 5 => o_q5,
             );
         }
-        _ => crate::loopfilter::highbd::lpf_scalar(width, buf, center, ts, step, bl, li, th, bd),
+        _ => crate::loopfilter::highbd::lpf_scalar(width, buf, c as usize, ts, step, bl, li, th, bd),
+        }
     }
 }
 
@@ -430,13 +451,17 @@ fn lpf_impl_v3(
     li: u8,
     th: u8,
     bd: i32,
+    nseg: usize,
 ) {
     use archmage::intrinsics::x86_64::*;
 
     let c = center as isize;
     let len = buf.len() as isize;
 
-    // [lo, hi) element span this call reads and writes, per axis/width.
+    // [lo, hi) element span this call reads and writes, per axis/width — the
+    // batch covers `nseg` segments at `c + s*4*step`, so the position extent
+    // grows from 4 to 4*nseg positions.
+    let last_pos = (4 * nseg - 1) as isize;
     let (lo, hi) = if step == 1 {
         let (kmin, kmax) = match width {
             4 => (-2isize, 1isize),
@@ -444,17 +469,20 @@ fn lpf_impl_v3(
             8 => (-4, 3),
             _ => (-7, 6), // 14
         };
-        (c + kmin * ts, c + kmax * ts + 4)
+        (c + kmin * ts, c + kmax * ts + 4 * nseg as isize)
     } else {
         match width {
-            4 => (c - 2, c + 3 * step + 2),
-            6 => (c - 3, c + 3 * step + 5),
-            8 => (c - 4, c + 3 * step + 4),
-            _ => (c - 8, c + 3 * step + 8), // 14
+            4 => (c - 2, c + last_pos * step + 2),
+            6 => (c - 3, c + last_pos * step + 5),
+            8 => (c - 4, c + last_pos * step + 4),
+            _ => (c - 8, c + last_pos * step + 8), // 14
         }
     };
     if !matches!(width, 4 | 6 | 8 | 14) || lo < 0 || hi > len {
-        crate::loopfilter::highbd::lpf_scalar(width, buf, center, ts, step, bl, li, th, bd);
+        for s in 0..nseg {
+            let cs = (c + s as isize * 4 * step) as usize;
+            crate::loopfilter::highbd::lpf_scalar(width, buf, cs, ts, step, bl, li, th, bd);
+        }
         return;
     }
 
@@ -861,7 +889,9 @@ fn lpf_impl_v3(
 
     if step == 1 {
         // aom_highbd_lpf_horizontal_*_sse2 — positions contiguous along the row.
-        match width {
+        for s in 0..nseg {
+            let c = c + s as isize * 4;
+            match width {
             4 => {
                 let p1 = ldl4!(c - 2 * ts);
                 let p0 = ldl4!(c - ts);
@@ -931,11 +961,14 @@ fn lpf_impl_v3(
                 }
             }
         }
+        }
         return;
     }
 
     // aom_highbd_lpf_vertical_*_sse2 — taps contiguous; 4 positions = 4 rows.
-    match width {
+    for s in 0..nseg {
+        let c = c + s as isize * 4 * step;
+        match width {
         4 => {
             let x0 = ldl4!(c - 2);
             let x1 = ldl4!(c - 2 + step);
@@ -1021,6 +1054,7 @@ fn lpf_impl_v3(
             stu8!(c + 2 * step, z2);
             stu8!(c + 3 * step, z3);
         }
+    }
     }
 }
 

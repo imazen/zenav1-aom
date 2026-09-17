@@ -22,7 +22,8 @@
 //! LUMA deblocking (plane 0 never derives a chroma bsize) IS swept here.
 
 use aom_dsp::loopfilter::frame::{
-    lf_frame_init, loop_filter_frame, loop_filter_frame_u8, LfFrameBuf, LfFrameBufU8, LfMi,
+    lf_frame_init, loop_filter_frame, loop_filter_frame_opt, loop_filter_frame_u8, LfFrameBuf,
+    LfFrameBufU8, LfMi,
     LfMiGrid, LfParams, LfSeg, FRAME_LF_COUNT, MODE_LF_LUT,
 };
 use aom_sys_ref as c;
@@ -103,7 +104,13 @@ impl Frame {
     }
 
     /// Stamp one leaf block (bsize at mi position), clipped to the frame.
-    fn stamp(&mut self, rng: &mut Rng, mi_r: usize, mi_c: usize, bsize: usize) {
+    /// `uniform_tx` forces every cell to the block tx (the all-intra encoder
+    /// contract — needed by the `lpf_opt` differential); `no_skip` disables
+    /// `skip_txfm` (the C shim's per-cell `MB_MODE_INFO` flattening cannot
+    /// express the opt path's `mi_prev != mbmi` same-block test — pointer
+    /// identity is always false there, which wrongly un-skips interior edges
+    /// of skipped blocks).
+    fn stamp(&mut self, rng: &mut Rng, mi_r: usize, mi_c: usize, bsize: usize, uniform_tx: bool, no_skip: bool) {
         if mi_r >= self.mi_rows || mi_c >= self.mi_cols {
             return; // fully out of frame: not in the mi grid
         }
@@ -116,7 +123,7 @@ impl Frame {
         } else {
             (true, false, 1 + rng.upto(7) as u8, 13 + rng.upto(12) as i32) // inter
         };
-        let skip = is_inter && rng.chance(1, 3);
+        let skip = !no_skip && is_inter && rng.chance(1, 3);
         let segment_id = rng.upto(8) as u8;
         let dlf_base = rng.range_i(-63, 63) as i8;
         let dlf: [i8; FRAME_LF_COUNT] =
@@ -132,7 +139,7 @@ impl Frame {
         for r in 0..h {
             for cc in 0..w {
                 let i = (mi_r + r) * self.mi_cols + (mi_c + cc);
-                let tx = if is_inter && !skip {
+                let tx = if !uniform_tx && is_inter && !skip {
                     chain[rng.upto(3) as usize] // per-cell (vartx flattening)
                 } else {
                     block_tx
@@ -163,50 +170,50 @@ impl Frame {
 
     /// Recursive partition of a `sq`-mi square node (like the AV1 tree; rect +
     /// 1:4 leaves included so every block shape appears).
-    fn part(&mut self, rng: &mut Rng, mi_r: usize, mi_c: usize, sq: usize) {
+    fn part(&mut self, rng: &mut Rng, mi_r: usize, mi_c: usize, sq: usize, uniform_tx: bool, no_skip: bool) {
         let can_split = sq > 1;
         let choice = rng.upto(10);
         if can_split && (choice < 4 || sq > 8) {
             let h = sq / 2;
-            self.part(rng, mi_r, mi_c, h);
-            self.part(rng, mi_r, mi_c + h, h);
-            self.part(rng, mi_r + h, mi_c, h);
-            self.part(rng, mi_r + h, mi_c + h, h);
+            self.part(rng, mi_r, mi_c, h, uniform_tx, no_skip);
+            self.part(rng, mi_r, mi_c + h, h, uniform_tx, no_skip);
+            self.part(rng, mi_r + h, mi_c, h, uniform_tx, no_skip);
+            self.part(rng, mi_r + h, mi_c + h, h, uniform_tx, no_skip);
         } else if can_split && choice < 6 {
             // HORZ: two sq x sq/2.
             let b = bsize_of(sq, sq / 2);
-            self.stamp(rng, mi_r, mi_c, b);
-            self.stamp(rng, mi_r + sq / 2, mi_c, b);
+            self.stamp(rng, mi_r, mi_c, b, uniform_tx, no_skip);
+            self.stamp(rng, mi_r + sq / 2, mi_c, b, uniform_tx, no_skip);
         } else if can_split && choice < 8 {
             // VERT.
             let b = bsize_of(sq / 2, sq);
-            self.stamp(rng, mi_r, mi_c, b);
-            self.stamp(rng, mi_r, mi_c + sq / 2, b);
+            self.stamp(rng, mi_r, mi_c, b, uniform_tx, no_skip);
+            self.stamp(rng, mi_r, mi_c + sq / 2, b, uniform_tx, no_skip);
         } else if sq >= 4 && choice == 8 {
             // HORZ_4 / VERT_4.
             if rng.chance(1, 2) {
                 let b = bsize_of(sq, sq / 4);
                 for k in 0..4 {
-                    self.stamp(rng, mi_r + k * (sq / 4), mi_c, b);
+                    self.stamp(rng, mi_r + k * (sq / 4), mi_c, b, uniform_tx, no_skip);
                 }
             } else {
                 let b = bsize_of(sq / 4, sq);
                 for k in 0..4 {
-                    self.stamp(rng, mi_r, mi_c + k * (sq / 4), b);
+                    self.stamp(rng, mi_r, mi_c + k * (sq / 4), b, uniform_tx, no_skip);
                 }
             }
         } else {
-            self.stamp(rng, mi_r, mi_c, bsize_of(sq, sq));
+            self.stamp(rng, mi_r, mi_c, bsize_of(sq, sq), uniform_tx, no_skip);
         }
     }
 
-    fn generate(rng: &mut Rng, mi_rows: usize, mi_cols: usize, sb_mi: usize) -> Self {
+    fn generate(rng: &mut Rng, mi_rows: usize, mi_cols: usize, sb_mi: usize, uniform_tx: bool, no_skip: bool) -> Self {
         let mut f = Frame::new(mi_rows, mi_cols);
         let mut r = 0;
         while r < mi_rows {
             let mut c0 = 0;
             while c0 < mi_cols {
-                f.part(rng, r, c0, sb_mi);
+                f.part(rng, r, c0, sb_mi, uniform_tx, no_skip);
                 c0 += sb_mi;
             }
             r += sb_mi;
@@ -339,11 +346,14 @@ fn run_one(
     bd: i32,
     sb_mi: usize,
     force_zero_levels: bool,
+    uniform_tx: bool,
+    no_skip: bool,
+    check_opt: bool,
 ) -> bool {
     // 8px-aligned mi dims (set_mb_mi).
     let mi_cols = ((w + 7) & !7) >> 2;
     let mi_rows = ((h + 7) & !7) >> 2;
-    let f = Frame::generate(rng, mi_rows, mi_cols, sb_mi);
+    let f = Frame::generate(rng, mi_rows, mi_cols, sb_mi, uniform_tx, no_skip);
 
     let luma_on = !force_zero_levels;
     // 4:2:2 chroma deblocking is out of scope (see module doc).
@@ -388,7 +398,7 @@ fn run_one(
     c::ref_lf_filter_frame(
         &mut cy, y_stride, &mut cu, &mut cv, uv_stride,
         w as i32, h as i32, ss_x as i32, ss_y as i32, bd,
-        &grid, &ref_params(&p), 0, num_planes as i32,
+        &grid, &ref_params(&p), 0, num_planes as i32, false,
     );
 
     // Rust.
@@ -446,6 +456,66 @@ fn run_one(
         assert_eq!(widen(&u8v), u, "LOWBD-u8 U {w}x{h} ss=({ss_x},{ss_y})");
         assert_eq!(widen(&v8), v, "LOWBD-u8 V {w}x{h} ss=({ss_x},{ss_y})");
     }
+
+    // `lpf_opt_level == 1` walk: real C `av1_filter_block_plane_{vert,horz}_opt`
+    // (+ chroma) vs `loop_filter_frame_opt`, on the same grid. The C opt path's
+    // dual/quad batching is only *equivalent to* the level-0 walk under the
+    // encoder's uniform-tx invariant; here we require the port to be
+    // pixel-identical to C OPT ITSELF — including on arbitrary vartx grids,
+    // where both implementations take the same (deliberately different)
+    // batched decisions.
+    //
+    // `no_skip` grids only: C's `set_lpf_parameters_for_line_*` derives
+    // `pu_edge` from `mi_prev != mbmi` POINTER identity — cells of one block
+    // share an MB_MODE_INFO in a real AV1_COMMON grid, but the shim flattens
+    // one struct per cell, so interior edges of a skipped block read as
+    // pu_edge=1 on the C side and get filtered where the port (correctly,
+    // per its flattened-cell contract) suppresses them. The skipped-block
+    // suppression arm is instead covered by `opt_matches_nonopt` below, which
+    // compares the two port walks where pointer identity plays no role.
+    if check_opt {
+        let (mut py, mut pu, mut pv) = (y0.clone(), u0.clone(), v0.clone());
+        {
+            let mut pbuf = LfFrameBuf {
+                y: &mut py,
+                y_stride,
+                u: &mut pu,
+                v: &mut pv,
+                uv_stride,
+                crop_width: w as u32,
+                crop_height: h as u32,
+                ss_x,
+                ss_y,
+                bd,
+            };
+            loop_filter_frame_opt(&mut pbuf, &mi_grid, &p, 0, num_planes);
+        }
+        if no_skip {
+            // C-opt oracle is only faithful without skips: see above — the
+            // shim's flattened per-cell MB_MODE_INFOs make the C line-fill's
+            // `mi_prev != mbmi` pointer test always report a prediction edge.
+            let (mut oy, mut ou, mut ov) = (y0.clone(), u0.clone(), v0.clone());
+            c::ref_lf_filter_frame(
+                &mut oy, y_stride, &mut ou, &mut ov, uv_stride,
+                w as i32, h as i32, ss_x as i32, ss_y as i32, bd,
+                &grid, &ref_params(&p), 0, num_planes as i32, true,
+            );
+            assert_eq!(py, oy, "OPT LUMA {w}x{h} ss=({ss_x},{ss_y}) bd{bd} mono={mono} u_tx={uniform_tx}");
+            assert_eq!(pu, ou, "OPT U {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
+            assert_eq!(pv, ov, "OPT V {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
+        }
+        if uniform_tx {
+            // The encoder's contract: when every cell of a block carries the
+            // block's tx_size (all-intra — and C's own lpf_opt gate via
+            // is_inter_tx_size_search_level_one exists precisely to restrict
+            // to this case), the batched opt walk must reproduce the level-0
+            // walk bit-for-bit. This holds WITH skipped blocks because the
+            // port derives pu_edge geometrically, not by pointer identity.
+            assert_eq!(py, y, "opt-vs-nonopt LUMA {w}x{h} ss=({ss_x},{ss_y}) bd{bd} mono={mono}");
+            assert_eq!(pu, u, "opt-vs-nonopt U {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
+            assert_eq!(pv, v, "opt-vs-nonopt V {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
+        }
+    }
     if force_zero_levels {
         // Zero levels: both sides must be exact no-ops.
         assert_eq!(y, y0, "zero-level walk must not touch luma");
@@ -467,7 +537,7 @@ fn zero_derived_level_walk_is_noop() {
     for &(w, h) in &[(96usize, 80usize), (100, 76)] {
         let mi_cols = ((w + 7) & !7) >> 2;
         let mi_rows = ((h + 7) & !7) >> 2;
-        let mut f = Frame::generate(&mut rng, mi_rows, mi_cols, 16);
+        let mut f = Frame::generate(&mut rng, mi_rows, mi_cols, 16, false, false);
         let base = 1 + rng.range_i(0, 62);
         // Every cell: delta_lf = -base in all four ids -> clamp(delta + base)
         // = 0 for every plane/dir; mode-ref deltas OFF so nothing re-raises.
@@ -514,7 +584,7 @@ fn zero_derived_level_walk_is_noop() {
         c::ref_lf_filter_frame(
             &mut cy, y_stride, &mut cu, &mut cv, y_stride >> 1,
             w as i32, h as i32, 1, 1, 8,
-            &grid, &ref_params(&p), 0, 3,
+            &grid, &ref_params(&p), 0, 3, false,
         );
         let mi_grid = LfMiGrid {
             mi: &f.mi,
@@ -571,9 +641,17 @@ fn filter_frame_matches_c() {
             for &bd in &[8i32, 10, 12] {
                 for rep in 0..3 {
                     // sb_mi 16 = 64x64 SBs (the envelope); one rep with 32 =
-                    // 128x128 blocks to cover the biggest bsizes.
+                    // 128x128 blocks to cover the biggest bsizes. rep 0/2 are
+                    // arbitrary vartx+skip grids (level-0 only — the C-opt
+                    // oracle needs no_skip); rep 1 is the no-skip grid that
+                    // makes the C-opt differential faithful, so it runs the
+                    // opt walk on both sides too.
                     let sb_mi = if rep == 2 { 32 } else { 16 };
-                    changed += run_one(&mut rng, w, h, ss_x, ss_y, mono, bd, sb_mi, false) as u32;
+                    let check_opt = rep == 1;
+                    changed += run_one(
+                        &mut rng, w, h, ss_x, ss_y, mono, bd, sb_mi, false,
+                        false, check_opt, check_opt,
+                    ) as u32;
                     n += 1;
                 }
             }
@@ -582,12 +660,60 @@ fn filter_frame_matches_c() {
     // Zero-level no-op arm (the lf==0 envelope streams take this path).
     for &(w, h) in &[(64usize, 64usize), (100, 76)] {
         for &(ss_x, ss_y, mono) in &formats {
-            run_one(&mut rng, w, h, ss_x, ss_y, mono, 8, 16, true);
+            run_one(&mut rng, w, h, ss_x, ss_y, mono, 8, 16, true, false, false, false);
             n += 1;
         }
     }
     assert_eq!(n, 6 * 4 * 3 * 3 + 8);
     // The sweep must actually exercise filtering (not degenerate to no-ops).
+    assert!(
+        changed > n * 3 / 5,
+        "only {changed}/{n} runs changed pixels — coverage collapsed"
+    );
+}
+
+/// The `lpf_opt` differential on uniform-transform grids — the grid shape the
+/// encoder's all-intra search actually produces (and the shape C's own
+/// `is_inter_tx_size_search_level_one` gate exists to require). Two oracles
+/// run per cell: port-opt vs port-nonopt holds with skips because the port
+/// derives `pu_edge` geometrically; the no-skip rep additionally gets the
+/// real `av1_filter_block_plane_*_opt*` functions as oracle.
+#[test]
+fn filter_frame_opt_matches_on_uniform_tx() {
+    c::ref_init();
+    let mut rng = Rng(0xBEE7_1A00_2026_0915);
+    let shapes = [
+        (64usize, 64usize),
+        (96, 80),
+        (100, 76),
+        (160, 144),
+        (196, 132),
+    ];
+    let formats = [
+        (1usize, 1usize, false),
+        (0, 0, false),
+        (1, 0, false),
+        (1, 1, true),
+    ];
+    let mut n = 0u32;
+    let mut changed = 0u32;
+    for &(w, h) in &shapes {
+        for &(ss_x, ss_y, mono) in &formats {
+            for &bd in &[8i32, 10, 12] {
+                for rep in 0..2 {
+                    // rep 0: uniform-tx with skips — port self-compare arm.
+                    // rep 1: no-skip — adds the real C-opt oracle.
+                    let no_skip = rep == 1;
+                    changed += run_one(
+                        &mut rng, w, h, ss_x, ss_y, mono, bd, 16, false,
+                        true, no_skip, true,
+                    ) as u32;
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, 5 * 4 * 3 * 2);
     assert!(
         changed > n * 3 / 5,
         "only {changed}/{n} runs changed pixels — coverage collapsed"

@@ -67,7 +67,7 @@ use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
 use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::partition::KfFrameContext;
 use aom_dsp::entropy::rb::ReadBitBuffer;
-use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame};
+use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame_opt};
 use aom_dsp::quant::{
     Dequants, Quants, aom_get_qmlevel_allintra, av1_build_quantizer, av1_dc_quant_qtx, set_q_index,
 };
@@ -2329,7 +2329,7 @@ impl EncodeCell {
             );
 
             // (1) The deblocked reconstruction: the derived levels applied to
-            //     a copy (`loop_filter_frame` gates itself on the Y levels,
+            //     a copy (`loop_filter_frame_opt` gates itself on the Y levels,
             //     exactly like the C apply site).
             let mut db_y = recon_y.clone();
             let mut db_u = recon_u.clone();
@@ -2366,7 +2366,7 @@ impl EncodeCell {
                     ss_y,
                     bd: i32::from(bd),
                 };
-                loop_filter_frame(&mut buf, &grid, &lf_apply, 0, num_planes as usize);
+                loop_filter_frame_opt(&mut buf, &grid, &lf_apply, 0, num_planes as usize);
             }
 
             // (2) `av1_pick_filter_restoration`: costs = av1_fill_lr_rates

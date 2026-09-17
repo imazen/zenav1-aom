@@ -245,13 +245,30 @@ pub(crate) fn lpf_scalar(width: u32, buf: &mut [u16], center: usize, ts: isize, 
 /// Highbd horizontal deblock (taps stride by pitch) — SIMD-dispatched.
 #[allow(clippy::too_many_arguments)]
 pub fn horizontal(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32) {
-    crate::loopfilter::simd::lpf(width, buf, center, p as isize, 1, bl, li, th, bd);
+    horizontal_n(width, buf, center, p, bl, li, th, bd, 1);
 }
 
 /// Highbd vertical deblock (taps stride by 1) — SIMD-dispatched.
 #[allow(clippy::too_many_arguments)]
 pub fn vertical(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32) {
-    crate::loopfilter::simd::lpf(width, buf, center, 1, p as isize, bl, li, th, bd);
+    vertical_n(width, buf, center, p, bl, li, th, bd, 1);
+}
+
+/// Highbd horizontal deblock covering `nseg` adjacent 4-position segments —
+/// C's `_dual`/`_quad` batching (`av1_loopfilter.c` `use_filter_type`): the
+/// covered segments sit at `center + s*4` for `s in 0..nseg` and share this
+/// call's limits. Per-segment arithmetic is identical to `nseg` separate
+/// [`horizontal`] calls, so batching cannot move a pixel.
+#[allow(clippy::too_many_arguments)]
+pub fn horizontal_n(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32, nseg: usize) {
+    crate::loopfilter::simd::lpf(width, buf, center, p as isize, 1, bl, li, th, bd, nseg);
+}
+
+/// Highbd vertical deblock covering `nseg` adjacent 4-position segments —
+/// the batched twin of [`vertical`]; segments at `center + s*4*p`.
+#[allow(clippy::too_many_arguments)]
+pub fn vertical_n(width: u32, buf: &mut [u16], center: usize, p: usize, bl: u8, li: u8, th: u8, bd: i32, nseg: usize) {
+    crate::loopfilter::simd::lpf(width, buf, center, 1, p as isize, bl, li, th, bd, nseg);
 }
 
 /// Pure-scalar highbd horizontal deblock (never SIMD-dispatched) — the fixed

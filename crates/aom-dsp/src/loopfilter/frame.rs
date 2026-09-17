@@ -490,14 +490,185 @@ fn set_lpf_parameters(
     (ts, filter_length, level)
 }
 
+/// `set_one_param_for_line_luma` / `set_one_param_for_line_chroma`
+/// (av1_loopfilter.c:646-723 / :765-841) — the opt line-fill's per-unit
+/// derivation, which differs from [`set_lpf_parameters`] in four ways:
+///
+/// 1. **No crop early-out** — the opt drivers bound each line to in-crop
+///    units (`CEIL_POWER_OF_TWO(dst.width, …)` / the chroma `ROUND_POW2`
+///    pair), where the non-opt walk iterates the full mi grid and early-outs.
+///    C expresses the guarantee as the asserts at :654/:779.
+/// 2. **No `tu_edge` early-out** — the fill only ever lands on transform
+///    edges by construction (advance = `tx_size_*_unit[ts]`), asserted in C
+///    under `#ifndef NDEBUG`.
+/// 3. **Chained `pv_ts`** — for every unit after the first, C uses
+///    `prev_tx_size` (the previous unit's ts along the line) instead of
+///    re-deriving `get_transform_size(mi_prev)`. Identical on any grid whose
+///    txs tile contiguously; differs only on grids where a unit's stamped tx
+///    disagrees with its left/above cell's — which real encoders cannot
+///    emit. `prev_ts == None` marks the line's first unit
+///    (`is_first_block`), which derives `pv_ts` geometrically.
+/// 4. **`pu_edge` is a same-block test** — `mi_prev != mbmi` (pointer
+///    identity: in libaom every mi cell of a block aliases the block's one
+///    `MB_MODE_INFO`). On tiled grids that equals the geometric
+///    `coord & prediction_masks == 0` used here and by the non-opt path.
+///    The skip gate is `level && (pu_edge || !curr_skipped)` — the non-opt
+///    `!pv_skip` disjunct is absent (pv is the same block when !pu_edge, so
+///    its skip flag equals the current one).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn set_lpf_parameters_opt(
+    grid: &LfMiGrid,
+    p: &LfParams,
+    lfi: &LfInfo,
+    edge_dir: usize,
+    x: u32,
+    y: u32,
+    plane: usize,
+    ss_x: usize,
+    ss_y: usize,
+    prev_ts: Option<usize>,
+) -> (usize, u8, u8) {
+    let mi_row = (ss_y as u32 | ((y << ss_y) >> MI_SIZE_LOG2)) as usize;
+    let mi_col = (ss_x as u32 | ((x << ss_x) >> MI_SIZE_LOG2)) as usize;
+    let idx = mi_row * grid.stride + mi_col;
+    let mi = &grid.mi[idx];
+    let ts = get_transform_size(p, mi, plane, ss_x, ss_y);
+
+    let coord = if edge_dir == VERT_EDGE { x } else { y };
+    let mut filter_length = 0u8;
+    let mut level = 0u8;
+    // `!is_first_block || coord` — the first unit of a line skips all prev
+    // derivation at the frame's left/top edge only.
+    if prev_ts.is_some() || coord != 0 {
+        let prev_idx = if edge_dir == VERT_EDGE {
+            idx - (1 << ss_x)
+        } else {
+            idx - (grid.stride << ss_y)
+        };
+        let mi_prev = &grid.mi[prev_idx];
+        let pv_ts = prev_ts.unwrap_or_else(|| get_transform_size(p, mi_prev, plane, ss_x, ss_y));
+        let curr_level = get_filter_level(p, lfi, edge_dir, plane, mi);
+        let lvl = if curr_level != 0 {
+            curr_level
+        } else {
+            get_filter_level(p, lfi, edge_dir, plane, mi_prev)
+        };
+        let bsize = get_plane_block_size(mi.bsize as usize, ss_x, ss_y);
+        debug_assert_ne!(bsize, BLOCK_INVALID);
+        let prediction_masks = if edge_dir == VERT_EDGE {
+            BLOCK_SIZE_WIDE[bsize as usize] - 1
+        } else {
+            BLOCK_SIZE_HIGH[bsize as usize] - 1
+        };
+        let pu_edge = (coord & prediction_masks) == 0;
+        let curr_skipped = !pu_edge && mi.skip_txfm && mi.is_inter;
+        if lvl != 0 && (pu_edge || !curr_skipped) {
+            let dim = if edge_dir == VERT_EDGE {
+                TX_SIZE_WIDE_UNIT_LOG2[ts].min(TX_SIZE_WIDE_UNIT_LOG2[pv_ts])
+            } else {
+                TX_SIZE_HIGH_UNIT_LOG2[ts].min(TX_SIZE_HIGH_UNIT_LOG2[pv_ts])
+            } as usize;
+            filter_length = if plane != 0 {
+                if dim == 0 { 4 } else { 6 }
+            } else {
+                TX_DIM_TO_FILTER_LENGTH[dim]
+            };
+            level = lvl;
+        }
+    }
+    (ts, filter_length, level)
+}
+
 // ---- the plane walks --------------------------------------------------------------
 
 fn round_pot(v: i32, n: usize) -> i32 {
     (v + ((1 << n) >> 1)) >> n
 }
 
+/// The `use_filter_type` criterion's per-unit dim contribution
+/// (av1_loopfilter.c:719-721 luma / :857-858 chroma): luma folds the
+/// PREDICTION-block dim (`block_size_{high,wide}[bsize]`), chroma the
+/// transform dim (`tx_size_{high,wide}[ts]`). `x`/`y` are plane-pixel coords.
+/// Evaluated for every unit in the line — including out-of-crop ones (C's opt
+/// line-fill has no crop early-out, and dropping a small block's dim could
+/// wrongly enable a batch spanning two different blocks).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn batch_unit_dim(
+    grid: &LfMiGrid,
+    p: &LfParams,
+    edge_dir: usize,
+    x: u32,
+    y: u32,
+    plane: usize,
+    ss_x: usize,
+    ss_y: usize,
+) -> usize {
+    let mi_row = (ss_y as u32 | ((y << ss_y) >> MI_SIZE_LOG2)) as usize;
+    let mi_col = (ss_x as u32 | ((x << ss_x) >> MI_SIZE_LOG2)) as usize;
+    let mi = &grid.mi[mi_row * grid.stride + mi_col];
+    if plane == 0 {
+        (if edge_dir == VERT_EDGE {
+            BLOCK_SIZE_HIGH
+        } else {
+            BLOCK_SIZE_WIDE
+        })[mi.bsize as usize] as usize
+    } else {
+        let ts = get_transform_size(p, mi, plane, ss_x, ss_y);
+        (if edge_dir == VERT_EDGE {
+            TX_SIZE_HIGH
+        } else {
+            TX_SIZE_WIDE
+        })[ts] as usize
+    }
+}
+
+/// The line-start fold of the neighbouring block's dim
+/// (av1_loopfilter.c:687-690 luma / :822-824 chroma): at the line's first
+/// unit, `min_dim` starts from the LEFT/ABOVE neighbour's dim, so the batch
+/// criterion also proves the covered segments' `pv_ts`/level side matches.
+/// Only valid when `coord != 0` (caller gates on `x0 > 0` / `y0 > 0`).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn batch_prev_dim(
+    grid: &LfMiGrid,
+    p: &LfParams,
+    edge_dir: usize,
+    x: u32,
+    y: u32,
+    plane: usize,
+    ss_x: usize,
+    ss_y: usize,
+) -> usize {
+    let mi_row = (ss_y as u32 | ((y << ss_y) >> MI_SIZE_LOG2)) as usize;
+    let mi_col = (ss_x as u32 | ((x << ss_x) >> MI_SIZE_LOG2)) as usize;
+    let idx = mi_row * grid.stride + mi_col;
+    let prev_idx = if edge_dir == VERT_EDGE {
+        idx - (1 << ss_x)
+    } else {
+        idx - (grid.stride << ss_y)
+    };
+    let mi_prev = &grid.mi[prev_idx];
+    if plane == 0 {
+        (if edge_dir == VERT_EDGE {
+            BLOCK_SIZE_HIGH
+        } else {
+            BLOCK_SIZE_WIDE
+        })[mi_prev.bsize as usize] as usize
+    } else {
+        let pv_ts = get_transform_size(p, mi_prev, plane, ss_x, ss_y);
+        (if edge_dir == VERT_EDGE {
+            TX_SIZE_HIGH
+        } else {
+            TX_SIZE_WIDE
+        })[pv_ts] as usize
+    }
+}
+
 /// `av1_filter_block_plane_vert` / `_horz` (av1_loopfilter.c:1305-1352,
-/// :1907-1953) for one 32x32-mi superblock region of one plane.
+/// :1907-1953 — the `lpf_opt_level == 0` non-batched walk the decoder takes)
+/// for one 32x32-mi superblock region of one plane.
 #[allow(clippy::too_many_arguments)]
 fn filter_block_plane(
     dir: usize,
@@ -562,6 +733,169 @@ fn filter_block_plane(
     }
 }
 
+/// `av1_filter_block_plane_vert_opt_{luma,chroma}` /
+/// `_horz_opt{,_chroma}` (av1_loopfilter.c:1354-1505, :1955-2100) — the
+/// `lpf_opt_level == 1` walk the ENCODER takes when inter tx-size search is
+/// depth-limited (`get_lpf_opt_level`, encoder.h:4504 — which guarantees all
+/// transform blocks inside a <=16x16 prediction block are the same size).
+/// Each line's parameters are derived once into `line` (C's
+/// `params_buf`/`tx_buf`), the line's minimum block dim decides how many
+/// 4-px segments one kernel call covers along the batch axis, and covered
+/// segments run the first segment's limits (av1_loopfilter.c:1393-1396: the
+/// `min_dim` + alignment criterion guarantees they lie in the same
+/// prediction/transform blocks, hence share the params).
+///
+/// Callers must only select this when the uniform-tx invariant holds — same
+/// restriction C puts on `lpf_opt_level`: it is exact under all-intra grids
+/// (uniform block tx) but is a deliberate speed-feature divergence on
+/// arbitrary vartx inter grids, so the decoder-facing [`loop_filter_frame`]
+/// keeps the `lpf_opt_level == 0` walk.
+#[allow(clippy::too_many_arguments)]
+fn filter_block_plane_opt(
+    dir: usize,
+    buf: &mut [u16],
+    stride: usize,
+    bd: i32,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    lfi: &LfInfo,
+    plane: usize,
+    ss_x: usize,
+    ss_y: usize,
+    plane_w: u32,
+    plane_h: u32,
+    mi_row: usize,
+    mi_col: usize,
+) {
+    // The opt drivers bound each line by the CROP-derived mi dims — luma
+    // `CEIL_POWER_OF_TWO(dst.width, MI_SIZE_LOG2)` (av1_loopfilter.c:1364,
+    // :1965), chroma `ROUND_POWER_OF_TWO(((dst.w << ss) + 3) >> 2, ss)`
+    // (:1434-1436, :2030-2032) — NOT the mi-grid dims the non-opt walk uses.
+    // The difference only ever drops units that are fully out of crop, which
+    // the non-opt walk visits and no-ops on; here they must not contribute to
+    // `min_dim` or the batch criterion.
+    let (plane_mi_rows, plane_mi_cols) = if plane == 0 {
+        (
+            (plane_h + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2,
+            (plane_w + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2,
+        )
+    } else {
+        (
+            round_pot((((plane_h << ss_y) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_y)
+                as u32,
+            round_pot((((plane_w << ss_x) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_x)
+                as u32,
+        )
+    };
+    let y_range = ((plane_mi_rows as i32) - ((mi_row >> ss_y) as i32))
+        .min((MAX_MIB_SIZE >> ss_y) as i32)
+        .max(0) as usize;
+    let x_range = ((plane_mi_cols as i32) - ((mi_col >> ss_x) as i32))
+        .min((MAX_MIB_SIZE >> ss_x) as i32)
+        .max(0) as usize;
+    // Plane-pixel origin of this superblock region.
+    let x0 = (mi_col * MI_SIZE) >> ss_x;
+    let y0 = (mi_row * MI_SIZE) >> ss_y;
+    let origin = y0 * stride + x0;
+
+    // `(ts, filter_length, level)` per line unit — C's `tx_buf`/`params_buf`.
+    let mut line = [(0usize, 0u8, 0u8); MAX_MIB_SIZE];
+
+    if dir == 0 {
+        // Vertical edges: batch along rows. The line's params run along x at
+        // the group's top row; each call then covers `nseg` 4-px row segments.
+        let mut y = 0usize;
+        while y < y_range {
+            let curr_y = (y0 + y * MI_SIZE) as u32;
+            // min `block_size_high[bsize]` (luma) / `tx_size_high[ts]` (chroma)
+            // over the line, folded with the left neighbour's at the head
+            // (av1_loopfilter.c:1381-1384 luma / :1450-1454 chroma).
+            let mut min_dim = usize::MAX;
+            let mut x = 0usize;
+            let mut prev_ts = None;
+            while x < x_range {
+                let curr_x = (x0 + x * MI_SIZE) as u32;
+                let (ts, len, level) = set_lpf_parameters_opt(
+                    grid, p, lfi, VERT_EDGE, curr_x, curr_y, plane, ss_x, ss_y, prev_ts,
+                );
+                line[x] = (ts, len, level);
+                min_dim = min_dim.min(batch_unit_dim(
+                    grid, p, VERT_EDGE, curr_x, curr_y, plane, ss_x, ss_y,
+                ));
+                x += TX_SIZE_WIDE_UNIT[ts];
+                prev_ts = Some(ts);
+            }
+            if x0 > 0 {
+                min_dim = min_dim.min(batch_prev_dim(
+                    grid, p, VERT_EDGE, x0 as u32, curr_y, plane, ss_x, ss_y,
+                ));
+            }
+            // use_filter_type (av1_loopfilter.c:1392-1402 luma / :1461-1474
+            // chroma — chroma's dual arm additionally requires an even row).
+            let nseg = if (y & 3) == 0 && y + 3 < y_range && min_dim >= 16 {
+                4
+            } else if (plane == 0 || y % 2 == 0) && y + 1 < y_range && min_dim >= 8 {
+                2
+            } else {
+                1
+            };
+            let mut x = 0usize;
+            while x < x_range {
+                let (ts, len, level) = line[x];
+                if len > 0 {
+                    let (mblim, lim, hev) = lfi.lfthr[level as usize];
+                    let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
+                    highbd::vertical_n(len as u32, buf, center, stride, mblim, lim, hev, bd, nseg);
+                }
+                x += TX_SIZE_WIDE_UNIT[ts];
+            }
+            y += nseg;
+        }
+    } else {
+        // Horizontal edges: batch along columns — the line runs along y.
+        let mut x = 0usize;
+        while x < x_range {
+            let curr_x = (x0 + x * MI_SIZE) as u32;
+            let mut min_dim = usize::MAX;
+            let mut y = 0usize;
+            let mut prev_ts = None;
+            while y < y_range {
+                let curr_y = (y0 + y * MI_SIZE) as u32;
+                let (ts, len, level) = set_lpf_parameters_opt(
+                    grid, p, lfi, 1, curr_x, curr_y, plane, ss_x, ss_y, prev_ts,
+                );
+                line[y] = (ts, len, level);
+                min_dim =
+                    min_dim.min(batch_unit_dim(grid, p, 1, curr_x, curr_y, plane, ss_x, ss_y));
+                y += TX_SIZE_HIGH_UNIT[ts];
+                prev_ts = Some(ts);
+            }
+            if y0 > 0 {
+                min_dim =
+                    min_dim.min(batch_prev_dim(grid, p, 1, curr_x, y0 as u32, plane, ss_x, ss_y));
+            }
+            let nseg = if (x & 3) == 0 && x + 3 < x_range && min_dim >= 16 {
+                4
+            } else if (plane == 0 || x % 2 == 0) && x + 1 < x_range && min_dim >= 8 {
+                2
+            } else {
+                1
+            };
+            let mut y = 0usize;
+            while y < y_range {
+                let (ts, len, level) = line[y];
+                if len > 0 {
+                    let (mblim, lim, hev) = lfi.lfthr[level as usize];
+                    let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
+                    highbd::horizontal_n(len as u32, buf, center, stride, mblim, lim, hev, bd, nseg);
+                }
+                y += TX_SIZE_HIGH_UNIT[ts];
+            }
+            x += nseg;
+        }
+    }
+}
+
 // ---- whole-frame entry -------------------------------------------------------------
 
 /// The frame's reconstruction planes (u16 samples at every bit depth; strides
@@ -601,7 +935,35 @@ pub fn loop_filter_frame(
 ) {
     // A `None` token is never polled, so this cannot fail; discarding the
     // `Ok(())` keeps the historical signature panic-free.
-    let _ = loop_filter_frame_stop(buf, grid, p, plane_start, plane_end, None);
+    let _ = loop_filter_frame_impl(buf, grid, p, plane_start, plane_end, None, false);
+}
+
+/// The encoder's `av1_loop_filter_frame_mt(..., lpf_opt_level = 1)` walk —
+/// [`loop_filter_frame`] with the per-strip dispatch routed through
+/// [`filter_block_plane_opt`]'s dual/quad batching (av1_loopfilter.c's
+/// `USE_DUAL`/`USE_QUAD`), where `lpf_opt_level == 2` (joint chroma) is not
+/// ported and chroma batches per-plane — C's `joint_filter_chroma = false`
+/// arm.
+///
+/// **Caller contract — same as C's `lpf_opt_level`:** the batched walk runs
+/// covered segments on the first segment's params, which is only exact when
+/// every transform block inside a prediction block has the same size.
+/// libaom itself enables this only when `is_inter_tx_size_search_level_one`
+/// holds (encoder.h:4504) or `LPF_PICK_FROM_Q` makes it level 2; on
+/// all-intra encodes the invariant holds unconditionally (a block codes one
+/// uniform tx size), so this port routes encode-side calls here while the
+/// decoder-facing [`loop_filter_frame`] / [`loop_filter_frame_stop`] keep
+/// the `lpf_opt_level == 0` walk — exactly the split between
+/// `decodeframe.c`'s `lpf_opt_level = 0` and `encoder.c`'s
+/// `get_lpf_opt_level(&cpi->sf)`.
+pub fn loop_filter_frame_opt(
+    buf: &mut LfFrameBuf,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+) {
+    let _ = loop_filter_frame_impl(buf, grid, p, plane_start, plane_end, None, true);
 }
 
 /// [`loop_filter_frame`] with a cooperative stop token polled once per 32-mi
@@ -621,6 +983,22 @@ pub fn loop_filter_frame_stop(
     plane_start: usize,
     plane_end: usize,
     stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    loop_filter_frame_impl(buf, grid, p, plane_start, plane_end, stop, false)
+}
+
+/// Shared `loop_filter_rows` walk behind [`loop_filter_frame`],
+/// [`loop_filter_frame_opt`] and [`loop_filter_frame_stop`]; `lpf_opt` picks
+/// C's `lpf_opt_level > 0` batched traversal.
+#[allow(clippy::too_many_arguments)]
+fn loop_filter_frame_impl(
+    buf: &mut LfFrameBuf,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+    stop: Option<&dyn enough::Stop>,
+    lpf_opt: bool,
 ) -> Result<(), enough::StopReason> {
     // check_planes_to_loop_filter / set_planes_to_loop_filter.
     let planes_to_lf = [
@@ -661,10 +1039,17 @@ pub fn loop_filter_frame_stop(
                             1 => (buf.u, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
                             _ => (buf.v, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
                         };
-                    filter_block_plane(
-                        dir, pb, stride, buf.bd, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row,
-                        mi_col,
-                    );
+                    if lpf_opt {
+                        filter_block_plane_opt(
+                            dir, pb, stride, buf.bd, grid, p, &lfi, plane, ss_x, ss_y, w, h,
+                            mi_row, mi_col,
+                        );
+                    } else {
+                        filter_block_plane(
+                            dir, pb, stride, buf.bd, grid, p, &lfi, plane, ss_x, ss_y, w, h,
+                            mi_row, mi_col,
+                        );
+                    }
                     mi_col += MAX_MIB_SIZE;
                 }
             }

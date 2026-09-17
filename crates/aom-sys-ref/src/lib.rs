@@ -10450,6 +10450,7 @@ extern "C" {
         seg_data: *const i32,
         plane_start: i32,
         plane_end: i32,
+        lpf_opt: i32,
     ) -> i32;
 }
 
@@ -10539,7 +10540,8 @@ pub struct RefLfGrid<'a> {
 /// real lowbd path on internal u8 copies — what the production decoder does
 /// for 8-bit streams). `y` must hold `y_stride * (mi_rows * 4)` samples; the
 /// chroma planes `uv_stride * ((mi_rows * 4) >> ss_y)` (empty + `uv_stride ==
-/// 0` for monochrome). Filters in place.
+/// 0` for monochrome). Filters in place. `lpf_opt` selects C's
+/// `lpf_opt_level == 1` walk (dual/quad batching, per-plane chroma).
 #[allow(clippy::too_many_arguments)]
 pub fn ref_lf_filter_frame(
     y: &mut [u16],
@@ -10556,6 +10558,7 @@ pub fn ref_lf_filter_frame(
     p: &RefLfParams,
     plane_start: i32,
     plane_end: i32,
+    lpf_opt: bool,
 ) {
     let ncells = (grid.mi_rows * grid.grid_stride) as usize;
     assert!(
@@ -10610,6 +10613,7 @@ pub fn ref_lf_filter_frame(
             d.as_ptr(),
             plane_start,
             plane_end,
+            lpf_opt as i32,
         )
     };
     assert_eq!(rc, 0, "shim_lf_filter_frame failed ({rc})");

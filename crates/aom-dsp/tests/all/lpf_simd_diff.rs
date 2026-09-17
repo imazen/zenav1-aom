@@ -130,6 +130,63 @@ fn hbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
     assert!(report.permutations_run >= 2);
 }
 
+/// The `nseg > 1` batch (`highbd::{horizontal,vertical}_n` — C's dual/quad
+/// batching) must be pixel-identical to `nseg` single-segment calls at the
+/// covered centres: batching shares setup only; per-segment arithmetic is
+/// unchanged.
+#[test]
+fn hbd_lpf_batch_identical_to_singles() {
+    const BIG: usize = 48; // 4 segs x 4 pos + 8-tap reach needs > 32 rows
+    let mut rng = Rng(0x_ba7c_1e5_deed_5eed);
+    for &bd in &[8i32, 10, 12] {
+        let maxv = (1u32 << bd) - 1;
+        for &dir in b"hv" {
+            for &width in &[4u32, 6, 8, 14] {
+                for &nseg in &[2usize, 4] {
+                    for _ in 0..2000 {
+                        let base = rng.upto(maxv + 1);
+                        let amp = 1 + rng.upto(1 << (bd - 4));
+                        let strat = rng.upto(3);
+                        let buf: Vec<u16> = (0..PITCH * BIG)
+                            .map(|_| {
+                                if strat == 0 {
+                                    rng.upto(maxv + 1) as u16
+                                } else {
+                                    (base as i32 + rng.upto(2 * amp + 1) as i32 - amp as i32)
+                                        .clamp(0, maxv as i32)
+                                        as u16
+                                }
+                            })
+                            .collect();
+                        let bl = (16 + rng.upto(200)) as u8;
+                        let li = (1 + rng.upto(64)) as u8;
+                        let th = rng.upto(256) as u8;
+
+                        let mut got = buf.clone();
+                        let mut want = buf.clone();
+                        if dir == b'h' {
+                            highbd::horizontal_n(width, &mut got, CENTER, PITCH, bl, li, th, bd, nseg);
+                            for s in 0..nseg {
+                                highbd::horizontal(width, &mut want, CENTER + 4 * s, PITCH, bl, li, th, bd);
+                            }
+                        } else {
+                            highbd::vertical_n(width, &mut got, CENTER, PITCH, bl, li, th, bd, nseg);
+                            for s in 0..nseg {
+                                highbd::vertical(width, &mut want, CENTER + 4 * s * PITCH, PITCH, bl, li, th, bd);
+                            }
+                        }
+                        assert_eq!(
+                            got, want,
+                            "dir={} width={width} bd={bd} nseg={nseg} bl={bl} li={li} th={th}",
+                            dir as char
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Gate-3 parity for the lowbd (bd8, `u8` pixel) deblock SIMD: the dispatching
 /// `loopfilter::{horizontal, vertical}` (SIMD) must equal the never-dispatched
 /// `loopfilter::{horizontal_scalar, vertical_scalar}` at EVERY archmage token
