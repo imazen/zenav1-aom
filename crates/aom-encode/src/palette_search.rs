@@ -33,7 +33,7 @@ use crate::tx_search::{
     pick_uniform_tx_size_type_yrd_intra,
 };
 use aom_dsp::entropy::partition::{
-    PaletteNbrKf, get_palette_cache, get_palette_color_index_context, index_color_cache,
+    PaletteNbrKf, get_palette_cache, index_color_cache,
 };
 
 /// `PALETTE_MAX_SIZE` (blockd.h).
@@ -65,24 +65,10 @@ fn divide_and_round(x: i32, y: i32) -> i32 {
     (x + (y >> 1)) / y
 }
 
-/// `calc_dist` (k_means_template.h): dim 1 is L1 (squared only for the total),
-/// dim 2 is squared L2.
-#[inline]
-fn calc_dist(p1: &[i16], p2: &[i16], dim: usize) -> i32 {
-    if dim == 1 {
-        (i32::from(p1[0]) - i32::from(p2[0])).abs()
-    } else {
-        let mut dist = 0i32;
-        for i in 0..dim {
-            let diff = i32::from(p1[i]) - i32::from(p2[i]);
-            dist += diff * diff;
-        }
-        dist
-    }
-}
-
-/// `av1_calc_indices_dim1/_dim2` (`_c`): nearest-centroid assignment; the
-/// returned total distortion squares the per-point L1 in dim 1.
+/// `av1_calc_indices_dim1/_dim2`: nearest-centroid assignment, dispatched —
+/// the SIMD tiers (`av1_calc_indices_dim*_avx2` mirrors) live in
+/// [`aom_dsp::kmeans`]; the returned total distortion squares the per-point
+/// L1 in dim 1.
 pub fn calc_indices(
     data: &[i16],
     centroids: &[i16],
@@ -91,25 +77,7 @@ pub fn calc_indices(
     k: usize,
     dim: usize,
 ) -> i64 {
-    let mut total: i64 = 0;
-    for i in 0..n {
-        let p = &data[i * dim..i * dim + dim];
-        let mut min_dist = calc_dist(p, &centroids[0..dim], dim);
-        indices[i] = 0;
-        for j in 1..k {
-            let this_dist = calc_dist(p, &centroids[j * dim..j * dim + dim], dim);
-            if this_dist < min_dist {
-                min_dist = this_dist;
-                indices[i] = j as u8;
-            }
-        }
-        if dim == 1 {
-            total += i64::from(min_dist) * i64::from(min_dist);
-        } else {
-            total += i64::from(min_dist);
-        }
-    }
-    total
+    aom_dsp::kmeans::calc_indices(data, centroids, indices, n, k, dim)
 }
 
 /// `calc_centroids` (k_means_template.h): per-cluster mean
@@ -511,6 +479,109 @@ pub fn palette_color_cost_uv(
     cost_literal(total_bits)
 }
 
+/// `av1_fast_palette_color_index_context_on_edge` (tokenize.c:30): the
+/// single-neighbour arm — the context is always 0 and `color_idx` reduces to
+/// a three-way compare.
+#[inline]
+fn fast_palette_ctx_on_edge(color_map: &[u8], stride: usize, r: usize, c: usize) -> (i32, usize) {
+    let has_above = r >= 1;
+    let neighbor = if has_above {
+        color_map[(r - 1) * stride + c]
+    } else {
+        color_map[r * stride + c - 1]
+    };
+    let current = color_map[r * stride + c];
+    let mut color_idx = i32::from(current);
+    if neighbor > current {
+        color_idx += 1;
+    } else if neighbor == current {
+        color_idx = 0;
+    }
+    // color_score * hash_multiplier = 2*1; av1_palette_color_index_context_
+    // lookup[2] == 0 (C asserts it and returns the constant).
+    (color_idx, 0)
+}
+
+/// `av1_fast_palette_color_index_context` (tokenize.c:78): the encoder twin of
+/// [`get_palette_color_index_context`] — the encoder does not need
+/// `color_order`, so C drops the per-pixel selection-sort entirely: dedup the
+/// three neighbours with if-chains, tiny fixed-array sort, same hash/lookup.
+/// C asserts the context and colour index agree with the general version.
+fn fast_palette_ctx(color_map: &[u8], stride: usize, r: usize, c: usize) -> (i32, usize) {
+    const INVALID: u8 = u8::MAX;
+    const NEIGHBORS: usize = 3;
+    let has_above = r >= 1;
+    let has_left = c >= 1;
+    debug_assert!(has_above || has_left);
+    if has_above ^ has_left {
+        return fast_palette_ctx_on_edge(color_map, stride, r, c);
+    }
+    // Order: left, top, top-left — usually already sorted.
+    let mut color_rank: [u8; NEIGHBORS] = [
+        color_map[r * stride + c - 1],
+        color_map[(r - 1) * stride + c],
+        color_map[(r - 1) * stride + c - 1],
+    ];
+    let mut score_rank: [u8; NEIGHBORS] = [2, 2, 1];
+    let mut num_invalid = 0usize;
+    if color_rank[0] == color_rank[1] {
+        score_rank[0] += score_rank[1];
+        color_rank[1] = INVALID;
+        num_invalid += 1;
+        if color_rank[0] == color_rank[2] {
+            score_rank[0] += score_rank[2];
+            num_invalid += 1;
+        }
+    } else if color_rank[0] == color_rank[2] {
+        score_rank[0] += score_rank[2];
+        num_invalid += 1;
+    } else if color_rank[1] == color_rank[2] {
+        score_rank[1] += score_rank[2];
+        num_invalid += 1;
+    }
+    let num_valid = NEIGHBORS - num_invalid;
+    if num_valid > 1 {
+        if color_rank[1] == INVALID {
+            score_rank[1] = score_rank[2];
+            color_rank[1] = color_rank[2];
+        }
+        if score_rank[0] < score_rank[1]
+            || (score_rank[0] == score_rank[1] && color_rank[0] > color_rank[1])
+        {
+            score_rank.swap(0, 1);
+            color_rank.swap(0, 1);
+        }
+        if num_valid > 2 {
+            if score_rank[0] < score_rank[2] {
+                score_rank.swap(0, 2);
+                color_rank.swap(0, 2);
+            }
+            if score_rank[1] < score_rank[2] {
+                score_rank.swap(1, 2);
+                color_rank.swap(1, 2);
+            }
+        }
+    }
+    let current = color_map[r * stride + c];
+    let mut color_idx = i32::from(current);
+    for idx in 0..num_valid {
+        if color_rank[idx] > current {
+            color_idx += 1;
+        } else if color_rank[idx] == current {
+            color_idx = idx as i32;
+            break;
+        }
+    }
+    let hash_multipliers: [u8; NEIGHBORS] = [1, 2, 2];
+    let mut hash: u8 = 0;
+    for idx in 0..num_valid {
+        hash += score_rank[idx] * hash_multipliers[idx];
+    }
+    debug_assert!(hash > 0);
+    // C: `9 - color_index_ctx_hash` (asserted == the lookup table).
+    (color_idx, (9 - hash) as usize)
+}
+
 /// `av1_cost_color_map` (tokenize.c:257) for `PALETTE_MAP`: the wavefront
 /// colour-index token rate over the visible `rows x cols` region of the
 /// (extended, `plane_width`-stride) map, using the per-size/ctx colour-index
@@ -532,8 +603,8 @@ pub fn cost_color_map(
         let mut j = j_hi;
         loop {
             let i = k - j;
-            let (_order, color_new_idx, color_ctx) =
-                get_palette_color_index_context(color_map, plane_width, i, j, n as i32);
+            let (color_new_idx, color_ctx) =
+                fast_palette_ctx(color_map, plane_width, i, j);
             debug_assert!((color_new_idx as usize) < n);
             this_rate += color_cost[color_ctx][color_new_idx as usize];
             if j == j_lo {

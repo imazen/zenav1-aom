@@ -26,6 +26,7 @@ pub mod dist;
 pub mod entropy;
 pub mod inter;
 pub mod intra;
+pub mod kmeans;
 pub mod loopfilter;
 pub mod lowbd;
 pub mod par;
