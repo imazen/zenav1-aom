@@ -138,7 +138,9 @@ pub fn chroma_plane_offset(
     }
     let x = ((4 * mi_col) >> ss_x) as usize;
     let y = ((4 * mi_row) >> ss_y) as usize;
-    base + y * stride + x
+    // `base` is the BAND BASE — subtracted, matching `SbEncodeEnv::base_uv`:
+    // the chroma slice's element 0 sits at absolute index `base`.
+    y * stride + x - base
 }
 
 /// The plane dimensions `set_plane_n4` (encodeframe_utils / decodeframe)

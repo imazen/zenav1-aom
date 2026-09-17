@@ -224,7 +224,7 @@ pub fn generate_hog_y_cached(
     let sb_mi_row = mi_row & !(sb_mi - 1);
     let sb_mi_col = mi_col & !(sb_mi - 1);
     let sb_px = (sb_mi as usize) * 4;
-    let sb_off = src_base + (sb_mi_row as usize * 4) * src_stride + sb_mi_col as usize * 4;
+    let sb_off = (sb_mi_row as usize * 4) * src_stride + sb_mi_col as usize * 4 - src_base;
     cache
         .y
         .ensure(src, sb_off, src_stride, sb_px, sb_px, sb_mi_row, sb_mi_col);
@@ -232,7 +232,7 @@ pub fn generate_hog_y_cached(
     cache.y.hog(block_off, rows, cols).unwrap_or_else(|| {
         generate_hog(
             src,
-            src_base + (mi_row as usize * 4) * src_stride + mi_col as usize * 4,
+            (mi_row as usize * 4) * src_stride + mi_col as usize * 4 - src_base,
             src_stride,
             rows,
             cols,
@@ -261,9 +261,9 @@ pub fn generate_hog_uv_cached(
     let sb_mi_col = mi_col & !(sb_mi - 1);
     let sb_w = ((sb_mi as usize) * 4) >> ss_x;
     let sb_h = ((sb_mi as usize) * 4) >> ss_y;
-    let sb_off = src_base
-        + ((sb_mi_row as usize * 4) >> ss_y) * src_stride
-        + ((sb_mi_col as usize * 4) >> ss_x);
+    let sb_off = ((sb_mi_row as usize * 4) >> ss_y) * src_stride
+        + ((sb_mi_col as usize * 4) >> ss_x)
+        - src_base;
     cache
         .uv
         .ensure(src, sb_off, src_stride, sb_w, sb_h, sb_mi_row, sb_mi_col);
@@ -272,9 +272,8 @@ pub fn generate_hog_uv_cached(
     cache.uv.hog(block_off, rows, cols).unwrap_or_else(|| {
         generate_hog(
             src,
-            src_base
-                + ((mi_row as usize * 4) >> ss_y) * src_stride
-                + ((mi_col as usize * 4) >> ss_x),
+            ((mi_row as usize * 4) >> ss_y) * src_stride + ((mi_col as usize * 4) >> ss_x)
+                - src_base,
             src_stride,
             rows,
             cols,

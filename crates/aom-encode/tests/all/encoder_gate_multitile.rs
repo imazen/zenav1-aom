@@ -398,6 +398,7 @@ fn attempt_multitile_case(
                 src_y: &src_y_strided,
                 src_u: &src_u_strided,
                 src_v: &src_v_strided,
+                src_y_frame: &src_y_strided,
                 base_y: 0,
                 base_uv: 0,
                 rows_y: &rows_y,
@@ -590,4 +591,111 @@ fn encoder_gate_multitile_byte_match() {
          128/256/512) must byte-match real aomenc end-to-end -- a mismatch is a genuine multi-tile \
          machinery regression (per-tile pack bounds / fresh entropy / length-prefix assembly)"
     );
+}
+
+/// **Threaded == serial, byte for byte.** The phase-1 row-tile workers own
+/// disjoint `split_at_mut` bands of the shared recon planes and banded source
+/// slices (`SbEncodeEnv::base_y`/`base_uv` carry each band's origin), so the
+/// parallel walk must produce bit-identical `SbTree`s and an identical
+/// `OBU_FRAME`. Any recon/src read escaping its tile band would panic or
+/// diverge here. The serial arm is already C-gated above, so equality here
+/// also holds the threaded output to real aomenc at the same tile config.
+#[test]
+fn encoder_threaded_row_bands_match_serial() {
+    use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
+
+    let flat = |_r: usize, _c: usize| 128u8;
+    fn hgrad(w: usize) -> impl Fn(usize, usize) -> u8 {
+        move |_r, c| (40 + c * 150 / w) as u8
+    }
+    fn vgrad(h: usize) -> impl Fn(usize, usize) -> u8 {
+        move |r, _c| (40 + r * 150 / h) as u8
+    }
+    let noise = || -> Box<dyn Fn(usize, usize) -> u8> {
+        Box::new(move |r, c| {
+            // deterministic texture — stresses intra predictors + IBC refs
+            let v = (r as u32)
+                .wrapping_mul(2654435761)
+                .wrapping_add((c as u32).wrapping_mul(40503))
+                .wrapping_add((r * c) as u32);
+            ((v >> 13) & 0xff) as u8
+        })
+    };
+    // Asymmetric texture: a row-band indexing slip (e.g. a worker handed the
+    // WRONG band) is invisible on vertically symmetric content — the first
+    // cut of the banding bug passed two noise cells on a mirror-tiled source
+    // for exactly that reason. This mixes in a row-parity-dependent term so
+    // every plane row carries distinct data.
+    let asym = || -> Box<dyn Fn(usize, usize) -> u8> {
+        Box::new(move |r, c| {
+            let v = (r as u32)
+                .wrapping_mul(2246822519)
+                .wrapping_add((c as u32).wrapping_mul(3266489917))
+                .wrapping_add((r as u32).wrapping_pow(2))
+                .wrapping_add((c as u32) << 7);
+            ((v >> 11) & 0xff) as u8
+        })
+    };
+    // (w, h, tile_cols_log2, tile_rows_log2, cq, name, content)
+    let cases: Vec<(
+        usize,
+        usize,
+        i32,
+        i32,
+        i32,
+        &str,
+        Box<dyn Fn(usize, usize) -> u8>,
+    )> = vec![
+        (256, 256, 0, 1, 48, "flat 1x2", Box::new(flat)),
+        (256, 256, 0, 2, 48, "flat 1x4", Box::new(flat)),
+        (256, 256, 1, 1, 48, "vgrad 2x2", Box::new(vgrad(256))),
+        (512, 512, 0, 2, 48, "hgrad 1x4", Box::new(hgrad(512))),
+        (512, 512, 0, 2, 32, "noise 1x4", noise()),
+        (256, 256, 0, 1, 32, "noise 1x2", noise()),
+        // Asymmetric content — a band misassignment cannot hide.
+        (512, 512, 0, 2, 32, "asym 1x4", asym()),
+        (512, 512, 2, 2, 27, "asym 4x4", asym()),
+        // Non-SB-aligned height: the last tile row is partial, so the bottom
+        // band must keep the plane's padded tail (HOG window + recon writes
+        // reach past mi_rows*4 — this shape panics if the tail is dropped).
+        (392, 392, 0, 2, 27, "asym 1x4 unaligned", asym()),
+        (256, 392, 0, 1, 40, "asym 1x2 unaligned", asym()),
+    ];
+    for (w, h, tcl, trl, cq, name, content) in &cases {
+        let (y, u, v): (Vec<u16>, Vec<u16>, Vec<u16>) = {
+            let cw = w / 2;
+            let ch = h / 2;
+            (
+                (0..h * w).map(|i| content(i % w, i / w) as u16).collect(),
+                vec![128u16; cw * ch],
+                vec![128u16; cw * ch],
+            )
+        };
+        let mut base = KeyFrameConfig::allintra_speed0(*w, *h, 8, false, 1, 1, *cq);
+        base.tile_columns_log2 = *tcl;
+        base.tile_rows_log2 = *trl;
+        base.cpu_used = 3;
+        let serial = encode_key_frame(
+            KeyFramePlanes::new(&y, &u, &v),
+            &base,
+        )
+        .unwrap_or_else(|e| panic!("{name}: serial encode refused: {e}"));
+        for threads in [2usize, 4] {
+            let mut cfg = base.clone();
+            cfg.threads = threads;
+            let got = encode_key_frame(
+                KeyFramePlanes::new(&y, &u, &v),
+                &cfg,
+            )
+            .unwrap_or_else(|e| panic!("{name}: threads={threads} refused: {e}"));
+            assert_eq!(
+                got, serial,
+                "{name}: threads={threads} diverged from the serial walk \
+                 ({}B vs {}B) — a read escaped its row band or a worker \
+                 carried cross-tile state",
+                got.len(),
+                serial.len()
+            );
+        }
+    }
 }

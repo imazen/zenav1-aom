@@ -1794,7 +1794,7 @@ pub fn nonrd_pick_intra_mode(
     let mu_w = MU_UNIT_4X4.min(walk_blocks_wide);
     let mu_h = MU_UNIT_4X4.min(walk_blocks_high);
 
-    let ref_off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+    let ref_off = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
     let src_off = ref_off; // src and recon share layout in this port
 
     let above_ctx = INTRA_MODE_CONTEXT[lctx.above_mode.min(12)];

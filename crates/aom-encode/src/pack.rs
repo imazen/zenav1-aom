@@ -1992,7 +1992,7 @@ pub fn pack_tile_lr_stop(
                 // `av1_adjust_q_from_delta_q_res` — shared helper so every
                 // emit pass derives the same per-SB sequence.
                 let sb_off =
-                    env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+                    (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
                 let adjusted = dq.sb_qindex(
                     env.src_y,
                     sb_off,
@@ -2062,7 +2062,7 @@ pub fn pack_tile_lr_stop(
                 let mi_w = MI_SIZE_WIDE_B[sb_size] as i32;
                 let mi_h = MI_SIZE_HIGH_B[sb_size] as i32;
                 let ref_off_y =
-                    env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+                    (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
                 let mb_to_right_edge = (env.mi_cols - mi_w - mi_col) * 4 * 8;
                 let mb_to_bottom_edge = (env.mi_rows - mi_h - mi_row) * 4 * 8;
                 let (var_min, var_max) = crate::partition_pick::log_sub_block_var(
@@ -2640,7 +2640,7 @@ pub fn pack_tile_from_trees_lr(
             // modes 2/3 — the repack then signaled a different qindex than the
             // search priced (and than C).
             let (sb_current_qindex, dq_rows) = if let Some(dq) = &env.deltaq {
-                let sb_off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+                let sb_off = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
                 let adjusted = dq.sb_qindex(
                     env.src_y,
                     sb_off,
@@ -2702,7 +2702,7 @@ pub fn pack_tile_from_trees_lr(
                 let mi_w = MI_SIZE_WIDE_B[sb_size] as i32;
                 let mi_h = MI_SIZE_HIGH_B[sb_size] as i32;
                 let ref_off_y =
-                    env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+                    (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
                 let mb_to_right_edge = (env.mi_cols - mi_w - mi_col) * 4 * 8;
                 let mb_to_bottom_edge = (env.mi_rows - mi_h - mi_row) * 4 * 8;
                 let (var_min, var_max) = crate::partition_pick::log_sub_block_var(

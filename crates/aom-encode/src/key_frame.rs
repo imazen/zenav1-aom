@@ -611,6 +611,17 @@ pub struct KeyFrameConfig {
     pub tile_columns_log2: i32,
     /// `AV1E_SET_TILE_ROWS`. See [`Self::tile_columns_log2`].
     pub tile_rows_log2: i32,
+    /// Worker count for the phase-1 per-tile walk (`--threads`). Tiles are
+    /// entropy-independent by construction, so the parallel frontier is the
+    /// TILE ROW: workers get disjoint row bands of the source and recon
+    /// planes via `split_at_mut` (no unsafe). `1` (the
+    /// [`Self::allintra_speed0`] default) is the serial walk — byte-identical
+    /// output either way, since the tile grid itself is unchanged. To
+    /// parallelize, raise [`Self::tile_rows_log2`]: a 1-row grid has no
+    /// parallel frontier. (C's row-mt threads the SB pipeline inside one
+    /// tile; the port deliberately does not — it keeps C's own
+    /// tile-independence property instead.)
+    pub threads: usize,
     /// `AV1E_SET_SUPERBLOCK_SIZE` (`AOM_SUPERBLOCK_SIZE_128X128` when true,
     /// the `_64X64` default otherwise). `false` (the
     /// [`Self::allintra_speed0`] default) matches every other gate in this
@@ -705,6 +716,7 @@ impl KeyFrameConfig {
             enable_restoration: false,
             tile_columns_log2: 0,
             tile_rows_log2: 0,
+            threads: 1,
             sb_size_128: false,
             color: ColorDescription::default(),
             // aomenc's own ALLINTRA defaults. Both are gated on the frame's
@@ -2142,6 +2154,7 @@ fn scm_trial_run_pass(
         src_y: inp.src_y,
         src_u: inp.src_u,
         src_v: inp.src_v,
+        src_y_frame: inp.src_y,
         base_y: 0,
         base_uv: 0,
         rows_y: &rows_y,
@@ -3314,6 +3327,7 @@ pub fn encode_key_frame_with(
         src_y: &src_y,
         src_u: &src_u,
         src_v: &src_v,
+        src_y_frame: &src_y,
         base_y: 0,
         base_uv: 0,
         rows_y: &rows_y,
@@ -3566,38 +3580,196 @@ pub fn encode_key_frame_with(
     // tile context per tile (`av1_reset_loop_restoration` + a fresh copy of
     // `cm->fc`), which is why each tile gets its own `KfFrameContext`.
     let mut frame_trees: Vec<Option<SbTree>> = (0..(n_sb_x * n_sb_y)).map(|_| None).collect();
-    for &(r0, c0, r1, c1, n_tr, n_tc) in &tile_grid {
-        env.tile_row_start = r0;
-        env.tile_col_start = c0;
-        env.tile_row_end = r1;
-        env.tile_col_end = c1;
-        let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
-        let mut scratch = OdEcEnc::new();
-        let t = crate::pack::pack_tile_stop(
-            &mut scratch,
-            &env,
-            &pick_cfg,
-            &phase1_pack_cfg,
-            &mut kf_tile,
-            &mut recon_y,
-            &mut recon_u,
-            &mut recon_v,
-            r0,
-            c0,
-            n_tr,
-            n_tc,
-            sb_mi,
-            sb_block,
-            opts.stop,
-        )
-        .map_err(KeyFrameError::Cancelled)?;
-        let _ = scratch.done();
-        let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
-        for (i, tree) in t.into_iter().enumerate() {
-            let sb_r = sb_r0 + i as i32 / n_tc;
-            let sb_c = sb_c0 + i as i32 % n_tc;
-            frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
+    // Phase-1 parallel frontier = tile ROWS. Every read the walk makes is
+    // tile-bounded (intra-pred availability is `mi_row > tile_row_start`,
+    // IntraBC's DV limits clamp to `tile.mi_row_start`, and no post-filter
+    // runs inside the tile walk), so disjoint `split_at_mut` bands of the
+    // recon planes + banded source slices give each worker a sound `&mut`
+    // region — no unsafe. The ONE exception is the CNN-prune window, which
+    // reads the crop-clamped frame through `env.src_y_frame` (always the
+    // full plane). `SbEncodeEnv::base_y`/`base_uv` carry each band's origin
+    // so the walk's absolute-mi offset math is unchanged (`abs - base`).
+    let n_workers = cfg.threads.max(1).min((n_tile_rows as usize).max(1));
+    if n_workers <= 1 {
+        for &(r0, c0, r1, c1, n_tr, n_tc) in &tile_grid {
+            env.tile_row_start = r0;
+            env.tile_col_start = c0;
+            env.tile_row_end = r1;
+            env.tile_col_end = c1;
+            let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+            let mut scratch = OdEcEnc::new();
+            let t = crate::pack::pack_tile_stop(
+                &mut scratch,
+                &env,
+                &pick_cfg,
+                &phase1_pack_cfg,
+                &mut kf_tile,
+                &mut recon_y,
+                &mut recon_u,
+                &mut recon_v,
+                r0,
+                c0,
+                n_tr,
+                n_tc,
+                sb_mi,
+                sb_block,
+                opts.stop,
+            )
+            .map_err(KeyFrameError::Cancelled)?;
+            let _ = scratch.done();
+            let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+            for (i, tree) in t.into_iter().enumerate() {
+                let sb_r = sb_r0 + i as i32 / n_tc;
+                let sb_c = sb_c0 + i as i32 % n_tc;
+                frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
+            }
         }
+    } else {
+        let n_tr = n_tile_rows as usize;
+        let n_tc = n_tile_cols as usize;
+        // Band bounds per tile-row, in PLANE elements. Tile rows partition
+        // the mi grid, and their starts are SB-aligned, so `r*4 >> ss_y`
+        // chroma rows also partition exactly. The LAST band runs to the end
+        // of the plane: `buf_h`/`stride` carry border-extension padding past
+        // `mi_rows*4`, and the bottom (possibly partial) SB row's HOG window
+        // and recon writes legitimately reach into it. Interior bands end
+        // exactly at their tile-row bound — recon writes never cross a tile
+        // row, so disjoint `&mut` bands suffice.
+        let band_y: Vec<(usize, usize)> = (0..n_tr)
+            .map(|tr| {
+                let t = &tile_grid[tr * n_tc];
+                let end = if tr == n_tr - 1 {
+                    recon_y.len()
+                } else {
+                    t.2 as usize * 4 * stride
+                };
+                (t.0 as usize * 4 * stride, end)
+            })
+            .collect();
+        let band_uv: Vec<(usize, usize)> = (0..n_tr)
+            .map(|tr| {
+                let t = &tile_grid[tr * n_tc];
+                let end = if tr == n_tr - 1 {
+                    recon_u.len()
+                } else {
+                    ((t.2 as usize * 4) >> cfg.ss_y) * stride
+                };
+                (((t.0 as usize * 4) >> cfg.ss_y) * stride, end)
+            })
+            .collect();
+        let y_bands = split_row_bands(&mut recon_y, &band_y);
+        let u_bands = split_row_bands(&mut recon_u, &band_uv);
+        let v_bands = split_row_bands(&mut recon_v, &band_uv);
+        // Contiguous row chunks — rows are the same height in mi by uniform
+        // spacing, so count-balancing is work-balancing. The first `rem`
+        // workers take one extra row so every worker is used even when
+        // `n_workers` does not divide `n_tr`.
+        let workers = n_workers.min(n_tr);
+        let (rows_per, rem) = (n_tr / workers, n_tr % workers);
+        let stop = opts.stop;
+        let env = &env;
+        let pick_cfg = &pick_cfg;
+        let phase1_pack_cfg = &phase1_pack_cfg;
+        // Move closures capture by value — rebind every shared input as a
+        // `Copy` slice/ref so all workers see the same data.
+        let tile_grid = tile_grid.as_slice();
+        let band_y = band_y.as_slice();
+        let band_uv = band_uv.as_slice();
+        let src_y = src_y.as_slice();
+        let src_u = src_u.as_slice();
+        let src_v = src_v.as_slice();
+        // Bands must reach each worker IN raster order — a Vec's `pop` hands
+        // them out reversed (the bug the threaded-byte gate caught), so the
+        // bands are yielded through `into_iter` instead.
+        let mut y_it = y_bands.into_iter();
+        let mut u_it = u_bands.into_iter();
+        let mut v_it = v_bands.into_iter();
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            let mut rows_left = 0..n_tr;
+            for w in 0..workers {
+                if rows_left.is_empty() {
+                    break;
+                }
+                let take = rows_per + usize::from(w < rem);
+                let rows: Vec<usize> = rows_left.by_ref().take(take).collect();
+                let mut wy: Vec<&mut [u16]> = (0..take)
+                    .map(|_| y_it.next().expect("one band per tile row"))
+                    .collect();
+                let mut wu: Vec<&mut [u16]> = (0..take)
+                    .map(|_| u_it.next().expect("one band per tile row"))
+                    .collect();
+                let mut wv: Vec<&mut [u16]> = (0..take)
+                    .map(|_| v_it.next().expect("one band per tile row"))
+                    .collect();
+                handles.push(s.spawn(move || {
+                    let mut out: Vec<(usize, Vec<SbTree>)> = Vec::new();
+                    for (li, &tr) in rows.iter().enumerate() {
+                        for tc in 0..n_tc {
+                            let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
+                            let env_w = crate::encode_sb::SbEncodeEnv {
+                                tile_row_start: r0,
+                                tile_col_start: c0,
+                                tile_row_end: r1,
+                                tile_col_end: c1,
+                                base_y: band_y[tr].0,
+                                base_uv: band_uv[tr].0,
+                                // Source reads are immutable — the slice may
+                                // safely run past the band end (reads below a
+                                // tile row, e.g. the bottom SB's padded
+                                // region, stay correct). Reads ABOVE the band
+                                // start are still impossible; the one such
+                                // reader uses `src_y_frame` instead.
+                                src_y: &src_y[band_y[tr].0..],
+                                src_u: &src_u[band_uv[tr].0..],
+                                src_v: &src_v[band_uv[tr].0..],
+                                ..*env
+                            };
+                            let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+                            let mut scratch = OdEcEnc::new();
+                            let t = crate::pack::pack_tile_stop(
+                                &mut scratch,
+                                &env_w,
+                                pick_cfg,
+                                phase1_pack_cfg,
+                                &mut kf_tile,
+                                &mut wy[li][..],
+                                &mut wu[li][..],
+                                &mut wv[li][..],
+                                r0,
+                                c0,
+                                n_tr_s,
+                                n_tc_s,
+                                sb_mi,
+                                sb_block,
+                                stop,
+                            )?;
+                            let _ = scratch.done();
+                            out.push((tr * n_tc + tc, t));
+                        }
+                    }
+                    Ok::<_, enough::StopReason>(out)
+                }));
+            }
+            for h in handles {
+                // A worker panic is a bug, not a cancellation — propagate it
+                // rather than converting to an encode error.
+                let tile_results = h
+                    .join()
+                    .unwrap_or_else(|p| std::panic::resume_unwind(p))?;
+                for (tile_idx, t) in tile_results {
+                    let (r0, c0, _, _, _, n_tc_s) = tile_grid[tile_idx];
+                    let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+                    for (i, tree) in t.into_iter().enumerate() {
+                        let sb_r = sb_r0 + i as i32 / n_tc_s;
+                        let sb_c = sb_c0 + i as i32 % n_tc_s;
+                        frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
+                    }
+                }
+            }
+            Ok::<_, enough::StopReason>(())
+        })
+        .map_err(KeyFrameError::Cancelled)?;
     }
     let trees: Vec<SbTree> = frame_trees
         .into_iter()
@@ -4051,6 +4223,29 @@ pub fn encode_key_frame_with(
     out.extend_from_slice(&seq_obu);
     out.extend_from_slice(&frame_obu);
     Ok(out)
+}
+
+/// Split a plane into one disjoint `&mut` band per `(start, end)` element
+/// range — the row-tile threading primitive. Bounds must be ascending and
+/// non-overlapping (tile rows partition the plane); any padded tail past the
+/// last band is dropped, so a stray below-band write panics instead of
+/// corrupting nothing.
+fn split_row_bands<'a>(
+    plane: &'a mut [u16],
+    bounds: &[(usize, usize)],
+) -> Vec<&'a mut [u16]> {
+    let mut bands = Vec::with_capacity(bounds.len());
+    let mut rest = plane;
+    let mut cursor = 0usize;
+    for &(s, e) in bounds {
+        debug_assert!(s >= cursor && e >= s, "band bounds must be ascending");
+        let (_, tail) = rest.split_at_mut(s - cursor);
+        let (band, tail2) = tail.split_at_mut(e - s);
+        bands.push(band);
+        rest = tail2;
+        cursor = e;
+    }
+    bands
 }
 
 /// `av1_superres_downscale` for one tight plane (`w x h` samples) to `coded_w`

@@ -95,6 +95,22 @@ fn main() {
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
+    // Optional 7th/8th args (after cdef_mode): tile grid `C,R` and port worker
+    // count — the same spellings eprof_x86 uses.
+    if let Some(t) = std::env::args().nth(7) {
+        let (c, r) = match t.split_once(',') {
+            Some((c, r)) => (c.parse::<i32>().unwrap(), r.parse::<i32>().unwrap()),
+            None => {
+                let n = t.parse::<i32>().unwrap();
+                (n, n)
+            }
+        };
+        cfg.tile_columns_log2 = c;
+        cfg.tile_rows_log2 = r;
+    }
+    if let Some(t) = std::env::args().nth(8) {
+        cfg.threads = t.parse::<usize>().unwrap();
+    }
     cfg.enable_cdef = cdef_mode != 0;
     cfg.enable_restoration = cdef_mode == 0;
     cfg.quality.cdef_adaptive = cdef_mode == 3;

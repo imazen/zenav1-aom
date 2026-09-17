@@ -422,6 +422,7 @@ fn encode_sb_dry_run_matches_c_walk() {
             src_y: &src_y,
             src_u: &src_u,
             src_v: &src_v,
+            src_y_frame: &src_y,
             base_y,
             base_uv,
             rows_y: &rows_y,

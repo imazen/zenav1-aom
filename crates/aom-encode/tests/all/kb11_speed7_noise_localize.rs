@@ -412,6 +412,7 @@ fn run_and_localize(cq_level: i32, mono: bool) -> bool {
         src_y: &src_y_strided,
         src_u: &src_u_strided,
         src_v: &src_v_strided,
+        src_y_frame: &src_y_strided,
         base_y: 0,
         base_uv: 0,
         rows_y: &rows_y,

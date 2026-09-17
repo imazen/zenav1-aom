@@ -1448,6 +1448,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
             src_y: &src_y,
             src_u: &src_u,
             src_v: &src_v,
+            src_y_frame: &src_y,
             base_y,
             base_uv,
             rows_y: &rows_y,

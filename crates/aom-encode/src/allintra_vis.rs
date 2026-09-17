@@ -1168,7 +1168,7 @@ pub fn av1_set_mb_wiener_variance(
     while row < mi_rows {
         let mut col = 0i32;
         while col < mi_cols {
-            let src_off = base_y + (row as usize * 4) * stride + col as usize * 4;
+            let src_off = (row as usize * 4) * stride + col as usize * 4 - base_y;
 
             // --- intra-mode SATD search (av1_calc_mb_wiener_var_row :343-360) ---
             let mut best_mode = 0usize; // DC_PRED

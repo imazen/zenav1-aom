@@ -515,7 +515,7 @@ pub fn choose_var_based_partitioning_key(
     let sb_px = if is_small_sb { 64i32 } else { 128 };
     let pixels_wide = sb_px.min((f.mi_cols - mi_col) * 4);
     let pixels_high = sb_px.min((f.mi_rows - mi_row) * 4);
-    let sb_off = base_y + (mi_row as usize * 4) * stride + mi_col as usize * 4;
+    let sb_off = (mi_row as usize * 4) * stride + mi_col as usize * 4 - base_y;
 
     for blk64_idx in 0..num_64x64_blocks {
         let x64_idx = blk_idx_x(blk64_idx, 6);

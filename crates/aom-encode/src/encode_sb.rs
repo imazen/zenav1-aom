@@ -503,10 +503,22 @@ pub struct SbEncodeEnv<'a> {
     /// One stride shared by all planes (fixture convenience — the walk only
     /// ever derives per-plane offsets from it).
     pub stride: usize,
-    /// Source planes + the pixel offset of mi (0,0) in each.
+    /// Source planes + the BAND BASE of each: every pixel offset derived in
+    /// the walk is `mi_row*4*stride + mi_col*4 - base_*`, i.e. `base_*` is the
+    /// absolute index of the slice's element 0 — 0 when the slices span the
+    /// whole plane (the serial path), the row-tile band's start when
+    /// `key_frame` hands a row-parallel worker its own sub-slice of the
+    /// shared planes. Subtracted (not added) so a worker's band can sit at a
+    /// nonzero plane offset while the walk keeps using absolute mi coords.
     pub src_y: &'a [u16],
     pub src_u: &'a [u16],
     pub src_v: &'a [u16],
+    /// The FULL-frame luma source, indexed absolutely — for the one walk
+    /// reader that is not tile-band-bounded: `extract_intra_cnn_window`'s
+    /// 65x65 crop-clamped window reads a row above the SB (and past the tile's
+    /// bottom edge), matching C's read of the border-extended `x->src.buf`.
+    /// Equals `src_y` when the walk holds the whole plane.
+    pub src_y_frame: &'a [u16],
     pub base_y: usize,
     pub base_uv: usize,
     // Quantizer rows per plane.
@@ -1068,7 +1080,7 @@ pub fn encode_b_intra_dry(
             .expect("an inter leaf needs SbEncodeEnv::ref_frame");
         let bw = crate::tx_search::BLK_W_B[bsize];
         let bh = crate::tx_search::BLK_H_B[bsize];
-        let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+        let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
         let a0 = mi_col as usize;
         let l0 = (mi_row & 31) as usize;
         // Luma: co-located copy, clipped to the recon's mi-aligned extent
@@ -1179,7 +1191,7 @@ pub fn encode_b_intra_dry(
     if winner.use_intrabc {
         let bw = crate::tx_search::BLK_W_B[bsize];
         let bh = crate::tx_search::BLK_H_B[bsize];
-        let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+        let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
         let a0 = mi_col as usize;
         let l0 = (mi_row & 31) as usize;
         let (fm_r, fm_c) = (winner.dv_row / 8, winner.dv_col / 8);
@@ -1285,7 +1297,7 @@ pub fn encode_b_intra_dry(
     let store_y = store_cfl_required(env.monochrome, is_chroma_ref, winner.uv_mode);
 
     // Step 2, plane 0: av1_encode_intra_block_plane(AOM_PLANE_Y).
-    let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
     let mut above_y = [0i8; 32];
@@ -1391,7 +1403,7 @@ pub fn encode_b_intra_dry(
     if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
         let bw = crate::tx_search::BLK_W_B[bsize];
         let bh = crate::tx_search::BLK_H_B[bsize];
-        let off = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+        let off = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
         let mut rh = 0u64;
         let mut col = String::new();
         for r in 0..bh.min(16) {
@@ -2656,7 +2668,7 @@ fn encode_b_intrabc_coeff(
     let mi_h = MI_SIZE_HIGH_B[bsize];
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
-    let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
     let use_trellis = crate::encode_intra::is_trellis_used(env.enable_optimize_b, output_enabled);
     // Frame-edge-clipped extents via the validated `max_block_wide/high` port
     // (av1_common_int.h:1567/1581) — hand-rolled mi-difference clips are wrong

@@ -131,6 +131,10 @@ fn main() {
         cfg.tile_columns_log2 = c;
         cfg.tile_rows_log2 = r;
     }
+    // Optional 8th arg: worker count for the port arm's phase-1 row-tile walk.
+    if let Some(t) = std::env::args().nth(8) {
+        cfg.threads = t.parse::<usize>().unwrap();
+    }
     cfg.enable_cdef = false;
     cfg.enable_restoration = true;
 

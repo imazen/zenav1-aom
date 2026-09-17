@@ -851,7 +851,7 @@ fn leaf_pick_sb_modes(
     let up_available = mi_row > env.tile_row_start;
     let left_available = mi_col > env.tile_col_start;
     let is_chroma_ref = is_chroma_reference(mi_row, mi_col, bsize, env.ss_x, env.ss_y);
-    let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
 
@@ -2888,7 +2888,9 @@ fn extract_intra_cnn_window(env: &SbEncodeEnv, mi_row: i32, mi_col: i32) -> Vec<
         let r = (sb_py + i - 1).clamp(0, crop_h - 1) as usize;
         for j in 0..65i32 {
             let c = (sb_px + j - 1).clamp(0, crop_w - 1) as usize;
-            win[(i * 65 + j) as usize] = env.src_y[env.base_y + r * env.stride + c];
+            // `src_y_frame`, not `src_y`: the window's crop-clamp reads cross
+            // the row-tile band (C reads the border-extended full frame).
+            win[(i * 65 + j) as usize] = env.src_y_frame[r * env.stride + c];
         }
     }
     win
@@ -3322,7 +3324,7 @@ pub fn rd_pick_partition_real(
     // same established simplification as the AB stage's handling).
     let prune_rect_part_using_4x4_var_deviation = cfg.allintra && cfg.speed >= 6;
     if cfg.allintra && (bsize >= 6 || prune_rect_part_using_4x4_var_deviation) {
-        let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+        let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
         let mb_right = (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8;
         let mb_bottom = (env.mi_rows - MI_SIZE_HIGH_B[bsize] as i32 - mi_row) * 4 * 8;
         let (var_min, var_max) = log_sub_block_var(
@@ -3945,7 +3947,7 @@ pub fn rd_pick_partition_real(
         // (harmless duplication, matches this crate's established per-site
         // convention for small helper computations -- e.g. pack.rs's own
         // PARTITION_* const duplication, module docs).
-        let ab_node_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+        let ab_node_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
         let pb_source_variance =
             perpixel_variance_y(env.src_y, ab_node_off_y, env.stride, bsize, env.bd);
 
@@ -4206,7 +4208,7 @@ pub fn rd_pick_partition_real(
             const BLK_H: [usize; 22] = [
                 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
             ];
-            let node_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+            let node_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
             // pb_source_variance = x->source_variance: identical to the
             // NONE-stage leaf's own value regardless of whether NONE ran
             // (av1_get_perpixel_variance_facade is a pure fn of block
@@ -5720,7 +5722,7 @@ fn nonrd_leaf_pick_and_encode(
     // x->source_variance: pick_sb_modes_nonrd:2306-2311 recomputes per leaf
     // (bsize < sb_size, or the SB-level value is the identical
     // perpixel-variance — module docs in nonrd_pickmode.rs).
-    let ref_off_y = env.base_y + (mi_row as usize * 4) * env.stride + mi_col as usize * 4;
+    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
     let source_variance = perpixel_variance_y(env.src_y, ref_off_y, env.stride, bsize, env.bd);
     *last_source_variance = source_variance;
 
