@@ -23,15 +23,15 @@ type Txfm1d = fn(&[i32], &mut [i32], i32, &[i8]);
 pub const TX_SIZES_ALL: usize = 19;
 
 #[rustfmt::skip]
-pub(crate) static TX_SIZE_WIDE: [usize; TX_SIZES_ALL] =
+pub(crate) const TX_SIZE_WIDE: [usize; TX_SIZES_ALL] =
     [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
 #[rustfmt::skip]
-pub(crate) static TX_SIZE_HIGH: [usize; TX_SIZES_ALL] =
+pub(crate) const TX_SIZE_HIGH: [usize; TX_SIZES_ALL] =
     [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
 
 // av1_fwd_txfm_shift_ls[tx_size][0..3]
 #[rustfmt::skip]
-pub(crate) static FWD_SHIFT: [[i8; 3]; TX_SIZES_ALL] = [
+pub(crate) const FWD_SHIFT: [[i8; 3]; TX_SIZES_ALL] = [
     [2, 0, 0], [2, -1, 0], [2, -2, 0], [2, -4, 0], [0, -2, -2],
     [2, -1, 0], [2, -1, 0], [2, -2, 0], [2, -2, 0], [2, -4, 0],
     [2, -4, 0], [0, -2, -2], [2, -4, -2], [2, -1, 0], [2, -1, 0],
@@ -40,12 +40,12 @@ pub(crate) static FWD_SHIFT: [[i8; 3]; TX_SIZES_ALL] = [
 
 // av1_fwd_cos_bit_col / _row [txw_idx][txh_idx]
 #[rustfmt::skip]
-pub(crate) static COS_BIT_COL: [[i8; 5]; 5] = [
+pub(crate) const COS_BIT_COL: [[i8; 5]; 5] = [
     [13, 13, 13, 0, 0], [13, 13, 13, 12, 0], [13, 13, 13, 12, 13],
     [0, 13, 13, 12, 13], [0, 0, 13, 12, 13],
 ];
 #[rustfmt::skip]
-pub(crate) static COS_BIT_ROW: [[i8; 5]; 5] = [
+pub(crate) const COS_BIT_ROW: [[i8; 5]; 5] = [
     [13, 13, 12, 0, 0], [13, 13, 13, 12, 0], [13, 13, 12, 13, 12],
     [0, 12, 13, 12, 11], [0, 0, 12, 11, 10],
 ];
@@ -58,13 +58,13 @@ pub const TX_TYPES: usize = 16;
 
 // TX_TYPE_1D: 0:DCT 1:ADST 2:FLIPADST 3:IDTX
 #[rustfmt::skip]
-pub(crate) static VTX_TAB: [usize; TX_TYPES] = [0,1,0,1,2,0,2,1,2,3,0,3,1,3,2,3];
+pub(crate) const VTX_TAB: [usize; TX_TYPES] = [0,1,0,1,2,0,2,1,2,3,0,3,1,3,2,3];
 #[rustfmt::skip]
-pub(crate) static HTX_TAB: [usize; TX_TYPES] = [0,0,1,1,0,2,2,2,1,3,3,0,3,1,3,2];
+pub(crate) const HTX_TAB: [usize; TX_TYPES] = [0,0,1,1,0,2,2,2,1,3,3,0,3,1,3,2];
 
 // (ud_flip, lr_flip) per tx_type
 #[rustfmt::skip]
-pub(crate) static FLIP_CFG: [(bool, bool); TX_TYPES] = [
+pub(crate) const FLIP_CFG: [(bool, bool); TX_TYPES] = [
     (false,false),(false,false),(false,false),(false,false),
     (true,false),(false,true),(true,true),(false,true),
     (true,false),(false,false),(false,false),(false,false),
@@ -75,7 +75,7 @@ pub(crate) static FLIP_CFG: [(bool, bool); TX_TYPES] = [
 //            8:IDTX4 9:IDTX8 10:IDTX16 11:IDTX32 ; -1 = INVALID
 // av1_txfm_type_ls[size_idx][tx_type_1d]
 #[rustfmt::skip]
-pub(crate) static TXFM_TYPE_LS: [[i32; 4]; 5] = [
+pub(crate) const TXFM_TYPE_LS: [[i32; 4]; 5] = [
     [0, 5, 5, 8],
     [1, 6, 6, 9],
     [2, 7, 7, 10],
@@ -133,6 +133,7 @@ pub(crate) fn get_rect_tx_log_ratio(col: i64, row: i64) -> i32 {
     0
 }
 
+#[derive(Clone, Copy)]
 struct Cfg {
     tx_size: usize,
     shift: [i8; 3],
@@ -152,26 +153,52 @@ struct Cfg {
     valid: bool,
 }
 
-fn get_fwd_txfm_cfg(tx_type: usize, tx_size: usize) -> Cfg {
-    let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
-    let tx_type_1d_col = VTX_TAB[tx_type];
-    let tx_type_1d_row = HTX_TAB[tx_type];
-    let txw_idx = log2_idx(TX_SIZE_WIDE[tx_size]);
-    let txh_idx = log2_idx(TX_SIZE_HIGH[tx_size]);
-    let txfm_type_col = TXFM_TYPE_LS[txh_idx][tx_type_1d_col];
-    let txfm_type_row = TXFM_TYPE_LS[txw_idx][tx_type_1d_row];
-    let valid = txfm_type_col != -1 && txfm_type_row != -1;
-    Cfg {
-        tx_size,
-        shift: FWD_SHIFT[tx_size],
-        cos_bit_col: COS_BIT_COL[txw_idx][txh_idx],
-        cos_bit_row: COS_BIT_ROW[txw_idx][txh_idx],
-        txfm_type_col,
-        txfm_type_row,
-        ud_flip,
-        lr_flip,
-        valid,
+/// `FWD_CFG[tx_size][tx_type]` — the whole `get_fwd_txfm_cfg` derivation
+/// (FLIP_CFG/VTX/HTX/TXFM_TYPE_LS/COS_BIT_*/FWD_SHIFT lookups, six tables per
+/// call) flattened at compile time to one indexed load. Built by const-eval
+/// *from the source tables*, so it cannot drift from them.
+static FWD_CFG: [[Cfg; TX_TYPES]; TX_SIZES_ALL] = {
+    const INVALID: Cfg = Cfg {
+        tx_size: 0,
+        shift: [0; 3],
+        cos_bit_col: 0,
+        cos_bit_row: 0,
+        txfm_type_col: -1,
+        txfm_type_row: -1,
+        ud_flip: false,
+        lr_flip: false,
+        valid: false,
+    };
+    let mut out = [[INVALID; TX_TYPES]; TX_SIZES_ALL];
+    let mut ts = 0;
+    while ts < TX_SIZES_ALL {
+        let txw_idx = TX_SIZE_WIDE[ts].trailing_zeros() as usize - 2;
+        let txh_idx = TX_SIZE_HIGH[ts].trailing_zeros() as usize - 2;
+        let mut tt = 0;
+        while tt < TX_TYPES {
+            let (ud_flip, lr_flip) = FLIP_CFG[tt];
+            let tc = TXFM_TYPE_LS[txh_idx][VTX_TAB[tt]];
+            let tr = TXFM_TYPE_LS[txw_idx][HTX_TAB[tt]];
+            out[ts][tt] = Cfg {
+                tx_size: ts,
+                shift: FWD_SHIFT[ts],
+                cos_bit_col: COS_BIT_COL[txw_idx][txh_idx],
+                cos_bit_row: COS_BIT_ROW[txw_idx][txh_idx],
+                txfm_type_col: tc,
+                txfm_type_row: tr,
+                ud_flip,
+                lr_flip,
+                valid: tc != -1 && tr != -1,
+            };
+            tt += 1;
+        }
+        ts += 1;
     }
+    out
+};
+
+fn get_fwd_txfm_cfg(tx_type: usize, tx_size: usize) -> Cfg {
+    FWD_CFG[tx_size][tx_type]
 }
 
 /// Is `(tx_type, tx_size)` a supported forward-transform combination?

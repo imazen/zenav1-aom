@@ -10,8 +10,8 @@
 use crate::transform::cospi::{NEW_SQRT2_BITS, NEW_INV_SQRT2};
 use crate::transform::fdct::{clamp_value, round_shift};
 use crate::transform::txfm2d::{
-    get_rect_tx_log_ratio, log2_idx, FLIP_CFG, HTX_TAB, TXFM_TYPE_LS, TX_SIZE_HIGH, TX_SIZE_WIDE,
-    VTX_TAB,
+    get_rect_tx_log_ratio, FLIP_CFG, HTX_TAB, TXFM_TYPE_LS, TX_SIZES_ALL, TX_SIZE_HIGH,
+    TX_SIZE_WIDE, TX_TYPES, VTX_TAB,
 };
 use crate::transform::{
     av1_iadst16, av1_iadst4, av1_iadst8, av1_idct16, av1_idct32, av1_idct4, av1_idct64, av1_idct8,
@@ -24,7 +24,7 @@ pub(crate) const INV_COS_BIT: i32 = 12;
 
 // av1_inv_txfm_shift_ls[tx_size][0..2]
 #[rustfmt::skip]
-static INV_SHIFT: [[i8; 2]; 19] = [
+const INV_SHIFT: [[i8; 2]; 19] = [
     [0, -4], [-1, -4], [-2, -4], [-2, -4], [-2, -4],
     [0, -4], [0, -4], [-1, -4], [-1, -4], [-1, -4],
     [-1, -4], [-1, -4], [-1, -4], [-1, -4], [-1, -4],
@@ -61,6 +61,7 @@ fn opt_range(bd: i32) -> (i8, i8) {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Cfg {
     shift: [i8; 2],
     // The resolved `Txfm1d` pointers are NOT stored; see the forward twin in
@@ -74,21 +75,45 @@ struct Cfg {
     valid: bool,
 }
 
-fn get_inv_txfm_cfg(tx_type: usize, tx_size: usize) -> Cfg {
-    let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
-    let txw_idx = log2_idx(TX_SIZE_WIDE[tx_size]);
-    let txh_idx = log2_idx(TX_SIZE_HIGH[tx_size]);
-    let txfm_type_col = TXFM_TYPE_LS[txh_idx][VTX_TAB[tx_type]];
-    let txfm_type_row = TXFM_TYPE_LS[txw_idx][HTX_TAB[tx_type]];
-    let valid = txfm_type_col != -1 && txfm_type_row != -1;
-    Cfg {
-        shift: INV_SHIFT[tx_size],
-        txfm_type_col,
-        txfm_type_row,
-        ud_flip,
-        lr_flip,
-        valid,
+/// Inverse twin of `FWD_CFG` in `txfm2d.rs`: the six-table
+/// `get_inv_txfm_cfg` derivation flattened at compile time, built by
+/// const-eval from the shared source tables so it cannot drift.
+static INV_CFG: [[Cfg; TX_TYPES]; TX_SIZES_ALL] = {
+    const INVALID: Cfg = Cfg {
+        shift: [0; 2],
+        txfm_type_col: -1,
+        txfm_type_row: -1,
+        ud_flip: false,
+        lr_flip: false,
+        valid: false,
+    };
+    let mut out = [[INVALID; TX_TYPES]; TX_SIZES_ALL];
+    let mut ts = 0;
+    while ts < TX_SIZES_ALL {
+        let txw_idx = TX_SIZE_WIDE[ts].trailing_zeros() as usize - 2;
+        let txh_idx = TX_SIZE_HIGH[ts].trailing_zeros() as usize - 2;
+        let mut tt = 0;
+        while tt < TX_TYPES {
+            let (ud_flip, lr_flip) = FLIP_CFG[tt];
+            let tc = TXFM_TYPE_LS[txh_idx][VTX_TAB[tt]];
+            let tr = TXFM_TYPE_LS[txw_idx][HTX_TAB[tt]];
+            out[ts][tt] = Cfg {
+                shift: INV_SHIFT[ts],
+                txfm_type_col: tc,
+                txfm_type_row: tr,
+                ud_flip,
+                lr_flip,
+                valid: tc != -1 && tr != -1,
+            };
+            tt += 1;
+        }
+        ts += 1;
     }
+    out
+};
+
+fn get_inv_txfm_cfg(tx_type: usize, tx_size: usize) -> Cfg {
+    INV_CFG[tx_size][tx_type]
 }
 
 /// Is `(tx_type, tx_size)` a supported inverse-transform combination?
