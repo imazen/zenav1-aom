@@ -1091,10 +1091,11 @@ pub(crate) fn lpf_u8(
     bl: u8,
     li: u8,
     th: u8,
+    nseg: usize,
 ) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
-        lpf_impl_u8(width, buf, center, ts, step, bl, li, th),
+        lpf_impl_u8(width, buf, center, ts, step, bl, li, th, nseg),
         [v3, neon, wasm128, scalar]
     )
 }
@@ -1111,8 +1112,20 @@ fn lpf_impl_u8_scalar(
     bl: u8,
     li: u8,
     th: u8,
+    nseg: usize,
 ) {
-    crate::loopfilter::lpf_scalar(width, buf, center, ts, step, bl, li, th);
+    for s in 0..nseg {
+        crate::loopfilter::lpf_scalar(
+            width,
+            buf,
+            center.wrapping_add_signed(s as isize * 4 * step),
+            ts,
+            step,
+            bl,
+            li,
+            th,
+        );
+    }
 }
 
 #[magetypes(define(i32x4), neon, wasm128, -scalar)]
@@ -1127,6 +1140,7 @@ fn lpf_impl_u8(
     bl: u8,
     li: u8,
     th: u8,
+    nseg: usize,
 ) {
     // bd == 8 ⇒ shift == 0: bias 0x80, clamp [-128,127], thresholds unshifted.
     const BIAS: i32 = 0x80;
@@ -1141,19 +1155,6 @@ fn lpf_impl_u8(
     let iabs = |a: i32x4, b: i32x4| (a - b).abs();
     let rpo3 = |v: i32x4| (v + 4).shr_logical_const::<3>();
     let rpo4 = |v: i32x4| (v + 8).shr_logical_const::<4>();
-
-    let c = center as isize;
-    let load = |k: isize| -> i32x4 {
-        i32x4::from_array(
-            token,
-            [
-                buf[(c + k * ts) as usize] as i32,
-                buf[(c + step + k * ts) as usize] as i32,
-                buf[(c + 2 * step + k * ts) as usize] as i32,
-                buf[(c + 3 * step + k * ts) as usize] as i32,
-            ],
-        )
-    };
 
     let filter4 = |op1: i32x4,
                    op0: i32x4,
@@ -1330,7 +1331,20 @@ fn lpf_impl_u8(
         };
     }
 
-    match width {
+    for s in 0..nseg {
+        let c = center as isize + s as isize * 4 * step;
+        let load = |k: isize| -> i32x4 {
+            i32x4::from_array(
+                token,
+                [
+                    buf[(c + k * ts) as usize] as i32,
+                    buf[(c + step + k * ts) as usize] as i32,
+                    buf[(c + 2 * step + k * ts) as usize] as i32,
+                    buf[(c + 3 * step + k * ts) as usize] as i32,
+                ],
+            )
+        };
+        match width {
         4 => {
             let mut rows = [[0u8; 4]; 4];
             let vfast = ts == 1 && step >= 4;
@@ -1452,7 +1466,8 @@ fn lpf_impl_u8(
                 0 => o_q0, 1 => o_q1, 2 => o_q2, 3 => o_q3, 4 => o_q4, 5 => o_q5,
             );
         }
-        _ => crate::loopfilter::lpf_scalar(width, buf, center, ts, step, bl, li, th),
+        _ => crate::loopfilter::lpf_scalar(width, buf, c as usize, ts, step, bl, li, th),
+        }
     }
 }
 
@@ -1484,11 +1499,14 @@ fn lpf_impl_u8_v3(
     bl: u8,
     li: u8,
     th: u8,
+    nseg: usize,
 ) {
     use archmage::intrinsics::x86_64::*;
 
     let c = center as isize;
     let len = buf.len() as isize;
+    // The batch covers `nseg` 4-position segments at `c + s*4*step`.
+    let dseg = (nseg.saturating_sub(1) * 4) as isize * step;
 
     // [lo, hi) byte span this call reads and writes.
     let (lo, hi) = if step == 1 {
@@ -1500,8 +1518,8 @@ fn lpf_impl_u8_v3(
             _ => (-7, 6), // 14
         };
         (
-            c + (kmin * ts).min(kmax * ts),
-            c + (kmin * ts).max(kmax * ts) + 4,
+            c + (kmin * ts).min(kmax * ts) + dseg.min(0),
+            c + (kmin * ts).max(kmax * ts) + 4 + dseg.max(0),
         )
     } else if ts == 1 {
         // vertical: `span`-byte rows at c - w/2 + k*step, k in 0..4. Widths 4/6
@@ -1514,14 +1532,25 @@ fn lpf_impl_u8_v3(
             _ => (8, 16), // 14
         };
         (
-            c - half + (3 * step).min(0),
-            c - half + span + (3 * step).max(0),
+            c - half + (3 * step).min(0) + dseg.min(0),
+            c - half + span + (3 * step).max(0) + dseg.max(0),
         )
     } else {
         (0, -1) // neither layout — force the scalar arm
     };
     if !matches!(width, 4 | 6 | 8 | 14) || lo < 0 || hi > len {
-        crate::loopfilter::lpf_scalar(width, buf, center, ts, step, bl, li, th);
+        for s in 0..nseg {
+            crate::loopfilter::lpf_scalar(
+                width,
+                buf,
+                center.wrapping_add_signed(s as isize * 4 * step),
+                ts,
+                step,
+                bl,
+                li,
+                th,
+            );
+        }
         return;
     }
 
@@ -1698,7 +1727,9 @@ fn lpf_impl_u8_v3(
         )
     };
 
-    if step == 1 {
+    for s in 0..nseg {
+        let c = center as isize + s as isize * 4 * step;
+        if step == 1 {
         // ---- horizontal: aom_lpf_horizontal_{4,6,8,14}_sse2 ------------------
         match width {
             4 => {
@@ -2095,6 +2126,7 @@ fn lpf_impl_u8_v3(
                     }
                 }
             }
+        }
         }
     }
 }

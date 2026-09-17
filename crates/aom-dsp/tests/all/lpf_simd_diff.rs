@@ -187,6 +187,64 @@ fn hbd_lpf_batch_identical_to_singles() {
     }
 }
 
+/// Lowbd twin of [`hbd_lpf_batch_identical_to_singles`]:
+/// `loopfilter::{horizontal,vertical}_n` must be pixel-identical to `nseg`
+/// single-segment calls — batching shares setup (dispatch, span-check, limit
+/// broadcasts) only; per-segment arithmetic is unchanged. Compared at the
+/// dispatched entry so both sides run the same tier — identical even in the
+/// bl+li ≥ 255 saturation corner where the v3 and scalar tiers diverge from
+/// each other (this buffer never reaches the span-check fallback, so a
+/// mid-batch fallback cannot mix tiers either).
+#[test]
+fn lowbd_lpf_batch_identical_to_singles() {
+    const BIG: usize = 48; // 4 segs x 4 pos + 8-tap reach needs > 32 rows
+    use aom_dsp::loopfilter;
+    let mut rng = Rng(0x_10bd_ba7c_1e5_deed);
+    for &dir in b"hv" {
+        for &width in &[4u32, 6, 8, 14] {
+            for &nseg in &[2usize, 4] {
+                for _ in 0..2000 {
+                    let base = rng.upto(256);
+                    let amp = 1 + rng.upto(16);
+                    let strat = rng.upto(3);
+                    let buf: Vec<u8> = (0..PITCH * BIG)
+                        .map(|_| {
+                            if strat == 0 {
+                                rng.upto(256) as u8
+                            } else {
+                                (base as i32 + rng.upto(2 * amp + 1) as i32 - amp as i32)
+                                    .clamp(0, 255) as u8
+                            }
+                        })
+                        .collect();
+                    let bl = rng.upto(256) as u8;
+                    let li = rng.upto(256) as u8;
+                    let th = rng.upto(256) as u8;
+
+                    let mut got = buf.clone();
+                    let mut want = buf.clone();
+                    if dir == b'h' {
+                        loopfilter::horizontal_n(width, &mut got, CENTER, PITCH, bl, li, th, nseg);
+                        for s in 0..nseg {
+                            loopfilter::horizontal(width, &mut want, CENTER + 4 * s, PITCH, bl, li, th);
+                        }
+                    } else {
+                        loopfilter::vertical_n(width, &mut got, CENTER, PITCH, bl, li, th, nseg);
+                        for s in 0..nseg {
+                            loopfilter::vertical(width, &mut want, CENTER + 4 * s * PITCH, PITCH, bl, li, th);
+                        }
+                    }
+                    assert_eq!(
+                        got, want,
+                        "dir={} width={width} nseg={nseg} bl={bl} li={li} th={th}",
+                        dir as char
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Gate-3 parity for the lowbd (bd8, `u8` pixel) deblock SIMD: the dispatching
 /// `loopfilter::{horizontal, vertical}` (SIMD) must equal the never-dispatched
 /// `loopfilter::{horizontal_scalar, vertical_scalar}` at EVERY archmage token

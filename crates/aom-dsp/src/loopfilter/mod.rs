@@ -258,13 +258,13 @@ pub(crate) fn lpf_scalar(width: u32, buf: &mut [u8], center: usize, ts: isize, s
 /// filters: taps stride by pitch, positions advance by 1. SIMD-dispatched
 /// (bit-identical to [`lpf_scalar`] at every token tier — `lpf_lowbd_simd_diff`).
 pub fn horizontal(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
-    simd::lpf_u8(width, buf, center, p as isize, 1, blimit, limit, thresh);
+    simd::lpf_u8(width, buf, center, p as isize, 1, blimit, limit, thresh, 1);
 }
 
 /// Vertical filters: taps stride by 1, positions advance by pitch.
 /// SIMD-dispatched.
 pub fn vertical(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
-    simd::lpf_u8(width, buf, center, 1, p as isize, blimit, limit, thresh);
+    simd::lpf_u8(width, buf, center, 1, p as isize, blimit, limit, thresh, 1);
 }
 
 /// Pure-scalar lowbd horizontal deblock (never SIMD-dispatched) — the fixed
@@ -286,16 +286,12 @@ pub fn vertical_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, blim
 /// separate [`horizontal`] calls, so batching cannot move a pixel.
 #[allow(clippy::too_many_arguments)]
 pub fn horizontal_n(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8, nseg: usize) {
-    for s in 0..nseg {
-        simd::lpf_u8(width, buf, center + s * 4, p as isize, 1, blimit, limit, thresh);
-    }
+    simd::lpf_u8(width, buf, center, p as isize, 1, blimit, limit, thresh, nseg);
 }
 
 /// Lowbd vertical deblock covering `nseg` adjacent 4-position segments —
 /// the batched twin of [`vertical`]; segments at `center + s*4*p`.
 #[allow(clippy::too_many_arguments)]
 pub fn vertical_n(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8, nseg: usize) {
-    for s in 0..nseg {
-        simd::lpf_u8(width, buf, center + s * 4 * p, 1, p as isize, blimit, limit, thresh);
-    }
+    simd::lpf_u8(width, buf, center, 1, p as isize, blimit, limit, thresh, nseg);
 }
