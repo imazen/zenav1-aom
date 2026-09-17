@@ -1649,14 +1649,14 @@ pub(crate) fn stamp_leaf_ctx(
                     // nonzero (`entropy_ctx[block] |= dc_sign_ctx << 4`);
                     // otherwise the cached field stays 0 (and the writer
                     // never reads it — no DC sign symbol is coded).
-                    t.dc_sign_ctx = if t.qcoeff.first().copied().unwrap_or(0) != 0 {
+                    t.dc_sign_ctx = if t.qcoeff().first().copied().unwrap_or(0) != 0 {
                         tok_dsc as usize
                     } else {
                         0
                     };
                 }
                 let txb = &y_out.txbs[k];
-                let cul = txb_entropy_context(&txb.qcoeff, winner.tx_size, tt, txb.eob as usize);
+                let cul = txb_entropy_context(txb.qcoeff(), winner.tx_size, tt, txb.eob as usize);
                 // The recompute equals the encode walk's stored ctx: eob==0
                 // gives 0 under any scan, and eob>0 txbs kept their map type
                 // (only eob-0 origins reset to DCT).
@@ -1769,14 +1769,14 @@ pub(crate) fn stamp_leaf_ctx(
                         {
                             let t = &mut out.txbs[k];
                             t.txb_skip_ctx = tok_tsc as usize;
-                            t.dc_sign_ctx = if t.qcoeff.first().copied().unwrap_or(0) != 0 {
+                            t.dc_sign_ctx = if t.qcoeff().first().copied().unwrap_or(0) != 0 {
                                 tok_dsc as usize
                             } else {
                                 0
                             };
                         }
                         let txb = &out.txbs[k];
-                        let cul = txb_entropy_context(&txb.qcoeff, uv_tx, uv_tt, txb.eob as usize);
+                        let cul = txb_entropy_context(txb.qcoeff(), uv_tx, uv_tt, txb.eob as usize);
                         debug_assert_eq!(cul, txb.txb_entropy_ctx, "uv tokenize cul == encode ctx");
                         // av1_set_entropy_contexts edge arms (see the luma
                         // stamp above): the beyond-visible tail of the tx
@@ -2481,10 +2481,9 @@ fn ibc_encode_txb(
         tx_type,
         eob,
         txb_entropy_ctx: ent_ctx,
-        // KB-PERF-49: `TxbEncode`'s coefficient fields are inline-32 now; this
+        // KB-PERF-49: `TxbEncode`'s coefficient pair is inline-64 now; this
         // intrabc path still produces owned `Vec`s, so it copies in.
-        qcoeff: crate::encode_intra::TxbCoeffs::from_slice(&qcoeff),
-        dqcoeff: crate::encode_intra::TxbCoeffs::from_slice(&dqcoeff),
+        coeffs: crate::encode_intra::coeff_pair(&qcoeff, &dqcoeff),
         txb_skip_ctx,
         dc_sign_ctx,
     }
@@ -2539,7 +2538,7 @@ fn ibc_encode_block_inter_y(
         );
         let mut txb = ibc_encode_txb(c, recon, ta, tl, blk_row, blk_col, tx_size, tx_type);
         txb.txb_skip_ctx = tok_tsc as usize;
-        txb.dc_sign_ctx = if txb.qcoeff.first().copied().unwrap_or(0) != 0 {
+        txb.dc_sign_ctx = if txb.qcoeff().first().copied().unwrap_or(0) != 0 {
             tok_dsc as usize
         } else {
             0
@@ -2898,7 +2897,7 @@ fn encode_b_intrabc_coeff(
                                 );
                                 txb.txb_skip_ctx = tsc as usize;
                                 txb.dc_sign_ctx =
-                                    if txb.qcoeff.first().copied().unwrap_or(0) != 0 {
+                                    if txb.qcoeff().first().copied().unwrap_or(0) != 0 {
                                         dsc as usize
                                     } else {
                                         0

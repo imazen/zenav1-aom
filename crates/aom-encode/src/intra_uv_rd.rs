@@ -1877,7 +1877,10 @@ pub fn rd_pick_intra_sbuv_mode(
         best_rd: i64::MAX,
         palette_uv: None,
     };
-    let mut visits: Vec<UvModeVisit> = Vec::new();
+    // The mode loop appends ≤ UV_RD_SEARCH_MODE_ORDER.len() + a handful of
+    // derived-angle/CFL retries — reserve once instead of the per-call
+    // 1→2→4→8→16 grow chain (~1.9k calls/encode at 512²).
+    let mut visits: Vec<UvModeVisit> = Vec::with_capacity(UV_RD_SEARCH_MODE_ORDER.len() + 8);
     // ONE set of per-transform-block buffers for the whole chroma mode loop —
     // see `tx_search::IntraTxScratch` (the luma loop owns the twin).
     let mut txs = TXS_POOL_UV.with(|c| core::mem::take(&mut *c.borrow_mut()));

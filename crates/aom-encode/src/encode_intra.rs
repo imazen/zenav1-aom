@@ -243,30 +243,41 @@ pub struct EncodeIntraYEnv<'a> {
 
 /// One re-encoded txb's outputs (the `p->qcoeff/dqcoeff/eobs/txb_entropy_ctx`
 /// slots plus the tx_type actually used).
-/// A txb's quantized / dequantized coefficients — inline for up to 32, which
+/// A txb's quantized and dequantized coefficients in ONE buffer:
+/// `qcoeff = coeffs[..n]`, `dqcoeff = coeffs[n..2n]` — the two arrays always
+/// have the same length `n = txb_wide*txb_high` (both empty on the skip arm,
+/// where C leaves the shared scratch untouched). Inline for `n ≤ 32`, which
 /// the s3 census says is **57.2 % of forward transforms** (4x4 at 40.5 % plus
-/// 4x8/8x4 at 16.7 %).
+/// 4x8/8x4 at 16.7 %); a spilled txb pays ONE heap allocation instead of the
+/// split-field form's two (~50k → ~25k per 1 MP encode, and `Clone` becomes
+/// a single memcpy).
 ///
-/// KB-PERF-49: these two fields were `Vec<i32>` MOVED out of the
+/// KB-PERF-49: the coefficient data was `Vec<i32>` MOVED out of the
 /// transform/quantize scratch with `core::mem::take`, which emptied the scratch
 /// on every txb and made its buffers regrow from zero — **4,822,422 of
 /// 7,378,761 allocations (62 %) were that regrowth**. Copying into an inline
 /// buffer instead lets the pooled scratch (KB-PERF-48) keep its allocation for
 /// the life of the thread, and the copy is free for the 57.2 % that fit inline.
-pub type TxbCoeffs = smallvec::SmallVec<[i32; 32]>;
+pub(crate) type TxbCoeffPair = smallvec::SmallVec<[i32; 64]>;
 
-/// `TxbCoeffs` without the `memcpy` call on the inline path: `n ≤ 32` fills a
-/// fixed buffer via `copy_ctx`'s literal-length arms and wraps it with
-/// `from_buf_and_len` (no call); `n > 32` spills via `from_slice` as before.
-/// The scratch Vecs are grow-only, so callers slice to the live `n_coeffs`.
+/// `qcoeff ‖ dqcoeff` in one `TxbCoeffPair` — `n ≤ 32` fills a fixed buffer
+/// via `copy_ctx`'s literal-length arms and wraps it with `from_buf_and_len`
+/// (no `memcpy` call); `n > 32` spills once via `with_capacity` + two
+/// `extend_from_slice`s.
 #[inline]
-fn txb_coeffs(src: &[i32]) -> TxbCoeffs {
-    if src.len() <= 32 {
-        let mut a = [0i32; 32];
-        crate::tx_search::copy_ctx(&mut a, src, src.len());
-        TxbCoeffs::from_buf_and_len(a, src.len())
+pub(crate) fn coeff_pair(qcoeff: &[i32], dqcoeff: &[i32]) -> TxbCoeffPair {
+    debug_assert_eq!(qcoeff.len(), dqcoeff.len(), "txb coeff pair length");
+    let n = qcoeff.len();
+    if n <= 32 {
+        let mut a = [0i32; 64];
+        crate::tx_search::copy_ctx(&mut a[..n], qcoeff, n);
+        crate::tx_search::copy_ctx(&mut a[n..2 * n], dqcoeff, n);
+        TxbCoeffPair::from_buf_and_len(a, 2 * n)
     } else {
-        TxbCoeffs::from_slice(src)
+        let mut v = TxbCoeffPair::with_capacity(2 * n);
+        v.extend_from_slice(qcoeff);
+        v.extend_from_slice(dqcoeff);
+        v
     }
 }
 
@@ -276,10 +287,10 @@ pub struct TxbEncode {
     pub tx_type: usize,
     pub eob: u16,
     pub txb_entropy_ctx: u8,
-    /// Quantized / dequantized coefficients (empty on the skip arm — the C
-    /// leaves the shared scratch buffers untouched there).
-    pub qcoeff: TxbCoeffs,
-    pub dqcoeff: TxbCoeffs,
+    /// `qcoeff ‖ dqcoeff` — see [`TxbCoeffPair`]. (Both empty on the skip arm.)
+    /// `pub(crate)` for the intrabc constructor in `encode_sb`; read via
+    /// [`TxbEncode::qcoeff`]/[`TxbEncode::dqcoeff`].
+    pub(crate) coeffs: TxbCoeffPair,
     /// `get_txb_ctx`'s `(txb_skip_ctx, dc_sign_ctx)` derived for this txb from
     /// the *pre*-write neighbour contexts (the same pair the trellis used to
     /// select its rate tables, exposed here for the pack-stage coefficient
@@ -288,6 +299,20 @@ pub struct TxbEncode {
     /// `skip_txfm` arm (dead in the KEY intra envelope).
     pub txb_skip_ctx: usize,
     pub dc_sign_ctx: usize,
+}
+
+impl TxbEncode {
+    /// This txb's quantized coefficients — `coeffs[..n]` where `n` is the
+    /// txb's coefficient area (`txb_wide * txb_high`); empty on the skip arm.
+    #[inline]
+    pub fn qcoeff(&self) -> &[i32] {
+        &self.coeffs[..self.coeffs.len() / 2]
+    }
+    /// This txb's dequantized coefficients — `coeffs[n..]`.
+    #[inline]
+    pub fn dqcoeff(&self) -> &[i32] {
+        &self.coeffs[self.coeffs.len() / 2..]
+    }
 }
 
 /// The walk's outputs: per-txb results in raster order plus the final local
@@ -577,11 +602,10 @@ pub fn encode_intra_block_plane_y(
             }
 
             let mut tx_type = 0usize; // DCT_DCT
-            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx): (TxbCoeffs, TxbCoeffs, _, _, _, _);
+            let (coeffs, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx): (TxbCoeffPair, _, _, _, _);
             if env.skip_txfm {
                 // *eob = 0; p->txb_entropy_ctx[block] = 0 (encodemb.c:722-724).
-                qcoeff = TxbCoeffs::new();
-                dqcoeff = TxbCoeffs::new();
+                coeffs = TxbCoeffPair::new();
                 eob = 0u16;
                 ent_ctx = 0u8;
                 // Dead arm in the KEY intra envelope (skip_txfm asserted 0 by
@@ -654,11 +678,10 @@ pub fn encode_intra_block_plane_y(
                     let r = crate::xform_quant_optimize_split_into(
                         &residual[..txw * txh], tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
                     );
-                    // `xq`'s Vecs are grow-only scratch — `from_slice` copies
+                    // `xq`'s Vecs are grow-only scratch — `coeff_pair` copies
                     // the whole range, so slice to the live `n_coeffs`.
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
-                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
+                    coeffs = coeff_pair(&xq.qcoeff[..n], &xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
@@ -668,8 +691,7 @@ pub fn encode_intra_block_plane_y(
                         &residual[..txw * txh], tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
-                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
+                    coeffs = coeff_pair(&xq.qcoeff[..n], &xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     // get_txb_ctx: xform_quant (non-optimize_b) doesn't derive
@@ -685,7 +707,7 @@ pub fn encode_intra_block_plane_y(
             if crate::tx_search::tx_dbg_target()
                 .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
             {
-                let qh = qcoeff
+                let qh = coeffs[..coeffs.len() / 2]
                     .iter()
                     .take(64)
                     .fold(0u64, |h, &v| h.wrapping_mul(31).wrapping_add((v as i64 + 32768) as u64));
@@ -730,7 +752,7 @@ pub fn encode_intra_block_plane_y(
             // copy in, `txh` row copies out) was pure overhead.
             if eob > 0 {
                 av1_inverse_transform_add_into(
-                    &dqcoeff,
+                    &coeffs[coeffs.len() / 2..],
                     &mut recon[txb_off..],
                     env.ref_stride,
                     tx_type,
@@ -775,8 +797,7 @@ pub fn encode_intra_block_plane_y(
                 tx_type,
                 eob,
                 txb_entropy_ctx: ent_ctx,
-                qcoeff,
-                dqcoeff,
+                coeffs,
                 txb_skip_ctx,
                 dc_sign_ctx,
             });
@@ -968,11 +989,10 @@ pub fn encode_intra_block_plane_uv(
             }
 
             let mut tx_type = 0usize; // DCT_DCT
-            let (qcoeff, dqcoeff, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx): (TxbCoeffs, TxbCoeffs, _, _, _, _);
+            let (coeffs, eob, ent_ctx, txb_skip_ctx, dc_sign_ctx): (TxbCoeffPair, _, _, _, _);
             if prm.skip_txfm {
                 // *eob = 0; p->txb_entropy_ctx[block] = 0 (encodemb.c:722-724).
-                qcoeff = TxbCoeffs::new();
-                dqcoeff = TxbCoeffs::new();
+                coeffs = TxbCoeffPair::new();
                 eob = 0u16;
                 ent_ctx = 0u8;
                 // Dead arm in the KEY intra envelope (skip_txfm asserted 0).
@@ -1045,11 +1065,10 @@ pub fn encode_intra_block_plane_uv(
                     let r = crate::xform_quant_optimize_split_into(
                         &residual[..txw * txh], tx_size, tx_type, kind, &qp, &qp, &bctx, &opt, &mut xq,
                     );
-                    // `xq`'s Vecs are grow-only scratch — `from_slice` copies
+                    // `xq`'s Vecs are grow-only scratch — `coeff_pair` copies
                     // the whole range, so slice to the live `n_coeffs`.
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
-                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
+                    coeffs = coeff_pair(&xq.qcoeff[..n], &xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     txb_skip_ctx = r.txb_skip_ctx;
@@ -1059,8 +1078,7 @@ pub fn encode_intra_block_plane_uv(
                         &residual[..txw * txh], tx_size, tx_type, kind, &qp, false, &mut xq,
                     );
                     let n = txb_wide(tx_size) * txb_high(tx_size);
-                    qcoeff = txb_coeffs(&xq.qcoeff[..n]);
-                    dqcoeff = txb_coeffs(&xq.dqcoeff[..n]);
+                    coeffs = coeff_pair(&xq.qcoeff[..n], &xq.dqcoeff[..n]);
                     eob = r.eob;
                     ent_ctx = r.txb_entropy_ctx;
                     let (sc, dc) =
@@ -1075,7 +1093,7 @@ pub fn encode_intra_block_plane_uv(
             // `pd->dst` at `dst_stride`, so the add lands in place.
             if eob > 0 {
                 av1_inverse_transform_add_into(
-                    &dqcoeff,
+                    &coeffs[coeffs.len() / 2..],
                     &mut recon[txb_off..],
                     env.ref_stride,
                     tx_type,
@@ -1101,8 +1119,7 @@ pub fn encode_intra_block_plane_uv(
                 tx_type,
                 eob,
                 txb_entropy_ctx: ent_ctx,
-                qcoeff,
-                dqcoeff,
+                coeffs,
                 txb_skip_ctx,
                 dc_sign_ctx,
             });
