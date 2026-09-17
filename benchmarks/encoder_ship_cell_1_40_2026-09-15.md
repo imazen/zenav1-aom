@@ -5,7 +5,32 @@ Cell: `eprof_x86 {port,c} 1024 1024 27 3 1` — the preset zenavif ships
 CDEF off). Interleaved port/C pairs, single-threaded, byte-verified
 40,237 B on both arms every rep (`first_diff=-1`).
 
-## Result
+## Result — third batch (through `71aab23`)
+
+4 interleaved pairs after the lpf opt-walk landing + the alloc-pooling
+pass: port {2224.5, 2227.3, 2227.3, 2216.6} ms / C {1633.0, 1631.3,
+1638.7, 1633.0} ms — median ratio **≈1.36×** (port ~2225 / C ~1633).
+Byte-identical 40,237 B every rep; `self_contained_key_frame` byte-match
++ tune bundles + 35 targeted differentials green.
+
+The lpf opt walk is confirmed live by callgrind: `hbd_lpf` kernel calls
+dropped **879K → 402K** per 512² rep (dual/quad batching mirroring C's
+`lpf_opt_level == 1`), yet wall time held ~flat — the remaining lpf gap
+is kernel *shape*, not traversal: C's bd8 path runs u8 `aom_lpf_*`
+(~150M Ir total) where the port runs u16 kernels (~400M). That is the
+u16-at-bd8 program, already mapped below.
+
+The alloc pass cut Rust-side allocator calls roughly in half at 512²
+(heavyweights post-pass: `txb_coeffs` SmallVec spills ~50K/rep — retained
+per-txb coeff arrays, needs the flat-`coeffs`+range refactor; Vec
+`finish_grow` chains ~37K/rep). Wall delta on glibc is sub-percent as
+predicted; the same calls cost ~7–11× more on Windows/macOS heaps
+(`encoder_alloc_pass_windows_2026-09-10.md`), which is where this class
+pays. Heaptrack: pooled state is bounded — TLS scratch ~100 KB/thread
+worst case, `var_cache` ≤ 32 KB per *tile ctx* (per-worker, not
+per-thread, under tile threading).
+
+## Result — second batch (through `9386d02`)
 
 Refresh after the second batch (through `9386d02`), same cell — C's own
 clock ran ~3% slower this round so ratios are the honest unit:
@@ -93,10 +118,11 @@ mechanisms:
 
 - **u16-at-bd8 tax** (the big structural one): `lpf_impl_v3` (~33M),
   `highbd_variance64` residual, and the restoration u16 kernels all run
-  8-lane u16 where C runs 16-lane u8 `aom_lpf_*`/`aom_variance*`. C also
-  batches loop-filter edges via `_dual`/`_quad` kernels (port: 879K
-  calls vs C ~190K at 512²). Fix is plane-storage conversion or
-  transpose-gather kernel rewrites — a program, not a lever.
+  8-lane u16 where C runs 16-lane u8 `aom_lpf_*`/`aom_variance*`.
+  Loop-filter traversal batching has now landed (post-`9386d02`:
+  dual/quad `nseg` walk, 879K→402K kernel calls at 512²), so the
+  residual is kernel shape — transpose-gather u8 kernels + a u8
+  workspace through the post-filters, i.e. a program, not a lever.
 - **`quantize_fp_impl_v3`** (~88M): already a tight C mirror at
   ~212 vs ~180 Ir/call — thin residual.
 - **`build_directional_intra_high_in_place`** (~87M @ 44/call): mostly
