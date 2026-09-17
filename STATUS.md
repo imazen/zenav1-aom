@@ -1,5 +1,60 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Phase-1 tile walk is threaded by row bands + bd8 lpf runs the u8 kernels (2026-09-16)
+
+`6ada3da` — `KeyFrameConfig::threads` (default 1, serial path byte-untouched).
+With `threads > 1` the phase-1 `pack_tile_stop` walk partitions tile ROWS
+into contiguous bands; `split_at_mut` gives each `std::thread::scope`
+worker disjoint `&mut` recon slices, so no `unsafe` anywhere. The
+`SbEncodeEnv::base_y`/`base_uv` convention FLIPPED from additive to
+subtracted band bases (`slice[absolute - base]`), including inside
+`chroma_plane_offset` and the `var_part`/`allintra_vis` base args — the
+serial path sits at base 0 and is unchanged. One out-of-band reader,
+`extract_intra_cnn_window`'s crop-clamped 65x65 window, gets the full
+frame via a new `src_y_frame` field; every other read is tile-bounded
+(IntraBC clamps to `tile.mi_row_start`, above-neighbour reads are
+guarded by `mi_row > tile_row_start`, no post-filters run inside pack).
+Bugs found by the differential, not by review: reversed band→worker
+assignment (`pop()` took from the end) — invisible on the
+vertically-symmetric mirror-tiled photo, caught on asymmetric content;
+and the last band dropping the plane's edge-extended tail, which partial
+bottom superblocks legitimately read/write (HOG ±1-px gradients,
+predictor writes). Gate:
+`encoder_gate_multitile::encoder_threaded_row_bands_match_serial` —
+flat/gradient-h/gradient-v/noise/asymmetric cells x {1x2, 1x4, 2x2} tile
+grids x {2, 4} threads, whole-stream byte equality, plus the asymmetric
++ non-SB-aligned heights that caught both bugs. Measured 1024² cq27 s3:
+**serial ~2231 ms → 809 ms at 4 threads (2.76x) / ~511 ms at 8 (4.4x,
+8 tile rows)** — byte-identical to serial every rep; heaptrack peak heap
+73.7M @1 thread vs 73.9M @8 (worker state bounded, planes shared).
+This is the absolute-time lever the clause-(4) record priced at
+~3.2x/~5.1x; it does not move the port:C ratio (both arms thread).
+
+`41c9c06` — the bd8 loop filter now runs the u8 kernels C uses:
+`loop_filter_frame_opt` narrows the u16 planes to a u8 workspace at
+bd==8, runs `filter_block_plane_u8_opt` (the lowbd twin of the
+`lpf_opt_level==1` batched walk, with new `vertical_n`/`horizontal_n`
+u8 wrappers — C's `_dual`/`_quad` as a per-segment loop) and widens
+back. Byte-identical at both witnesses (40,237 B; 11,188 B at 512²) vs
+real aomenc; `lf_apply_diff` 4/4 incl. the `u_tx=false` opt-divergence
+cell that REJECTED the first version routed through the level-0 u8 walk
+(the batching is semantic on non-uniform-tx grids). Wall-flat at the
+ship cell — the win is the ~2.5x kernel-Ir cut on the lpf class and
+removing the kernel-shape divergence; the u16-at-bd8 tax now reduces to
+restoration (needs u8 wiener/sgrproj ports) and `highbd_variance` (u8
+kernels exist scalar-only; the SIMD tier plus a u8 source plane are the
+structural remainder). Also fixes `encode_intra_plane_uv_diff`: a test
+site still passing `chroma_plane_offset` a margin base under the old
+additive convention.
+
+Downstream: `zenavif` pin bumped `fbea6b4` -> `41c9c065` on branch
+`bump/zenav1-aom-encode-41c9c065` — `#[non_exhaustive]` migration
+(`allintra_speed0` + field assignment), and one seam bug the new
+`validate_configuration` caught: the alpha aux item's mono encode
+inherited the colour item's MC_IDENTITY, which upstream refuses on mono.
+zenavif gates: `aom_encode_backend` 22/22, `aom_roundtrip_loss` 5/5,
+`resolved_routing` 6/6 — all at the real git pin.
+
 ## Ship cell under the user's 1.40× bar — median ~1.36× (Gate 3, 2026-09-16)
 
 1024² cq27 `--cpu-used 3` (the zenavif preset), 12 interleaved port/C
