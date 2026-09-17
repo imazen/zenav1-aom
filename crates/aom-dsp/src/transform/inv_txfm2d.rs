@@ -420,7 +420,7 @@ pub fn av1_inv_txfm2d_add_into(
                 c816.txfm_type_row,
                 c816.txfm_type_col,
                 input,
-                output,
+                crate::transform::simd::InvDst::U16(output),
                 stride,
                 cw,
                 ch,
@@ -446,7 +446,7 @@ pub fn av1_inv_txfm2d_add_into(
                 cfg16.txfm_type_row,
                 cfg16.txfm_type_col,
                 input,
-                output,
+                crate::transform::simd::InvDst::U16(output),
                 stride,
                 (bd + 8) as i8,
                 (bd + 6).max(16) as i8,
@@ -661,6 +661,135 @@ pub fn av1_inv_txfm2d_add_u8_into(
     let InvTxfmScratch { buf, mod_input: mod_input_scratch } = scratch;
     let cfg = get_inv_txfm_cfg(tx_type, tx_size);
     assert!(cfg.valid, "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})");
+    // The fused 4x4 whole-block kernel — C's `lowbd_inv_txfm2d_add_4x4`,
+    // u8 store. Same gating as the u16 driver's `inv_txfm2d_add_4x4_fused`.
+    #[cfg(target_arch = "x86_64")]
+    if tx_size == 0 && INV_SHIFT[0] == [0, -4] && get_rect_tx_log_ratio(4, 4) == 0 {
+        let txfm_type_col = TXFM_TYPE_LS[0][VTX_TAB[tx_type]];
+        let txfm_type_row = TXFM_TYPE_LS[0][HTX_TAB[tx_type]];
+        if txfm_type_col >= 0 && txfm_type_row >= 0 {
+            let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
+            let (opt_col, opt_row) = opt_range(BD);
+            let (srr, src_) = ([opt_row; 12], [opt_col; 12]);
+            if crate::transform::simd::try_inv_txfm2d_4x4_fused_u8(
+                txfm_type_row,
+                txfm_type_col,
+                input,
+                output,
+                stride,
+                (BD + 8) as i8,
+                (BD + 6).max(16) as i8,
+                &srr,
+                &src_,
+                ud_flip,
+                lr_flip,
+            ) {
+                return;
+            }
+        }
+    }
+    // The fused 4x8 / 8x4 whole-block kernels — C's
+    // `lowbd_inv_txfm2d_add_4x8` / `_add_8x4`, u8 store. Same gating as the
+    // u16 driver's entry (rect log-ratio 1, `INV_SHIFT == [0, -4]`).
+    #[cfg(target_arch = "x86_64")]
+    if (tx_size == 5 || tx_size == 6) && INV_SHIFT[tx_size] == [0, -4] {
+        let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
+        if get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
+            let (opt_col, opt_row) = opt_range(BD);
+            let (srr, src_) = ([opt_row; 12], [opt_col; 12]);
+            if crate::transform::simd::try_inv_txfm2d_rect48_fused_u8(
+                cfg.txfm_type_row,
+                cfg.txfm_type_col,
+                input,
+                output,
+                stride,
+                cw,
+                ch,
+                (BD + 8) as i8,
+                (BD + 6).max(16) as i8,
+                &srr,
+                &src_,
+                cfg.ud_flip,
+                cfg.lr_flip,
+            ) {
+                return;
+            }
+        }
+    }
+    // The fused 8x8 whole-block kernel — C's `av1_lowbd_inv_txfm2d_add_8x8`,
+    // u8 store (`clip_pixel`). Same gating as the u16 driver's entry: the
+    // i16-bound/mapped-type declines fall through to the two-pass driver.
+    #[cfg(target_arch = "x86_64")]
+    if tx_size == 1 && INV_SHIFT[1] == [-1, -4] {
+        let (opt_col, opt_row) = opt_range(BD);
+        let (srr, src_) = ([opt_row; 12], [opt_col; 12]);
+        if crate::transform::simd::try_inv_txfm2d_8x8_fused_u8(
+            cfg.txfm_type_row,
+            cfg.txfm_type_col,
+            input,
+            output,
+            stride,
+            (BD + 8) as i8,
+            (BD + 6).max(16) as i8,
+            &srr,
+            &src_,
+            cfg.ud_flip,
+            cfg.lr_flip,
+        ) {
+            return;
+        }
+    }
+    // The fused 8x16 / 16x8 whole-block kernels — u8 store. Same gating as
+    // the u16 driver's entry (`INV_SHIFT == [-1, -4]`, rect log-ratio 1).
+    #[cfg(target_arch = "x86_64")]
+    if (tx_size == 7 || tx_size == 8) && INV_SHIFT[tx_size] == [-1, -4] {
+        let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
+        if get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
+            let (opt_col, opt_row) = opt_range(BD);
+            let (srr, src_) = ([opt_row; 12], [opt_col; 12]);
+            if crate::transform::simd::try_inv_txfm2d_rect816_fused(
+                cfg.txfm_type_row,
+                cfg.txfm_type_col,
+                input,
+                crate::transform::simd::InvDst::U8(output),
+                stride,
+                cw,
+                ch,
+                (BD + 8) as i8,
+                (BD + 6).max(16) as i8,
+                &srr,
+                &src_,
+                cfg.ud_flip,
+                cfg.lr_flip,
+                BD,
+            ) {
+                return;
+            }
+        }
+    }
+    // The fused 16x16 whole-block kernel — u8 store. Same gating as the u16
+    // driver's entry (`INV_SHIFT == [-2, -4]`).
+    #[cfg(target_arch = "x86_64")]
+    if tx_size == 2 && INV_SHIFT[2] == [-2, -4] && get_rect_tx_log_ratio(16, 16) == 0 {
+        let (opt_col, opt_row) = opt_range(BD);
+        let (srr, src_) = ([opt_row; 12], [opt_col; 12]);
+        if crate::transform::simd::try_inv_txfm2d_16x16_fused(
+            cfg.txfm_type_row,
+            cfg.txfm_type_col,
+            input,
+            crate::transform::simd::InvDst::U8(output),
+            stride,
+            (BD + 8) as i8,
+            (BD + 6).max(16) as i8,
+            &srr,
+            &src_,
+            cfg.ud_flip,
+            cfg.lr_flip,
+            BD,
+        ) {
+            return;
+        }
+    }
     let col_n = TX_SIZE_WIDE[tx_size];
     let row_n = TX_SIZE_HIGH[tx_size];
     let shift = cfg.shift;

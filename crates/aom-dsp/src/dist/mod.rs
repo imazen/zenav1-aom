@@ -53,6 +53,44 @@ pub fn highbd_sse(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usi
     sse
 }
 
+/// bd8 mixed-width SSE: `a` is the u16-stored source plane, `b` the u8
+/// reconstruction. Values are identical to [`highbd_sse`] at `bd == 8` (u8
+/// range), so the diff is arithmetic-equal — only the storage widths differ.
+///
+/// SIMD-dispatched: widths that are a multiple of 8 and >= 8 take the
+/// magetypes kernel in `simd_variance.rs`; width 4, non-multiples of 8 (the
+/// frame-edge `pixel_dist_visible_only` clip) and the `AOM_FORCE_SCALAR` pin
+/// run the scalar twin.
+pub fn sse_u16_u8(a: &[u16], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> i64 {
+    let _ = crate::dispatch::scalar_forced();
+    if w != 4 && (w < 8 || !w.is_multiple_of(8)) {
+        return sse_u16_u8_scalar(a, a_stride, b, b_stride, w, h);
+    }
+    archmage::incant!(
+        simd_variance::sse_u16_u8_impl(a, a_stride, b, b_stride, w, h),
+        [v3, neon, wasm128, scalar]
+    )
+}
+
+/// The scalar transcription (the reference twin — never SIMD-routed).
+pub fn sse_u16_u8_scalar(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    let mut sse: i64 = 0;
+    for y in 0..h {
+        for x in 0..w {
+            let diff = (a[y * a_stride + x] as i32 - b[y * b_stride + x] as i32).abs();
+            sse += (diff * diff) as i64;
+        }
+    }
+    sse
+}
+
 /// `aom_sad<W>x<H>_avg_c`: SAD of `src` against the rounded average of `ref` and
 /// a contiguous `second_pred` (compound-prediction motion search). Matches
 /// `aom_comp_avg_pred` (comp = ROUND_POWER_OF_TWO(ref+second_pred, 1)) followed

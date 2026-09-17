@@ -10,24 +10,24 @@
 ## summary
 #
 #   pub modules                                80
-#   pub types (struct/enum/trait/alias)       281
+#   pub types (struct/enum/trait/alias)       283
 #   pub consts/statics                        639
-#   free functions                            619
-#   inherent methods                          942
-#   struct fields                            1932
+#   free functions                            621
+#   inherent methods                          957
+#   struct fields                            1935
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1106
-#   auto-trait-complete types                 261
+#   trait roster entries (type × trait)      1119
+#   auto-trait-complete types                 263
 #   auto-trait exceptions                       9
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4640
+#   aom_encode                     4662
 #   u16                               3
 #   u8                                3
 
-## items (4632 lines)
+## items (4654 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -124,7 +124,7 @@ pub aom_encode::compound_type::WedgePick::rd: i64
 pub aom_encode::compound_type::WedgePick::sign: usize
 pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::ta: [i8; 32]
 pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::tl: [i8; 32]
-pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::txbs: alloc::vec::Vec<aom_encode::encode_intra::TxbEncode>
+pub aom_encode::encode_intra::EncodeIntraPlaneOutcome::txbs: aom_encode::encode_intra::TxbsVec
 pub aom_encode::encode_intra::EncodeIntraYEnv::above_ctx: &'a [i8]
 pub aom_encode::encode_intra::EncodeIntraYEnv::angle_delta: i32
 pub aom_encode::encode_intra::EncodeIntraYEnv::bd: u8
@@ -168,9 +168,7 @@ pub aom_encode::encode_intra::TrellisOptType::FullTrellisOpt = 1
 pub aom_encode::encode_intra::TrellisOptType::NoEstimateYrdTrellisOpt = 3
 pub aom_encode::encode_intra::TrellisOptType::NoTrellisOpt = 0
 pub aom_encode::encode_intra::TxbEncode::dc_sign_ctx: usize
-pub aom_encode::encode_intra::TxbEncode::dqcoeff: aom_encode::encode_intra::TxbCoeffs
 pub aom_encode::encode_intra::TxbEncode::eob: u16
-pub aom_encode::encode_intra::TxbEncode::qcoeff: aom_encode::encode_intra::TxbCoeffs
 pub aom_encode::encode_intra::TxbEncode::tx_type: usize
 pub aom_encode::encode_intra::TxbEncode::txb_entropy_ctx: u8
 pub aom_encode::encode_intra::TxbEncode::txb_skip_ctx: usize
@@ -263,6 +261,7 @@ pub aom_encode::encode_sb::SbEncodeEnv::sharpness: i32
 pub aom_encode::encode_sb::SbEncodeEnv::src_u: &'a [u16]
 pub aom_encode::encode_sb::SbEncodeEnv::src_v: &'a [u16]
 pub aom_encode::encode_sb::SbEncodeEnv::src_y: &'a [u16]
+pub aom_encode::encode_sb::SbEncodeEnv::src_y_frame: &'a [u16]
 pub aom_encode::encode_sb::SbEncodeEnv::ss_x: usize
 pub aom_encode::encode_sb::SbEncodeEnv::ss_y: usize
 pub aom_encode::encode_sb::SbEncodeEnv::ssim: core::option::Option<aom_encode::encode_sb::SsimRdmult<'a>>
@@ -286,6 +285,8 @@ pub aom_encode::encode_sb::SbTree::Vert(alloc::boxed::Box<[aom_encode::encode_sb
 pub aom_encode::encode_sb::SbTree::Vert4(alloc::boxed::Box<[core::option::Option<aom_encode::encode_sb::LeafWinner>; 4]>)
 pub aom_encode::encode_sb::SbTree::VertA(alloc::boxed::Box<[aom_encode::encode_sb::LeafWinner; 3]>)
 pub aom_encode::encode_sb::SbTree::VertB(alloc::boxed::Box<[aom_encode::encode_sb::LeafWinner; 3]>)
+pub aom_encode::encode_sb::SbVarCache::entries: alloc::vec::Vec<aom_encode::intra_rd::Block4x4VarInfo>
+pub aom_encode::encode_sb::SbVarCache::sb: (i32, i32)
 pub aom_encode::encode_sb::SsimRdmult::cols: i32
 pub aom_encode::encode_sb::SsimRdmult::factors: &'a [f64]
 pub aom_encode::encode_sb::SsimRdmult::intra_modifier: i32
@@ -300,6 +301,7 @@ pub aom_encode::encode_sb::TileCtxState::left_tctx: [u8; 32]
 pub aom_encode::encode_sb::TileCtxState::search_palette_y_mode: [[[u16; 3]; 3]; 7]
 pub aom_encode::encode_sb::TileCtxState::search_palette_y_size: [[u16; 8]; 7]
 pub aom_encode::encode_sb::TileCtxState::search_tx_size: [[[u16; 4]; 3]; 4]
+pub aom_encode::encode_sb::TileCtxState::var_cache: core::cell::RefCell<aom_encode::encode_sb::SbVarCache>
 pub aom_encode::firstpass::FirstpassInfoError::Failed
 pub aom_encode::firstpass::FirstpassStats::coded_error: f64
 pub aom_encode::firstpass::FirstpassStats::cor_coeff: f64
@@ -1825,6 +1827,7 @@ pub aom_encode::tx_search::TxSearchScratch::best_dqcoeff: alloc::vec::Vec<i32>
 pub aom_encode::tx_search::TxSearchScratch::best_qcoeff: alloc::vec::Vec<i32>
 pub aom_encode::tx_search::TxSearchScratch::inv: aom_dsp::transform::inv_txfm2d::InvTxfmScratch
 pub aom_encode::tx_search::TxSearchScratch::recon: alloc::vec::Vec<u16>
+pub aom_encode::tx_search::TxSearchScratch::recon_u8: alloc::vec::Vec<u8>
 pub aom_encode::tx_search::TxSearchScratch::satd_coeff: alloc::vec::Vec<i32>
 pub aom_encode::tx_search::TxSearchScratch::xq: aom_encode::XformQuantScratch
 pub aom_encode::tx_search::TxSizeChoice::best_rd: i64
@@ -2857,8 +2860,19 @@ pub fn aom_encode::encode_intra::TrellisOptType::eq(&self, &aom_encode::encode_i
 pub fn aom_encode::encode_intra::TrellisOptType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::encode_intra::TxbEncode::assert_fields_are_eq(&self)
 pub fn aom_encode::encode_intra::TxbEncode::clone(&self) -> aom_encode::encode_intra::TxbEncode
+pub fn aom_encode::encode_intra::TxbEncode::dqcoeff(&self) -> &[i32]
 pub fn aom_encode::encode_intra::TxbEncode::eq(&self, &aom_encode::encode_intra::TxbEncode) -> bool
 pub fn aom_encode::encode_intra::TxbEncode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::encode_intra::TxbEncode::qcoeff(&self) -> &[i32]
+pub fn aom_encode::encode_intra::TxbsVec::clone(&self) -> Self
+pub fn aom_encode::encode_intra::TxbsVec::default() -> Self
+pub fn aom_encode::encode_intra::TxbsVec::deref(&self) -> &alloc::vec::Vec<aom_encode::encode_intra::TxbEncode>
+pub fn aom_encode::encode_intra::TxbsVec::deref_mut(&mut self) -> &mut alloc::vec::Vec<aom_encode::encode_intra::TxbEncode>
+pub fn aom_encode::encode_intra::TxbsVec::drop(&mut self)
+pub fn aom_encode::encode_intra::TxbsVec::eq(&self, &Self) -> bool
+pub fn aom_encode::encode_intra::TxbsVec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::encode_intra::TxbsVec::new() -> Self
+pub fn aom_encode::encode_intra::TxbsVec::with_capacity(usize) -> Self
 pub fn aom_encode::encode_intra::UvEncodeParams::clone(&self) -> aom_encode::encode_intra::UvEncodeParams
 pub fn aom_encode::encode_intra::UvEncodeParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::encode_intra::UvWinner<'a>::clone(&self) -> aom_encode::encode_intra::UvWinner<'a>
@@ -2886,6 +2900,10 @@ pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::node_rdmult(&self, usize, i32, i3
 pub fn aom_encode::encode_sb::SbTree::any_intrabc(&self) -> bool
 pub fn aom_encode::encode_sb::SbTree::clone(&self) -> aom_encode::encode_sb::SbTree
 pub fn aom_encode::encode_sb::SbTree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::encode_sb::SbVarCache::clone(&self) -> aom_encode::encode_sb::SbVarCache
+pub fn aom_encode::encode_sb::SbVarCache::default() -> aom_encode::encode_sb::SbVarCache
+pub fn aom_encode::encode_sb::SbVarCache::eq(&self, &Self) -> bool
+pub fn aom_encode::encode_sb::SbVarCache::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::encode_sb::SsimRdmult<'a>::clone(&self) -> aom_encode::encode_sb::SsimRdmult<'a>
 pub fn aom_encode::encode_sb::TileCtxState::assert_fields_are_eq(&self)
 pub fn aom_encode::encode_sb::TileCtxState::clone(&self) -> aom_encode::encode_sb::TileCtxState
@@ -3244,9 +3262,11 @@ pub fn aom_encode::lf_search::LoopFilterLevels::clone(&self) -> aom_encode::lf_s
 pub fn aom_encode::lf_search::LoopFilterLevels::eq(&self, &aom_encode::lf_search::LoopFilterLevels) -> bool
 pub fn aom_encode::lf_search::LoopFilterLevels::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::lf_search::build_lf_mi_grid(&[aom_encode::encode_sb::SbTree], i32, i32, i32, i32, usize) -> alloc::vec::Vec<aom_dsp::loopfilter::frame::LfMi>
+pub fn aom_encode::lf_search::build_lf_mi_grid_mt(&[aom_encode::encode_sb::SbTree], i32, i32, i32, i32, usize, usize) -> alloc::vec::Vec<aom_dsp::loopfilter::frame::LfMi>
 pub fn aom_encode::lf_search::frame_lf_sharpness(bool, bool, i32, bool, i32) -> i32
 pub fn aom_encode::lf_search::pick_filter_level(&aom_encode::lf_search::LfSearchFrame<'_>, bool, i32, bool) -> aom_encode::lf_search::LoopFilterLevels
 pub fn aom_encode::lf_search::pick_filter_level_from_q(i32, u8, bool, i32) -> aom_encode::lf_search::LoopFilterLevels
+pub fn aom_encode::lf_search::pick_filter_level_mt(&aom_encode::lf_search::LfSearchFrame<'_>, bool, i32, bool, usize) -> aom_encode::lf_search::LoopFilterLevels
 pub fn aom_encode::lf_search::sse_plane(&[u16], usize, &[u16], usize, usize, usize) -> i64
 pub fn aom_encode::lf_search::stamp_lf_delta_lf(&mut [aom_dsp::loopfilter::frame::LfMi], &[i32], i32, i32, i32, i32)
 pub fn aom_encode::mode_costs::CflCosts::assert_fields_are_eq(&self)
@@ -4140,7 +4160,7 @@ pub fn aom_encode::tx_search::TxbWinner::fmt(&self, &mut core::fmt::Formatter<'_
 pub fn aom_encode::tx_search::av1_pixel_diff_dist(&[i16], usize, usize, usize, usize, usize) -> (u64, u32)
 pub fn aom_encode::tx_search::choose_tx_size_type_from_rd_intra(&aom_encode::tx_search::TxfmYrdEnv<'_>, &mut [u16], i64, &aom_encode::tx_search::TxTypeSearchPolicy, u32, bool, bool, core::option::Option<&aom_encode::tx_search::PaletteYrd<'_>>, &mut aom_encode::tx_search::IntraTxScratch) -> core::option::Option<aom_encode::tx_search::TxSizeChoice>
 pub fn aom_encode::tx_search::dist_block_px_domain(&[i32], usize, usize, &[u16], &[u16], usize, usize, u8, usize, usize, usize, bool) -> i64
-pub fn aom_encode::tx_search::dist_block_px_domain_into(&[i32], usize, usize, &[u16], usize, &[u16], usize, usize, u8, usize, usize, usize, bool, &mut alloc::vec::Vec<u16>, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch) -> i64
+pub fn aom_encode::tx_search::dist_block_px_domain_into(&[i32], usize, usize, &[u16], usize, &[u16], usize, usize, u8, usize, usize, usize, bool, &mut alloc::vec::Vec<u16>, &mut alloc::vec::Vec<u8>, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch) -> i64
 pub fn aom_encode::tx_search::get_default_tx_type_y(usize, usize, bool, bool) -> usize
 pub fn aom_encode::tx_search::get_mean_dev_features(&[i16], usize, usize, usize, &mut [f32]) -> usize
 pub fn aom_encode::tx_search::get_search_init_depth_intra(usize, usize, i32, i32) -> i32
@@ -4448,12 +4468,14 @@ pub struct aom_encode::denoise::DenoiseAndModel
 pub struct aom_encode::encode_intra::EncodeIntraPlaneOutcome
 pub struct aom_encode::encode_intra::EncodeIntraYEnv<'a>
 pub struct aom_encode::encode_intra::TxbEncode
+pub struct aom_encode::encode_intra::TxbsVec(_)
 pub struct aom_encode::encode_intra::UvEncodeParams
 pub struct aom_encode::encode_intra::UvWinner<'a>
 pub struct aom_encode::encode_sb::DeltaQFrameCtx<'a>
 pub struct aom_encode::encode_sb::LeafEncodeOut
 pub struct aom_encode::encode_sb::LeafWinner
 pub struct aom_encode::encode_sb::SbEncodeEnv<'a>
+pub struct aom_encode::encode_sb::SbVarCache
 pub struct aom_encode::encode_sb::SsimRdmult<'a>
 pub struct aom_encode::encode_sb::TileCtxState
 pub struct aom_encode::firstpass::FirstpassInfo
@@ -4654,7 +4676,7 @@ pub struct aom_encode::var_tx::VarTxLeaf
 pub struct aom_encode::var_tx::VarTxResult
 pub trait aom_encode::temporal_filter::TfPixel: core::marker::Copy
 pub trait aom_encode::temporal_filter::TfPixelMut: core::marker::Copy
-pub type aom_encode::encode_intra::TxbCoeffs = smallvec::SmallVec<[i32; 32]>
+pub type aom_encode::encode_intra::TxbsVec::Target = alloc::vec::Vec<aom_encode::encode_intra::TxbEncode>
 pub type aom_encode::partition::LeafEval<'a> = (dyn core::ops::function::FnMut(i32, i32, usize, &aom_encode::partition::PartRdStats) -> aom_encode::partition::PartRdStats + 'a)
 pub type aom_encode::partition::NodeParamsFn<'a> = (dyn core::ops::function::FnMut(i32, i32, usize) -> (alloc::vec::Vec<i32>, bool, bool) + 'a)
 pub type aom_encode::rdopt_single_state::CollectMv = aom_encode::rdopt_mv::Mv
@@ -4662,7 +4684,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (243 types)
+## trait impls (245 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4697,12 +4719,14 @@ aom_encode::compound_type::WedgePick: Clone, Copy, Debug, Eq, PartialEq, Trivial
 aom_encode::encode_intra::EncodeIntraPlaneOutcome: Clone, Debug, Eq, PartialEq
 aom_encode::encode_intra::TrellisOptType: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
 aom_encode::encode_intra::TxbEncode: Clone, Debug, Eq, PartialEq
+aom_encode::encode_intra::TxbsVec: Clone, Debug, Default, Deref, DerefMut, Drop, Eq, PartialEq
 aom_encode::encode_intra::UvEncodeParams: Clone, Copy, Debug, TrivialClone
 aom_encode::encode_intra::UvWinner<'a>: Clone, Copy, Debug, TrivialClone
 aom_encode::encode_sb::DeltaQFrameCtx<'a>: Clone, Copy, TrivialClone
 aom_encode::encode_sb::LeafEncodeOut: Clone, Debug, Eq, PartialEq
 aom_encode::encode_sb::LeafWinner: Clone, Debug
 aom_encode::encode_sb::SbTree: Clone, Debug
+aom_encode::encode_sb::SbVarCache: Clone, Debug, Default, Eq, PartialEq
 aom_encode::encode_sb::SsimRdmult<'a>: Clone, Copy, TrivialClone
 aom_encode::encode_sb::TileCtxState: Clone, Debug, Eq, PartialEq
 aom_encode::firstpass::FirstpassInfo: Clone, Debug
@@ -4910,7 +4934,7 @@ u8: aom_encode::temporal_filter::TfPixel, aom_encode::temporal_filter::TfPixelMu
 
 ## auto traits
 
-261 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+263 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::encode_sb::TileCtxState: !Freeze !RefUnwindSafe !Sync
 aom_encode::inter_pred_enc::PixelsMut<'a>: !UnwindSafe
 aom_encode::intra_uv_rd::CflPredict<'a>: !UnwindSafe

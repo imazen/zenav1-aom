@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1838 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1853 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
 #
-#   pub modules                                60
+#   pub modules                                62
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            623
+#   free functions                            635
 #   inherent methods                           97
-#   struct fields                             706
+#   struct fields                             707
 #   enum variants                              13
-#   trait roster entries (type × trait)       263
+#   trait roster entries (type × trait)       264
 #   auto-trait-complete types                  85
 #   auto-trait exceptions                       3
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1795
+#   aom_dsp                        1810
 
-## items (1762 lines)
+## items (1777 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -295,6 +295,8 @@ pub fn aom_dsp::dist::masked_sad(&[u8], usize, &[u8], usize, &[u8], &[u8], usize
 pub fn aom_dsp::dist::obmc_sad(&[u8], usize, &[i32], &[i32], usize, usize) -> u32
 pub fn aom_dsp::dist::sad(&[u8], usize, &[u8], usize, usize, usize) -> u32
 pub fn aom_dsp::dist::sad_avg(&[u8], usize, &[u8], usize, &[u8], usize, usize) -> u32
+pub fn aom_dsp::dist::sse_u16_u8(&[u16], usize, &[u8], usize, usize, usize) -> i64
+pub fn aom_dsp::dist::sse_u16_u8_scalar(&[u16], usize, &[u8], usize, usize, usize) -> i64
 pub fn aom_dsp::dist::sub_pixel_variance(&[u8], usize, usize, usize, &[u8], usize, usize, usize) -> (u32, u32)
 pub fn aom_dsp::dist::subtract_block(usize, usize, &mut [i16], usize, &[u8], usize, &[u8], usize)
 pub fn aom_dsp::dist::sum_squares_2d_i16(&[i16], usize, usize, usize) -> u64
@@ -1380,6 +1382,9 @@ pub fn aom_dsp::intra::predict_highbd_scalar(usize, &mut [u16], usize, usize, us
 pub fn aom_dsp::intra::predict_intra_high(&[u16], usize, usize, &mut [u16], usize, usize, i32, bool, usize, bool, i32, usize, usize, i32, usize, i32, i32)
 pub fn aom_dsp::intra::predict_intra_high_in_place(&mut [u16], usize, usize, usize, i32, bool, usize, bool, i32, usize, usize, i32, usize, i32, i32)
 pub fn aom_dsp::intra::predict_intra_u8(&[u8], usize, usize, &mut [u8], usize, usize, i32, bool, usize, bool, i32, usize, usize, i32, usize, i32)
+pub mod aom_dsp::kmeans
+pub fn aom_dsp::kmeans::calc_indices(&[i16], &[i16], &mut [u8], usize, usize, usize) -> i64
+pub fn aom_dsp::kmeans::calc_indices_c(&[i16], &[i16], &mut [u8], usize, usize, usize) -> i64
 pub mod aom_dsp::loopfilter
 pub mod aom_dsp::loopfilter::frame
 pub struct aom_dsp::loopfilter::frame::LfFrameBuf<'a>
@@ -1442,19 +1447,28 @@ pub const aom_dsp::loopfilter::frame::MAX_LOOP_FILTER: i32
 pub const aom_dsp::loopfilter::frame::MODE_LF_LUT: [u8; 25]
 pub fn aom_dsp::loopfilter::frame::lf_frame_init(&aom_dsp::loopfilter::frame::LfParams, usize, usize) -> aom_dsp::loopfilter::frame::LfInfo
 pub fn aom_dsp::loopfilter::frame::loop_filter_frame(&mut aom_dsp::loopfilter::frame::LfFrameBuf<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize)
+pub fn aom_dsp::loopfilter::frame::loop_filter_frame_opt(&mut aom_dsp::loopfilter::frame::LfFrameBuf<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize)
 pub fn aom_dsp::loopfilter::frame::loop_filter_frame_stop(&mut aom_dsp::loopfilter::frame::LfFrameBuf<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize, core::option::Option<&dyn enough::Stop>) -> core::result::Result<(), enough::reason::StopReason>
 pub fn aom_dsp::loopfilter::frame::loop_filter_frame_u8(&mut aom_dsp::loopfilter::frame::LfFrameBufU8<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize)
+pub fn aom_dsp::loopfilter::frame::loop_filter_frame_u8_opt(&mut aom_dsp::loopfilter::frame::LfFrameBufU8<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize)
 pub fn aom_dsp::loopfilter::frame::loop_filter_frame_u8_stop(&mut aom_dsp::loopfilter::frame::LfFrameBufU8<'_>, &aom_dsp::loopfilter::frame::LfMiGrid<'_>, &aom_dsp::loopfilter::frame::LfParams, usize, usize, core::option::Option<&dyn enough::Stop>) -> core::result::Result<(), enough::reason::StopReason>
 pub mod aom_dsp::loopfilter::highbd
 pub fn aom_dsp::loopfilter::highbd::horizontal(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
+pub fn aom_dsp::loopfilter::highbd::horizontal_n(u32, &mut [u16], usize, usize, u8, u8, u8, i32, usize)
 pub fn aom_dsp::loopfilter::highbd::horizontal_scalar(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
 pub fn aom_dsp::loopfilter::highbd::vertical(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
+pub fn aom_dsp::loopfilter::highbd::vertical_n(u32, &mut [u16], usize, usize, u8, u8, u8, i32, usize)
 pub fn aom_dsp::loopfilter::highbd::vertical_scalar(u32, &mut [u16], usize, usize, u8, u8, u8, i32)
 pub fn aom_dsp::loopfilter::horizontal(u32, &mut [u8], usize, usize, u8, u8, u8)
+pub fn aom_dsp::loopfilter::horizontal_n(u32, &mut [u8], usize, usize, u8, u8, u8, usize)
 pub fn aom_dsp::loopfilter::horizontal_scalar(u32, &mut [u8], usize, usize, u8, u8, u8)
 pub fn aom_dsp::loopfilter::vertical(u32, &mut [u8], usize, usize, u8, u8, u8)
+pub fn aom_dsp::loopfilter::vertical_n(u32, &mut [u8], usize, usize, u8, u8, u8, usize)
 pub fn aom_dsp::loopfilter::vertical_scalar(u32, &mut [u8], usize, usize, u8, u8, u8)
 pub mod aom_dsp::lowbd
+pub mod aom_dsp::par
+pub fn aom_dsp::par::join<A, B, FA, FB>(FA, FB) -> (A, B) where FA: core::ops::function::FnOnce() -> A + core::marker::Send, FB: core::ops::function::FnOnce() -> B + core::marker::Send, A: core::marker::Send, B: core::marker::Send
+pub fn aom_dsp::par::map_workers<T, F>(usize, F) -> alloc::vec::Vec<T> where F: core::ops::function::Fn(usize) -> T + core::marker::Sync, T: core::marker::Send
 pub mod aom_dsp::quant
 pub mod aom_dsp::quant::simd
 pub fn aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch(&[i16; 2], &[i16; 2], &[i16; 2], i32, &[i16], &[i16], &[i32], &mut [i32], &mut [i32]) -> u16
@@ -1582,6 +1596,7 @@ pub aom_dsp::restore::pick::LrSearchInput::sgrproj_restore_cost: [i32; 2]
 pub aom_dsp::restore::pick::LrSearchInput::ss_x: usize
 pub aom_dsp::restore::pick::LrSearchInput::ss_y: usize
 pub aom_dsp::restore::pick::LrSearchInput::switchable_restore_cost: [i32; 3]
+pub aom_dsp::restore::pick::LrSearchInput::threads: usize
 pub aom_dsp::restore::pick::LrSearchInput::tile_sb_cols: alloc::vec::Vec<(i32, i32)>
 pub aom_dsp::restore::pick::LrSearchInput::tile_sb_rows: alloc::vec::Vec<(i32, i32)>
 pub aom_dsp::restore::pick::LrSearchInput::wiener_restore_cost: [i32; 2]
@@ -1858,7 +1873,7 @@ aom_dsp::quant::Segmentation: Clone, Debug, Default
 aom_dsp::recon::ReconScratch: Clone, Debug, Default
 aom_dsp::restore::pick::LrSearchOutcome: Clone, Debug, Default
 aom_dsp::restore::pick::LrSearchSf: Clone, Copy, Debug, Default
-aom_dsp::restore::wiener::WienerScratch: Default
+aom_dsp::restore::wiener::WienerScratch: Clone, Default
 aom_dsp::transform::inv_txfm2d::InvTxfmScratch: Clone, Debug, Default
 aom_dsp::transform::txfm2d::FwdTxfmScratch: Clone, Debug, Default
 aom_dsp::txb::ExtTxDeriv: Debug, Eq, PartialEq

@@ -84,6 +84,141 @@ pub(crate) fn highbd_variance64_impl(
     (tsse, tsum)
 }
 
+/// Scalar tier for [`crate::dist::sse_u16_u8`] — the transcribed twin.
+pub(crate) fn sse_u16_u8_impl_scalar(
+    _t: archmage::ScalarToken,
+    a: &[u16],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, w, h)
+}
+
+/// Mixed-width SSE (`u16` source x `u8` reconstruction) — the bd8 lowbd shape
+/// of [`highbd_variance64_impl`]'s square accumulation without the sum lane
+/// (the caller discards `var`): per row `d = a - b` in i32 lanes,
+/// `sse_v += d*d`, one `reduce_add` per row into `i64`. Bit-identical to the
+/// scalar twin on the pixel domain: |diff| <= 255 at bd8, per-lane row sum of
+/// squares <= (w/8)*255^2 < 2^28 for w <= 128 — the wrapping `as u32` reduce
+/// is exact.
+#[magetypes(define(i32x8), neon, wasm128, -scalar)]
+pub(crate) fn sse_u16_u8_impl(
+    token: Token,
+    a: &[u16],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    if w == 4 {
+        return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, w, h);
+    }
+    assert!(w >= 8 && w % 8 == 0, "block widths are powers of two");
+    let widen_a = |s: &[u16]| -> i32x8 {
+        let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
+        i32x8::from_array(token, arr)
+    };
+    let widen_b = |s: &[u8]| -> i32x8 {
+        let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
+        i32x8::from_array(token, arr)
+    };
+    let mut tsse: i64 = 0;
+    for y in 0..h {
+        let ra = y * a_stride;
+        let rb = y * b_stride;
+        let mut sse_v = i32x8::zero(token);
+        for c in (0..w).step_by(8) {
+            let d = widen_a(&a[ra + c..ra + c + 8]) - widen_b(&b[rb + c..rb + c + 8]);
+            sse_v = sse_v + d * d;
+        }
+        tsse += i64::from(sse_v.reduce_add() as u32);
+    }
+    tsse
+}
+
+/// x86-64/AVX2 body for `sse_u16_u8` — the lowbd shape of
+/// `highbd_variance64_impl_v3`'s square accumulation: 16 `u16` source lanes
+/// vs 16 `u8` recon lanes widened by `cvtepu8_epi16`, `sub_epi16` (|diff|
+/// <= 255 at bd8 — exact in i16), `madd_epi16(d, d)` pair-sums squares into
+/// i32 lanes (<= 2*255^2 per op). Accumulation strips at 8 rows like the
+/// variance kernel (lane bound (w/16)*8*2*255^2 < 2^25 for w <= 128); a
+/// w%16==8 row tail takes the xmm twin; w==4 and non-multiple widths are
+/// scalar-routed by the caller.
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+pub(crate) fn sse_u16_u8_impl_v3(
+    _t: archmage::X64V3Token,
+    a: &[u16],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    use archmage::intrinsics::x86_64::*;
+    // `incant!` routes v3 machines straight here — the generic impl's guards
+    // don't run. w==4 is too narrow to amortise the hadd tree (and the
+    // caller's own guard passes it through), so delegate like the generic.
+    if w == 4 {
+        return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, w, h);
+    }
+    // Two-hadd tree: hadd(x,x) pairs each 128 half; hadd again folds the two
+    // pair-sums of each half into lane 0; lo+hi adds the halves — lane 0 is
+    // the strip total. i32 all the way (per-lane bound <= 8*2*255^2 < 2^25).
+    let reduce = |xv: __m256i| -> i64 {
+        let p1 = _mm256_hadd_epi32(xv, xv);
+        let p2 = _mm256_hadd_epi32(p1, p1);
+        let both = _mm_add_epi32(
+            _mm256_castsi256_si128(p2),
+            _mm256_extracti128_si256::<1>(p2),
+        );
+        i64::from(_mm_extract_epi32::<0>(both) as u32)
+    };
+    let mut tsse: i64 = 0;
+    // Same strip derivation as `highbd_variance64_impl_v3`: a lane gains at
+    // most 2*255^2 per madd; 8 lanes in the hadd tree bound the total adds
+    // per lane at 8, so a strip is 8/ceil(w/16) rows (w>=128 -> per-row).
+    let strip = (8 / w.div_ceil(16)).max(1);
+    let mut y = 0usize;
+    while y < h {
+        let yend = (y + strip).min(h);
+        let mut xv = _mm256_setzero_si256();
+        for yy in y..yend {
+            let (ra, rb) = (yy * a_stride, yy * b_stride);
+            for c in (0..w).step_by(16) {
+                if c + 16 <= w {
+                    let av: &[u16; 16] = a[ra + c..ra + c + 16].try_into().unwrap();
+                    let bv: &[u8; 16] = b[rb + c..rb + c + 16].try_into().unwrap();
+                    let d = _mm256_sub_epi16(
+                        _mm256_loadu_si256(av),
+                        _mm256_cvtepu8_epi16(_mm_loadu_si128(bv)),
+                    );
+                    xv = _mm256_add_epi32(xv, _mm256_madd_epi16(d, d));
+                } else {
+                    let av: &[u16; 8] = a[ra + c..ra + c + 8].try_into().unwrap();
+                    let bv: &[u8; 8] = b[rb + c..rb + c + 8].try_into().unwrap();
+                    let d = _mm_sub_epi16(
+                        _mm_loadu_si128(av),
+                        _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
+                    );
+                    let sq = _mm_madd_epi16(d, d);
+                    xv = _mm256_add_epi32(
+                        xv,
+                        _mm256_castsi128_si256(sq),
+                    );
+                }
+            }
+        }
+        tsse += reduce(xv);
+        y = yend;
+    }
+    tsse
+}
+
 /// Scalar tier for [`crate::dist::variance_4x4_units`] — delegates to the
 /// transcribed twin `crate::dist::variance_4x4_units_scalar`.
 pub(crate) fn variance4x4_units_impl_scalar(

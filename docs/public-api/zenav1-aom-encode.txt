@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 284 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census) | zenav1-aom-encode.internal.txt 4885 lines (332 hidden + 7631 excluded-feature)
+# files: zenav1-aom-encode.txt 286 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-encode.internal.txt 4909 lines (332 hidden + 7682 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
@@ -14,9 +14,9 @@
 #   pub modules                                 2
 #   pub types (struct/enum/trait/alias)        28
 #   pub consts/statics                         11
-#   free functions                             23
+#   free functions                             24
 #   inherent methods                           27
-#   struct fields                             137
+#   struct fields                             138
 #   enum variants                              24
 #   re-exports                                  1
 #   trait roster entries (type × trait)       131
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            7
-#   aom_encode                      246
+#   aom_encode                      248
 
-## items (253 lines)
+## items (255 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -145,6 +145,7 @@ pub aom_encode::key_frame::KeyFrameConfig::screen_likelihood: core::option::Opti
 pub aom_encode::key_frame::KeyFrameConfig::ss_x: usize
 pub aom_encode::key_frame::KeyFrameConfig::ss_y: usize
 pub aom_encode::key_frame::KeyFrameConfig::superres_denom: u8
+pub aom_encode::key_frame::KeyFrameConfig::threads: usize
 pub aom_encode::key_frame::KeyFrameConfig::tile_columns_log2: i32
 pub aom_encode::key_frame::KeyFrameConfig::tile_rows_log2: i32
 pub aom_encode::key_frame::KeyFrameConfig::tools: aom_encode::key_frame::CodingTools
@@ -270,6 +271,7 @@ pub aom_encode::XformQuantSummary::txb_entropy_ctx: u8
 pub fn aom_encode::dist_block_tx_domain(&[i32], &[i32], usize, u8) -> (i64, i64)
 pub fn aom_encode::dist_block_tx_domain_qm(&[i32], &[i32], usize, u8, core::option::Option<&[u8]>, &[i16], bool) -> (i64, i64)
 pub fn aom_encode::dist_qmatrix<'a>(&aom_encode::QuantParams<'a>, usize, usize) -> core::option::Option<&'a [u8]>
+pub fn aom_encode::dump_trellis_calls()
 pub fn aom_encode::encode_block_coeffs(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>, bool, &mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16]) -> aom_encode::XformQuantOptResult
 pub fn aom_encode::encode_block_coeffs_full(&[i16], usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::BlockContext<'_>, &aom_encode::OptimizeInputs<'_>, &aom_encode::TxTypeContext, bool, &mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16]) -> aom_encode::XformQuantOptResult
 pub fn aom_encode::encode_coding_block_plane(&[&[i16]], usize, usize, usize, aom_encode::QuantKind, &aom_encode::QuantParams<'_>, &aom_encode::OptimizeInputs<'_>, &aom_encode::TxTypeContext, usize, bool, &mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16]) -> aom_encode::BlockContexts

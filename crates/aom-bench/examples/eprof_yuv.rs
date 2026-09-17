@@ -129,4 +129,5 @@ fn main() {
         warm.len(),
         el / reps as f64
     );
+    aom_encode::dump_trellis_calls();
 }

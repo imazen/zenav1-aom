@@ -161,6 +161,26 @@ fn half_batch_pays(kernel_points: usize) -> bool {
     if cfg!(target_arch = "aarch64") { kernel_points >= 8 } else { true }
 }
 
+/// Inverse-transform destination: the port's `u16` plane storage, or the bd8
+/// `u8` reconstruction scratch (`av1_inv_txfm2d_add_u8`'s buffer). The fused
+/// kernels' epilogues match on it once; the u8 arm clamps to `0..=255` —
+/// identical pixels to the u16 arm at `bd == 8`, whose pred is already
+/// u8-ranged.
+pub(crate) enum InvDst<'a> {
+    U16(&'a mut [u16]),
+    U8(&'a mut [u8]),
+}
+
+/// Reborrow an [`InvDst`] so a dispatcher can hand it to a fallback attempt
+/// after a declined fused call (the enum owns its slice, so a plain reuse
+/// would be a move).
+fn inv_dst_reborrow<'a>(o: &'a mut InvDst<'_>) -> InvDst<'a> {
+    match o {
+        InvDst::U16(s) => InvDst::U16(&mut **s),
+        InvDst::U8(s) => InvDst::U8(&mut **s),
+    }
+}
+
 /// 1-D kernel selector — TXFM_TYPE ids 0..=11 (DCT4..64, ADST4/8/16,
 /// IDTX4/8/16/32), one enum per direction. ALL 12 are ported in each
 /// direction; the `Option` maps stay for unknown-id safety (→ scalar loop).
@@ -576,6 +596,66 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
     )
 }
 
+/// u8-out dispatch for [`inv_rect48_fused_i16_u8`]; `false` routes the caller
+/// to the generic two-pass u8 driver (the u16 i32 fused fallback is not
+/// type-compatible here, so a decline is a decline).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_inv_txfm2d_rect48_fused_u8(
+    txfm_type_row: i32,
+    txfm_type_col: i32,
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    row_clamp: i8,
+    col_clamp: i8,
+    sr_row: &[i8; 12],
+    sr_col: &[i8; 12],
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    let _ = crate::dispatch::scalar_forced();
+    if !(row_clamp == 16
+        && col_clamp == 16
+        && *sr_row == [16i8; 12]
+        && *sr_col == [16i8; 12])
+    {
+        return false;
+    }
+    let pick = |t: i32| -> Option<(InvR48, usize)> {
+        match t {
+            0 => Some((InvR48::Dct, 4)),
+            1 => Some((InvR48::Dct, 8)),
+            5 => Some((InvR48::Adst, 4)),
+            6 => Some((InvR48::Adst, 8)),
+            8 => Some((InvR48::Idtx, 4)),
+            9 => Some((InvR48::Idtx, 8)),
+            _ => None,
+        }
+    };
+    let (Some((kr, kn_r)), Some((kc, kn_c))) =
+        (pick(txfm_type_row), pick(txfm_type_col))
+    else {
+        return false;
+    };
+    if kn_r != col_n || kn_c != row_n {
+        return false;
+    }
+    let bound = if col_n == 4 {
+        INV48_I16_BOUND[kr as usize][kc as usize]
+    } else {
+        INV84_I16_BOUND[kr as usize][kc as usize]
+    };
+    incant!(
+        inv_rect48_fused_i16_u8(
+            kr, kc, input, output, stride, col_n, row_n, bound, ud_flip, lr_flip
+        ),
+        [v3, scalar]
+    )
+}
+
 // ---- fused 4x8 / 8x4 inverse on i16 lanes: C's lowbd_inv_txfm2d_add_4x8/8x4 ----
 //
 // [`inv_rect48_fused`] keeps the block in i32x8 lanes; C's lowbd kernels never
@@ -665,30 +745,31 @@ fn inv_rect48_fused_i16_scalar(
     false
 }
 
-/// The i16 fused 4x8 / 8x4 inverse transform — C's `lowbd_inv_txfm2d_add_4x8`
-/// / `_add_8x4` shape adapted to the port's u16 output.
+/// The i16 fused 4x8 / 8x4 compute — shared by the u16 epilogue
+/// ([`inv_rect48_fused_i16`]) and the u8 epilogue
+/// ([`inv_rect48_fused_i16_u8`]); `None` is the bound/shape decline. Returns
+/// the post-shift `u` array (register index = output row, `ud_flip` applied
+/// by the store): row_n registers are live, col_n lanes wide each.
+/// `#[rite(v3)]` inlines into the callers' tier region.
 #[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[archmage::rite(v3)]
 #[allow(clippy::too_many_arguments)]
-fn inv_rect48_fused_i16(
-    t: Token,
+fn inv_rect48_i16_core(
+    _t: archmage::X64V3Token,
     kr: InvR48,
     kc: InvR48,
     input: &[i32],
-    output: &mut [u16],
-    stride: usize,
     col_n: usize,
     row_n: usize,
     bound: i32,
     ud_flip: bool,
     lr_flip: bool,
-    bd: i32,
-) -> bool {
+) -> Option<[__m128i; 8]> {
     use archmage::intrinsics::x86_64::*;
-    let _ = t;
+    let _ = ud_flip;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
     if !((col_n == 4 && row_n == 8) || (col_n == 8 && row_n == 4)) {
-        return false;
+        return None;
     }
 
     let pair = |a: i32, b: i32| -> __m128i {
@@ -929,7 +1010,7 @@ fn inv_rect48_fused_i16(
             let col: &[i32; 8] =
                 match input.get(c * 8..c * 8 + 8).and_then(|s| s.try_into().ok()) {
                     Some(a) => a,
-                    None => return false,
+                    None => return None,
                 };
             let lo = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[..4]).unwrap());
             let hi = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[4..]).unwrap());
@@ -939,7 +1020,7 @@ fn inv_rect48_fused_i16(
             let col: &[i32; 4] =
                 match input.get(c * 4..c * 4 + 4).and_then(|s| s.try_into().ok()) {
                     Some(a) => a,
-                    None => return false,
+                    None => return None,
                 };
             let v32 = _mm_loadu_si128(col);
             mx = _mm_max_epu32(mx, _mm_abs_epi32(v32));
@@ -948,7 +1029,7 @@ fn inv_rect48_fused_i16(
     }
     let over = _mm_cmpgt_epi32(_mm_sub_epi32(mx, _mm_set1_epi32(bound)), _mm_setzero_si128());
     if _mm_testz_si128(over, over) == 0 {
-        return false;
+        return None;
     }
 
     let zero = _mm_setzero_si128();
@@ -979,23 +1060,7 @@ fn inv_rect48_fused_i16(
         for v in u.iter_mut() {
             *v = _mm_mulhrs_epi16(*v, _mm_set1_epi16(2048));
         }
-        // `lowbd_write_buffer_4xn`: 8 rows of 4 pixels, ud_flip picks u[7 - r].
-        let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
-        for r in 0..8usize {
-            let src = u[if ud_flip { 7 - r } else { r }];
-            let idx = r * stride;
-            let dst: &mut [u16; 4] =
-                match output.get_mut(idx..idx + 4).and_then(|s| s.try_into().ok()) {
-                    Some(d) => d,
-                    None => return false,
-                };
-            let d = _mm_loadu_si128(&[dst[0], dst[1], dst[2], dst[3], 0, 0, 0, 0]);
-            let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
-            let mut sa = [0u16; 8];
-            _mm_storeu_si128(&mut sa, sum);
-            dst.copy_from_slice(&sa[..4]);
-        }
-        return true;
+        return Some(u);
     }
 
     // ---- 8x4: row = w4 8-pt over the 8 registers; col = w8 4-pt ----
@@ -1020,12 +1085,60 @@ fn inv_rect48_fused_i16(
         _mm_unpacklo_epi64(b2, b3),
         _mm_unpackhi_epi64(b2, b3),
     ];
-    let mut u = run4(kc, &tr);
-    for v in u.iter_mut() {
+    let mut u4 = run4(kc, &tr);
+    for v in u4.iter_mut() {
         *v = _mm_mulhrs_epi16(*v, _mm_set1_epi16(2048));
     }
-    // `lowbd_write_buffer_8xn`: 4 rows of 8 pixels, ud_flip picks u[3 - r].
+    let mut u = [_mm_setzero_si128(); 8];
+    u[..4].copy_from_slice(&u4);
+    Some(u)
+}
+
+/// The i16 fused 4x8 / 8x4 inverse transform — C's `lowbd_inv_txfm2d_add_4x8`
+/// / `_add_8x4` shape adapted to the port's u16 output.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn inv_rect48_fused_i16(
+    t: Token,
+    kr: InvR48,
+    kc: InvR48,
+    input: &[i32],
+    output: &mut [u16],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    bound: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+    bd: i32,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let Some(u) = inv_rect48_i16_core(t, kr, kc, input, col_n, row_n, bound, ud_flip, lr_flip)
+    else {
+        return false;
+    };
+    let zero = _mm_setzero_si128();
     let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
+    if col_n == 4 {
+        // `lowbd_write_buffer_4xn`: 8 rows of 4 pixels, ud_flip picks u[7 - r].
+        for r in 0..8usize {
+            let src = u[if ud_flip { 7 - r } else { r }];
+            let idx = r * stride;
+            let dst: &mut [u16; 4] =
+                match output.get_mut(idx..idx + 4).and_then(|s| s.try_into().ok()) {
+                    Some(d) => d,
+                    None => return false,
+                };
+            let d = _mm_loadu_si128(&[dst[0], dst[1], dst[2], dst[3], 0, 0, 0, 0]);
+            let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
+            let mut sa = [0u16; 8];
+            _mm_storeu_si128(&mut sa, sum);
+            dst.copy_from_slice(&sa[..4]);
+        }
+        return true;
+    }
+    // `lowbd_write_buffer_8xn`: 4 rows of 8 pixels, ud_flip picks u[3 - r].
     for r in 0..4usize {
         let src = u[if ud_flip { 3 - r } else { r }];
         let idx = r * stride;
@@ -1044,12 +1157,86 @@ fn inv_rect48_fused_i16(
 /// The `incant!` fallback: decline to the generic two-pass driver.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
+fn inv_rect48_fused_i16_u8_scalar(
+    _t: archmage::ScalarToken,
+    _kr: InvR48,
+    _kc: InvR48,
+    _input: &[i32],
+    _output: &mut [u8],
+    _stride: usize,
+    _col_n: usize,
+    _row_n: usize,
+    _bound: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
+}
+
+/// The u8-out twin of [`inv_rect48_fused_i16`] — C's
+/// `lowbd_inv_txfm2d_add_4x8` / `_add_8x4` `clip_pixel` u8 store. Same
+/// compute, same gate; the epilogue widens the other way (`cvtepu8_epi16`
+/// load, add, `packus_epi16` = `clamp(_, 0, 255)`, narrow store).
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn inv_rect48_fused_i16_u8(
+    t: Token,
+    kr: InvR48,
+    kc: InvR48,
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    bound: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let Some(u) = inv_rect48_i16_core(t, kr, kc, input, col_n, row_n, bound, ud_flip, lr_flip)
+    else {
+        return false;
+    };
+    if col_n == 4 {
+        for r in 0..8usize {
+            let src = u[if ud_flip { 7 - r } else { r }];
+            let idx = r * stride;
+            let dst: &mut [u8; 4] =
+                match output.get_mut(idx..idx + 4).and_then(|s| s.try_into().ok()) {
+                    Some(d) => d,
+                    None => return false,
+                };
+            let d = _mm_cvtepu8_epi16(_mm_loadu_si32(dst));
+            let sum = _mm_packus_epi16(_mm_add_epi16(d, src), _mm_setzero_si128());
+            _mm_storeu_si32(dst, sum);
+        }
+        return true;
+    }
+    for r in 0..4usize {
+        let src = u[if ud_flip { 3 - r } else { r }];
+        let idx = r * stride;
+        let dst: &mut [u8; 8] =
+            match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+                Some(d) => d,
+                None => return false,
+            };
+        let d = _mm_cvtepu8_epi16(_mm_loadu_si64(dst));
+        let sum = _mm_packus_epi16(_mm_add_epi16(d, src), _mm_setzero_si128());
+        _mm_storeu_si64(dst, sum);
+    }
+    true
+}
+
+/// The `incant!` fallback: decline to the generic two-pass driver.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
 fn inv_rect816_fused_scalar(
     _t: archmage::ScalarToken,
     _kr: Inv1d,
     _kc: Inv1d,
     _input: &[i32],
-    _output: &mut [u16],
+    _output: InvDst<'_>,
     _stride: usize,
     _col_n: usize,
     _row_n: usize,
@@ -1093,7 +1280,7 @@ fn inv_rect816_fused(
     kr: Inv1d,
     kc: Inv1d,
     input: &[i32],
-    output: &mut [u16],
+    output: InvDst,
     stride: usize,
     col_n: usize,
     row_n: usize,
@@ -1199,20 +1386,43 @@ fn inv_rect816_fused(
 
     // ---- reconstruction ----
     let zero = i32x8::zero(t);
-    let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
-    for r in 0..row_n {
-        let src_i = if ud_flip { row_n - 1 - r } else { r };
-        let idx = r * stride;
-        for cg in 0..cg_n {
-            let o0 = idx + cg * 8;
-            let d: [u16; 8] = match output.get(o0..o0 + 8).and_then(|s| s.try_into().ok()) {
-                Some(d) => d,
-                None => return false,
-            };
-            let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
-            let s = (dv + co[cg][src_i]).clamp(zero, pix_hi).to_array();
-            for j in 0..8 {
-                output[o0 + j] = s[j] as u16;
+    match output {
+        InvDst::U16(output) => {
+            let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
+            for r in 0..row_n {
+                let src_i = if ud_flip { row_n - 1 - r } else { r };
+                let idx = r * stride;
+                for cg in 0..cg_n {
+                    let o0 = idx + cg * 8;
+                    let d: [u16; 8] = match output.get(o0..o0 + 8).and_then(|s| s.try_into().ok()) {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+                    let s = (dv + co[cg][src_i]).clamp(zero, pix_hi).to_array();
+                    for j in 0..8 {
+                        output[o0 + j] = s[j] as u16;
+                    }
+                }
+            }
+        }
+        InvDst::U8(output) => {
+            let pix_hi = i32x8::splat(t, 255);
+            for r in 0..row_n {
+                let src_i = if ud_flip { row_n - 1 - r } else { r };
+                let idx = r * stride;
+                for cg in 0..cg_n {
+                    let o0 = idx + cg * 8;
+                    let d: [u8; 8] = match output.get(o0..o0 + 8).and_then(|s| s.try_into().ok()) {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+                    let s = (dv + co[cg][src_i]).clamp(zero, pix_hi).to_array();
+                    for j in 0..8 {
+                        output[o0 + j] = s[j] as u8;
+                    }
+                }
             }
         }
     }
@@ -1226,7 +1436,7 @@ pub(crate) fn try_inv_txfm2d_rect816_fused(
     txfm_type_row: i32,
     txfm_type_col: i32,
     input: &[i32],
-    output: &mut [u16],
+    output: InvDst,
     stride: usize,
     col_n: usize,
     row_n: usize,
@@ -1238,6 +1448,7 @@ pub(crate) fn try_inv_txfm2d_rect816_fused(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
+    let mut output = output;
     let _ = crate::dispatch::scalar_forced();
     let (Some(kr), Some(kc)) = (inv_kernel(txfm_type_row), inv_kernel(txfm_type_col)) else {
         return false;
@@ -1263,8 +1474,17 @@ pub(crate) fn try_inv_txfm2d_rect816_fused(
             if bound >= 0
                 && incant!(
                     inv_w16_fused_i16(
-                        kr16, kc16, input, output, stride, col_n, row_n, bound, ud_flip,
-                        lr_flip, bd
+                        kr16,
+                        kc16,
+                        input,
+                        inv_dst_reborrow(&mut output),
+                        stride,
+                        col_n,
+                        row_n,
+                        bound,
+                        ud_flip,
+                        lr_flip,
+                        bd
                     ),
                     [v3, scalar]
                 )
@@ -1290,7 +1510,7 @@ fn inv_16x16_fused_scalar(
     _kr: Inv1d,
     _kc: Inv1d,
     _input: &[i32],
-    _output: &mut [u16],
+    _output: InvDst<'_>,
     _stride: usize,
     _row_clamp: i8,
     _col_clamp: i8,
@@ -1318,7 +1538,7 @@ fn inv_16x16_fused(
     kr: Inv1d,
     kc: Inv1d,
     input: &[i32],
-    output: &mut [u16],
+    output: InvDst,
     stride: usize,
     row_clamp: i8,
     col_clamp: i8,
@@ -1410,21 +1630,44 @@ fn inv_16x16_fused(
 
     // ---- reconstruction ----
     let zero = i32x8::zero(t);
-    let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
-    for r in 0..16usize {
-        let src_i = if ud_flip { 15 - r } else { r };
-        let idx = r * stride;
-        let d: [u16; 16] = match output.get(idx..idx + 16).and_then(|s| s.try_into().ok()) {
-            Some(d) => d,
-            None => return false,
-        };
-        let dl = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
-        let dh = i32x8::from_array(t, core::array::from_fn(|j| d[j + 8] as i32));
-        let sl = (dl + colo[src_i]).clamp(zero, pix_hi).to_array();
-        let sh = (dh + cohi[src_i]).clamp(zero, pix_hi).to_array();
-        for j in 0..8 {
-            output[idx + j] = sl[j] as u16;
-            output[idx + 8 + j] = sh[j] as u16;
+    match output {
+        InvDst::U16(output) => {
+            let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
+            for r in 0..16usize {
+                let src_i = if ud_flip { 15 - r } else { r };
+                let idx = r * stride;
+                let d: [u16; 16] = match output.get(idx..idx + 16).and_then(|s| s.try_into().ok()) {
+                    Some(d) => d,
+                    None => return false,
+                };
+                let dl = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+                let dh = i32x8::from_array(t, core::array::from_fn(|j| d[j + 8] as i32));
+                let sl = (dl + colo[src_i]).clamp(zero, pix_hi).to_array();
+                let sh = (dh + cohi[src_i]).clamp(zero, pix_hi).to_array();
+                for j in 0..8 {
+                    output[idx + j] = sl[j] as u16;
+                    output[idx + 8 + j] = sh[j] as u16;
+                }
+            }
+        }
+        InvDst::U8(output) => {
+            let pix_hi = i32x8::splat(t, 255);
+            for r in 0..16usize {
+                let src_i = if ud_flip { 15 - r } else { r };
+                let idx = r * stride;
+                let d: [u8; 16] = match output.get(idx..idx + 16).and_then(|s| s.try_into().ok()) {
+                    Some(d) => d,
+                    None => return false,
+                };
+                let dl = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+                let dh = i32x8::from_array(t, core::array::from_fn(|j| d[j + 8] as i32));
+                let sl = (dl + colo[src_i]).clamp(zero, pix_hi).to_array();
+                let sh = (dh + cohi[src_i]).clamp(zero, pix_hi).to_array();
+                for j in 0..8 {
+                    output[idx + j] = sl[j] as u8;
+                    output[idx + 8 + j] = sh[j] as u8;
+                }
+            }
         }
     }
     true
@@ -1437,7 +1680,7 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
     txfm_type_row: i32,
     txfm_type_col: i32,
     input: &[i32],
-    output: &mut [u16],
+    output: InvDst,
     stride: usize,
     row_clamp: i8,
     col_clamp: i8,
@@ -1447,6 +1690,7 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
+    let mut output = output;
     let _ = crate::dispatch::scalar_forced();
     let (Some(kr), Some(kc)) = (inv_kernel(txfm_type_row), inv_kernel(txfm_type_col)) else {
         return false;
@@ -1468,7 +1712,7 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
                     kr16,
                     kc16,
                     input,
-                    output,
+                    inv_dst_reborrow(&mut output),
                     stride,
                     16,
                     16,
@@ -1697,6 +1941,50 @@ pub(crate) fn try_inv_txfm2d_8x8_fused(
     )
 }
 
+/// u8-out dispatch for [`inv_8x8_fused_i16_u8`]; `false` routes the caller to
+/// the generic two-pass u8 driver (out-of-range inputs, unmapped types, and
+/// the scalar tier all decline — the u16 i32 fused fallback is not
+/// type-compatible here).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_inv_txfm2d_8x8_fused_u8(
+    txfm_type_row: i32,
+    txfm_type_col: i32,
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    row_clamp: i8,
+    col_clamp: i8,
+    sr_row: &[i8; 12],
+    sr_col: &[i8; 12],
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    let _ = crate::dispatch::scalar_forced();
+    if row_clamp == 16
+        && col_clamp == 16
+        && *sr_row == [16i8; 12]
+        && *sr_col == [16i8; 12]
+    {
+        if let (Some(kr), Some(kc)) = (inv8_kernel(txfm_type_row), inv8_kernel(txfm_type_col)) {
+            return incant!(
+                inv_8x8_fused_i16_u8(
+                    kr,
+                    kc,
+                    input,
+                    output,
+                    stride,
+                    INV8_I16_BOUND[kr as usize][kc as usize],
+                    ud_flip,
+                    lr_flip
+                ),
+                [v3, scalar]
+            );
+        }
+    }
+    false
+}
+
 // ---- fused 8x8 inverse on i16 lanes: C's `av1_lowbd_inv_txfm2d_add_8x8` ----
 //
 // [`inv_8x8_fused`] keeps the block in i32x8 lanes; C's lowbd kernel never
@@ -1773,25 +2061,25 @@ fn inv_8x8_fused_i16_scalar(
     false
 }
 
-/// The i16 fused 8x8 inverse transform — C's `av1_lowbd_inv_txfm2d_add_8x8`
-/// shape adapted to the port's u16 output (`highbd_clip_pixel_add` store).
+/// The i16 fused 8x8 compute — the whole-block kernel up to (but not
+/// including) the destination store. Shared by the u16 epilogue
+/// ([`inv_8x8_fused_i16`]) and the u8 epilogue ([`inv_8x8_fused_i16_u8`]):
+/// `None` is the bound/len decline that routes the caller to the next path.
+/// `#[rite(v3)]` so the call inlines into each caller's target-feature
+/// region (both callers are v3-only tier bodies).
 #[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[archmage::rite(v3)]
 #[allow(clippy::too_many_arguments)]
-fn inv_8x8_fused_i16(
-    t: Token,
+fn inv_8x8_i16_core(
+    _t: archmage::X64V3Token,
     kr: Inv8,
     kc: Inv8,
     input: &[i32],
-    output: &mut [u16],
-    stride: usize,
     bound: i32,
     ud_flip: bool,
     lr_flip: bool,
-    bd: i32,
-) -> bool {
+) -> Option<[__m128i; 8]> {
     use archmage::intrinsics::x86_64::*;
-    let _ = t;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
     // `pair_set_epi16(a, b)` — i16 pair (a lo, b hi) per 32-bit group.
@@ -1944,7 +2232,7 @@ fn inv_8x8_fused_i16(
     for (c, v) in b.iter_mut().enumerate() {
         let col: &[i32; 8] = match input.get(c * 8..c * 8 + 8).and_then(|s| s.try_into().ok()) {
             Some(a) => a,
-            None => return false,
+            None => return None,
         };
         let lo = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[..4]).unwrap());
         let hi = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[4..]).unwrap());
@@ -1956,7 +2244,7 @@ fn inv_8x8_fused_i16(
         _mm_setzero_si128(),
     );
     if _mm_testz_si128(over, over) == 0 {
-        return false;
+        return None;
     }
 
     // Pass 1: register index = the c axis (input column), lanes = r.
@@ -2011,6 +2299,30 @@ fn inv_8x8_fused_i16(
     for v in u.iter_mut() {
         *v = _mm_mulhrs_epi16(*v, _mm_set1_epi16(2048));
     }
+    Some(u)
+}
+
+/// The i16 fused 8x8 inverse transform — C's `av1_lowbd_inv_txfm2d_add_8x8`
+/// shape adapted to the port's u16 output (`highbd_clip_pixel_add` store).
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn inv_8x8_fused_i16(
+    t: Token,
+    kr: Inv8,
+    kc: Inv8,
+    input: &[i32],
+    output: &mut [u16],
+    stride: usize,
+    bound: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+    bd: i32,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let Some(u) = inv_8x8_i16_core(t, kr, kc, input, bound, ud_flip, lr_flip) else {
+        return false;
+    };
 
     // u[r][c] — register index is the output row (ud_flip selects 7 - r),
     // lanes the output column, so each register is one contiguous dst row.
@@ -2026,6 +2338,60 @@ fn inv_8x8_fused_i16(
         let d = _mm_loadu_si128(dst);
         let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
         _mm_storeu_si128(dst, sum);
+    }
+    true
+}
+
+/// The `incant!` fallback: decline to the generic two-pass driver.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn inv_8x8_fused_i16_u8_scalar(
+    _t: archmage::ScalarToken,
+    _kr: Inv8,
+    _kc: Inv8,
+    _input: &[i32],
+    _output: &mut [u8],
+    _stride: usize,
+    _bound: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
+}
+
+/// The u8-out twin of [`inv_8x8_fused_i16`] — C's true
+/// `av1_lowbd_inv_txfm2d_add_8x8` store (`clip_pixel` on u8 lanes). Same
+/// compute, same gate; only the destination widens the other way:
+/// `cvtepu8_epi16` load, add, `packus_epi16` (which IS `clamp(_, 0, 255)` —
+/// the u16 epilogue's `min(max(_, 0), 255)` at bd8), `storeu_si64`.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn inv_8x8_fused_i16_u8(
+    t: Token,
+    kr: Inv8,
+    kc: Inv8,
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    bound: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let Some(u) = inv_8x8_i16_core(t, kr, kc, input, bound, ud_flip, lr_flip) else {
+        return false;
+    };
+    for r in 0..8usize {
+        let src = u[if ud_flip { 7 - r } else { r }];
+        let idx = r * stride;
+        let dst: &mut [u8; 8] = match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+            Some(d) => d,
+            None => return false,
+        };
+        let d = _mm_cvtepu8_epi16(_mm_loadu_si64(dst));
+        let sum = _mm_packus_epi16(_mm_add_epi16(d, src), _mm_setzero_si128());
+        _mm_storeu_si64(dst, sum);
     }
     true
 }
@@ -2092,7 +2458,7 @@ fn inv_w16_fused_i16_scalar(
     _kr: Inv16,
     _kc: Inv16,
     _input: &[i32],
-    _output: &mut [u16],
+    _output: InvDst<'_>,
     _stride: usize,
     _col_n: usize,
     _row_n: usize,
@@ -2121,7 +2487,7 @@ fn inv_w16_fused_i16(
     kr: Inv16,
     kc: Inv16,
     input: &[i32],
-    output: &mut [u16],
+    output: InvDst,
     stride: usize,
     col_n: usize,
     row_n: usize,
@@ -2647,20 +3013,45 @@ fn inv_w16_fused_i16(
     // `lowbd_write_buffer_16xn`/`lowbd_write_buffer_8xn`: register index = row
     // (ud_flip picks `row_n - 1 - r`), lanes = output column within the group.
     let zero = _mm_setzero_si128();
-    let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
-    for r in 0..row_n {
-        let src_i = if ud_flip { row_n - 1 - r } else { r };
-        let idx = r * stride;
-        for cg in 0..cg_n {
-            let dst: &mut [u16; 8] =
-                match output.get_mut(idx + cg * 8..idx + cg * 8 + 8).and_then(|s| s.try_into().ok())
-                {
-                    Some(d) => d,
-                    None => return false,
-                };
-            let d = _mm_loadu_si128(dst);
-            let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, co[cg][src_i]), zero), hi);
-            _mm_storeu_si128(dst, sum);
+    match output {
+        InvDst::U16(output) => {
+            let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
+            for r in 0..row_n {
+                let src_i = if ud_flip { row_n - 1 - r } else { r };
+                let idx = r * stride;
+                for cg in 0..cg_n {
+                    let dst: &mut [u16; 8] = match output
+                        .get_mut(idx + cg * 8..idx + cg * 8 + 8)
+                        .and_then(|s| s.try_into().ok())
+                    {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let d = _mm_loadu_si128(dst);
+                    let sum =
+                        _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, co[cg][src_i]), zero), hi);
+                    _mm_storeu_si128(dst, sum);
+                }
+            }
+        }
+        InvDst::U8(output) => {
+            for r in 0..row_n {
+                let src_i = if ud_flip { row_n - 1 - r } else { r };
+                let idx = r * stride;
+                for cg in 0..cg_n {
+                    let dst: &mut [u8; 8] = match output
+                        .get_mut(idx + cg * 8..idx + cg * 8 + 8)
+                        .and_then(|s| s.try_into().ok())
+                    {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let d = _mm_cvtepu8_epi16(_mm_loadu_si64(dst));
+                    let sum =
+                        _mm_packus_epi16(_mm_add_epi16(d, co[cg][src_i]), _mm_setzero_si128());
+                    _mm_storeu_si64(dst, sum);
+                }
+            }
         }
     }
     true
@@ -3791,7 +4182,102 @@ fn inv_4x4_fused(
     bd: i32,
 ) -> bool {
     use archmage::intrinsics::x86_64::*;
-    let _ = t;
+    let Some(u) = inv_4x4_i16_core(t, kr, kc, input, ud_flip, lr_flip) else {
+        return false;
+    };
+
+    // u[j][c] = temp_out_c[j] — register index is the output row (with
+    // ud_flip selecting 3 - r), lanes the output column, so each register is
+    // one contiguous destination row.
+    let zero = _mm_setzero_si128();
+    let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
+    for r in 0..4usize {
+        let src = u[if ud_flip { 3 - r } else { r }];
+        let idx = r * stride;
+        let dst: &mut [u16; 4] = match output.get_mut(idx..idx + 4) {
+            Some(s) => match s.try_into() {
+                Ok(a) => a,
+                Err(_) => return false,
+            },
+            None => return false,
+        };
+        let d = _mm_loadu_si64(dst);
+        let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
+        _mm_storeu_si64(dst, sum);
+    }
+    true
+}
+
+/// The `incant!` fallback: decline to the generic two-pass driver.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn inv_4x4_fused_u8_scalar(
+    _t: archmage::ScalarToken,
+    _kr: Inv4,
+    _kc: Inv4,
+    _input: &[i32],
+    _output: &mut [u8],
+    _stride: usize,
+    _ud_flip: bool,
+    _lr_flip: bool,
+) -> bool {
+    false
+}
+
+/// The u8-out twin of [`inv_4x4_fused`] — C's `lowbd_inv_txfm2d_add_4x4`
+/// `clip_pixel` u8 store. Same compute, same gate; the epilogue widens the
+/// other way: `cvtepu8_epi16` load, add, `packus_epi16` (= `clamp(_, 0, 255)`,
+/// the u16 epilogue's `min(max(_, 0), 255)` at bd8), `storeu_si32`.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn inv_4x4_fused_u8(
+    t: Token,
+    kr: Inv4,
+    kc: Inv4,
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let Some(u) = inv_4x4_i16_core(t, kr, kc, input, ud_flip, lr_flip) else {
+        return false;
+    };
+    for r in 0..4usize {
+        let src = u[if ud_flip { 3 - r } else { r }];
+        let idx = r * stride;
+        let dst: &mut [u8; 4] = match output.get_mut(idx..idx + 4) {
+            Some(s) => match s.try_into() {
+                Ok(a) => a,
+                Err(_) => return false,
+            },
+            None => return false,
+        };
+        let d = _mm_cvtepu8_epi16(_mm_loadu_si32(dst));
+        let sum = _mm_packus_epi16(_mm_add_epi16(d, src), _mm_setzero_si128());
+        _mm_storeu_si32(dst, sum);
+    }
+    true
+}
+
+/// The i16 fused 4x4 compute — shared by the u16 epilogue
+/// ([`inv_4x4_fused`]) and the u8 epilogue ([`inv_4x4_fused_u8`]); `None` is
+/// the bound/len decline. `#[rite(v3)]` inlines into the callers' tier
+/// region.
+#[cfg(target_arch = "x86_64")]
+#[archmage::rite(v3)]
+#[allow(clippy::too_many_arguments)]
+fn inv_4x4_i16_core(
+    _t: archmage::X64V3Token,
+    kr: Inv4,
+    kc: Inv4,
+    input: &[i32],
+    ud_flip: bool,
+    lr_flip: bool,
+) -> Option<[__m128i; 4]> {
+    use archmage::intrinsics::x86_64::*;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
     // Runtime input bound (was a scalar scan in the dispatcher — moved inside
@@ -3804,7 +4290,7 @@ fn inv_4x4_fused(
     // 2^31 > 4096 — the wrapping lane still declines, matching the scalar
     // `unsigned_abs().max` bound exactly.
     if input.len() < 16 {
-        return false;
+        return None;
     }
     let m = _mm256_max_epu32(
         _mm256_abs_epi32(_mm256_loadu_si256(
@@ -3821,7 +4307,7 @@ fn inv_4x4_fused(
     let m = _mm_max_epu32(m, _mm_srli_si128::<8>(m));
     let m = _mm_max_epu32(m, _mm_srli_si128::<4>(m));
     if _mm_cvtsi128_si32(m) as u32 > 4096 {
-        return false;
+        return None;
     }
 
     // `pair_set_epi16(a, b)` — i16 pair (a lo, b hi) per 32-bit group.
@@ -3917,9 +4403,9 @@ fn inv_4x4_fused(
         let col: &[i32; 4] = match input.get(c * 4..c * 4 + 4) {
             Some(s) => match s.try_into() {
                 Ok(a) => a,
-                Err(_) => return false,
+                Err(_) => return None,
             },
-            None => return false,
+            None => return None,
         };
         let x = _mm_loadu_si128(col);
         *v = _mm_packs_epi32(x, x);
@@ -3949,27 +4435,7 @@ fn inv_4x4_fused(
     for v in u.iter_mut() {
         *v = _mm_mulhrs_epi16(*v, _mm_set1_epi16(2048));
     }
-
-    // u[j][c] = temp_out_c[j] — register index is the output row (with
-    // ud_flip selecting 3 - r), lanes the output column, so each register is
-    // one contiguous destination row.
-    let zero = _mm_setzero_si128();
-    let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
-    for r in 0..4usize {
-        let src = u[if ud_flip { 3 - r } else { r }];
-        let idx = r * stride;
-        let dst: &mut [u16; 4] = match output.get_mut(idx..idx + 4) {
-            Some(s) => match s.try_into() {
-                Ok(a) => a,
-                Err(_) => return false,
-            },
-            None => return false,
-        };
-        let d = _mm_loadu_si64(dst);
-        let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
-        _mm_storeu_si64(dst, sum);
-    }
-    true
+    Some(u)
 }
 
 /// Dispatch for [`inv_4x4_fused`]; `false` routes to the scalar fused path.
@@ -4004,6 +4470,36 @@ pub(crate) fn try_inv_txfm2d_4x4_fused(
     // here identically.
     incant!(
         inv_4x4_fused(kr, kc, input, output, stride, ud_flip, lr_flip, bd),
+        [v3, scalar]
+    )
+}
+
+/// u8-out dispatch for [`inv_4x4_fused_u8`]; `false` routes the caller to the
+/// generic two-pass u8 driver (same decline conditions as the u16 twin).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_inv_txfm2d_4x4_fused_u8(
+    txfm_type_row: i32,
+    txfm_type_col: i32,
+    input: &[i32],
+    output: &mut [u8],
+    stride: usize,
+    row_clamp: i8,
+    col_clamp: i8,
+    sr_row: &[i8; 12],
+    sr_col: &[i8; 12],
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    let _ = crate::dispatch::scalar_forced();
+    if row_clamp != 16 || col_clamp != 16 || *sr_row != [16i8; 12] || *sr_col != [16i8; 12] {
+        return false;
+    }
+    let (Some(kr), Some(kc)) = (inv4_kernel(txfm_type_row), inv4_kernel(txfm_type_col)) else {
+        return false;
+    };
+    incant!(
+        inv_4x4_fused_u8(kr, kc, input, output, stride, ud_flip, lr_flip),
         [v3, scalar]
     )
 }

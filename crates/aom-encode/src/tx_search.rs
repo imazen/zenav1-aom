@@ -1425,6 +1425,9 @@ pub struct TxSearchScratch {
     pub best_dqcoeff: Vec<i32>,
     /// `dist_block_px_domain`'s `pred + inv_txfm(dqcoeff)` reconstruction.
     pub recon: Vec<u16>,
+    /// The bd8 twin of `recon`: the u8 reconstruction `dist_block_px_domain`
+    /// stages when `bd == 8` (C's lowbd `av1_inv_txfm_add` path — u8 store).
+    pub recon_u8: Vec<u8>,
     /// `skip_trellis_opt_based_on_satd`'s forward-transform output.
     pub satd_coeff: Vec<i32>,
     /// The inverse transform's row-pass / input-expansion scratch — reused
@@ -1696,6 +1699,12 @@ pub fn search_tx_type_intra_into(
     let perform_block_coeff_opt = (block_mse_q8 as u64)
         <= (pol.coeff_opt_dist_threshold as u64) * (qstep as u64) * (qstep as u64);
     skip_trellis |= !perform_block_coeff_opt;
+    if TX_DBG_VERBOSE.get() {
+        eprintln!(
+            "[gate] pl{} txs={tx_size} mse_q8={block_mse_q8} qstep={qstep} thr={} pco={perform_block_coeff_opt} skip={skip_trellis} mask={allowed_tx_mask:#06x}",
+            inp.plane, pol.coeff_opt_dist_threshold
+        );
+    }
 
     // Distortion-domain policy.
     let mut use_transform_domain_distortion = pol.use_transform_domain_distortion > 0
@@ -1761,6 +1770,30 @@ pub fn search_tx_type_intra_into(
         sharpness: pol.sharpness,
     };
 
+    static TRELLIS_CALLS_DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let trellis_calls_dbg =
+        *TRELLIS_CALLS_DBG.get_or_init(|| std::env::var_os("AOM_TRELLIS_CALLS").is_some());
+    if trellis_calls_dbg {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CALLS: AtomicU64 = AtomicU64::new(0);
+        static EVALS: AtomicU64 = AtomicU64::new(0);
+        static EVALS_UV: AtomicU64 = AtomicU64::new(0);
+        let c = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        let pop = allowed_tx_mask.count_ones() as u64;
+        if inp.plane == 0 {
+            EVALS.fetch_add(pop, Ordering::Relaxed);
+        } else {
+            EVALS_UV.fetch_add(pop, Ordering::Relaxed);
+        }
+        if c % 100_000 == 1 {
+            eprintln!(
+                "TXSEARCH calls={c} evals_y={} evals_uv={}",
+                EVALS.load(Ordering::Relaxed),
+                EVALS_UV.load(Ordering::Relaxed)
+            );
+        }
+    }
+
     let mut best: Option<TxTypeSearchSummary> = None;
     let mut best_rd = i64::MAX;
     let mut evaluated_mask = 0u16;
@@ -1804,6 +1837,24 @@ pub fn search_tx_type_intra_into(
         // switches to B for that tx type. The port previously carried the
         // block-level `kind` into both arms, quantizing FP where C quantizes B
         // — same eob, different coefficients, hence different rate AND dist.
+        if trellis_calls_dbg {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SKIP: AtomicU64 = AtomicU64::new(0);
+            static RUN: AtomicU64 = AtomicU64::new(0);
+            if skip_trellis_this {
+                SKIP.fetch_add(1, Ordering::Relaxed);
+            } else {
+                RUN.fetch_add(1, Ordering::Relaxed);
+            }
+            let t = SKIP.load(Ordering::Relaxed) + RUN.load(Ordering::Relaxed);
+            if t % 200_000 == 0 {
+                eprintln!(
+                    "TXSKIP skip={} run={}",
+                    SKIP.load(Ordering::Relaxed),
+                    RUN.load(Ordering::Relaxed)
+                );
+            }
+        }
         // Byte-identical below speed 4: the whole SATD body is short-circuited
         // when `coeff_opt_satd_threshold == UINT_MAX`, and then
         // `skip_trellis_this == skip_trellis`, so this expression reproduces
@@ -1986,6 +2037,7 @@ pub fn search_tx_type_intra_into(
                     res.eob as usize,
                     inp.lossless,
                     &mut scratch.recon,
+                    &mut scratch.recon_u8,
                     &mut scratch.inv,
                 );
                 dbg_pxd = d;
@@ -2083,6 +2135,7 @@ pub fn search_tx_type_intra_into(
                 b.best_eob as usize,
                 inp.lossless,
                 &mut scratch.recon,
+                &mut scratch.recon_u8,
                 &mut scratch.inv,
             );
             b.sse = block_sse;
@@ -2116,10 +2169,12 @@ pub fn dist_block_px_domain(
     lossless: bool,
 ) -> i64 {
     let mut recon = Vec::new();
+    let mut recon_u8 = Vec::new();
     let mut inv_scratch = aom_dsp::transform::inv_txfm2d::InvTxfmScratch::default();
     dist_block_px_domain_into(
         dqcoeff, tx_size, tx_type, pred, TXS_W[tx_size], src, src_off, src_stride, bd,
-        visible_cols, visible_rows, eob, lossless, &mut recon, &mut inv_scratch,
+        visible_cols, visible_rows, eob, lossless, &mut recon, &mut recon_u8,
+        &mut inv_scratch,
     )
 }
 
@@ -2145,9 +2200,56 @@ pub fn dist_block_px_domain_into(
     eob: usize,
     lossless: bool,
     recon: &mut Vec<u16>,
+    recon_u8: &mut Vec<u8>,
     inv_scratch: &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch,
 ) -> i64 {
     let (w, h) = (TXS_W[tx_size], TXS_H[tx_size]);
+    if bd == 8 {
+        // bd8 lowbd route: C's `dist_block_px_domain` reconstructs into a u8
+        // dst buffer via `av1_inv_txfm_add` (lowbd kernels) and SSEs with
+        // `aom_sse`. The port's planes are u16-stored, so `pred`/`src` arrive
+        // u16 — downcast the prediction into the u8 scratch (a truncation on
+        // u8-range values = identity), inverse-transform-add in u8, and take
+        // the mixed-width SSE. Byte-identical: `av1_inv_txfm2d_add_u8` is the
+        // verified u8 twin, and `sse_u16_u8` computes the same squared diffs.
+        if recon_u8.len() < w * h {
+            recon_u8.resize(w * h, 0);
+        }
+        let recon8 = &mut recon_u8[..w * h];
+        if pred_stride == w {
+            for (d, s) in recon8.iter_mut().zip(&pred[..w * h]) {
+                *d = *s as u8;
+            }
+        } else {
+            match w {
+                4 => downcast_pred_rows::<4>(recon8, pred, pred_stride, h),
+                8 => downcast_pred_rows::<8>(recon8, pred, pred_stride, h),
+                16 => downcast_pred_rows::<16>(recon8, pred, pred_stride, h),
+                32 => downcast_pred_rows::<32>(recon8, pred, pred_stride, h),
+                _ => downcast_pred_rows::<64>(recon8, pred, pred_stride, h),
+            }
+        }
+        // `av1_inverse_transform_block`'s `if (!eob) return` — all-zero
+        // dqcoeff adds nothing, so the recon stays the pred copy.
+        if eob != 0 {
+            if lossless {
+                aom_dsp::transform::inv_txfm2d::av1_iwht4x4_add_u8(dqcoeff, recon8, w, eob);
+            } else {
+                aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add_u8_into(
+                    dqcoeff, recon8, w, tx_type, tx_size, inv_scratch,
+                );
+            }
+        }
+        let sse = aom_dsp::dist::sse_u16_u8(
+            &src[src_off..],
+            src_stride,
+            recon8,
+            w,
+            visible_cols,
+            visible_rows,
+        );
+        return 16 * i64::from(sse);
+    }
     // `recon` is a per-candidate scratch: keep the capacity and write the rows.
     // The strided arm is width-specialised (`copy_pred_rows`) because a
     // runtime-width `copy_from_slice` lowers to a `memcpy` call per row — the
@@ -2179,17 +2281,21 @@ pub fn dist_block_px_domain_into(
             }
         }
     }
-    aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into(
-        dqcoeff,
-        recon,
-        w,
-        tx_type,
-        tx_size,
-        i32::from(bd),
-        eob,
-        lossless,
-        inv_scratch,
-    );
+    // `av1_inverse_transform_block`'s `if (!eob) return` — same guard as the
+    // u8 branch above.
+    if eob != 0 {
+        aom_dsp::transform::inv_txfm2d::av1_inverse_transform_add_into(
+            dqcoeff,
+            recon,
+            w,
+            tx_type,
+            tx_size,
+            i32::from(bd),
+            eob,
+            lossless,
+            inv_scratch,
+        );
+    }
     let (_var, sse) = aom_dsp::dist::highbd_variance(
         &src[src_off..],
         src_stride,
@@ -2221,10 +2327,24 @@ pub fn dist_block_px_domain_into(
     16 * i64::from(sse)
 }
 
-/// `h` rows of `W` pixels from `pred` (stride `pred_stride`) into `recon`
-/// (packed, stride `W`). Const-generic `W` keeps each row a fixed-size array
-/// move — the runtime-width `copy_from_slice` form emits a `memcpy` call per
-/// row, which dominates at 4..64-px widths.
+/// bd8 strided pred downcast — the u8 recon's counterpart of
+/// [`copy_pred_rows`]: a runtime-width `u16 -> u8` row loop stays scalar, so
+/// the literal-W arms let each row lower to a truncating vector move.
+fn downcast_pred_rows<const W: usize>(
+    recon: &mut [u8],
+    pred: &[u16],
+    pred_stride: usize,
+    h: usize,
+) {
+    for r in 0..h {
+        let d: &mut [u8; W] = (&mut recon[r * W..r * W + W]).try_into().unwrap();
+        let s: &[u16; W] = pred[r * pred_stride..r * pred_stride + W].try_into().unwrap();
+        for i in 0..W {
+            d[i] = s[i] as u8;
+        }
+    }
+}
+
 fn copy_pred_rows<const W: usize>(
     recon: &mut [u16],
     pred: &[u16],

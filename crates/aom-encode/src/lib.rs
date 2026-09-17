@@ -783,9 +783,26 @@ pub struct XformQuantOptSummary {
     pub dc_sign_ctx: usize,
 }
 
+/// Temporary instrumentation: dump per-call-site trellis counters when
+/// `AOM_TRELLIS_CALLS` is set.
+pub fn dump_trellis_calls() {
+    if let Some(m) = TRELLIS_CALLS.lock().unwrap().as_ref() {
+        let mut v: Vec<_> = m.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        for (k, n) in v {
+            eprintln!("TRELLIS_CALLS {n:>10} {k}");
+        }
+    }
+}
+
+static TRELLIS_CALLS: std::sync::Mutex<
+    Option<std::collections::HashMap<String, u64>>,
+> = std::sync::Mutex::new(None);
+
 /// [`xform_quant_optimize_split`] with caller-owned coefficient buffers.
 /// Byte-identical output; see [`XformQuantScratch`].
 #[allow(clippy::too_many_arguments)]
+#[track_caller]
 pub fn xform_quant_optimize_split_into(
     residual: &[i16],
     tx_size: usize,
@@ -806,6 +823,19 @@ pub fn xform_quant_optimize_split_into(
         get_txb_ctx(bctx.plane_bsize, tx_size, bctx.plane, bctx.above, bctx.left);
     let txb_skip_ctx = txb_skip_ctx as usize;
     let dc_sign_ctx = dc_sign_ctx as usize;
+
+    static TRELLIS_CALLS_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *TRELLIS_CALLS_ON.get_or_init(|| std::env::var_os("AOM_TRELLIS_CALLS").is_some()) {
+        let loc = std::panic::Location::caller();
+        let mut g = TRELLIS_CALLS.lock().unwrap();
+        let m = g.get_or_insert_with(std::collections::HashMap::new);
+        let key = format!("{}:{}", loc.file(), loc.line());
+        *m.entry(key).or_insert(0) += 1;
+        if eob != 0 {
+            let key = format!("{}:{} TRELLIS", loc.file(), loc.line());
+            *m.entry(key).or_insert(0) += 1;
+        }
+    }
 
     // av1_optimize_b: eob 0 -> skip-txb cost; else run the trellis.
     if eob == 0 {
