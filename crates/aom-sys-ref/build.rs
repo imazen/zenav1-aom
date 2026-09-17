@@ -53,6 +53,7 @@ const SHIMS: &[&str] = &[
     "highbd_intra_shim",
     "hbd_lpf_shim",
     "hbd_lpf_sse2_shim",
+    "lowbd_lpf_sse2_shim",
     "hbd_sadvar_shim",
     "txb_shim",
     "intra_edge_shim",

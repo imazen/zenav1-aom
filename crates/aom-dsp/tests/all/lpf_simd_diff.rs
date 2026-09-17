@@ -245,8 +245,12 @@ fn lowbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
                             }
                         })
                         .collect();
-                    let bl = if rng.upto(2) == 0 { rng.upto(256) as u8 } else { (16 + rng.upto(200)) as u8 };
-                    let li = if rng.upto(2) == 0 { rng.upto(256) as u8 } else { (1 + rng.upto(64)) as u8 };
+                    // bl+li bounded at 254: the v3 tier mirrors `_sse2`'s saturating mask sum,
+                    // which passes when blimit+limit >= 255 even where the scalar
+                    // tier's exact-int sum fails — the same C-internal divergence
+                    // lowbd_lpf_sse2_diff pins against the real `_sse2` kernels.
+                    let bl = if rng.upto(2) == 0 { rng.upto(255) as u8 } else { (16 + rng.upto(200)) as u8 };
+                    let li = if rng.upto(2) == 0 { rng.upto(255 - bl as u32) as u8 } else { (1 + rng.upto(64)) as u8 };
                     let th = rng.upto(256) as u8;
 
                     let mut got = buf.clone();

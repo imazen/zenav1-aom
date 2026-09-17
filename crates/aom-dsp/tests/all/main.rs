@@ -80,6 +80,7 @@ mod kernels_diff;
 mod leb128_diff;
 mod lf_apply_diff;
 mod loopfilter_lowbd_diff;
+mod lowbd_lpf_sse2_diff;
 mod lpf_diff;
 mod lpf_simd_diff;
 mod lr_read_diff;

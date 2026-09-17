@@ -64,8 +64,13 @@ fn kernel_matches(mut apply: impl FnMut(u8, u32, &mut [u8], usize, usize, u8, u8
             for _ in 0..30_000 {
                 let strategy = rng.upto(3);
                 let base = gen_buf(&mut rng, strategy);
-                let blimit = if rng.upto(2) == 0 { rng.u8() } else { (16 + rng.upto(200)) as u8 };
-                let limit = if rng.upto(2) == 0 { rng.u8() } else { (1 + rng.upto(64)) as u8 };
+                // bl+li bounded at 254: the `_sse2` kernels' mask sum saturates at 255, so
+                // when blimit+limit >= 255 a capped sum can pass where `_c`'s exact
+                // sum fails — C's own kernels diverge there. The v3 mirror follows
+                // `_sse2` (pinned in lowbd_lpf_sse2_diff); the u16 highbd comparison
+                // below is likewise exact-int.
+                let blimit = if rng.upto(2) == 0 { rng.u8().min(254) } else { (16 + rng.upto(200)) as u8 };
+                let limit = if rng.upto(2) == 0 { rng.upto(255 - blimit as u32) as u8 } else { (1 + rng.upto(64)) as u8 };
                 let thresh = rng.u8();
 
                 // u8 lowbd kernel under test.

@@ -1115,7 +1115,7 @@ fn lpf_impl_u8_scalar(
     crate::loopfilter::lpf_scalar(width, buf, center, ts, step, bl, li, th);
 }
 
-#[magetypes(define(i32x4), v3, neon, wasm128, -scalar)]
+#[magetypes(define(i32x4), neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn lpf_impl_u8(
     token: Token,
@@ -1454,4 +1454,1091 @@ fn lpf_impl_u8(
         }
         _ => crate::loopfilter::lpf_scalar(width, buf, center, ts, step, bl, li, th),
     }
+}
+
+// ---- v3 lowbd: mirror of the REAL dispatched u8 kernels ----------------------
+//
+// `aom_lpf_{horizontal,vertical}_{4,6,8,14}_sse2` from
+// `aom_dsp/x86/loopfilter_sse2.c` + `lpf_common_sse2.h` — the kernels a libaom
+// x86-64 build runs at bd8. The magetypes `i32x4` tier above gathers every tap
+// scalar-wise and widens to i32 lanes (~390 Ir/call); this mirror keeps C's own
+// structure instead: packed u8 lanes, saturating byte arithmetic, and the
+// unpack-tree transposes on the vertical axis. All math is the C sequence
+// verbatim, so it is exact by construction (gated by `lpf_simd_diff` and
+// `loopfilter_lowbd_diff` against the REAL exported `aom_lpf_*_c`).
+//
+// Span check mirrors the hbd v3 kernel: compute the [lo, hi) byte window the
+// kernel's loads/stores touch and fall back to the scalar transcription when
+// it is not fully inside `buf` — the scalar's own bounds-checked indexing then
+// preserves the panic contract (it panics iff the taps are genuinely OOB).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn lpf_impl_u8_v3(
+    _t: archmage::X64V3Token,
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    ts: isize,
+    step: isize,
+    bl: u8,
+    li: u8,
+    th: u8,
+) {
+    use archmage::intrinsics::x86_64::*;
+
+    let c = center as isize;
+    let len = buf.len() as isize;
+
+    // [lo, hi) byte span this call reads and writes.
+    let (lo, hi) = if step == 1 {
+        // horizontal: 4-byte position rows at c + k*ts, k in [-w/2, w/2-1].
+        let (kmin, kmax) = match width {
+            4 => (-2isize, 1isize),
+            6 => (-3, 2),
+            8 => (-4, 3),
+            _ => (-7, 6), // 14
+        };
+        (
+            c + (kmin * ts).min(kmax * ts),
+            c + (kmin * ts).max(kmax * ts) + 4,
+        )
+    } else if ts == 1 {
+        // vertical: `span`-byte rows at c - w/2 + k*step, k in 0..4. Widths 4/6
+        // read a couple bytes past the last needed tap (C's 8-byte loads);
+        // the fallback below covers the plane edge.
+        let (half, span) = match width {
+            4 => (2isize, 4isize),
+            6 => (3, 8),
+            8 => (4, 8),
+            _ => (8, 16), // 14
+        };
+        (
+            c - half + (3 * step).min(0),
+            c - half + span + (3 * step).max(0),
+        )
+    } else {
+        (0, -1) // neither layout — force the scalar arm
+    };
+    if !matches!(width, 4 | 6 | 8 | 14) || lo < 0 || hi > len {
+        crate::loopfilter::lpf_scalar(width, buf, center, ts, step, bl, li, th);
+        return;
+    }
+
+    macro_rules! ld4 {
+        ($o:expr) => {{
+            let o = ($o) as usize;
+            let a: &[u8; 4] = buf[o..o + 4].try_into().unwrap();
+            _mm_loadu_si32(a)
+        }};
+    }
+    macro_rules! ld8 {
+        ($o:expr) => {{
+            let o = ($o) as usize;
+            let a: &[u8; 8] = buf[o..o + 8].try_into().unwrap();
+            _mm_loadu_si64(a)
+        }};
+    }
+    macro_rules! ld16 {
+        ($o:expr) => {{
+            let o = ($o) as usize;
+            let a: &[u8; 16] = buf[o..o + 16].try_into().unwrap();
+            _mm_loadu_si128(a)
+        }};
+    }
+    macro_rules! st4 {
+        ($o:expr, $v:expr) => {{
+            let o = ($o) as usize;
+            let a: &mut [u8; 4] = (&mut buf[o..o + 4]).try_into().unwrap();
+            _mm_storeu_si32(a, $v)
+        }};
+    }
+    macro_rules! st8 {
+        ($o:expr, $v:expr) => {{
+            let o = ($o) as usize;
+            let a: &mut [u8; 8] = (&mut buf[o..o + 8]).try_into().unwrap();
+            _mm_storeu_si64(a, $v)
+        }};
+    }
+    macro_rules! st16 {
+        ($o:expr, $v:expr) => {{
+            let o = ($o) as usize;
+            let a: &mut [u8; 16] = (&mut buf[o..o + 16]).try_into().unwrap();
+            _mm_storeu_si128(a, $v)
+        }};
+    }
+
+    let zero = _mm_setzero_si128();
+    let one = _mm_set1_epi8(1);
+    let fe = _mm_set1_epi8(-2i8); // 0xfe
+    let ff = _mm_cmpeq_epi8(fe, fe);
+    let t80 = _mm_set1_epi8(i8::MIN); // 0x80
+    let t3t4 = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 4, 4, 4, 4);
+    let four = _mm_set1_epi16(4);
+
+    let absd = |a: __m128i, b: __m128i| _mm_or_si128(_mm_subs_epu8(a, b), _mm_subs_epu8(b, a));
+    let any_set = |v: __m128i| _mm_movemask_epi8(_mm_cmpeq_epi8(v, zero)) != 0xffff;
+
+    // filter4_sse2: in [p0 pos|p1 pos],[q0 pos|q1 pos] → out (ps1ps0, qs1qs0).
+    let filter4 =
+        |p1p0: __m128i, q1q0: __m128i, hev: __m128i, mask: __m128i| -> (__m128i, __m128i) {
+            let ps_work = _mm_xor_si128(p1p0, t80);
+            let qs_work = _mm_xor_si128(q1q0, t80);
+            let work = _mm_subs_epi8(ps_work, qs_work);
+            let mut filter = _mm_and_si128(_mm_srli_si128::<4>(work), hev);
+            filter = _mm_subs_epi8(filter, work);
+            filter = _mm_subs_epi8(filter, work);
+            filter = _mm_subs_epi8(filter, work);
+            filter = _mm_and_si128(filter, mask);
+            filter = _mm_unpacklo_epi32(filter, filter);
+            let mut f2f1 = _mm_adds_epi8(filter, t3t4);
+            f2f1 = _mm_unpacklo_epi8(f2f1, f2f1);
+            f2f1 = _mm_srai_epi16::<11>(f2f1);
+            f2f1 = _mm_packs_epi16(f2f1, f2f1);
+            filter = _mm_subs_epi8(f2f1, ff);
+            filter = _mm_unpacklo_epi8(filter, filter);
+            filter = _mm_srai_epi16::<9>(filter);
+            filter = _mm_packs_epi16(filter, filter);
+            filter = _mm_andnot_si128(hev, filter);
+            filter = _mm_unpacklo_epi32(filter, filter);
+            f2f1 = _mm_unpacklo_epi32(f2f1, filter);
+            let hev1 = _mm_srli_si128::<8>(f2f1);
+            let qs1qs0 = _mm_xor_si128(_mm_subs_epi8(qs_work, f2f1), t80);
+            let ps1ps0 = _mm_xor_si128(_mm_adds_epi8(ps_work, hev1), t80);
+            (ps1ps0, qs1qs0)
+        };
+
+    // transpose4x8_8x4_low_sse2 / transpose4x8_8x4_sse2 / transpose8x8_low_sse2
+    let t4x8_low = |x0: __m128i,
+                    x1: __m128i,
+                    x2: __m128i,
+                    x3: __m128i|
+     -> (__m128i, __m128i, __m128i, __m128i) {
+        let w0 = _mm_unpacklo_epi8(x0, x1);
+        let w1 = _mm_unpacklo_epi8(x2, x3);
+        let d0 = _mm_unpacklo_epi16(w0, w1);
+        (
+            d0,
+            _mm_srli_si128::<4>(d0),
+            _mm_srli_si128::<8>(d0),
+            _mm_srli_si128::<12>(d0),
+        )
+    };
+    let t4x8 = |x0: __m128i, x1: __m128i, x2: __m128i, x3: __m128i| -> [__m128i; 8] {
+        let w0 = _mm_unpacklo_epi8(x0, x1);
+        let w1 = _mm_unpacklo_epi8(x2, x3);
+        let ww0 = _mm_unpacklo_epi16(w0, w1);
+        let ww1 = _mm_unpackhi_epi16(w0, w1);
+        [
+            ww0,
+            _mm_srli_si128::<4>(ww0),
+            _mm_srli_si128::<8>(ww0),
+            _mm_srli_si128::<12>(ww0),
+            ww1,
+            _mm_srli_si128::<4>(ww1),
+            _mm_srli_si128::<8>(ww1),
+            _mm_srli_si128::<12>(ww1),
+        ]
+    };
+    let t8x8_low = |x: [__m128i; 8]| -> (__m128i, __m128i, __m128i, __m128i) {
+        let w0 = _mm_unpacklo_epi8(x[0], x[1]);
+        let w1 = _mm_unpacklo_epi8(x[2], x[3]);
+        let w2 = _mm_unpacklo_epi8(x[4], x[5]);
+        let w3 = _mm_unpacklo_epi8(x[6], x[7]);
+        let w4 = _mm_unpacklo_epi16(w0, w1);
+        let w5 = _mm_unpacklo_epi16(w2, w3);
+        let d0 = _mm_unpacklo_epi32(w4, w5);
+        let d2 = _mm_unpackhi_epi32(w4, w5);
+        (d0, _mm_srli_si128::<8>(d0), d2, _mm_srli_si128::<8>(d2))
+    };
+
+    // transpose_pq_14_sse2: 4 rows of 16 taps → [q0p0 ..= q7p7] tap-pair regs.
+    let tpq14 = |x0: __m128i, x1: __m128i, x2: __m128i, x3: __m128i| -> [__m128i; 8] {
+        let w0 = _mm_unpacklo_epi8(x0, x1);
+        let w1 = _mm_unpacklo_epi8(x2, x3);
+        let w2 = _mm_unpackhi_epi8(x0, x1);
+        let w3 = _mm_unpackhi_epi8(x2, x3);
+        let ww0 = _mm_unpacklo_epi16(w0, w1);
+        let ww1 = _mm_unpackhi_epi16(w0, w1);
+        let ww2 = _mm_unpacklo_epi16(w2, w3);
+        let ww3 = _mm_unpackhi_epi16(w2, w3);
+        let q7p7 = _mm_unpacklo_epi32(ww0, _mm_srli_si128::<12>(ww3));
+        let q6p6 = _mm_unpackhi_epi32(_mm_slli_si128::<4>(ww0), ww3);
+        let q5p5 = _mm_unpackhi_epi32(ww0, _mm_slli_si128::<4>(ww3));
+        let q4p4 = _mm_unpacklo_epi32(_mm_srli_si128::<12>(ww0), ww3);
+        let q3p3 = _mm_unpacklo_epi32(ww1, _mm_srli_si128::<12>(ww2));
+        let q2p2 = _mm_unpackhi_epi32(_mm_slli_si128::<4>(ww1), ww2);
+        let q1p1 = _mm_unpackhi_epi32(ww1, _mm_slli_si128::<4>(ww2));
+        let q0p0 = _mm_unpacklo_epi32(_mm_srli_si128::<12>(ww1), ww2);
+        [q0p0, q1p1, q2p2, q3p3, q4p4, q5p5, q6p6, q7p7]
+    };
+    // transpose_pq_14_inv_sse2: x0 = q7p7 .. x7 = q0p0 → 4 rows.
+    let tpq14_inv = |x: [__m128i; 8]| -> (__m128i, __m128i, __m128i, __m128i) {
+        let w0 = _mm_unpacklo_epi8(x[0], x[1]);
+        let w1 = _mm_unpacklo_epi8(x[2], x[3]);
+        let w2 = _mm_unpacklo_epi8(x[4], x[5]);
+        let w3 = _mm_unpacklo_epi8(x[6], x[7]);
+        let w4 = _mm_unpacklo_epi16(w0, w1);
+        let w5 = _mm_unpacklo_epi16(w2, w3);
+        let d0 = _mm_unpacklo_epi32(w4, w5);
+        let d2 = _mm_unpackhi_epi32(w4, w5);
+        let w10 = _mm_unpacklo_epi8(x[7], x[6]);
+        let w11 = _mm_unpacklo_epi8(x[5], x[4]);
+        let w12 = _mm_unpacklo_epi8(x[3], x[2]);
+        let w13 = _mm_unpacklo_epi8(x[1], x[0]);
+        let w4 = _mm_unpackhi_epi16(w10, w11);
+        let w5 = _mm_unpackhi_epi16(w12, w13);
+        let d1 = _mm_unpacklo_epi32(w4, w5);
+        let d3 = _mm_unpackhi_epi32(w4, w5);
+        (
+            _mm_unpacklo_epi64(d0, d1),
+            _mm_unpackhi_epi64(d0, d1),
+            _mm_unpacklo_epi64(d2, d3),
+            _mm_unpackhi_epi64(d2, d3),
+        )
+    };
+
+    if step == 1 {
+        // ---- horizontal: aom_lpf_horizontal_{4,6,8,14}_sse2 ------------------
+        match width {
+            4 => {
+                // limit = unpacklo_epi32(loadl(blimit), loadl(limit)) —
+                // [bl*4 | li*4 | bl*4 | li*4]; thresh = u16 lanes of `th`.
+                let limit4 = _mm_unpacklo_epi32(_mm_set1_epi8(bl as i8), _mm_set1_epi8(li as i8));
+                let thresh16 = _mm_set1_epi16(th as i16);
+
+                let p1 = ld4!(c - 2 * ts);
+                let p0 = ld4!(c - ts);
+                let q0 = ld4!(c);
+                let q1 = ld4!(c + ts);
+
+                // lpf_internal_4_sse2
+                let q1p1 = _mm_unpacklo_epi32(p1, q1);
+                let q0p0 = _mm_unpacklo_epi32(p0, q0);
+                let p1p0 = _mm_unpacklo_epi32(q0p0, q1p1);
+                let q1q0 = _mm_srli_si128::<8>(p1p0);
+                let mut flat = absd(q1p1, q0p0);
+                let abs_p1q1p0q0 = absd(p1p0, q1q0);
+                flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+                let mut hev = _mm_unpacklo_epi8(flat, zero);
+                hev = _mm_cmpgt_epi16(hev, thresh16);
+                hev = _mm_packs_epi16(hev, hev);
+                hev = _mm_unpacklo_epi32(hev, hev);
+                let abs_p0q0 = _mm_adds_epu8(abs_p1q1p0q0, abs_p1q1p0q0);
+                let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p1q1p0q0);
+                abs_p1q1 = _mm_unpacklo_epi8(abs_p1q1, abs_p1q1);
+                abs_p1q1 = _mm_srli_epi16::<9>(abs_p1q1);
+                abs_p1q1 = _mm_packs_epi16(abs_p1q1, abs_p1q1);
+                let mut mask = _mm_adds_epu8(abs_p0q0, abs_p1q1);
+                mask = _mm_unpacklo_epi32(mask, flat);
+                mask = _mm_subs_epu8(mask, limit4);
+                mask = _mm_cmpeq_epi8(mask, zero);
+                mask = _mm_and_si128(mask, _mm_srli_si128::<4>(mask));
+                let (ps1ps0, qs1qs0) = filter4(p1p0, q1q0, hev, mask);
+
+                st4!(c - ts, ps1ps0);
+                st4!(c - 2 * ts, _mm_srli_si128::<4>(ps1ps0));
+                st4!(c, qs1qs0);
+                st4!(c + ts, _mm_srli_si128::<4>(qs1qs0));
+            }
+            _ => {
+                let blimit = _mm_set1_epi8(bl as i8);
+                let limit = _mm_set1_epi8(li as i8);
+                let thresh = _mm_set1_epi8(th as i8);
+                match width {
+                    6 => {
+                        let p2 = ld4!(c - 3 * ts);
+                        let p1 = ld4!(c - 2 * ts);
+                        let p0 = ld4!(c - ts);
+                        let q0 = ld4!(c);
+                        let q1 = ld4!(c + ts);
+                        let q2 = ld4!(c + 2 * ts);
+
+                        // lpf_internal_6_sse2
+                        let q2p2 = _mm_unpacklo_epi32(p2, q2);
+                        let q1p1 = _mm_unpacklo_epi32(p1, q1);
+                        let q0p0 = _mm_unpacklo_epi32(p0, q0);
+                        let mut p1p0 = _mm_unpacklo_epi32(p0, p1);
+                        let mut q1q0 = _mm_unpacklo_epi32(q0, q1);
+
+                        let abs_p1p0 = absd(q1p1, q0p0);
+                        let abs_q1q0 = _mm_srli_si128::<4>(abs_p1p0);
+                        let mut abs_p0q0 = absd(p1p0, q1q0);
+                        let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p0q0);
+                        let mut flat = _mm_max_epu8(abs_p1p0, abs_q1q0);
+                        let mut hev = _mm_subs_epu8(flat, thresh);
+                        hev = _mm_xor_si128(_mm_cmpeq_epi8(hev, zero), ff);
+                        hev = _mm_unpacklo_epi32(hev, hev);
+                        abs_p0q0 = _mm_adds_epu8(abs_p0q0, abs_p0q0);
+                        abs_p1q1 = _mm_srli_epi16::<1>(_mm_and_si128(abs_p1q1, fe));
+                        let mut mask = _mm_subs_epu8(_mm_adds_epu8(abs_p0q0, abs_p1q1), blimit);
+                        mask = _mm_unpacklo_epi32(mask, zero);
+                        mask = _mm_xor_si128(_mm_cmpeq_epi8(mask, zero), ff);
+                        mask = _mm_max_epu8(abs_p1p0, mask);
+                        let work = absd(q2p2, q1p1);
+                        mask = _mm_max_epu8(work, mask);
+                        mask = _mm_max_epu8(mask, _mm_srli_si128::<4>(mask));
+                        mask = _mm_subs_epu8(mask, limit);
+                        mask = _mm_cmpeq_epi8(mask, zero);
+                        let (ps, qs) = filter4(p1p0, q1q0, hev, mask);
+                        p1p0 = ps;
+                        q1q0 = qs;
+
+                        flat = _mm_max_epu8(absd(q2p2, q0p0), abs_p1p0);
+                        flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+                        flat = _mm_subs_epu8(flat, one);
+                        flat = _mm_cmpeq_epi8(flat, zero);
+                        flat = _mm_and_si128(flat, mask);
+                        flat = _mm_unpacklo_epi32(flat, flat);
+                        flat = _mm_unpacklo_epi64(flat, flat);
+
+                        if any_set(flat) {
+                            // 5-tap filter16
+                            let pq2_16 = _mm_unpacklo_epi8(q2p2, zero);
+                            let pq1_16 = _mm_unpacklo_epi8(q1p1, zero);
+                            let pq0_16 = _mm_unpacklo_epi8(q0p0, zero);
+                            let q0_16 = _mm_srli_si128::<8>(pq0_16);
+                            let q2_16 = _mm_srli_si128::<8>(pq2_16);
+                            let pq0x2_pq1 = _mm_add_epi16(_mm_add_epi16(pq0_16, pq0_16), pq1_16);
+                            let pq1_pq2 = _mm_add_epi16(pq1_16, pq2_16);
+                            let mut workp_a =
+                                _mm_add_epi16(_mm_add_epi16(pq0x2_pq1, four), pq1_pq2);
+                            let mut workp_b = _mm_add_epi16(_mm_add_epi16(pq2_16, pq2_16), q0_16);
+                            workp_b = _mm_add_epi16(workp_a, workp_b);
+                            let workp_c = _mm_srli_si128::<8>(pq0x2_pq1);
+                            workp_a = _mm_add_epi16(workp_a, workp_c);
+                            workp_b = _mm_unpacklo_epi64(workp_a, workp_b);
+                            workp_b = _mm_srli_epi16::<3>(workp_b);
+                            let flat_p1p0 = _mm_packus_epi16(workp_b, workp_b);
+                            workp_a = _mm_sub_epi16(_mm_sub_epi16(workp_a, pq2_16), pq1_16);
+                            workp_b = _mm_srli_si128::<8>(pq1_pq2);
+                            workp_a = _mm_add_epi16(workp_a, workp_b);
+                            let workp_c = _mm_sub_epi16(_mm_sub_epi16(workp_a, pq1_16), pq0_16);
+                            workp_b = _mm_add_epi16(q2_16, q2_16);
+                            workp_b = _mm_add_epi16(workp_c, workp_b);
+                            workp_a = _mm_unpacklo_epi64(workp_a, workp_b);
+                            workp_a = _mm_srli_epi16::<3>(workp_a);
+                            let flat_q0q1 = _mm_packus_epi16(workp_a, workp_a);
+                            q1q0 = _mm_or_si128(
+                                _mm_andnot_si128(flat, q1q0),
+                                _mm_and_si128(flat, flat_q0q1),
+                            );
+                            p1p0 = _mm_or_si128(
+                                _mm_andnot_si128(flat, p1p0),
+                                _mm_and_si128(flat, flat_p1p0),
+                            );
+                        }
+
+                        st4!(c - ts, p1p0);
+                        st4!(c - 2 * ts, _mm_srli_si128::<4>(p1p0));
+                        st4!(c, q1q0);
+                        st4!(c + ts, _mm_srli_si128::<4>(q1q0));
+                    }
+                    8 => {
+                        let p3 = ld4!(c - 4 * ts);
+                        let p2 = ld4!(c - 3 * ts);
+                        let p1 = ld4!(c - 2 * ts);
+                        let p0 = ld4!(c - ts);
+                        let q0 = ld4!(c);
+                        let q1 = ld4!(c + ts);
+                        let q2 = ld4!(c + 2 * ts);
+                        let q3 = ld4!(c + 3 * ts);
+
+                        // lpf_internal_8_sse2
+                        let q3p3 = _mm_unpacklo_epi32(p3, q3);
+                        let q2p2 = _mm_unpacklo_epi32(p2, q2);
+                        let q1p1 = _mm_unpacklo_epi32(p1, q1);
+                        let q0p0 = _mm_unpacklo_epi32(p0, q0);
+                        let p1p0 = _mm_unpacklo_epi32(q0p0, q1p1);
+                        let q1q0 = _mm_srli_si128::<8>(p1p0);
+
+                        let abs_p1p0 = absd(q1p1, q0p0);
+                        let abs_q1q0 = _mm_srli_si128::<4>(abs_p1p0);
+                        let mut abs_p0q0 = absd(p1p0, q1q0);
+                        let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p0q0);
+                        let mut flat = _mm_max_epu8(abs_p1p0, abs_q1q0);
+                        let mut hev = _mm_subs_epu8(flat, thresh);
+                        hev = _mm_xor_si128(_mm_cmpeq_epi8(hev, zero), ff);
+                        hev = _mm_unpacklo_epi32(hev, hev);
+                        abs_p0q0 = _mm_adds_epu8(abs_p0q0, abs_p0q0);
+                        abs_p1q1 = _mm_srli_epi16::<1>(_mm_and_si128(abs_p1q1, fe));
+                        let mut mask = _mm_subs_epu8(_mm_adds_epu8(abs_p0q0, abs_p1q1), blimit);
+                        mask = _mm_unpacklo_epi32(mask, zero);
+                        mask = _mm_xor_si128(_mm_cmpeq_epi8(mask, zero), ff);
+                        mask = _mm_max_epu8(abs_p1p0, mask);
+                        let work = _mm_max_epu8(absd(q2p2, q1p1), absd(q3p3, q2p2));
+                        mask = _mm_max_epu8(work, mask);
+                        mask = _mm_max_epu8(mask, _mm_srli_si128::<4>(mask));
+                        mask = _mm_subs_epu8(mask, limit);
+                        mask = _mm_cmpeq_epi8(mask, zero);
+                        let (mut p1p0_o, mut q1q0_o) = filter4(p1p0, q1q0, hev, mask);
+
+                        flat = _mm_max_epu8(absd(q2p2, q0p0), absd(q3p3, q0p0));
+                        flat = _mm_max_epu8(abs_p1p0, flat);
+                        flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+                        flat = _mm_subs_epu8(flat, one);
+                        flat = _mm_cmpeq_epi8(flat, zero);
+                        flat = _mm_and_si128(flat, mask);
+                        flat = _mm_unpacklo_epi32(flat, flat);
+                        flat = _mm_unpacklo_epi64(flat, flat);
+
+                        let mut p2_o = p2;
+                        let mut q2_o = q2;
+                        if any_set(flat) {
+                            // 7-tap filter16
+                            let p2_16 = _mm_unpacklo_epi8(p2, zero);
+                            let p1_16 = _mm_unpacklo_epi8(p1, zero);
+                            let p0_16 = _mm_unpacklo_epi8(p0, zero);
+                            let q0_16 = _mm_unpacklo_epi8(q0, zero);
+                            let q1_16 = _mm_unpacklo_epi8(q1, zero);
+                            let q2_16 = _mm_unpacklo_epi8(q2, zero);
+                            let p3_16 = _mm_unpacklo_epi8(p3, zero);
+                            let q3_16 = _mm_unpacklo_epi8(q3, zero);
+
+                            let mut workp_a = _mm_add_epi16(
+                                _mm_add_epi16(p3_16, p3_16),
+                                _mm_add_epi16(p2_16, p1_16),
+                            );
+                            workp_a = _mm_add_epi16(_mm_add_epi16(workp_a, four), p0_16);
+                            let mut workp_b = _mm_add_epi16(_mm_add_epi16(q0_16, p2_16), p3_16);
+                            let workp_shft2 = _mm_add_epi16(workp_a, workp_b);
+                            workp_b = _mm_add_epi16(_mm_add_epi16(q0_16, q1_16), p1_16);
+                            let mut workp_c = _mm_add_epi16(workp_a, workp_b);
+                            workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p3_16), q2_16);
+                            workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, p1_16), p0_16);
+                            let mut workp_d = _mm_add_epi16(workp_a, workp_b);
+                            workp_c = _mm_unpacklo_epi64(workp_d, workp_c);
+                            workp_c = _mm_srli_epi16::<3>(workp_c);
+                            let flat_p1p0 = _mm_packus_epi16(workp_c, workp_c);
+                            workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p3_16), q3_16);
+                            workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, p0_16), q0_16);
+                            workp_c = _mm_add_epi16(workp_a, workp_b);
+                            workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p2_16), q3_16);
+                            workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, q0_16), q1_16);
+                            workp_d = _mm_add_epi16(workp_a, workp_b);
+                            workp_c = _mm_unpacklo_epi64(workp_c, workp_d);
+                            workp_c = _mm_srli_epi16::<3>(workp_c);
+                            let flat_q0q1 = _mm_packus_epi16(workp_c, workp_c);
+                            workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p1_16), q3_16);
+                            workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, q1_16), q2_16);
+                            let workp_shft1 = _mm_add_epi16(workp_a, workp_b);
+                            workp_c = _mm_unpacklo_epi64(workp_shft2, workp_shft1);
+                            workp_c = _mm_srli_epi16::<3>(workp_c);
+                            let opq2 = _mm_packus_epi16(workp_c, workp_c);
+
+                            p2_o = _mm_or_si128(
+                                _mm_andnot_si128(flat, q2p2),
+                                _mm_and_si128(flat, opq2),
+                            );
+                            q2_o = _mm_srli_si128::<4>(p2_o);
+                            q1q0_o = _mm_or_si128(
+                                _mm_andnot_si128(flat, q1q0_o),
+                                _mm_and_si128(flat, flat_q0q1),
+                            );
+                            p1p0_o = _mm_or_si128(
+                                _mm_andnot_si128(flat, p1p0_o),
+                                _mm_and_si128(flat, flat_p1p0),
+                            );
+                        }
+
+                        st4!(c - ts, p1p0_o);
+                        st4!(c - 2 * ts, _mm_srli_si128::<4>(p1p0_o));
+                        st4!(c, q1q0_o);
+                        st4!(c + ts, _mm_srli_si128::<4>(q1q0_o));
+                        st4!(c - 3 * ts, p2_o);
+                        st4!(c + 2 * ts, q2_o);
+                    }
+                    _ => {
+                        // 14
+                        let q4p4 = _mm_unpacklo_epi32(ld4!(c - 5 * ts), ld4!(c + 4 * ts));
+                        let q3p3 = _mm_unpacklo_epi32(ld4!(c - 4 * ts), ld4!(c + 3 * ts));
+                        let q2p2 = _mm_unpacklo_epi32(ld4!(c - 3 * ts), ld4!(c + 2 * ts));
+                        let q1p1 = _mm_unpacklo_epi32(ld4!(c - 2 * ts), ld4!(c + ts));
+                        let q0p0 = _mm_unpacklo_epi32(ld4!(c - ts), ld4!(c));
+                        let q5p5 = _mm_unpacklo_epi32(ld4!(c - 6 * ts), ld4!(c + 5 * ts));
+                        let q6p6 = _mm_unpacklo_epi32(ld4!(c - 7 * ts), ld4!(c + 6 * ts));
+
+                        let out = internal14_u8(
+                            _t,
+                            [q0p0, q1p1, q2p2, q3p3, q4p4, q5p5, q6p6],
+                            blimit,
+                            limit,
+                            thresh,
+                            filter4,
+                        );
+                        for (num, x) in out.iter().enumerate() {
+                            let num = num as isize;
+                            st4!(c - (num + 1) * ts, *x);
+                            st4!(c + num * ts, _mm_srli_si128::<4>(*x));
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // ---- vertical: aom_lpf_vertical_{4,6,8,14}_sse2 --------------------
+        match width {
+            4 => {
+                let limit4 = _mm_unpacklo_epi32(_mm_set1_epi8(bl as i8), _mm_set1_epi8(li as i8));
+                let thresh16 = _mm_set1_epi16(th as i16);
+
+                let x0 = ld4!(c - 2);
+                let x1 = ld4!(c - 2 + step);
+                let x2 = ld4!(c - 2 + 2 * step);
+                let x3 = ld4!(c - 2 + 3 * step);
+                let (p1, p0, q0, q1) = t4x8_low(x0, x1, x2, x3);
+
+                // lpf_internal_4_sse2 (same body as the horizontal arm)
+                let q1p1 = _mm_unpacklo_epi32(p1, q1);
+                let q0p0 = _mm_unpacklo_epi32(p0, q0);
+                let p1p0 = _mm_unpacklo_epi32(q0p0, q1p1);
+                let q1q0 = _mm_srli_si128::<8>(p1p0);
+                let mut flat = absd(q1p1, q0p0);
+                let abs_p1q1p0q0 = absd(p1p0, q1q0);
+                flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+                let mut hev = _mm_unpacklo_epi8(flat, zero);
+                hev = _mm_cmpgt_epi16(hev, thresh16);
+                hev = _mm_packs_epi16(hev, hev);
+                hev = _mm_unpacklo_epi32(hev, hev);
+                let abs_p0q0 = _mm_adds_epu8(abs_p1q1p0q0, abs_p1q1p0q0);
+                let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p1q1p0q0);
+                abs_p1q1 = _mm_unpacklo_epi8(abs_p1q1, abs_p1q1);
+                abs_p1q1 = _mm_srli_epi16::<9>(abs_p1q1);
+                abs_p1q1 = _mm_packs_epi16(abs_p1q1, abs_p1q1);
+                let mut mask = _mm_adds_epu8(abs_p0q0, abs_p1q1);
+                mask = _mm_unpacklo_epi32(mask, flat);
+                mask = _mm_subs_epu8(mask, limit4);
+                mask = _mm_cmpeq_epi8(mask, zero);
+                mask = _mm_and_si128(mask, _mm_srli_si128::<4>(mask));
+                let (ps1ps0, qs1qs0) = filter4(p1p0, q1q0, hev, mask);
+
+                let p0_s = _mm_srli_si128::<4>(ps1ps0);
+                let q0_s = _mm_srli_si128::<4>(qs1qs0);
+                let (d0, d1, d2, d3) = t4x8_low(p0_s, ps1ps0, qs1qs0, q0_s);
+                st4!(c - 2, d0);
+                st4!(c - 2 + step, d1);
+                st4!(c - 2 + 2 * step, d2);
+                st4!(c - 2 + 3 * step, d3);
+            }
+            _ => {
+                let blimit = _mm_set1_epi8(bl as i8);
+                let limit = _mm_set1_epi8(li as i8);
+                let thresh = _mm_set1_epi8(th as i8);
+                match width {
+                    6 => {
+                        let x3 = ld8!(c - 3);
+                        let x2 = ld8!(c - 3 + step);
+                        let x1 = ld8!(c - 3 + 2 * step);
+                        let x0 = ld8!(c - 3 + 3 * step);
+                        let d = t4x8(x3, x2, x1, x0);
+                        let (q1q0, p1p0) = internal6_u8(
+                            _t,
+                            [d[0], d[1], d[2], d[3], d[4], d[5]],
+                            blimit,
+                            limit,
+                            thresh,
+                            filter4,
+                        );
+                        let p0_s = _mm_srli_si128::<4>(p1p0);
+                        let q0_s = _mm_srli_si128::<4>(q1q0);
+                        let (d0, d1, d2, d3) = t4x8_low(p0_s, p1p0, q1q0, q0_s);
+                        st4!(c - 2, d0);
+                        st4!(c - 2 + step, d1);
+                        st4!(c - 2 + 2 * step, d2);
+                        st4!(c - 2 + 3 * step, d3);
+                    }
+                    8 => {
+                        let x3 = ld8!(c - 4);
+                        let x2 = ld8!(c - 4 + step);
+                        let x1 = ld8!(c - 4 + 2 * step);
+                        let x0 = ld8!(c - 4 + 3 * step);
+                        let d = t4x8(x3, x2, x1, x0);
+                        let (q1q0, p1p0, p2_o, q2_o) = internal8_u8(
+                            _t,
+                            [d[0], d[7], d[1], d[6], d[2], d[5], d[3], d[4]],
+                            blimit,
+                            limit,
+                            thresh,
+                            filter4,
+                        );
+                        let p0_s = _mm_srli_si128::<4>(p1p0);
+                        let q0_s = _mm_srli_si128::<4>(q1q0);
+                        let (nd0, nd1, nd2, nd3) =
+                            t8x8_low([d[0], p2_o, p0_s, p1p0, q1q0, q0_s, q2_o, d[7]]);
+                        st8!(c - 4, nd0);
+                        st8!(c - 4 + step, nd1);
+                        st8!(c - 4 + 2 * step, nd2);
+                        st8!(c - 4 + 3 * step, nd3);
+                    }
+                    _ => {
+                        // 14
+                        let x6 = ld16!(c - 8);
+                        let x5 = ld16!(c - 8 + step);
+                        let x4 = ld16!(c - 8 + 2 * step);
+                        let x3 = ld16!(c - 8 + 3 * step);
+                        let mut pq = tpq14(x6, x5, x4, x3);
+                        let out = internal14_u8(
+                            _t,
+                            [pq[0], pq[1], pq[2], pq[3], pq[4], pq[5], pq[6]],
+                            blimit,
+                            limit,
+                            thresh,
+                            filter4,
+                        );
+                        pq[..6].copy_from_slice(&out);
+                        let (r0, r1, r2, r3) =
+                            tpq14_inv([pq[7], pq[6], pq[5], pq[4], pq[3], pq[2], pq[1], pq[0]]);
+                        st16!(c - 8, r0);
+                        st16!(c - 8 + step, r1);
+                        st16!(c - 8 + 2 * step, r2);
+                        st16!(c - 8 + 3 * step, r3);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The shared lowbd internals (lpf_internal_{6,8,14}_sse2) are large enough that
+// they live as sibling functions rather than closures so the four driver arms
+// stay readable. `filter4` is passed in because it closes over the per-call
+// constants (C inlines everything into one function scope).
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn internal6_u8(
+    _t: archmage::X64V3Token,
+    d: [__m128i; 6],
+    blimit: __m128i,
+    limit: __m128i,
+    thresh: __m128i,
+    filter4: impl Fn(__m128i, __m128i, __m128i, __m128i) -> (__m128i, __m128i),
+) -> (__m128i, __m128i) {
+    use archmage::intrinsics::x86_64::*;
+    let zero = _mm_setzero_si128();
+    let one = _mm_set1_epi8(1);
+    let fe = _mm_set1_epi8(-2i8);
+    let ff = _mm_cmpeq_epi8(fe, fe);
+    let four = _mm_set1_epi16(4);
+    let [p2, p1, p0, q0, q1, q2] = d;
+
+    let q2p2 = _mm_unpacklo_epi32(p2, q2);
+    let q1p1 = _mm_unpacklo_epi32(p1, q1);
+    let q0p0 = _mm_unpacklo_epi32(p0, q0);
+    let mut p1p0 = _mm_unpacklo_epi32(p0, p1);
+    let mut q1q0 = _mm_unpacklo_epi32(q0, q1);
+
+    let abs_p1p0 = _mm_or_si128(_mm_subs_epu8(q1p1, q0p0), _mm_subs_epu8(q0p0, q1p1));
+    let abs_q1q0 = _mm_srli_si128::<4>(abs_p1p0);
+    let mut abs_p0q0 = _mm_or_si128(_mm_subs_epu8(p1p0, q1q0), _mm_subs_epu8(q1q0, p1p0));
+    let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p0q0);
+    let mut flat = _mm_max_epu8(abs_p1p0, abs_q1q0);
+    let mut hev = _mm_subs_epu8(flat, thresh);
+    hev = _mm_xor_si128(_mm_cmpeq_epi8(hev, zero), ff);
+    hev = _mm_unpacklo_epi32(hev, hev);
+    abs_p0q0 = _mm_adds_epu8(abs_p0q0, abs_p0q0);
+    abs_p1q1 = _mm_srli_epi16::<1>(_mm_and_si128(abs_p1q1, fe));
+    let mut mask = _mm_subs_epu8(_mm_adds_epu8(abs_p0q0, abs_p1q1), blimit);
+    mask = _mm_unpacklo_epi32(mask, zero);
+    mask = _mm_xor_si128(_mm_cmpeq_epi8(mask, zero), ff);
+    mask = _mm_max_epu8(abs_p1p0, mask);
+    let work = _mm_or_si128(_mm_subs_epu8(q2p2, q1p1), _mm_subs_epu8(q1p1, q2p2));
+    mask = _mm_max_epu8(work, mask);
+    mask = _mm_max_epu8(mask, _mm_srli_si128::<4>(mask));
+    mask = _mm_subs_epu8(mask, limit);
+    mask = _mm_cmpeq_epi8(mask, zero);
+    let (ps, qs) = filter4(p1p0, q1q0, hev, mask);
+    p1p0 = ps;
+    q1q0 = qs;
+
+    flat = _mm_max_epu8(
+        _mm_or_si128(_mm_subs_epu8(q2p2, q0p0), _mm_subs_epu8(q0p0, q2p2)),
+        abs_p1p0,
+    );
+    flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+    flat = _mm_subs_epu8(flat, one);
+    flat = _mm_cmpeq_epi8(flat, zero);
+    flat = _mm_and_si128(flat, mask);
+    flat = _mm_unpacklo_epi32(flat, flat);
+    flat = _mm_unpacklo_epi64(flat, flat);
+
+    if _mm_movemask_epi8(_mm_cmpeq_epi8(flat, zero)) != 0xffff {
+        let pq2_16 = _mm_unpacklo_epi8(q2p2, zero);
+        let pq1_16 = _mm_unpacklo_epi8(q1p1, zero);
+        let pq0_16 = _mm_unpacklo_epi8(q0p0, zero);
+        let q0_16 = _mm_srli_si128::<8>(pq0_16);
+        let q2_16 = _mm_srli_si128::<8>(pq2_16);
+        let pq0x2_pq1 = _mm_add_epi16(_mm_add_epi16(pq0_16, pq0_16), pq1_16);
+        let pq1_pq2 = _mm_add_epi16(pq1_16, pq2_16);
+        let mut workp_a = _mm_add_epi16(_mm_add_epi16(pq0x2_pq1, four), pq1_pq2);
+        let mut workp_b = _mm_add_epi16(_mm_add_epi16(pq2_16, pq2_16), q0_16);
+        workp_b = _mm_add_epi16(workp_a, workp_b);
+        let workp_c = _mm_srli_si128::<8>(pq0x2_pq1);
+        workp_a = _mm_add_epi16(workp_a, workp_c);
+        workp_b = _mm_unpacklo_epi64(workp_a, workp_b);
+        workp_b = _mm_srli_epi16::<3>(workp_b);
+        let flat_p1p0 = _mm_packus_epi16(workp_b, workp_b);
+        workp_a = _mm_sub_epi16(_mm_sub_epi16(workp_a, pq2_16), pq1_16);
+        workp_b = _mm_srli_si128::<8>(pq1_pq2);
+        workp_a = _mm_add_epi16(workp_a, workp_b);
+        let workp_c = _mm_sub_epi16(_mm_sub_epi16(workp_a, pq1_16), pq0_16);
+        workp_b = _mm_add_epi16(q2_16, q2_16);
+        workp_b = _mm_add_epi16(workp_c, workp_b);
+        workp_a = _mm_unpacklo_epi64(workp_a, workp_b);
+        workp_a = _mm_srli_epi16::<3>(workp_a);
+        let flat_q0q1 = _mm_packus_epi16(workp_a, workp_a);
+        q1q0 = _mm_or_si128(_mm_andnot_si128(flat, q1q0), _mm_and_si128(flat, flat_q0q1));
+        p1p0 = _mm_or_si128(_mm_andnot_si128(flat, p1p0), _mm_and_si128(flat, flat_p1p0));
+    }
+    (q1q0, p1p0)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn internal8_u8(
+    _t: archmage::X64V3Token,
+    d: [__m128i; 8],
+    blimit: __m128i,
+    limit: __m128i,
+    thresh: __m128i,
+    filter4: impl Fn(__m128i, __m128i, __m128i, __m128i) -> (__m128i, __m128i),
+) -> (__m128i, __m128i, __m128i, __m128i) {
+    use archmage::intrinsics::x86_64::*;
+    let zero = _mm_setzero_si128();
+    let one = _mm_set1_epi8(1);
+    let fe = _mm_set1_epi8(-2i8);
+    let ff = _mm_cmpeq_epi8(fe, fe);
+    let four = _mm_set1_epi16(4);
+    let [p3, q3, p2, q2, p1, q1, p0, q0] = d;
+
+    let q3p3 = _mm_unpacklo_epi32(p3, q3);
+    let q2p2 = _mm_unpacklo_epi32(p2, q2);
+    let q1p1 = _mm_unpacklo_epi32(p1, q1);
+    let q0p0 = _mm_unpacklo_epi32(p0, q0);
+    let p1p0 = _mm_unpacklo_epi32(q0p0, q1p1);
+    let q1q0 = _mm_srli_si128::<8>(p1p0);
+
+    let abs_p1p0 = _mm_or_si128(_mm_subs_epu8(q1p1, q0p0), _mm_subs_epu8(q0p0, q1p1));
+    let abs_q1q0 = _mm_srli_si128::<4>(abs_p1p0);
+    let mut abs_p0q0 = _mm_or_si128(_mm_subs_epu8(p1p0, q1q0), _mm_subs_epu8(q1q0, p1p0));
+    let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p0q0);
+    let mut flat = _mm_max_epu8(abs_p1p0, abs_q1q0);
+    let mut hev = _mm_subs_epu8(flat, thresh);
+    hev = _mm_xor_si128(_mm_cmpeq_epi8(hev, zero), ff);
+    hev = _mm_unpacklo_epi32(hev, hev);
+    abs_p0q0 = _mm_adds_epu8(abs_p0q0, abs_p0q0);
+    abs_p1q1 = _mm_srli_epi16::<1>(_mm_and_si128(abs_p1q1, fe));
+    let mut mask = _mm_subs_epu8(_mm_adds_epu8(abs_p0q0, abs_p1q1), blimit);
+    mask = _mm_unpacklo_epi32(mask, zero);
+    mask = _mm_xor_si128(_mm_cmpeq_epi8(mask, zero), ff);
+    mask = _mm_max_epu8(abs_p1p0, mask);
+    let work = _mm_max_epu8(
+        _mm_or_si128(_mm_subs_epu8(q2p2, q1p1), _mm_subs_epu8(q1p1, q2p2)),
+        _mm_or_si128(_mm_subs_epu8(q3p3, q2p2), _mm_subs_epu8(q2p2, q3p3)),
+    );
+    mask = _mm_max_epu8(work, mask);
+    mask = _mm_max_epu8(mask, _mm_srli_si128::<4>(mask));
+    mask = _mm_subs_epu8(mask, limit);
+    mask = _mm_cmpeq_epi8(mask, zero);
+    let (mut p1p0_o, mut q1q0_o) = filter4(p1p0, q1q0, hev, mask);
+
+    flat = _mm_max_epu8(
+        _mm_or_si128(_mm_subs_epu8(q2p2, q0p0), _mm_subs_epu8(q0p0, q2p2)),
+        _mm_or_si128(_mm_subs_epu8(q3p3, q0p0), _mm_subs_epu8(q0p0, q3p3)),
+    );
+    flat = _mm_max_epu8(abs_p1p0, flat);
+    flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+    flat = _mm_subs_epu8(flat, one);
+    flat = _mm_cmpeq_epi8(flat, zero);
+    flat = _mm_and_si128(flat, mask);
+    flat = _mm_unpacklo_epi32(flat, flat);
+    flat = _mm_unpacklo_epi64(flat, flat);
+
+    let mut p2_o = p2;
+    let mut q2_o = q2;
+    if _mm_movemask_epi8(_mm_cmpeq_epi8(flat, zero)) != 0xffff {
+        let p2_16 = _mm_unpacklo_epi8(p2, zero);
+        let p1_16 = _mm_unpacklo_epi8(p1, zero);
+        let p0_16 = _mm_unpacklo_epi8(p0, zero);
+        let q0_16 = _mm_unpacklo_epi8(q0, zero);
+        let q1_16 = _mm_unpacklo_epi8(q1, zero);
+        let q2_16 = _mm_unpacklo_epi8(q2, zero);
+        let p3_16 = _mm_unpacklo_epi8(p3, zero);
+        let q3_16 = _mm_unpacklo_epi8(q3, zero);
+        let mut workp_a = _mm_add_epi16(_mm_add_epi16(p3_16, p3_16), _mm_add_epi16(p2_16, p1_16));
+        workp_a = _mm_add_epi16(_mm_add_epi16(workp_a, four), p0_16);
+        let mut workp_b = _mm_add_epi16(_mm_add_epi16(q0_16, p2_16), p3_16);
+        let workp_shft2 = _mm_add_epi16(workp_a, workp_b);
+        workp_b = _mm_add_epi16(_mm_add_epi16(q0_16, q1_16), p1_16);
+        let mut workp_c = _mm_add_epi16(workp_a, workp_b);
+        workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p3_16), q2_16);
+        workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, p1_16), p0_16);
+        let mut workp_d = _mm_add_epi16(workp_a, workp_b);
+        workp_c = _mm_unpacklo_epi64(workp_d, workp_c);
+        workp_c = _mm_srli_epi16::<3>(workp_c);
+        let flat_p1p0 = _mm_packus_epi16(workp_c, workp_c);
+        workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p3_16), q3_16);
+        workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, p0_16), q0_16);
+        workp_c = _mm_add_epi16(workp_a, workp_b);
+        workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p2_16), q3_16);
+        workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, q0_16), q1_16);
+        workp_d = _mm_add_epi16(workp_a, workp_b);
+        workp_c = _mm_unpacklo_epi64(workp_c, workp_d);
+        workp_c = _mm_srli_epi16::<3>(workp_c);
+        let flat_q0q1 = _mm_packus_epi16(workp_c, workp_c);
+        workp_a = _mm_add_epi16(_mm_sub_epi16(workp_a, p1_16), q3_16);
+        workp_b = _mm_add_epi16(_mm_sub_epi16(workp_b, q1_16), q2_16);
+        let workp_shft1 = _mm_add_epi16(workp_a, workp_b);
+        workp_c = _mm_unpacklo_epi64(workp_shft2, workp_shft1);
+        workp_c = _mm_srli_epi16::<3>(workp_c);
+        let opq2 = _mm_packus_epi16(workp_c, workp_c);
+        p2_o = _mm_or_si128(_mm_andnot_si128(flat, q2p2), _mm_and_si128(flat, opq2));
+        q2_o = _mm_srli_si128::<4>(p2_o);
+        q1q0_o = _mm_or_si128(
+            _mm_andnot_si128(flat, q1q0_o),
+            _mm_and_si128(flat, flat_q0q1),
+        );
+        p1p0_o = _mm_or_si128(
+            _mm_andnot_si128(flat, p1p0_o),
+            _mm_and_si128(flat, flat_p1p0),
+        );
+    }
+    (q1q0_o, p1p0_o, p2_o, q2_o)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn internal14_u8(
+    _t: archmage::X64V3Token,
+    pq: [__m128i; 7],
+    blimit: __m128i,
+    limit: __m128i,
+    thresh: __m128i,
+    filter4: impl Fn(__m128i, __m128i, __m128i, __m128i) -> (__m128i, __m128i),
+) -> [__m128i; 6] {
+    use archmage::intrinsics::x86_64::*;
+    let zero = _mm_setzero_si128();
+    let one = _mm_set1_epi8(1);
+    let fe = _mm_set1_epi8(-2i8);
+    let ff = _mm_cmpeq_epi8(fe, fe);
+    let four = _mm_set1_epi16(4);
+    let eight = _mm_set1_epi16(8);
+    let absd = |a: __m128i, b: __m128i| _mm_or_si128(_mm_subs_epu8(a, b), _mm_subs_epu8(b, a));
+    let [q0p0, q1p1, q2p2, q3p3, q4p4, q5p5, q6p6] = pq;
+
+    let p1p0 = _mm_unpacklo_epi32(q0p0, q1p1);
+    let q1q0 = _mm_srli_si128::<8>(p1p0);
+
+    let abs_p1p0 = absd(q1p1, q0p0);
+    let abs_q1q0 = _mm_srli_si128::<4>(abs_p1p0);
+    let mut abs_p0q0 = absd(p1p0, q1q0);
+    let mut abs_p1q1 = _mm_srli_si128::<4>(abs_p0q0);
+    let mut flat = _mm_max_epu8(abs_p1p0, abs_q1q0);
+    let mut hev = _mm_subs_epu8(flat, thresh);
+    hev = _mm_xor_si128(_mm_cmpeq_epi8(hev, zero), ff);
+    hev = _mm_unpacklo_epi32(hev, hev);
+    abs_p0q0 = _mm_adds_epu8(abs_p0q0, abs_p0q0);
+    abs_p1q1 = _mm_srli_epi16::<1>(_mm_and_si128(abs_p1q1, fe));
+    let mut mask = _mm_subs_epu8(_mm_adds_epu8(abs_p0q0, abs_p1q1), blimit);
+    mask = _mm_unpacklo_epi32(mask, zero);
+    mask = _mm_xor_si128(_mm_cmpeq_epi8(mask, zero), ff);
+    mask = _mm_max_epu8(abs_p1p0, mask);
+    let mut work = _mm_max_epu8(absd(q2p2, q1p1), absd(q3p3, q2p2));
+    mask = _mm_max_epu8(work, mask);
+    mask = _mm_max_epu8(mask, _mm_srli_si128::<4>(mask));
+    mask = _mm_subs_epu8(mask, limit);
+    mask = _mm_cmpeq_epi8(mask, zero);
+
+    let (ps1ps0, qs1qs0) = filter4(p1p0, q1q0, hev, mask);
+    let qs0ps0 = _mm_unpacklo_epi32(ps1ps0, qs1qs0);
+    let qs1ps1 = _mm_srli_si128::<8>(qs0ps0);
+
+    flat = _mm_max_epu8(absd(q2p2, q0p0), absd(q3p3, q0p0));
+    flat = _mm_max_epu8(abs_p1p0, flat);
+    flat = _mm_max_epu8(flat, _mm_srli_si128::<4>(flat));
+    flat = _mm_subs_epu8(flat, one);
+    flat = _mm_cmpeq_epi8(flat, zero);
+    flat = _mm_and_si128(flat, mask);
+    flat = _mm_unpacklo_epi32(flat, flat);
+    flat = _mm_unpacklo_epi64(flat, flat);
+
+    let mut out0 = qs0ps0;
+    let mut out1 = qs1ps1;
+    let mut out2 = q2p2;
+    let mut out3 = q3p3;
+    let mut out4 = q4p4;
+    let mut out5 = q5p5;
+
+    if _mm_movemask_epi8(_mm_cmpeq_epi8(flat, zero)) != 0xffff {
+        let pq_16 = [
+            _mm_unpacklo_epi8(q0p0, zero),
+            _mm_unpacklo_epi8(q1p1, zero),
+            _mm_unpacklo_epi8(q2p2, zero),
+            _mm_unpacklo_epi8(q3p3, zero),
+            _mm_unpacklo_epi8(q4p4, zero),
+            _mm_unpacklo_epi8(q5p5, zero),
+            _mm_unpacklo_epi8(q6p6, zero),
+        ];
+        let q0_16 = _mm_srli_si128::<8>(pq_16[0]);
+        let q1_16 = _mm_srli_si128::<8>(pq_16[1]);
+        let q2_16 = _mm_srli_si128::<8>(pq_16[2]);
+        let q3_16 = _mm_srli_si128::<8>(pq_16[3]);
+        let q4_16 = _mm_srli_si128::<8>(pq_16[4]);
+        let q5_16 = _mm_srli_si128::<8>(pq_16[5]);
+
+        let mut sum_p = _mm_add_epi16(pq_16[5], _mm_add_epi16(pq_16[4], pq_16[3]));
+        let mut sum_lp = _mm_add_epi16(pq_16[0], _mm_add_epi16(pq_16[2], pq_16[1]));
+        sum_p = _mm_add_epi16(sum_p, sum_lp);
+        let mut sum_lq = _mm_srli_si128::<8>(sum_lp);
+        let mut sum_q = _mm_srli_si128::<8>(sum_p);
+        let sum_p_0 = _mm_add_epi16(eight, _mm_add_epi16(sum_p, sum_q));
+        sum_lp = _mm_add_epi16(four, _mm_add_epi16(sum_lp, sum_lq));
+
+        let flat_p0 = _mm_add_epi16(sum_lp, _mm_add_epi16(pq_16[3], pq_16[0]));
+        let flat_q0 = _mm_add_epi16(sum_lp, _mm_add_epi16(q3_16, q0_16));
+
+        let mut sum_p6 = _mm_add_epi16(pq_16[6], pq_16[6]);
+        let mut sum_p3 = _mm_add_epi16(pq_16[3], pq_16[3]);
+
+        sum_q = _mm_sub_epi16(sum_p_0, pq_16[5]);
+        let mut sum_p = _mm_sub_epi16(sum_p_0, q5_16);
+
+        let work0_0 = _mm_add_epi16(_mm_add_epi16(pq_16[6], pq_16[0]), pq_16[1]);
+        let work0_1 = _mm_add_epi16(
+            sum_p6,
+            _mm_add_epi16(pq_16[1], _mm_add_epi16(pq_16[2], pq_16[0])),
+        );
+
+        sum_lq = _mm_sub_epi16(sum_lp, pq_16[2]);
+        sum_lp = _mm_sub_epi16(sum_lp, q2_16);
+
+        let mut work0 = _mm_add_epi16(sum_p3, pq_16[1]);
+        let flat_p1 = _mm_add_epi16(sum_lp, work0);
+        let flat_q1 = _mm_add_epi16(sum_lq, _mm_srli_si128::<8>(work0));
+        let mut flat_pq0 = _mm_srli_epi16::<3>(_mm_unpacklo_epi64(flat_p0, flat_q0));
+        let mut flat_pq1 = _mm_srli_epi16::<3>(_mm_unpacklo_epi64(flat_p1, flat_q1));
+        flat_pq0 = _mm_packus_epi16(flat_pq0, flat_pq0);
+        flat_pq1 = _mm_packus_epi16(flat_pq1, flat_pq1);
+
+        sum_lp = _mm_sub_epi16(sum_lp, q1_16);
+        sum_lq = _mm_sub_epi16(sum_lq, pq_16[1]);
+        sum_p3 = _mm_add_epi16(sum_p3, pq_16[3]);
+        work0 = _mm_add_epi16(sum_p3, pq_16[2]);
+        let flat_p2 = _mm_add_epi16(sum_lp, work0);
+        let flat_q2 = _mm_add_epi16(sum_lq, _mm_srli_si128::<8>(work0));
+        let mut flat_pq2 = _mm_srli_epi16::<3>(_mm_unpacklo_epi64(flat_p2, flat_q2));
+        flat_pq2 = _mm_packus_epi16(flat_pq2, flat_pq2);
+
+        // flat2
+        let mut flat2 = _mm_max_epu8(absd(q4p4, q0p0), absd(q5p5, q0p0));
+        work = absd(q6p6, q0p0);
+        flat2 = _mm_max_epu8(work, flat2);
+        flat2 = _mm_max_epu8(flat2, _mm_srli_si128::<4>(flat2));
+        flat2 = _mm_subs_epu8(flat2, one);
+        flat2 = _mm_cmpeq_epi8(flat2, zero);
+        flat2 = _mm_and_si128(flat2, flat);
+        flat2 = _mm_unpacklo_epi32(flat2, flat2);
+
+        // apply flat
+        out0 = _mm_or_si128(
+            _mm_andnot_si128(flat, qs0ps0),
+            _mm_and_si128(flat, flat_pq0),
+        );
+        out1 = _mm_or_si128(
+            _mm_andnot_si128(flat, qs1ps1),
+            _mm_and_si128(flat, flat_pq1),
+        );
+        out2 = _mm_or_si128(_mm_andnot_si128(flat, q2p2), _mm_and_si128(flat, flat_pq2));
+
+        if _mm_movemask_epi8(_mm_cmpeq_epi8(flat2, zero)) != 0xffff {
+            let flat2_p0 = _mm_add_epi16(sum_p_0, _mm_add_epi16(work0_0, q0_16));
+            let flat2_q0 = _mm_add_epi16(
+                sum_p_0,
+                _mm_add_epi16(_mm_srli_si128::<8>(work0_0), pq_16[0]),
+            );
+            let flat2_p1 = _mm_add_epi16(sum_p, work0_1);
+            let flat2_q1 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work0_1));
+            let mut flat2_pq0 = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p0, flat2_q0));
+            let mut flat2_pq1 = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p1, flat2_q1));
+            flat2_pq0 = _mm_packus_epi16(flat2_pq0, flat2_pq0);
+            flat2_pq1 = _mm_packus_epi16(flat2_pq1, flat2_pq1);
+
+            sum_p = _mm_sub_epi16(sum_p, q4_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[4]);
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            work0 = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[2], _mm_add_epi16(pq_16[3], pq_16[1])),
+            );
+            let flat2_p2 = _mm_add_epi16(sum_p, work0);
+            let flat2_q2 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work0));
+            let mut flat2_pq2 = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p2, flat2_q2));
+            flat2_pq2 = _mm_packus_epi16(flat2_pq2, flat2_pq2);
+
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            sum_p = _mm_sub_epi16(sum_p, q3_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[3]);
+            work0 = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[3], _mm_add_epi16(pq_16[4], pq_16[2])),
+            );
+            let flat2_p3 = _mm_add_epi16(sum_p, work0);
+            let flat2_q3 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work0));
+            let mut flat2_pq3 = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p3, flat2_q3));
+            flat2_pq3 = _mm_packus_epi16(flat2_pq3, flat2_pq3);
+
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            sum_p = _mm_sub_epi16(sum_p, q2_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[2]);
+            work0 = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[4], _mm_add_epi16(pq_16[5], pq_16[3])),
+            );
+            let flat2_p4 = _mm_add_epi16(sum_p, work0);
+            let flat2_q4 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work0));
+            let mut flat2_pq4 = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p4, flat2_q4));
+            flat2_pq4 = _mm_packus_epi16(flat2_pq4, flat2_pq4);
+
+            sum_p6 = _mm_add_epi16(sum_p6, pq_16[6]);
+            sum_p = _mm_sub_epi16(sum_p, q1_16);
+            sum_q = _mm_sub_epi16(sum_q, pq_16[1]);
+            work0 = _mm_add_epi16(
+                sum_p6,
+                _mm_add_epi16(pq_16[5], _mm_add_epi16(pq_16[6], pq_16[4])),
+            );
+            let flat2_p5 = _mm_add_epi16(sum_p, work0);
+            let flat2_q5 = _mm_add_epi16(sum_q, _mm_srli_si128::<8>(work0));
+            let mut flat2_pq5 = _mm_srli_epi16::<4>(_mm_unpacklo_epi64(flat2_p5, flat2_q5));
+            flat2_pq5 = _mm_packus_epi16(flat2_pq5, flat2_pq5);
+
+            // wide flat apply
+            out0 = _mm_or_si128(
+                _mm_andnot_si128(flat2, out0),
+                _mm_and_si128(flat2, flat2_pq0),
+            );
+            out1 = _mm_or_si128(
+                _mm_andnot_si128(flat2, out1),
+                _mm_and_si128(flat2, flat2_pq1),
+            );
+            out2 = _mm_or_si128(
+                _mm_andnot_si128(flat2, out2),
+                _mm_and_si128(flat2, flat2_pq2),
+            );
+            out3 = _mm_or_si128(
+                _mm_andnot_si128(flat2, q3p3),
+                _mm_and_si128(flat2, flat2_pq3),
+            );
+            out4 = _mm_or_si128(
+                _mm_andnot_si128(flat2, q4p4),
+                _mm_and_si128(flat2, flat2_pq4),
+            );
+            out5 = _mm_or_si128(
+                _mm_andnot_si128(flat2, q5p5),
+                _mm_and_si128(flat2, flat2_pq5),
+            );
+        }
+    }
+    [out0, out1, out2, out3, out4, out5]
 }
