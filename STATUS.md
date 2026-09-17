@@ -1,5 +1,43 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Thread curve, content matrix, rayon backend (2026-09-16, `74fa859`)
+
+Full same-session sweep vs the threaded aomenc, row-tile geometry,
+1024x1024 cq27 s3:
+
+| t | C | port | ratio | port eff | C tile-mt eff |
+|---|---|---|---|---|---|
+| 1 | 1822 | 2334 | 1.28 | — | — |
+| 2 | 1020 | 1227 | 1.20 | 95% | 89% |
+| 3 | 744 | 854 | 1.15 | 91% | 82% |
+| 4 | 601 | 655 | 1.09 | 89% | 76% |
+| 8 | 439 | 430 | 0.98 | 68% | 52% |
+| 16 | 384 | 332 | 0.86 | 44% | 30% |
+
+Port scaling efficiency exceeds C's tile-mt at every point; the serial
+gap narrows monotonically and inverts at 8t. `KeyFrameConfig::threads=0`
+is now AUTO (`available_parallelism`, clamped to tile rows — the frontier
+is unchanged: a 1-row grid still serializes).
+
+Content/size matrix (port/C, same-geometry): 1024² photo 1.09x@4t /
+0.98x@8t; noise 0.87x/0.80x (0.93x serial — faster than C); gradient
+0.51x/0.41x; **screen 1.70x/1.19x — IntraBC DV-search tax, the one class
+outside the bar**; 1080p photo 1.12x/1.01x; 1080p screen 1.70x/1.18x;
+4K photo 1.11x/0.99x; 512² photo 1.07x/0.88x.
+
+`aom_dsp::par::{map_workers, join}` now fronts all six spawn sites;
+opt-in `rayon` feature (`zenav1-aom-encode/rayon`) runs the same items
+on the host's shared pool — zenavif already depends on rayon, so this
+avoids oversubscribing a server; `threads` becomes a ceiling not a
+spawn count. Byte-identical on both backends; wall identical
+(433.5/331.3 rayon vs 435.9/331.7 std at 8t/auto).
+
+Threads guidance from the measured knee: efficiency holds ~85-90%
+through 4t, drops to ~68% at 8t/1MP. Throughput servers: threads=1..4
+and parallelize across requests. Latency mode: threads≈tile rows (auto
+clamps there anyway). Bigger frames keep efficiency higher at high t
+(4K: 71% at 8t).
+
 ## Threaded vs threaded C: within 10% at 4t/8t on row-tile geometry (2026-09-16)
 
 `e7cdd08` — the honest threaded-C baseline exists now: a SEPARATE
