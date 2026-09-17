@@ -1306,6 +1306,10 @@ pub struct TxTypeSearchInputs<'a> {
     /// `pd->dst.buf` / `dst_stride` form.
     pub pred: &'a [u16],
     pub pred_stride: usize,
+    /// The bd8 tight u8 staging of `pred` (`Some` only when the caller staged
+    /// it — the u16->u8 downcast done once per txb instead of once per
+    /// candidate). When `None` the bd8 px-domain arm downcasts `pred` itself.
+    pub pred_u8: Option<&'a [u8]>,
     pub tx_size: usize,
     /// Plane (0 = luma; 1/2 = chroma). Chroma pins the tx type to
     /// [`uv_intra_tx_type`], uses the chroma trellis rd multiplier
@@ -1447,6 +1451,11 @@ pub struct TxWalkScratch {
     pub pred: Vec<u16>,
     pub residual: Vec<i16>,
     pub tight: Vec<u16>,
+    /// The bd8 u8 twin of the plane-held prediction: staged once per txb from
+    /// `recon[txb_off..]` so the per-candidate px-domain dist and the residual
+    /// subtract read a tight u8 buffer instead of strided u16 rows (C's lowbd
+    /// route reads u8 `dst` directly). `None`-equivalent when empty (bd > 8).
+    pub pred_u8: Vec<u8>,
     /// `wht_satd`'s coefficient buffer: the Hadamard writes into it via the
     /// `_into` variants so no 1–4 KB `[i32; N]` is initialised and moved per
     /// model txb.
@@ -2028,6 +2037,7 @@ pub fn search_tx_type_intra_into(
                     px_tx_type,
                     inp.pred,
                     inp.pred_stride,
+                    inp.pred_u8,
                     inp.src,
                     inp.src_off,
                     inp.src_stride,
@@ -2126,6 +2136,7 @@ pub fn search_tx_type_intra_into(
                 px_tx_type,
                 inp.pred,
                 inp.pred_stride,
+                inp.pred_u8,
                 inp.src,
                 inp.src_off,
                 inp.src_stride,
@@ -2172,7 +2183,7 @@ pub fn dist_block_px_domain(
     let mut recon_u8 = Vec::new();
     let mut inv_scratch = aom_dsp::transform::inv_txfm2d::InvTxfmScratch::default();
     dist_block_px_domain_into(
-        dqcoeff, tx_size, tx_type, pred, TXS_W[tx_size], src, src_off, src_stride, bd,
+        dqcoeff, tx_size, tx_type, pred, TXS_W[tx_size], None, src, src_off, src_stride, bd,
         visible_cols, visible_rows, eob, lossless, &mut recon, &mut recon_u8,
         &mut inv_scratch,
     )
@@ -2191,6 +2202,7 @@ pub fn dist_block_px_domain_into(
     tx_type: usize,
     pred: &[u16],
     pred_stride: usize,
+    pred_u8: Option<&[u8]>,
     src: &[u16],
     src_off: usize,
     src_stride: usize,
@@ -2216,7 +2228,12 @@ pub fn dist_block_px_domain_into(
             recon_u8.resize(w * h, 0);
         }
         let recon8 = &mut recon_u8[..w * h];
-        if pred_stride == w {
+        if let Some(p8) = pred_u8 {
+            // The caller staged the plane prediction to u8 once per txb — a
+            // contiguous `w*h` copy instead of a strided u16->u8 downcast
+            // per candidate.
+            recon8.copy_from_slice(&p8[..w * h]);
+        } else if pred_stride == w {
             for (d, s) in recon8.iter_mut().zip(&pred[..w * h]) {
                 *d = *s as u8;
             }
@@ -2664,6 +2681,9 @@ pub fn txfm_rd_in_plane_intra(
 
             // av1_predict_intra_block_facade: predict INTO the recon plane.
             let txb_off = env.ref_off + (blk_row * env.ref_stride + blk_col) * 4;
+            if env.bd == 8 && walk.pred_u8.len() < txw * txh {
+                walk.pred_u8.resize(txw * txh, 0);
+            }
             if let Some(pal) = palette {
                 // av1_predict_intra_block's use_palette arm: the colour-index
                 // map fill at this txb's pixel offset (x = blk_col*4,
@@ -2671,8 +2691,11 @@ pub fn txfm_rd_in_plane_intra(
                 let (x, y) = (blk_col * 4, blk_row * 4);
                 for r in 0..txh {
                     for c in 0..txw {
-                        recon[txb_off + r * env.ref_stride + c] =
-                            pal.colors[pal.map[(r + y) * pal.map_stride + c + x] as usize];
+                        let v = pal.colors[pal.map[(r + y) * pal.map_stride + c + x] as usize];
+                        recon[txb_off + r * env.ref_stride + c] = v;
+                        if env.bd == 8 {
+                            walk.pred_u8[r * txw + c] = v as u8;
+                        }
                     }
                 }
             } else {
@@ -2730,6 +2753,14 @@ pub fn txfm_rd_in_plane_intra(
                 // plane itself. The tight scratch + per-row publish it
                 // replaced was a memset plus `txh` memcpy calls per candidate
                 // per txb (callgrind: the port's largest memcpy caller).
+                //
+                // NOTE: the u8 predictors (`predict_intra_u8`) were tried here
+                // for the bd8 pred_u8 staging and REVERTED — the u8 z1/z2/z3
+                // kernels are the scalar decode-side C twins (no SIMD tier);
+                // only the u16 `*_high` predictors are archmage-dispatched, so
+                // the "lowbd" route ran slower than predicting u16 and
+                // narrowing once. The win is staging `pred_u8` once per txb,
+                // not u8 prediction internals.
                 predict_intra_high_in_place(
                     recon,
                     txb_off,
@@ -2747,6 +2778,21 @@ pub fn txfm_rd_in_plane_intra(
                     n_bottomleft,
                     env.bd as i32,
                 );
+                // Stage the plane-held prediction to tight u8 ONCE per txb —
+                // the per-candidate px-domain dist and the residual subtract
+                // then read `w*h` u8 instead of strided u16 rows (C's lowbd
+                // `dst` is u8 already).
+                if env.bd == 8 {
+                    let p8 = &mut walk.pred_u8[..txw * txh];
+                    let pred_plane = &recon[txb_off..];
+                    match txw {
+                        4 => downcast_pred_rows::<4>(p8, pred_plane, env.ref_stride, txh),
+                        8 => downcast_pred_rows::<8>(p8, pred_plane, env.ref_stride, txh),
+                        16 => downcast_pred_rows::<16>(p8, pred_plane, env.ref_stride, txh),
+                        32 => downcast_pred_rows::<32>(p8, pred_plane, env.ref_stride, txh),
+                        _ => downcast_pred_rows::<64>(p8, pred_plane, env.ref_stride, txh),
+                    }
+                }
             }
 
             // av1_subtract_txb. The prediction is read straight out of the
@@ -2764,16 +2810,29 @@ pub fn txfm_rd_in_plane_intra(
                 walk.residual.resize(txw * txh, 0);
             }
             let residual = &mut walk.residual[..txw * txh];
-            highbd_subtract_block(
-                txh,
-                txw,
-                residual,
-                txw,
-                &env.src[src_txb_off..],
-                env.src_stride,
-                &recon[txb_off..],
-                env.ref_stride,
-            );
+            if env.bd == 8 {
+                aom_dsp::dist::subtract_block_u16_u8(
+                    txh,
+                    txw,
+                    residual,
+                    txw,
+                    &env.src[src_txb_off..],
+                    env.src_stride,
+                    &walk.pred_u8[..txw * txh],
+                    txw,
+                );
+            } else {
+                highbd_subtract_block(
+                    txh,
+                    txw,
+                    residual,
+                    txw,
+                    &env.src[src_txb_off..],
+                    env.src_stride,
+                    &recon[txb_off..],
+                    env.ref_stride,
+                );
+            }
 
             // ml_predict_intra_tx_depth_prune (block_rd_txfm, tx_search.c:
             // 3089-3097): with the NN enabled for this (largest-depth) walk,
@@ -2839,6 +2898,11 @@ pub fn txfm_rd_in_plane_intra(
                 // `pd->dst.buf + dst_idx` at `dst_stride`.
                 pred: &recon[txb_off..],
                 pred_stride: env.ref_stride,
+                pred_u8: if env.bd == 8 {
+                    Some(&walk.pred_u8[..txw * txh])
+                } else {
+                    None
+                },
                 tx_size,
                 plane: 0,
                 uv_mode: 0,

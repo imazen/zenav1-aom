@@ -841,6 +841,7 @@ pub fn txfm_rd_in_plane_uv_p(
                 src_stride: env.src_stride,
                 pred: &recon[txb_off..],
                 pred_stride: env.ref_stride,
+                pred_u8: None,
                 tx_size,
                 plane,
                 uv_mode,

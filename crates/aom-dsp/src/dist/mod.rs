@@ -541,6 +541,36 @@ pub fn highbd_subtract_block(
     }
 }
 
+/// bd8 mixed-width residual generator: the source plane is u16-stored while
+/// the prediction is the u8 scratch the bd8 lowbd route stages. Identical
+/// arithmetic to [`highbd_subtract_block`] at `bd == 8` (pred values are in
+/// u8 range); only the load width differs.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn subtract_block_u16_u8(
+    rows: usize,
+    cols: usize,
+    diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+) {
+    let (mut d_off, mut s_off, mut p_off) = (0usize, 0usize, 0usize);
+    for _ in 0..rows {
+        let d = &mut diff[d_off..d_off + cols];
+        let s = &src[s_off..s_off + cols];
+        let p = &pred[p_off..p_off + cols];
+        for ((dv, &sv), &pv) in d.iter_mut().zip(s.iter()).zip(p.iter()) {
+            *dv = (sv as i32 - pv as i32) as i16;
+        }
+        d_off += diff_stride;
+        s_off += src_stride;
+        p_off += pred_stride;
+    }
+}
+
 /// `av1_block_error_qm` (`av1/encoder/tx_search.c`): the quant-matrix-weighted
 /// transform-domain distortion used by the QM RD path. Per coefficient the diff
 /// and coeff are scaled by `qmatrix[scan[i]]`, squared, and rounded `>> 2*AOM_QM_BITS`
