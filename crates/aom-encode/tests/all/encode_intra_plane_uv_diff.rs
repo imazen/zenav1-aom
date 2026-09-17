@@ -100,8 +100,12 @@ fn encode_intra_block_plane_uv_matches_c_walk() {
         let (pw, ph) = (BLK_W_L[plane_bsize], BLK_H_L[plane_bsize]);
         let tx_size = av1_get_tx_size_uv(bsize, false, ss_x, ss_y);
         let n_txbs = (pw / TX_W[tx_size]) * (ph / TX_H[tx_size]);
-        let ref_off =
-            chroma_plane_offset(32 * STRIDE + 32, STRIDE, mi_row, mi_col, bsize, ss_x, ss_y);
+        // `chroma_plane_offset` takes a SUBTRACTED band base since the
+        // row-band threading; this cell wants margin-anchored absolute
+        // offsets, so ask for the block offset (base 0) and add the margin.
+        let ref_off = chroma_plane_offset(0, STRIDE, mi_row, mi_col, bsize, ss_x, ss_y)
+            + 32 * STRIDE
+            + 32;
 
         for iter in 0..12 {
             // BOTH usage arms of the chroma trellis-table sf.

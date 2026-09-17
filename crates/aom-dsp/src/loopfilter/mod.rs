@@ -278,3 +278,24 @@ pub fn horizontal_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, bl
 pub fn vertical_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
     lpf_scalar(width, buf, center, 1, p as isize, blimit, limit, thresh);
 }
+
+/// Lowbd horizontal deblock covering `nseg` adjacent 4-position segments —
+/// C's `_dual`/`_quad` lowbd batching (`av1_loopfilter.c` `use_filter_type`):
+/// the covered segments sit at `center + s*4` for `s in 0..nseg` and share
+/// this call's limits. Per-segment arithmetic is identical to `nseg`
+/// separate [`horizontal`] calls, so batching cannot move a pixel.
+#[allow(clippy::too_many_arguments)]
+pub fn horizontal_n(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8, nseg: usize) {
+    for s in 0..nseg {
+        simd::lpf_u8(width, buf, center + s * 4, p as isize, 1, blimit, limit, thresh);
+    }
+}
+
+/// Lowbd vertical deblock covering `nseg` adjacent 4-position segments —
+/// the batched twin of [`vertical`]; segments at `center + s*4*p`.
+#[allow(clippy::too_many_arguments)]
+pub fn vertical_n(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8, nseg: usize) {
+    for s in 0..nseg {
+        simd::lpf_u8(width, buf, center + s * 4 * p, 1, p as isize, blimit, limit, thresh);
+    }
+}

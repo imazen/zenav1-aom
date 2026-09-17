@@ -963,6 +963,41 @@ pub fn loop_filter_frame_opt(
     plane_start: usize,
     plane_end: usize,
 ) {
+    if buf.bd == 8 {
+        // C runs the LOWBD `aom_lpf_*` u8 kernels at bd8 — the u16 highbd
+        // kernels below are bit-identical at bd == 8 but ~2.5x the work.
+        // Narrow to a u8 workspace, run the byte-proven u8 walk
+        // (`loopfilter_lowbd_diff`), widen back. `min(255)` is a safety
+        // net only: every bd8 recon sample is already < 256 (predictors
+        // and the edge extension both produce in-range values).
+        let mut y8: Vec<u8> = buf.y.iter().map(|&s| s.min(255) as u8).collect();
+        let mut u8p: Vec<u8> = buf.u.iter().map(|&s| s.min(255) as u8).collect();
+        let mut v8: Vec<u8> = buf.v.iter().map(|&s| s.min(255) as u8).collect();
+        {
+            let mut b8 = LfFrameBufU8 {
+                y: &mut y8,
+                y_stride: buf.y_stride,
+                u: &mut u8p,
+                v: &mut v8,
+                uv_stride: buf.uv_stride,
+                crop_width: buf.crop_width,
+                crop_height: buf.crop_height,
+                ss_x: buf.ss_x,
+                ss_y: buf.ss_y,
+            };
+            loop_filter_frame_u8_opt(&mut b8, grid, p, plane_start, plane_end);
+        }
+        for (d, s) in buf.y.iter_mut().zip(y8.iter()) {
+            *d = u16::from(*s);
+        }
+        for (d, s) in buf.u.iter_mut().zip(u8p.iter()) {
+            *d = u16::from(*s);
+        }
+        for (d, s) in buf.v.iter_mut().zip(v8.iter()) {
+            *d = u16::from(*s);
+        }
+        return;
+    }
     let _ = loop_filter_frame_impl(buf, grid, p, plane_start, plane_end, None, true);
 }
 
@@ -1157,6 +1192,139 @@ fn filter_block_plane_u8(
     }
 }
 
+/// The `lpf_opt_level == 1` batched walk for `u8` planes — the lowbd twin of
+/// [`filter_block_plane_opt`], identical structure with `u8` kernels and
+/// `bd` fixed at 8. Same caller contract: exact only when every transform
+/// block inside a prediction block has the same size.
+#[allow(clippy::too_many_arguments)]
+fn filter_block_plane_u8_opt(
+    dir: usize,
+    buf: &mut [u8],
+    stride: usize,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    lfi: &LfInfo,
+    plane: usize,
+    ss_x: usize,
+    ss_y: usize,
+    plane_w: u32,
+    plane_h: u32,
+    mi_row: usize,
+    mi_col: usize,
+) {
+    // Crop-derived mi dims like the u16 opt walk — see its note.
+    let (plane_mi_rows, plane_mi_cols) = if plane == 0 {
+        (
+            (plane_h + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2,
+            (plane_w + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2,
+        )
+    } else {
+        (
+            round_pot((((plane_h << ss_y) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_y)
+                as u32,
+            round_pot((((plane_w << ss_x) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_x)
+                as u32,
+        )
+    };
+    let y_range = ((plane_mi_rows as i32) - ((mi_row >> ss_y) as i32))
+        .min((MAX_MIB_SIZE >> ss_y) as i32)
+        .max(0) as usize;
+    let x_range = ((plane_mi_cols as i32) - ((mi_col >> ss_x) as i32))
+        .min((MAX_MIB_SIZE >> ss_x) as i32)
+        .max(0) as usize;
+    let x0 = (mi_col * MI_SIZE) >> ss_x;
+    let y0 = (mi_row * MI_SIZE) >> ss_y;
+    let origin = y0 * stride + x0;
+
+    let mut line = [(0usize, 0u8, 0u8); MAX_MIB_SIZE];
+
+    if dir == 0 {
+        let mut y = 0usize;
+        while y < y_range {
+            let curr_y = (y0 + y * MI_SIZE) as u32;
+            let mut min_dim = usize::MAX;
+            let mut x = 0usize;
+            let mut prev_ts = None;
+            while x < x_range {
+                let curr_x = (x0 + x * MI_SIZE) as u32;
+                let (ts, len, level) = set_lpf_parameters_opt(
+                    grid, p, lfi, VERT_EDGE, curr_x, curr_y, plane, ss_x, ss_y, prev_ts,
+                );
+                line[x] = (ts, len, level);
+                min_dim = min_dim.min(batch_unit_dim(
+                    grid, p, VERT_EDGE, curr_x, curr_y, plane, ss_x, ss_y,
+                ));
+                x += TX_SIZE_WIDE_UNIT[ts];
+                prev_ts = Some(ts);
+            }
+            if x0 > 0 {
+                min_dim = min_dim.min(batch_prev_dim(
+                    grid, p, VERT_EDGE, x0 as u32, curr_y, plane, ss_x, ss_y,
+                ));
+            }
+            let nseg = if (y & 3) == 0 && y + 3 < y_range && min_dim >= 16 {
+                4
+            } else if (plane == 0 || y % 2 == 0) && y + 1 < y_range && min_dim >= 8 {
+                2
+            } else {
+                1
+            };
+            let mut x = 0usize;
+            while x < x_range {
+                let (ts, len, level) = line[x];
+                if len > 0 {
+                    let (mblim, lim, hev) = lfi.lfthr[level as usize];
+                    let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
+                    loopfilter::vertical_n(len as u32, buf, center, stride, mblim, lim, hev, nseg);
+                }
+                x += TX_SIZE_WIDE_UNIT[ts];
+            }
+            y += nseg;
+        }
+    } else {
+        let mut x = 0usize;
+        while x < x_range {
+            let curr_x = (x0 + x * MI_SIZE) as u32;
+            let mut min_dim = usize::MAX;
+            let mut y = 0usize;
+            let mut prev_ts = None;
+            while y < y_range {
+                let curr_y = (y0 + y * MI_SIZE) as u32;
+                let (ts, len, level) = set_lpf_parameters_opt(
+                    grid, p, lfi, 1, curr_x, curr_y, plane, ss_x, ss_y, prev_ts,
+                );
+                line[y] = (ts, len, level);
+                min_dim =
+                    min_dim.min(batch_unit_dim(grid, p, 1, curr_x, curr_y, plane, ss_x, ss_y));
+                y += TX_SIZE_HIGH_UNIT[ts];
+                prev_ts = Some(ts);
+            }
+            if y0 > 0 {
+                min_dim =
+                    min_dim.min(batch_prev_dim(grid, p, 1, curr_x, y0 as u32, plane, ss_x, ss_y));
+            }
+            let nseg = if (x & 3) == 0 && x + 3 < x_range && min_dim >= 16 {
+                4
+            } else if (plane == 0 || x % 2 == 0) && x + 1 < x_range && min_dim >= 8 {
+                2
+            } else {
+                1
+            };
+            let mut y = 0usize;
+            while y < y_range {
+                let (ts, len, level) = line[y];
+                if len > 0 {
+                    let (mblim, lim, hev) = lfi.lfthr[level as usize];
+                    let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
+                    loopfilter::horizontal_n(len as u32, buf, center, stride, mblim, lim, hev, nseg);
+                }
+                y += TX_SIZE_HIGH_UNIT[ts];
+            }
+            x += nseg;
+        }
+    }
+}
+
 /// Lowbd (bd8, `u8` planes) whole-frame deblock — the additive twin of
 /// [`loop_filter_frame`]. See the module-level lowbd note above: the walk +
 /// per-edge derivation are shared verbatim; only the kernel dispatch narrows to
@@ -1172,6 +1340,20 @@ pub fn loop_filter_frame_u8(
     let _ = loop_filter_frame_u8_stop(buf, grid, p, plane_start, plane_end, None);
 }
 
+/// The encoder's `lpf_opt_level == 1` walk for `u8` planes — the lowbd twin
+/// of [`loop_filter_frame_opt`], routing each strip through
+/// [`filter_block_plane_u8_opt`]'s dual/quad batching. Same caller contract:
+/// exact only under uniform-tx grids (all-intra encodes unconditionally).
+pub fn loop_filter_frame_u8_opt(
+    buf: &mut LfFrameBufU8,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+) {
+    let _ = loop_filter_frame_u8_impl(buf, grid, p, plane_start, plane_end, None, true);
+}
+
 /// [`loop_filter_frame_u8`] with a cooperative stop token polled once per
 /// 32-mi strip — the lowbd twin of [`loop_filter_frame_stop`], and the one the
 /// bd8 decode path (every 8-bit stream) actually takes.
@@ -1182,6 +1364,22 @@ pub fn loop_filter_frame_u8_stop(
     plane_start: usize,
     plane_end: usize,
     stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    loop_filter_frame_u8_impl(buf, grid, p, plane_start, plane_end, stop, false)
+}
+
+/// Shared walk behind [`loop_filter_frame_u8`], [`loop_filter_frame_u8_opt`]
+/// and [`loop_filter_frame_u8_stop`]; `lpf_opt` picks C's `lpf_opt_level > 0`
+/// batched traversal.
+#[allow(clippy::too_many_arguments)]
+fn loop_filter_frame_u8_impl(
+    buf: &mut LfFrameBufU8,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+    stop: Option<&dyn enough::Stop>,
+    lpf_opt: bool,
 ) -> Result<(), enough::StopReason> {
     let planes_to_lf = [
         (p.filter_level[0] != 0 || p.filter_level[1] != 0) && plane_start == 0 && 0 < plane_end,
@@ -1219,9 +1417,17 @@ pub fn loop_filter_frame_u8_stop(
                             1 => (buf.u, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
                             _ => (buf.v, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
                         };
-                    filter_block_plane_u8(
-                        dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row, mi_col,
-                    );
+                    if lpf_opt {
+                        filter_block_plane_u8_opt(
+                            dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row,
+                            mi_col,
+                        );
+                    } else {
+                        filter_block_plane_u8(
+                            dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row,
+                            mi_col,
+                        );
+                    }
                     mi_col += MAX_MIB_SIZE;
                 }
             }
