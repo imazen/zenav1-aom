@@ -103,6 +103,7 @@ pub fn loop_restoration_filter_frame_stop(
     Ok(())
 }
 
+#[derive(Clone)]
 pub(crate) struct StripeBoundaries {
     pub(crate) above: Vec<u16>,
     pub(crate) below: Vec<u16>,
@@ -376,7 +377,7 @@ fn filter_plane(
 /// Per-plane scratch for `filter_unit`'s saved boundary rows — C allocates
 /// `tmp_buf` once in `av1_loop_restoration_filter_plane`; pooling keeps the
 /// per-stripe `to_vec`s (~6 allocs/unit) off the hot path.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct StripeScratch {
     above: [Vec<u16>; RESTORATION_BORDER],
     below: [Vec<u16>; RESTORATION_BORDER],

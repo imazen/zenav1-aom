@@ -2372,6 +2372,12 @@ pub struct LrSearchInput<'a> {
     pub wiener_restore_cost: [i32; 2],
     pub sgrproj_restore_cost: [i32; 2],
     pub switchable_restore_cost: [i32; 3],
+    /// Worker count for the per-tile search walk. `0`/`1` = the serial walk.
+    /// The unit results are identical either way: `RscState`'s delta-coding
+    /// references reset at every tile start (`rsc_on_tile`), so disjoint tile
+    /// rows are independent and the per-type `total_bits`/`total_sse` sums
+    /// merge commutatively.
+    pub threads: usize,
     pub sf: LrSearchSf,
 }
 
@@ -2410,6 +2416,7 @@ impl Default for RestUnitSearchInfo {
 
 /// One plane's staged buffers: the extended dgd (recon) in the padded
 /// frame-walk layout, the trial dst, the stripe boundaries, and the source.
+#[derive(Clone)]
 struct PlaneCtx<'a> {
     plane: usize,
     pw: i32,
@@ -3293,6 +3300,35 @@ fn restoration_search(
     rusi: &mut [RestUnitSearchInfo],
     disable_lr_filter: &[bool; RESTORE_TYPES],
 ) {
+    rsc.reset();
+    restoration_search_rows(
+        ctx,
+        input,
+        lr_geom,
+        rsc,
+        rusi,
+        None,
+        &input.tile_sb_rows,
+        disable_lr_filter,
+    );
+}
+
+/// The tile-row body of `restoration_search` over `tile_rows` (a slice of
+/// `input.tile_sb_rows`). `mask`, when present, is marked for every `rusi`
+/// slot written — the threaded caller gives each worker a private `rusi` +
+/// `mask` pair and merges the marked slots, since an RU row can straddle a
+/// tile-row boundary and `split_at_mut` bands would overlap.
+#[allow(clippy::too_many_arguments)]
+fn restoration_search_rows(
+    ctx: &mut PlaneCtx<'_>,
+    input: &LrSearchInput<'_>,
+    lr_geom: &LrFrameConfig,
+    rsc: &mut RscState,
+    rusi: &mut [RestUnitSearchInfo],
+    mut mask: Option<&mut [bool]>,
+    tile_rows: &[(i32, i32)],
+    disable_lr_filter: &[bool; RESTORE_TYPES],
+) {
     let plane = ctx.plane;
     let ru_size = lr_geom.unit_size[plane];
     let ext_size = ru_size * 3 / 2;
@@ -3305,9 +3341,7 @@ fn restoration_search(
     };
     let mib_size = 1i32 << input.mib_size_log2;
 
-    rsc.reset();
-
-    for &(sb_row_start, sb_row_end) in &input.tile_sb_rows {
+    for &(sb_row_start, sb_row_end) in tile_rows {
         for &(sb_col_start, sb_col_end) in &input.tile_sb_cols {
             // Reset reference parameters for delta-coding at tile start.
             rsc.on_tile();
@@ -3352,6 +3386,9 @@ fn restoration_search(
                             let unit_idx = (rrow * horz_units + rcol) as usize;
 
                             rsc.skip_sgr_eval = false;
+                            if let Some(m) = mask.as_deref_mut() {
+                                m[unit_idx] = true;
+                            }
                             for r in 0..num_rtypes {
                                 if disable_lr_filter[r] {
                                     continue;
@@ -3457,11 +3494,74 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
 
         for (ci, plane) in (plane_start..=plane_end).enumerate() {
             let ctx = &mut ctxs[ci];
+            let ctx_template = &*ctx;
             let (hu, vu) = lr_geom.plane_units(plane, input.ss_x, input.ss_y);
             let plane_num_units = (hu * vu) as usize;
             let mut rusi = vec![RestUnitSearchInfo::default(); plane_num_units];
 
-            restoration_search(ctx, input, &lr_geom, &mut rsc, &mut rusi, &disable_lr_filter);
+            let n_tile_rows = input.tile_sb_rows.len();
+            if input.threads > 1 && n_tile_rows > 1 {
+                // Tile rows are independent: `rsc_on_tile` resets the
+                // delta-coding references at every tile start, so disjoint
+                // rows only share the commutative total_bits/total_sse sums.
+                // Each worker stages its own PlaneCtx (identical inputs →
+                // identical staging) and returns a masked private `rusi`,
+                // which the merge copies back — the unit results are
+                // byte-identical to the serial walk.
+                let workers = input.threads.min(n_tile_rows);
+                let (rows_per, rem) = (n_tile_rows / workers, n_tile_rows % workers);
+                let tile_sb_rows = input.tile_sb_rows.as_slice();
+                rsc.reset();
+                std::thread::scope(|s| {
+                    let mut handles = Vec::new();
+                    let mut rows_left = 0..n_tile_rows;
+                    for w in 0..workers {
+                        if rows_left.is_empty() {
+                            break;
+                        }
+                        let take = rows_per + usize::from(w < rem);
+                        let rows: Vec<usize> = rows_left.by_ref().take(take).collect();
+                        handles.push(s.spawn(move || {
+                            // Clone the already-staged ctx: ~3 MB memcpy
+                            // instead of a full pad+extend+boundary restage.
+                            let mut ctx_w = ctx_template.clone();
+                            let mut rsc_w = RscState::new();
+                            rsc_w.reset();
+                            let mut rusi_w =
+                                vec![RestUnitSearchInfo::default(); plane_num_units];
+                            let mut mask_w = vec![false; plane_num_units];
+                            let tile_rows: Vec<(i32, i32)> =
+                                rows.iter().map(|&i| tile_sb_rows[i]).collect();
+                            restoration_search_rows(
+                                &mut ctx_w,
+                                input,
+                                &lr_geom,
+                                &mut rsc_w,
+                                &mut rusi_w,
+                                Some(&mut mask_w),
+                                &tile_rows,
+                                &disable_lr_filter,
+                            );
+                            (rsc_w, rusi_w, mask_w)
+                        }));
+                    }
+                    for h in handles {
+                        let (rsc_w, rusi_w, mask_w) =
+                            h.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+                        for r in 0..RESTORE_TYPES {
+                            rsc.total_sse[r] += rsc_w.total_sse[r];
+                            rsc.total_bits[r] += rsc_w.total_bits[r];
+                        }
+                        for (i, &m) in mask_w.iter().enumerate() {
+                            if m {
+                                rusi[i] = rusi_w[i];
+                            }
+                        }
+                    }
+                });
+            } else {
+                restoration_search(ctx, input, &lr_geom, &mut rsc, &mut rusi, &disable_lr_filter);
+            }
 
             let num_rtypes = if plane_num_units > 1 {
                 RESTORE_TYPES

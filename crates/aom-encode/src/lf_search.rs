@@ -327,6 +327,25 @@ fn search_filter_level(
     sharpness: i32,
     scratch: &mut Vec<u16>,
 ) -> i32 {
+    search_filter_level_impl(f, plane, dir, held_vert, held_horiz, sharpness, scratch, false)
+}
+
+/// The step search itself is sequential (each iteration's direction/step
+/// depends on the last), but the `filt_low`/`filt_high` TRIALS inside one
+/// iteration are independent — `par` runs that pair on a scoped worker with
+/// its own trial scratch. Results are per-level deterministic, so the
+/// parallel pre-fill is bit-identical to the serial `trial()` calls.
+#[allow(clippy::too_many_arguments)]
+fn search_filter_level_impl(
+    f: &LfSearchFrame,
+    plane: usize,
+    dir: usize,
+    held_vert: i32,
+    held_horiz: i32,
+    sharpness: i32,
+    scratch: &mut Vec<u16>,
+    par: bool,
+) -> i32 {
     const MIN_FILTER_LEVEL: i32 = 0;
     let max_filter_level = MAX_LOOP_FILTER; // one-pass envelope: always 63 (module docs)
     let mut filt_mid = 0i32; // last_frame_filter_level always 0 in this envelope
@@ -359,6 +378,29 @@ fn search_filter_level(
         // cm.features.tx_mode != ONLY_4X4 always holds where this result is
         // used (module docs) -- unconditional halving.
         bias >>= 1;
+
+        if par {
+            let need_low =
+                filt_direction <= 0 && filt_low != filt_mid && ss_err[filt_low as usize] < 0;
+            let need_high =
+                filt_direction >= 0 && filt_high != filt_mid && ss_err[filt_high as usize] < 0;
+            if need_low && need_high {
+                let (lo, hi) = (
+                    filt_pair(plane, dir, filt_low, held_vert, held_horiz),
+                    filt_pair(plane, dir, filt_high, held_vert, held_horiz),
+                );
+                let mut scratch2 = Vec::new();
+                std::thread::scope(|s| {
+                    let h = s.spawn(|| {
+                        try_filter_plane(f, plane, hi.0, hi.1, hi.2, sharpness, &mut scratch2)
+                    });
+                    let l = try_filter_plane(f, plane, lo.0, lo.1, lo.2, sharpness, scratch);
+                    ss_err[filt_low as usize] = l;
+                    ss_err[filt_high as usize] =
+                        h.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+                });
+            }
+        }
 
         if filt_direction <= 0 && filt_low != filt_mid {
             let e = trial(filt_low, &mut ss_err, scratch);
@@ -476,6 +518,59 @@ pub fn pick_filter_level(
     }
 }
 
+/// `pick_filter_level` with the independent passes on workers: the luma
+/// chain (combined → vert refine → horiz refine) is sequentially dependent,
+/// but the U and V searches depend on nothing in it — three disjoint
+/// `search_filter_level` walks, each with its own trial scratch. The result
+/// is identical to the serial pick.
+pub fn pick_filter_level_mt(
+    f: &LfSearchFrame,
+    allintra: bool,
+    sharpness_cfg: i32,
+    non_dual: bool,
+    workers: usize,
+) -> LoopFilterLevels {
+    if workers <= 1 || f.monochrome {
+        return pick_filter_level(f, allintra, sharpness_cfg, non_dual);
+    }
+    let sharpness = if allintra { sharpness_cfg } else { 0 };
+    let (mut level_y, mut level_u, mut level_v) = ([0i32; 2], 0i32, 0i32);
+    std::thread::scope(|s| {
+        let ty = s.spawn(|| {
+            let mut scratch = Vec::new();
+            // The luma chain is the long pole — its low/high trial pairs run
+            // on a second worker, so 4 threads see Y(2)+U(1)+V(1).
+            let combined =
+                search_filter_level_impl(f, 0, 2, 0, 0, sharpness, &mut scratch, true);
+            let mut fl = [combined, combined];
+            if !non_dual {
+                fl[0] =
+                    search_filter_level_impl(f, 0, 0, 0, fl[1], sharpness, &mut scratch, true);
+                fl[1] =
+                    search_filter_level_impl(f, 0, 1, fl[0], 0, sharpness, &mut scratch, true);
+            }
+            fl
+        });
+        let tu = s.spawn(|| {
+            let mut scratch = Vec::new();
+            search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch)
+        });
+        let tv = s.spawn(|| {
+            let mut scratch = Vec::new();
+            search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch)
+        });
+        level_y = ty.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+        level_u = tu.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+        level_v = tv.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+    });
+    LoopFilterLevels {
+        filter_level: level_y,
+        filter_level_u: level_u,
+        filter_level_v: level_v,
+        sharpness,
+    }
+}
+
 /// `av1_pick_filter_level`'s `method >= LPF_PICK_FROM_Q` arm (picklpf.c:
 /// 266-330) for this port's envelope — a one-pass shown KEY frame (no SVC
 /// temporal layers, no rt screen / cyclic-refresh paths, no
@@ -569,6 +664,75 @@ pub fn build_lf_mi_grid(
             mi_cols,
         );
     }
+    mi
+}
+
+/// `build_lf_mi_grid` threaded by superblock rows: each SB stamps only cells
+/// inside its own `sb_mi` block, so contiguous SB-row bands own disjoint `mi`
+/// rows and the result is identical to the serial build.
+#[allow(clippy::too_many_arguments)]
+pub fn build_lf_mi_grid_mt(
+    trees: &[SbTree],
+    mi_rows: i32,
+    mi_cols: i32,
+    n_sb_cols: i32,
+    sb_mi: i32,
+    sb_size: usize,
+    workers: usize,
+) -> Vec<LfMi> {
+    let n_sb_rows = trees.len() as i32 / n_sb_cols;
+    if workers <= 1 || n_sb_rows < 2 {
+        return build_lf_mi_grid(trees, mi_rows, mi_cols, n_sb_cols, sb_mi, sb_size);
+    }
+    let mut mi = vec![LfMi::default(); mi_rows as usize * mi_cols as usize];
+    let stride = mi_cols as usize;
+    let workers = workers.min(n_sb_rows as usize);
+    let (per, rem) = (n_sb_rows as usize / workers, n_sb_rows as usize % workers);
+    // One `&mut` band per SB row; workers claim whole rows.
+    let mut bands: Vec<&mut [LfMi]> = Vec::with_capacity(n_sb_rows as usize);
+    let mut rest = mi.as_mut_slice();
+    for _ in 0..n_sb_rows {
+        let n = (sb_mi as usize * stride).min(rest.len());
+        let (b, r) = rest.split_at_mut(n);
+        bands.push(b);
+        rest = r;
+    }
+    let mut it = bands.into_iter();
+    std::thread::scope(|s| {
+        let mut rows_left = 0..n_sb_rows as usize;
+        let mut handles = Vec::new();
+        for w in 0..workers {
+            if rows_left.is_empty() {
+                break;
+            }
+            let take = per + usize::from(w < rem);
+            let rows: Vec<usize> = rows_left.by_ref().take(take).collect();
+            let mut wbands: Vec<&mut [LfMi]> =
+                (0..take).map(|_| it.next().expect("one band per SB row")).collect();
+            handles.push(s.spawn(move || {
+                for (li, &sb_r) in rows.iter().enumerate() {
+                    let band = &mut *wbands[li];
+                    let band_rows = (band.len() / stride) as i32;
+                    for c in 0..n_sb_cols {
+                        let tree = &trees[sb_r * n_sb_cols as usize + c as usize];
+                        stamp_lf_tree(
+                            band,
+                            stride,
+                            tree,
+                            0,
+                            c * sb_mi,
+                            sb_size,
+                            band_rows,
+                            mi_cols,
+                        );
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+        }
+    });
     mi
 }
 

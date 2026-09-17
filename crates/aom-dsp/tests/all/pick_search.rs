@@ -131,6 +131,7 @@ fn build_input<'a>(
         wiener_restore_cost: wn,
         sgrproj_restore_cost: sg,
         switchable_restore_cost: sw,
+        threads: 1,
         sf,
     }
 }

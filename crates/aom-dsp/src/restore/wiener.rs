@@ -54,7 +54,7 @@ fn round_power_of_two(v: i32, n: i32) -> i32 {
 /// both the SIMD and scalar passes write every `temp` cell the vertical pass
 /// reads (rows `0..h+7`, cols `0..w`) before reading it — same argument as
 /// the 2026-07-19 `ReconScratch`/`InvTxfmScratch` landing.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct WienerScratch {
     temp: Vec<u16>,
 }

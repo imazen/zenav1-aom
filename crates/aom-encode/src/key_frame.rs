@@ -140,7 +140,8 @@ use crate::encode_intra::TrellisOptType;
 use crate::encode_sb::{LeafWinner, SbEncodeEnv, SbTree};
 use crate::intra_uv_rd::UvLoopPolicy;
 use crate::lf_search::{
-    LfSearchFrame, LoopFilterLevels, build_lf_mi_grid, pick_filter_level, pick_filter_level_from_q,
+    LfSearchFrame, LoopFilterLevels, pick_filter_level_mt,
+    pick_filter_level_from_q,
 };
 use crate::obu_assemble::{
     OBU_FRAME, assemble_multitile_frame_obu_payload_derived, assemble_obu_frame_single_tile,
@@ -3544,6 +3545,20 @@ pub fn encode_key_frame_with(
         palette_costs: search_palette.then_some(&real.palette_costs),
     };
 
+    // Optional phase timing (AOM_TIME_PHASES=1): names the serial-vs-parallel
+    // split the threading work is measured against. eprintln! only.
+    let phase_timing = std::env::var_os("AOM_TIME_PHASES").is_some();
+    #[allow(unused_assignments)]
+    let mut phase_t = std::time::Instant::now();
+    macro_rules! phase_mark {
+        ($name:literal) => {
+            if phase_timing {
+                eprintln!("[phase] {:<18} {:>8.1} ms", $name, phase_t.elapsed().as_secs_f64() * 1e3);
+                phase_t = std::time::Instant::now();
+            }
+        };
+    }
+
     // ---- phase 1: search + encode (bits discarded) ------------------------
     // C's `encode_frame_internal`: adapt a tile context, produce the
     // reconstruction, count `txb_split_count`. The bits go to a throwaway
@@ -3660,12 +3675,7 @@ pub fn encode_key_frame_with(
         let y_bands = split_row_bands(&mut recon_y, &band_y);
         let u_bands = split_row_bands(&mut recon_u, &band_uv);
         let v_bands = split_row_bands(&mut recon_v, &band_uv);
-        // Contiguous row chunks — rows are the same height in mi by uniform
-        // spacing, so count-balancing is work-balancing. The first `rem`
-        // workers take one extra row so every worker is used even when
-        // `n_workers` does not divide `n_tr`.
         let workers = n_workers.min(n_tr);
-        let (rows_per, rem) = (n_tr / workers, n_tr % workers);
         let stop = opts.stop;
         let env = &env;
         let pick_cfg = &pick_cfg;
@@ -3678,33 +3688,43 @@ pub fn encode_key_frame_with(
         let src_y = src_y.as_slice();
         let src_u = src_u.as_slice();
         let src_v = src_v.as_slice();
-        // Bands must reach each worker IN raster order — a Vec's `pop` hands
-        // them out reversed (the bug the threaded-byte gate caught), so the
-        // bands are yielded through `into_iter` instead.
-        let mut y_it = y_bands.into_iter();
-        let mut u_it = u_bands.into_iter();
-        let mut v_it = v_bands.into_iter();
+        // Bands are handed out through a shared cursor instead of a static
+        // assignment: a worker that finishes a cheap row early pulls the next
+        // untaken row rather than idling behind whoever drew the heavy chunk.
+        // Each `&mut` band is `take`n exactly once, so ownership stays
+        // disjoint; the merge below keys on the tile index, so the schedule
+        // can vary run to run while the OUTPUT stays deterministic.
+        let bands = std::sync::Mutex::new((
+            0usize,
+            y_bands.into_iter().map(Some).collect::<Vec<_>>(),
+            u_bands.into_iter().map(Some).collect::<Vec<_>>(),
+            v_bands.into_iter().map(Some).collect::<Vec<_>>(),
+        ));
+        let bands = &bands;
         std::thread::scope(|s| {
             let mut handles = Vec::new();
-            let mut rows_left = 0..n_tr;
-            for w in 0..workers {
-                if rows_left.is_empty() {
-                    break;
-                }
-                let take = rows_per + usize::from(w < rem);
-                let rows: Vec<usize> = rows_left.by_ref().take(take).collect();
-                let mut wy: Vec<&mut [u16]> = (0..take)
-                    .map(|_| y_it.next().expect("one band per tile row"))
-                    .collect();
-                let mut wu: Vec<&mut [u16]> = (0..take)
-                    .map(|_| u_it.next().expect("one band per tile row"))
-                    .collect();
-                let mut wv: Vec<&mut [u16]> = (0..take)
-                    .map(|_| v_it.next().expect("one band per tile row"))
-                    .collect();
+            for _w in 0..workers {
                 handles.push(s.spawn(move || {
                     let mut out: Vec<(usize, Vec<SbTree>)> = Vec::new();
-                    for (li, &tr) in rows.iter().enumerate() {
+                    loop {
+                        let Some((tr, wy, wu, wv)) = ({
+                            let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
+                            let (cursor, y, u, v) = &mut *g;
+                            if *cursor >= n_tr {
+                                None
+                            } else {
+                                let tr = *cursor;
+                                *cursor += 1;
+                                Some((
+                                    tr,
+                                    y[tr].take().expect("one band per tile row"),
+                                    u[tr].take().expect("one band per tile row"),
+                                    v[tr].take().expect("one band per tile row"),
+                                ))
+                            }
+                        }) else {
+                            break;
+                        };
                         for tc in 0..n_tc {
                             let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
                             let env_w = crate::encode_sb::SbEncodeEnv {
@@ -3733,9 +3753,9 @@ pub fn encode_key_frame_with(
                                 pick_cfg,
                                 phase1_pack_cfg,
                                 &mut kf_tile,
-                                &mut wy[li][..],
-                                &mut wu[li][..],
-                                &mut wv[li][..],
+                                &mut wy[..],
+                                &mut wu[..],
+                                &mut wv[..],
                                 r0,
                                 c0,
                                 n_tr_s,
@@ -3801,8 +3821,11 @@ pub fn encode_key_frame_with(
     p.cdef.allow_intrabc = p.allow_intrabc;
     p.restoration.allow_intrabc = p.allow_intrabc;
 
+    phase_mark!("lf_pick");
     // ---- loop-filter level: derived from THIS port's reconstruction -------
-    let mut mi_grid = build_lf_mi_grid(&trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block);
+    let mut mi_grid = crate::lf_search::build_lf_mi_grid_mt(
+        &trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block, n_workers,
+    );
     // `--delta-lf-mode=1`: the LF trial deblock reads per-SB `delta_lf_from_base`
     // through `get_filter_level`; it is `((delta_qindex / 4 + res / 2) & ~(res - 1))`
     // clamped, `res = DEFAULT_DELTA_LF_RES = 2` (encodeframe.c:380), off the SAME
@@ -3861,7 +3884,7 @@ pub fn encode_key_frame_with(
     } else if speed >= 6 {
         pick_filter_level_from_q(qindex, bd, true, lf_sharpness)
     } else {
-        pick_filter_level(&lf_frame, true, lf_sharpness, speed >= 4)
+        pick_filter_level_mt(&lf_frame, true, lf_sharpness, speed >= 4, n_workers)
     };
     // `loopfilter_frame` is wrapped whole in `if (!cm->features.allow_intrabc)`
     // (encoder.c:3780), so an IntraBC frame never runs `av1_pick_filter_level`
@@ -3885,6 +3908,7 @@ pub fn encode_key_frame_with(
         );
     }
 
+    phase_mark!("deblock");
     // ---- post-filter stages: deblock -> CDEF -> loop restoration ----------
     // C's order (`encoder.c` `loopfilter_frame` -> `cdef_restoration_frame`):
     // apply the picked deblock levels, then `av1_cdef_search` + `av1_cdef_frame`
@@ -3943,6 +3967,7 @@ pub fn encode_key_frame_with(
         }
     }
 
+    phase_mark!("cdef");
     // ---- CDEF: search on the deblocked recon, then APPLY it ---------------
     let mut cur_y = Vec::new();
     let mut cur_u = Vec::new();
@@ -4025,6 +4050,7 @@ pub fn encode_key_frame_with(
         None
     };
 
+    phase_mark!("lr_search");
     // ---- loop restoration: `av1_pick_filter_restoration` ------------------
     // `is_restoration_used` (`encoder.h:4431`) = `enable_restoration &&
     // !all_lossless && !large_scale`, plus the `allow_intrabc` gate folded into
@@ -4102,6 +4128,7 @@ pub fn encode_key_frame_with(
             wiener_restore_cost: wiener_cost,
             sgrproj_restore_cost: sgrproj_cost,
             switchable_restore_cost: switchable_cost,
+            threads: n_workers,
             sf: crate::speed_features::lr_search_sf_allintra(
                 speed,
                 qindex,
@@ -4117,6 +4144,7 @@ pub fn encode_key_frame_with(
         None
     };
 
+    phase_mark!("pack2");
     // ---- phase 2: the real pack over the already-picked trees -------------
     // `av1_pack_bitstream` seeds a SECOND fresh tile context from `cm->fc` and
     // re-writes every symbol, now with the FINAL `tx_mode`. `search_tx_mode_is
@@ -4158,47 +4186,188 @@ pub fn encode_key_frame_with(
         }
     });
     let mut tile_payloads: Vec<Vec<u8>> = Vec::with_capacity(tile_grid.len());
-    for &(r0, c0, r1, c1, n_tr, n_tc) in &tile_grid {
-        env.tile_row_start = r0;
-        env.tile_col_start = c0;
-        env.tile_row_end = r1;
-        env.tile_col_end = c1;
-        // This tile's slice of the frame-raster trees, in the tile-local raster
-        // order `pack_tile_from_trees_lr` indexes by.
-        let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
-        let mut tile_trees: Vec<SbTree> = (0..n_tr)
-            .flat_map(|r| (0..n_tc).map(move |c| (r, c)))
-            .map(|(r, c)| trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone())
-            .collect();
-        let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
-        let mut enc = OdEcEnc::new();
-        if let Some(s) = opts.stop {
-            s.check().map_err(KeyFrameError::Cancelled)?;
+    tile_payloads.resize_with(tile_grid.len(), Vec::new);
+    if n_workers <= 1 {
+        for (tile_idx, &(r0, c0, r1, c1, n_tr, n_tc)) in tile_grid.iter().enumerate() {
+            env.tile_row_start = r0;
+            env.tile_col_start = c0;
+            env.tile_row_end = r1;
+            env.tile_col_end = c1;
+            // This tile's slice of the frame-raster trees, in the tile-local
+            // raster order `pack_tile_from_trees_lr` indexes by.
+            let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+            let mut tile_trees: Vec<SbTree> = (0..n_tr)
+                .flat_map(|r| (0..n_tc).map(move |c| (r, c)))
+                .map(|(r, c)| trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone())
+                .collect();
+            let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+            let mut enc = OdEcEnc::new();
+            if let Some(s) = opts.stop {
+                s.check().map_err(KeyFrameError::Cancelled)?;
+            }
+            pack_tile_from_trees_lr(
+                &mut enc,
+                &env,
+                &pick_cfg,
+                &pack_cfg,
+                &mut kf_tile,
+                &mut recon2_y,
+                &mut recon2_u,
+                &mut recon2_v,
+                &mut tile_trees,
+                r0,
+                c0,
+                n_tr,
+                n_tc,
+                sb_mi,
+                sb_block,
+                cdef_pack.clone(),
+                lr_pack.as_ref(),
+                opts.stop,
+            )
+            .map_err(KeyFrameError::Cancelled)?;
+            tile_payloads[tile_idx] = enc.done().to_vec();
         }
-        pack_tile_from_trees_lr(
-            &mut enc,
-            &env,
-            &pick_cfg,
-            &pack_cfg,
-            &mut kf_tile,
-            &mut recon2_y,
-            &mut recon2_u,
-            &mut recon2_v,
-            &mut tile_trees,
-            r0,
-            c0,
-            n_tr,
-            n_tc,
-            sb_mi,
-            sb_block,
-            cdef_pack.clone(),
-            lr_pack.as_ref(),
-            opts.stop,
-        )
+    } else {
+        // Same row-band model as phase 1: the repack re-encodes each tile from
+        // the source into recon2 with the same tile-bounded read footprint, so
+        // disjoint `split_at_mut` bands of recon2 give sound `&mut` regions.
+        let n_tr = n_tile_rows as usize;
+        let n_tc = n_tile_cols as usize;
+        let band_y: Vec<(usize, usize)> = (0..n_tr)
+            .map(|tr| {
+                let t = &tile_grid[tr * n_tc];
+                let end = if tr == n_tr - 1 {
+                    recon2_y.len()
+                } else {
+                    t.2 as usize * 4 * stride
+                };
+                (t.0 as usize * 4 * stride, end)
+            })
+            .collect();
+        let band_uv: Vec<(usize, usize)> = (0..n_tr)
+            .map(|tr| {
+                let t = &tile_grid[tr * n_tc];
+                let end = if tr == n_tr - 1 {
+                    recon2_u.len()
+                } else {
+                    ((t.2 as usize * 4) >> cfg.ss_y) * stride
+                };
+                (((t.0 as usize * 4) >> cfg.ss_y) * stride, end)
+            })
+            .collect();
+        let y_bands = split_row_bands(&mut recon2_y, &band_y);
+        let u_bands = split_row_bands(&mut recon2_u, &band_uv);
+        let v_bands = split_row_bands(&mut recon2_v, &band_uv);
+        let workers = n_workers.min(n_tr);
+        let stop = opts.stop;
+        let env = &env;
+        let pick_cfg = &pick_cfg;
+        let pack_cfg = &pack_cfg;
+        let tile_grid = tile_grid.as_slice();
+        let band_y = band_y.as_slice();
+        let band_uv = band_uv.as_slice();
+        let src_y = src_y.as_slice();
+        let src_u = src_u.as_slice();
+        let src_v = src_v.as_slice();
+        let trees = trees.as_slice();
+        let cdef_pack = &cdef_pack;
+        let lr_pack = lr_pack.as_ref();
+        // Same dynamic band cursor as phase 1.
+        let bands = std::sync::Mutex::new((
+            0usize,
+            y_bands.into_iter().map(Some).collect::<Vec<_>>(),
+            u_bands.into_iter().map(Some).collect::<Vec<_>>(),
+            v_bands.into_iter().map(Some).collect::<Vec<_>>(),
+        ));
+        let bands = &bands;
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for _w in 0..workers {
+                handles.push(s.spawn(move || {
+                    let mut out: Vec<(usize, Vec<u8>)> = Vec::new();
+                    loop {
+                        let Some((tr, wy, wu, wv)) = ({
+                            let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
+                            let (cursor, y, u, v) = &mut *g;
+                            if *cursor >= n_tr {
+                                None
+                            } else {
+                                let tr = *cursor;
+                                *cursor += 1;
+                                Some((
+                                    tr,
+                                    y[tr].take().expect("one band per tile row"),
+                                    u[tr].take().expect("one band per tile row"),
+                                    v[tr].take().expect("one band per tile row"),
+                                ))
+                            }
+                        }) else {
+                            break;
+                        };
+                        for tc in 0..n_tc {
+                            let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
+                            let env_w = crate::encode_sb::SbEncodeEnv {
+                                tile_row_start: r0,
+                                tile_col_start: c0,
+                                tile_row_end: r1,
+                                tile_col_end: c1,
+                                base_y: band_y[tr].0,
+                                base_uv: band_uv[tr].0,
+                                src_y: &src_y[band_y[tr].0..],
+                                src_u: &src_u[band_uv[tr].0..],
+                                src_v: &src_v[band_uv[tr].0..],
+                                ..*env
+                            };
+                            let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+                            let mut tile_trees: Vec<SbTree> = (0..n_tr_s)
+                                .flat_map(|r| (0..n_tc_s).map(move |c| (r, c)))
+                                .map(|(r, c)| {
+                                    trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone()
+                                })
+                                .collect();
+                            let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+                            let mut enc = OdEcEnc::new();
+                            pack_tile_from_trees_lr(
+                                &mut enc,
+                                &env_w,
+                                pick_cfg,
+                                pack_cfg,
+                                &mut kf_tile,
+                                &mut wy[..],
+                                &mut wu[..],
+                                &mut wv[..],
+                                &mut tile_trees,
+                                r0,
+                                c0,
+                                n_tr_s,
+                                n_tc_s,
+                                sb_mi,
+                                sb_block,
+                                cdef_pack.clone(),
+                                lr_pack,
+                                stop,
+                            )?;
+                            out.push((tr * n_tc + tc, enc.done().to_vec()));
+                        }
+                    }
+                    Ok::<_, enough::StopReason>(out)
+                }));
+            }
+            for h in handles {
+                let tile_results = h
+                    .join()
+                    .unwrap_or_else(|p| std::panic::resume_unwind(p))?;
+                for (tile_idx, payload) in tile_results {
+                    tile_payloads[tile_idx] = payload;
+                }
+            }
+            Ok::<_, enough::StopReason>(())
+        })
         .map_err(KeyFrameError::Cancelled)?;
-        tile_payloads.push(enc.done().to_vec());
     }
 
+    phase_mark!("assemble");
     // ---- temporal unit ----------------------------------------------------
     if let Ok(path) = std::env::var("AOM_HDR_DUMP") {
         std::fs::write(path, format!("{p:#?}")).ok();

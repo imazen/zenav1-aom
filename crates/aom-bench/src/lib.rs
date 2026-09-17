@@ -2434,6 +2434,7 @@ impl EncodeCell {
                 wiener_restore_cost: wiener_cost,
                 sgrproj_restore_cost: sgrproj_cost,
                 switchable_restore_cost: switchable_cost,
+                threads: 1,
                 sf: if allintra {
                     lr_search_sf_allintra(speed, qindex, w, h, p.allow_screen_content_tools)
                 } else {
