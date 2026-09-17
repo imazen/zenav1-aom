@@ -164,18 +164,30 @@ fn integral_image_impl_v3(
         let dst2 = &mut sq_c[..width + 1];
         let mut ldiff1 = _mm_setzero_si128();
         let mut ldiff2 = _mm_setzero_si128();
+        // `chunks_exact(4)` zips make every lane access provably in-range —
+        // the four ii-row slices' `try_into`s compiled to per-iteration
+        // `cmp`/`ja` bounds branches even after the tight re-slice, because
+        // LLVM cannot relate a `split_at_mut` subslice's length back to the
+        // `j + 4 <= width` guard. Zipped equal-length chunk iterators carry
+        // the proof structurally instead.
         let mut j = 0usize;
-        while j + 4 <= width {
-            let above1: &[i32; 4] = abv1[1 + j..5 + j].try_into().unwrap();
+        for ((((av1, av2), px), d1), d2) in abv1[1..]
+            .chunks_exact(4)
+            .zip(abv2[1..].chunks_exact(4))
+            .zip(srow.chunks_exact(4))
+            .zip(dst1[1..].chunks_exact_mut(4))
+            .zip(dst2[1..].chunks_exact_mut(4))
+        {
+            let above1: &[i32; 4] = av1.try_into().unwrap();
             let above1 = _mm_loadu_si128(above1);
-            let above2: &[i32; 4] = abv2[1 + j..5 + j].try_into().unwrap();
+            let above2: &[i32; 4] = av2.try_into().unwrap();
             let above2 = _mm_loadu_si128(above2);
 
             let x1 = _mm_set_epi32(
-                srow[j + 3] as i32,
-                srow[j + 2] as i32,
-                srow[j + 1] as i32,
-                srow[j] as i32,
+                px[3] as i32,
+                px[2] as i32,
+                px[1] as i32,
+                px[0] as i32,
             );
             let x2 = _mm_madd_epi16(x1, x1);
 
@@ -187,9 +199,9 @@ fn integral_image_impl_v3(
             let row1 = _mm_add_epi32(_mm_add_epi32(sc1, above1), ldiff1);
             let row2 = _mm_add_epi32(_mm_add_epi32(sc2, above2), ldiff2);
 
-            let d1: &mut [i32; 4] = (&mut dst1[1 + j..5 + j]).try_into().unwrap();
+            let d1: &mut [i32; 4] = d1.try_into().unwrap();
             _mm_storeu_si128(d1, row1);
-            let d2: &mut [i32; 4] = (&mut dst2[1 + j..5 + j]).try_into().unwrap();
+            let d2: &mut [i32; 4] = d2.try_into().unwrap();
             _mm_storeu_si128(d2, row2);
 
             ldiff1 = _mm_shuffle_epi32::<0xff>(_mm_sub_epi32(row1, above1));
