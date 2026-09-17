@@ -7,6 +7,19 @@ const EC_PROB_SHIFT: u32 = 6;
 const EC_MIN_PROB: u32 = 4;
 const CDF_PROB_TOP: u32 = 1 << 15;
 
+/// Debug-only write-side symbol trace (mirrors `AOM_SYM_TRACE` on the decode
+/// path): sequence number + value + alphabet per emitted symbol.
+fn enc_sym_trace() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("AOM_WSYM_TRACE").is_some())
+}
+
+fn enc_sym_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
 #[inline]
 fn od_ilog_nz(x: u32) -> i32 {
     // 1 + get_msb(x) = bit length of x (x != 0)
@@ -141,6 +154,9 @@ impl OdEcEnc {
         }
         let r_new = if val != 0 { v } else { r - v };
         self.normalize(l, r_new);
+        if enc_sym_trace() {
+            eprintln!("[wby] {} v={} f={}", enc_sym_seq(), val, f);
+        }
     }
 
     /// `od_ec_encode_cdf_q15`. `icdf` is the inverse CDF (Q15), `icdf[nsyms-1]==0`.
@@ -152,6 +168,19 @@ impl OdEcEnc {
         };
         let fh = icdf[s as usize] as u32;
         self.encode_q15(fl, fh, s, nsyms);
+        if enc_sym_trace() {
+            eprintln!(
+                "[wsy] {} v={} n={} c={}",
+                enc_sym_seq(),
+                s,
+                nsyms,
+                icdf[..nsyms as usize]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &e)| (i as u32 + 1) * e as u32)
+                    .sum::<u32>()
+            );
+        }
     }
 
     /// `od_ec_enc_done`: flush and return the final byte buffer.

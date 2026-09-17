@@ -5166,6 +5166,13 @@ pub fn read_palette_colors_plane(
         left_colors,
         left_n_plane,
     );
+    static PAL_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *PAL_TRACE.get_or_init(|| std::env::var_os("AOM_PAL_TRACE").is_some()) {
+        eprintln!(
+            "[pal] plane={plane} n={n} n_cache={n_cache} an={above_n_plane} ln={left_n_plane} cache={:?}",
+            &cache[..n_cache.min(8)]
+        );
+    }
     let mut merged: Vec<u16> = Vec::with_capacity(n);
     for &cv in cache.iter().take(n_cache) {
         if merged.len() >= n {
@@ -5180,6 +5187,9 @@ pub fn read_palette_colors_plane(
         merged.push(d as u16);
     }
     merged.sort_unstable();
+    if *PAL_TRACE.get_or_init(|| std::env::var_os("AOM_PAL_TRACE").is_some()) {
+        eprintln!("[palc] plane={plane} n={n} colors={merged:?}");
+    }
     merged
 }
 

@@ -5,6 +5,67 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-68 — Encoder: real screen content diverges at an IntraBC leaf — DV-derived txb differs where headers/tools agree — OPEN, measured/attributed/bounded 2026-09-16
+
+- **Symptom.** Real screen witness `screen_512.yuv` (crop of
+  `imazen-26/screen/1440x900/climate__news__1440x900__dpr1.png`), ALLINTRA
+  cq27 `--cpu-used 3`, tools ON both arms via the matched
+  `ref_encode_av1_kf_screen_content` oracle: port emits **13,396 B** vs
+  C's **13,423 B** (−0.20 %). Photo witnesses at every tested size are
+  byte-identical; this is a screen-content-only class.
+- **Localized** (`localize_stream_diff`): headers field-identical
+  (`diff_stream_headers` clean); first partition divergence at
+  mi(18,84) bsize 3 (a=HORZ, b=NONE) and first leaf mismatch at
+  mi(16,86) — **both arms commit `ibc=1` with identical
+  mode/tx-size/uv/cfl/palette fields** and different txb contents
+  (`txbs=[(4,5)]` vs `[(47,11)]`), i.e. the IntraBC DV search produced a
+  different vector, residual and quantized block at that leaf. First
+  luma recon diff at px (344,64). The diverging leaf carries no palette,
+  so the palette-path kernels are not implicated.
+- **Attribution.** The IntraBC DV-search cost space: hash-table order,
+  diamond-search candidate ordering or a near-tie in the DV rate check
+  is the named mechanism family — the same class KB-41 recorded for
+  screen content. Byte-identical reconstruction would need the exact C
+  `av1_intrabc_hash_search`/`av1_intrabc_mesh_pattern` traversal order
+  at this leaf; that hunt is scoped but unscheduled.
+- **Bound.** 27 B on 13.4 KB (−0.20 %, port smaller — a rate-side
+  divergence, not corruption; the stream is decoder-conformant). Reach
+  is bounded to screen-detected frames: IntraBC only engages when the
+  SCM detector or the caller's `enable_intrabc` admits it, so the class
+  cannot reach photographic content. Documented rather than chased per
+  the standing cap — measured, attributed, bounded.
+- **Not caused by the 2026-09-15/16 u8-transform work** — the same gap
+  was observed before the fused-u8 landings, the u8 fused kernels were
+  byte-verified against the two-pass fallback on this image, and
+  `AOM_FORCE_SCALAR` reproduces the same bytes.
+- **2026-09-17 correction + conformance fix.** The "decoder-conformant"
+  clause above was wrong at writing time: the real `aomdec` rejected
+  the 13,396 B stream ("Failed to decode tile data" — a tile-desync,
+  while the port's own decoder accepted it, exposing a blind spot the
+  port decoder shares with its encoder). Symbol-level writer/reader
+  alignment (`AOM_WSYM_TRACE`/`AOM_SYM_TRACE`, 50,725 events identical)
+  localized it to leaf `mi(16,86)` bs=8x8 `ibc` `skip=0`: the writer
+  emitted the dv, a `txfm_partition` flag, then **zero coefficient
+  symbols** — the next write was the following leaf's partition. Root
+  cause was ordering, not the txb walk: `pack_leaf` wrote the mode
+  info (`skip=0`) and the vartx quadtree flag BEFORE
+  `encode_b_intra_dry`'s KB-41 mirror (`encode_sb.rs:2966`) re-derived
+  `skip_txfm` from the encode-time coefficients — that leaf's re-trellis
+  landed all-zero, flipping skip to 1, so the coeff gate suppressed the
+  txbs after the stream already carried `skip=0` + a vartx flag. C's
+  `av1_encode_sb` runs ahead of `write_modes_b`, so every syntax
+  element there reads the post-encode skip. **Fix:** for
+  `use_intrabc` leaves the re-encode now runs ahead of the mode-info
+  write (`pack.rs` `ibc_pre_out`, ~line 578), with a snapshot/restore
+  of `above_tctx`/`left_tctx` so `write_tx_size_vartx` still reads the
+  above-neighbour ctx (a skip-flipped leaf keeps the encode's skip-arm
+  stamp — neither vartx gate re-stamps for skip). Post-fix the real
+  `aomdec` accepts the stream and reconstructs pixel-identically to
+  the port decoder (13,398 B). Residual: the encode-time flip does not
+  propagate to the search-stamped `DvCell.skip_txfm` grid, so a
+  downstream intrabc leaf's `skip_ctx` can still read the search-time
+  value — a parity (not conformance) gap inside the same KB-68 class.
+
 ### KB-67 — Encoder/mode split: `KeyFrameMode::{LibaomExact, Zenaom}` — the SCM trial lands as the first opt-in zenaom deviation, margin-gated — LANDED 2026-09-13
 
 - **What changed.** KB-66 resolved the SCM trial as unreachable-in-envelope

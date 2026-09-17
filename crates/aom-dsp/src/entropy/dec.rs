@@ -37,6 +37,20 @@ fn od_ilog_nz(x: u32) -> i32 {
     (32 - x.leading_zeros()) as i32
 }
 
+/// Cached `AOM_SYM_TRACE` env flag: per-symbol decode trace (sequence number,
+/// decoded value, alphabet size) for decoder-mirror desync hunts against the
+/// instrumented `AOM_SYM_TRACE` build of upstream aomdec. One env lookup total.
+fn sym_trace() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("AOM_SYM_TRACE").is_some())
+}
+
+fn sym_seq() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
 /// The entropy decoder context (borrows the input buffer).
 pub struct OdEcDec<'a> {
     buf: &'a [u8],
@@ -181,7 +195,11 @@ impl<'a> OdEcDec<'a> {
             dif -= vw;
             ret = 0;
         }
-        self.normalize(dif, r_new, ret)
+        let out = self.normalize(dif, r_new, ret);
+        if sym_trace() {
+            eprintln!("[bym] {} v={} f={}", sym_seq(), out, f);
+        }
+        out
     }
 
     /// `od_ec_decode_cdf_q15`
@@ -211,6 +229,20 @@ impl<'a> OdEcDec<'a> {
         }
         let r_new = u - v;
         dif -= (v as u64) << (OD_EC_WINDOW_SIZE - 16);
-        self.normalize(dif, r_new, ret)
+        let out = self.normalize(dif, r_new, ret);
+        if sym_trace() {
+            eprintln!(
+                "[sym] {} v={} n={} c={}",
+                sym_seq(),
+                out,
+                nsyms,
+                icdf[..nsyms as usize]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &e)| (i as u32 + 1) * e as u32)
+                    .sum::<u32>()
+            );
+        }
+        out
     }
 }

@@ -443,6 +443,16 @@ pub fn pack_leaf(
         palette_colors[8..8 + p.size].copy_from_slice(&p.colors_u[..p.size]);
         palette_colors[16..16 + p.size].copy_from_slice(&p.colors_v[..p.size]);
     }
+    if *PACK_TRACE.get_or_init(|| std::env::var_os("AOM_PACK_TRACE").is_some())
+        && (winner.palette_y.is_some() || winner.palette_uv.is_some())
+    {
+        eprintln!(
+            "[pkpal] mi({mi_row},{mi_col}) n={} y={:?} wy={:?}",
+            palette_size[0],
+            &palette_colors[..palette_size[0].max(0) as usize],
+            winner.palette_y.as_ref().map(|p| (p.size, p.colors.to_vec()))
+        );
+    }
     // `--delta-lf-mode=1` per-SB delta-lf (setup_delta_q, encodeframe.c:380-383):
     // `delta_lf_from_base = ((delta_qindex/4 + res/2) & ~(res-1))` clamped to
     // [-MAX_LOOP_FILTER, MAX_LOOP_FILTER], where `delta_qindex = current_qindex
@@ -548,6 +558,40 @@ pub fn pack_leaf(
          arm declined where aomenc coded inter, so fail loudly rather than \
          desync the tile"
     );
+
+    // IntraBC COEFF-arm leaves: run the re-encode BEFORE the mode-info write.
+    // `av1_encode_sb` re-derives `mbmi->skip_txfm` from the ENCODE-time
+    // coefficients (encodemb.c:648-660 — the KB-41 mirror below): a leaf the
+    // search coded can re-trellis to all-zero here, flipping skip to 1. C's
+    // encode runs ahead of `write_modes_b`, so every syntax element reads the
+    // post-encode value; this walk re-encodes inside the pack, so it must run
+    // before `info.skip` is sampled and before the txfm-partition write —
+    // otherwise the stream carries skip=0 + a vartx quadtree flag + no
+    // coefficients, which no conforming decoder can parse (the screen_512
+    // leaf at mi(16,86): 50725 writer/reader events agree, then the reader
+    // expects txb_skip and the writer emits the next leaf's partition).
+    // The encode also stamps the var-tx txfm contexts (`tx_partition_set_contexts`),
+    // which on this path `write_tx_size_vartx` owns — restore the slots so its
+    // ctx reads still see the above/left neighbours' values. A leaf that
+    // flipped to skip KEEPS the encode's skip-arm stamp: neither vartx gate
+    // below re-stamps for skip.
+    let ibc_pre_out = if winner.use_intrabc {
+        let a0 = mi_col as usize;
+        let l0 = (mi_row & 31) as usize;
+        let saved_above = tile.above_tctx[a0..a0 + mi_w].to_vec();
+        let saved_left = tile.left_tctx[l0..l0 + mi_h].to_vec();
+        let o = encode_b_intra_dry(
+            env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition, true,
+            true,
+        );
+        if !winner.skip_txfm {
+            tile.above_tctx[a0..a0 + mi_w].copy_from_slice(&saved_above);
+            tile.left_tctx[l0..l0 + mi_h].copy_from_slice(&saved_left);
+        }
+        Some(o)
+    } else {
+        None
+    };
 
     let info = MbModeInfoKf {
         segment_id: 0,
@@ -901,15 +945,31 @@ pub fn pack_leaf(
             crate::encode_sb::stamp_leaf_ctx(env, tile, winner, &mut retained, true);
             retained
         }
-        None => encode_b_intra_dry(
-            env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition, true,
-            true,
-        ),
+        None => match ibc_pre_out {
+            // The intrabc re-encode already ran ahead of the mode-info write
+            // (see `ibc_pre_out` above) — its txbs and the skip re-derivation
+            // are final.
+            Some(o) => o,
+            None => encode_b_intra_dry(
+                env, tile, recon_y, recon_u, recon_v, cfl, winner, mi_row, mi_col, partition,
+                true, true,
+            ),
+        },
     };
 
     // ---- 4. write_tokens_b: coefficient bytes, gated on !skip_txfm (always
     //     true in the KEY intra envelope, asserted by encode_b_intra_dry). ----
     if !winner.skip_txfm && winner.use_intrabc {
+        static IBC_COEFF_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *IBC_COEFF_TRACE.get_or_init(|| std::env::var_os("AOM_IBC_COEFF_TRACE").is_some()) {
+            eprintln!(
+                "[ibc-coeff] mi({mi_row},{mi_col}) bs={bsize} ytxbs={} utxbs={:?} vtxbs={:?} itx={:?}",
+                out.y.txbs.len(),
+                out.u.as_ref().map(|u| u.txbs.len()),
+                out.v.as_ref().map(|v| v.txbs.len()),
+                winner.inter_tx_size
+            );
+        }
         // INTER (intrabc) coefficients: `write_tokens_b`'s inter arm
         // (bitstream.c:1444-1471) — 64x64-chunk outer in LUMA mi units, planes
         // INTERLEAVED per chunk, each plane's sub-walk being
