@@ -862,6 +862,7 @@ dependencies = [
  "archmage",
  "enough",
  "magetypes",
+ "rayon",
  "zenav1-aom-sys-ref",
 ]
 

@@ -619,8 +619,11 @@ pub struct KeyFrameConfig {
     /// [`Self::allintra_speed0`] default) is the serial walk — byte-identical
     /// output either way, since the tile grid itself is unchanged. To
     /// parallelize, raise [`Self::tile_rows_log2`]: a 1-row grid has no
-    /// parallel frontier. (C's row-mt threads the SB pipeline inside one
-    /// tile; the port deliberately does not — it keeps C's own
+    /// parallel frontier. `0` is AUTO:
+    /// [`std::thread::available_parallelism`], still clamped to the
+    /// tile-row count, so it only parallelizes frames whose derived tile
+    /// grid actually has rows. (C's row-mt threads the SB pipeline inside
+    /// one tile; the port deliberately does not — it keeps C's own
     /// tile-independence property instead.)
     pub threads: usize,
     /// `AV1E_SET_SUPERBLOCK_SIZE` (`AOM_SUPERBLOCK_SIZE_128X128` when true,
@@ -3604,7 +3607,15 @@ pub fn encode_key_frame_with(
     // reads the crop-clamped frame through `env.src_y_frame` (always the
     // full plane). `SbEncodeEnv::base_y`/`base_uv` carry each band's origin
     // so the walk's absolute-mi offset math is unchanged (`abs - base`).
-    let n_workers = cfg.threads.max(1).min((n_tile_rows as usize).max(1));
+    let n_workers = (if cfg.threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        cfg.threads
+    })
+    .max(1)
+    .min((n_tile_rows as usize).max(1));
     if n_workers <= 1 {
         for &(r0, c0, r1, c1, n_tr, n_tc) in &tile_grid {
             env.tile_row_start = r0;
@@ -3700,96 +3711,85 @@ pub fn encode_key_frame_with(
             u_bands.into_iter().map(Some).collect::<Vec<_>>(),
             v_bands.into_iter().map(Some).collect::<Vec<_>>(),
         ));
-        let bands = &bands;
-        std::thread::scope(|s| {
-            let mut handles = Vec::new();
-            for _w in 0..workers {
-                handles.push(s.spawn(move || {
-                    let mut out: Vec<(usize, Vec<SbTree>)> = Vec::new();
-                    loop {
-                        let Some((tr, wy, wu, wv)) = ({
-                            let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
-                            let (cursor, y, u, v) = &mut *g;
-                            if *cursor >= n_tr {
-                                None
-                            } else {
-                                let tr = *cursor;
-                                *cursor += 1;
-                                Some((
-                                    tr,
-                                    y[tr].take().expect("one band per tile row"),
-                                    u[tr].take().expect("one band per tile row"),
-                                    v[tr].take().expect("one band per tile row"),
-                                ))
-                            }
-                        }) else {
-                            break;
-                        };
-                        for tc in 0..n_tc {
-                            let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
-                            let env_w = crate::encode_sb::SbEncodeEnv {
-                                tile_row_start: r0,
-                                tile_col_start: c0,
-                                tile_row_end: r1,
-                                tile_col_end: c1,
-                                base_y: band_y[tr].0,
-                                base_uv: band_uv[tr].0,
-                                // Source reads are immutable — the slice may
-                                // safely run past the band end (reads below a
-                                // tile row, e.g. the bottom SB's padded
-                                // region, stay correct). Reads ABOVE the band
-                                // start are still impossible; the one such
-                                // reader uses `src_y_frame` instead.
-                                src_y: &src_y[band_y[tr].0..],
-                                src_u: &src_u[band_uv[tr].0..],
-                                src_v: &src_v[band_uv[tr].0..],
-                                ..*env
-                            };
-                            let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
-                            let mut scratch = OdEcEnc::new();
-                            let t = crate::pack::pack_tile_stop(
-                                &mut scratch,
-                                &env_w,
-                                pick_cfg,
-                                phase1_pack_cfg,
-                                &mut kf_tile,
-                                &mut wy[..],
-                                &mut wu[..],
-                                &mut wv[..],
-                                r0,
-                                c0,
-                                n_tr_s,
-                                n_tc_s,
-                                sb_mi,
-                                sb_block,
-                                stop,
-                            )?;
-                            let _ = scratch.done();
-                            out.push((tr * n_tc + tc, t));
-                        }
+        // `par::map_workers` = std::thread::scope by default, or the host's
+        // rayon pool under the `rayon` feature — same tasks either way.
+        let worker_results = aom_dsp::par::map_workers(workers, move |_w| {
+            let mut out: Vec<(usize, Vec<SbTree>)> = Vec::new();
+            loop {
+                let Some((tr, wy, wu, wv)) = ({
+                    let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
+                    let (cursor, y, u, v) = &mut *g;
+                    if *cursor >= n_tr {
+                        None
+                    } else {
+                        let tr = *cursor;
+                        *cursor += 1;
+                        Some((
+                            tr,
+                            y[tr].take().expect("one band per tile row"),
+                            u[tr].take().expect("one band per tile row"),
+                            v[tr].take().expect("one band per tile row"),
+                        ))
                     }
-                    Ok::<_, enough::StopReason>(out)
-                }));
-            }
-            for h in handles {
-                // A worker panic is a bug, not a cancellation — propagate it
-                // rather than converting to an encode error.
-                let tile_results = h
-                    .join()
-                    .unwrap_or_else(|p| std::panic::resume_unwind(p))?;
-                for (tile_idx, t) in tile_results {
-                    let (r0, c0, _, _, _, n_tc_s) = tile_grid[tile_idx];
-                    let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
-                    for (i, tree) in t.into_iter().enumerate() {
-                        let sb_r = sb_r0 + i as i32 / n_tc_s;
-                        let sb_c = sb_c0 + i as i32 % n_tc_s;
-                        frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
-                    }
+                }) else {
+                    break;
+                };
+                for tc in 0..n_tc {
+                    let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
+                    let env_w = crate::encode_sb::SbEncodeEnv {
+                        tile_row_start: r0,
+                        tile_col_start: c0,
+                        tile_row_end: r1,
+                        tile_col_end: c1,
+                        base_y: band_y[tr].0,
+                        base_uv: band_uv[tr].0,
+                        // Source reads are immutable — the slice may
+                        // safely run past the band end (reads below a
+                        // tile row, e.g. the bottom SB's padded
+                        // region, stay correct). Reads ABOVE the band
+                        // start are still impossible; the one such
+                        // reader uses `src_y_frame` instead.
+                        src_y: &src_y[band_y[tr].0..],
+                        src_u: &src_u[band_uv[tr].0..],
+                        src_v: &src_v[band_uv[tr].0..],
+                        ..*env
+                    };
+                    let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+                    let mut scratch = OdEcEnc::new();
+                    let t = crate::pack::pack_tile_stop(
+                        &mut scratch,
+                        &env_w,
+                        pick_cfg,
+                        phase1_pack_cfg,
+                        &mut kf_tile,
+                        &mut wy[..],
+                        &mut wu[..],
+                        &mut wv[..],
+                        r0,
+                        c0,
+                        n_tr_s,
+                        n_tc_s,
+                        sb_mi,
+                        sb_block,
+                        stop,
+                    )?;
+                    let _ = scratch.done();
+                    out.push((tr * n_tc + tc, t));
                 }
             }
-            Ok::<_, enough::StopReason>(())
-        })
-        .map_err(KeyFrameError::Cancelled)?;
+            Ok::<_, enough::StopReason>(out)
+        });
+        for tile_results in worker_results {
+            for (tile_idx, t) in tile_results.map_err(KeyFrameError::Cancelled)? {
+                let (r0, c0, _, _, _, n_tc_s) = tile_grid[tile_idx];
+                let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+                for (i, tree) in t.into_iter().enumerate() {
+                    let sb_r = sb_r0 + i as i32 / n_tc_s;
+                    let sb_c = sb_c0 + i as i32 % n_tc_s;
+                    frame_trees[(sb_r * n_sb_x + sb_c) as usize] = Some(tree);
+                }
+            }
+        }
     }
     let trees: Vec<SbTree> = frame_trees
         .into_iter()
@@ -4273,7 +4273,9 @@ pub fn encode_key_frame_with(
         let trees = trees.as_slice();
         let cdef_pack = &cdef_pack;
         let lr_pack = lr_pack.as_ref();
-        // Same dynamic band cursor as phase 1.
+        // Same dynamic band cursor as phase 1; `par::map_workers` is
+        // std::thread::scope by default or the host's rayon pool under the
+        // `rayon` feature.
         let bands = std::sync::Mutex::new((
             0usize,
             y_bands.into_iter().map(Some).collect::<Vec<_>>(),
@@ -4281,90 +4283,80 @@ pub fn encode_key_frame_with(
             v_bands.into_iter().map(Some).collect::<Vec<_>>(),
         ));
         let bands = &bands;
-        std::thread::scope(|s| {
-            let mut handles = Vec::new();
-            for _w in 0..workers {
-                handles.push(s.spawn(move || {
-                    let mut out: Vec<(usize, Vec<u8>)> = Vec::new();
-                    loop {
-                        let Some((tr, wy, wu, wv)) = ({
-                            let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
-                            let (cursor, y, u, v) = &mut *g;
-                            if *cursor >= n_tr {
-                                None
-                            } else {
-                                let tr = *cursor;
-                                *cursor += 1;
-                                Some((
-                                    tr,
-                                    y[tr].take().expect("one band per tile row"),
-                                    u[tr].take().expect("one band per tile row"),
-                                    v[tr].take().expect("one band per tile row"),
-                                ))
-                            }
-                        }) else {
-                            break;
-                        };
-                        for tc in 0..n_tc {
-                            let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
-                            let env_w = crate::encode_sb::SbEncodeEnv {
-                                tile_row_start: r0,
-                                tile_col_start: c0,
-                                tile_row_end: r1,
-                                tile_col_end: c1,
-                                base_y: band_y[tr].0,
-                                base_uv: band_uv[tr].0,
-                                src_y: &src_y[band_y[tr].0..],
-                                src_u: &src_u[band_uv[tr].0..],
-                                src_v: &src_v[band_uv[tr].0..],
-                                ..*env
-                            };
-                            let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
-                            let mut tile_trees: Vec<SbTree> = (0..n_tr_s)
-                                .flat_map(|r| (0..n_tc_s).map(move |c| (r, c)))
-                                .map(|(r, c)| {
-                                    trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone()
-                                })
-                                .collect();
-                            let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
-                            let mut enc = OdEcEnc::new();
-                            pack_tile_from_trees_lr(
-                                &mut enc,
-                                &env_w,
-                                pick_cfg,
-                                pack_cfg,
-                                &mut kf_tile,
-                                &mut wy[..],
-                                &mut wu[..],
-                                &mut wv[..],
-                                &mut tile_trees,
-                                r0,
-                                c0,
-                                n_tr_s,
-                                n_tc_s,
-                                sb_mi,
-                                sb_block,
-                                cdef_pack.clone(),
-                                lr_pack,
-                                stop,
-                            )?;
-                            out.push((tr * n_tc + tc, enc.done().to_vec()));
-                        }
+        let worker_results = aom_dsp::par::map_workers(workers, move |_w| {
+            let mut out: Vec<(usize, Vec<u8>)> = Vec::new();
+            loop {
+                let Some((tr, wy, wu, wv)) = ({
+                    let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
+                    let (cursor, y, u, v) = &mut *g;
+                    if *cursor >= n_tr {
+                        None
+                    } else {
+                        let tr = *cursor;
+                        *cursor += 1;
+                        Some((
+                            tr,
+                            y[tr].take().expect("one band per tile row"),
+                            u[tr].take().expect("one band per tile row"),
+                            v[tr].take().expect("one band per tile row"),
+                        ))
                     }
-                    Ok::<_, enough::StopReason>(out)
-                }));
-            }
-            for h in handles {
-                let tile_results = h
-                    .join()
-                    .unwrap_or_else(|p| std::panic::resume_unwind(p))?;
-                for (tile_idx, payload) in tile_results {
-                    tile_payloads[tile_idx] = payload;
+                }) else {
+                    break;
+                };
+                for tc in 0..n_tc {
+                    let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
+                    let env_w = crate::encode_sb::SbEncodeEnv {
+                        tile_row_start: r0,
+                        tile_col_start: c0,
+                        tile_row_end: r1,
+                        tile_col_end: c1,
+                        base_y: band_y[tr].0,
+                        base_uv: band_uv[tr].0,
+                        src_y: &src_y[band_y[tr].0..],
+                        src_u: &src_u[band_uv[tr].0..],
+                        src_v: &src_v[band_uv[tr].0..],
+                        ..*env
+                    };
+                    let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
+                    let mut tile_trees: Vec<SbTree> = (0..n_tr_s)
+                        .flat_map(|r| (0..n_tc_s).map(move |c| (r, c)))
+                        .map(|(r, c)| {
+                            trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone()
+                        })
+                        .collect();
+                    let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
+                    let mut enc = OdEcEnc::new();
+                    pack_tile_from_trees_lr(
+                        &mut enc,
+                        &env_w,
+                        pick_cfg,
+                        pack_cfg,
+                        &mut kf_tile,
+                        &mut wy[..],
+                        &mut wu[..],
+                        &mut wv[..],
+                        &mut tile_trees,
+                        r0,
+                        c0,
+                        n_tr_s,
+                        n_tc_s,
+                        sb_mi,
+                        sb_block,
+                        cdef_pack.clone(),
+                        lr_pack,
+                        stop,
+                    )?;
+                    out.push((tr * n_tc + tc, enc.done().to_vec()));
                 }
             }
-            Ok::<_, enough::StopReason>(())
-        })
-        .map_err(KeyFrameError::Cancelled)?;
+            Ok::<_, enough::StopReason>(out)
+        });
+        for tile_results in worker_results {
+            for (tile_idx, payload) in tile_results.map_err(KeyFrameError::Cancelled)? {
+                tile_payloads[tile_idx] = payload;
+            }
+        }
     }
 
     phase_mark!("assemble");

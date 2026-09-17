@@ -56,6 +56,12 @@ enough = "0.4.4"
 default = ["avx512"]
 avx512 = ["zenav1-aom-dsp/avx512"]
 census = ["zenav1-aom-dsp/census"]
+# Run the encoder's multi-worker spans (phase-1/phase-2 tile-row bands, the
+# loop-restoration search, the loop-filter level pick) on the host's shared
+# rayon pool instead of dedicated `std::thread`s. Behaviour is byte-identical
+# — only the executor changes; `KeyFrameConfig::threads` becomes a concurrency
+# ceiling rather than a spawned-thread count. See `aom_dsp::par`.
+rayon = ["zenav1-aom-dsp/rayon"]
 # Exposes this crate's 76 implementation modules as `pub`. DEFAULT OFF: the
 # external API is `key_frame` alone. In-workspace crates that reach inside
 # declare it, and a `--workspace` build unifies it on, so the harness still

@@ -3512,53 +3512,46 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
                 let (rows_per, rem) = (n_tile_rows / workers, n_tile_rows % workers);
                 let tile_sb_rows = input.tile_sb_rows.as_slice();
                 rsc.reset();
-                std::thread::scope(|s| {
-                    let mut handles = Vec::new();
-                    let mut rows_left = 0..n_tile_rows;
-                    for w in 0..workers {
-                        if rows_left.is_empty() {
-                            break;
-                        }
-                        let take = rows_per + usize::from(w < rem);
-                        let rows: Vec<usize> = rows_left.by_ref().take(take).collect();
-                        handles.push(s.spawn(move || {
-                            // Clone the already-staged ctx: ~3 MB memcpy
-                            // instead of a full pad+extend+boundary restage.
-                            let mut ctx_w = ctx_template.clone();
-                            let mut rsc_w = RscState::new();
-                            rsc_w.reset();
-                            let mut rusi_w =
-                                vec![RestUnitSearchInfo::default(); plane_num_units];
-                            let mut mask_w = vec![false; plane_num_units];
-                            let tile_rows: Vec<(i32, i32)> =
-                                rows.iter().map(|&i| tile_sb_rows[i]).collect();
-                            restoration_search_rows(
-                                &mut ctx_w,
-                                input,
-                                &lr_geom,
-                                &mut rsc_w,
-                                &mut rusi_w,
-                                Some(&mut mask_w),
-                                &tile_rows,
-                                &disable_lr_filter,
-                            );
-                            (rsc_w, rusi_w, mask_w)
-                        }));
-                    }
-                    for h in handles {
-                        let (rsc_w, rusi_w, mask_w) =
-                            h.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
-                        for r in 0..RESTORE_TYPES {
-                            rsc.total_sse[r] += rsc_w.total_sse[r];
-                            rsc.total_bits[r] += rsc_w.total_bits[r];
-                        }
-                        for (i, &m) in mask_w.iter().enumerate() {
-                            if m {
-                                rusi[i] = rusi_w[i];
-                            }
-                        }
-                    }
+                // `par::map_workers` = std::thread::scope by default, or the
+                // host's rayon pool under the `rayon` feature — same tasks.
+                let outs = crate::par::map_workers(workers, |w| {
+                    // Worker w's contiguous chunk: rows_per + (w < rem).
+                    let start = w * rows_per + w.min(rem);
+                    let take = rows_per + usize::from(w < rem);
+                    let rows: Vec<usize> = (start..start + take).collect();
+                    // Clone the already-staged ctx: ~3 MB memcpy
+                    // instead of a full pad+extend+boundary restage.
+                    let mut ctx_w = ctx_template.clone();
+                    let mut rsc_w = RscState::new();
+                    rsc_w.reset();
+                    let mut rusi_w =
+                        vec![RestUnitSearchInfo::default(); plane_num_units];
+                    let mut mask_w = vec![false; plane_num_units];
+                    let tile_rows: Vec<(i32, i32)> =
+                        rows.iter().map(|&i| tile_sb_rows[i]).collect();
+                    restoration_search_rows(
+                        &mut ctx_w,
+                        input,
+                        &lr_geom,
+                        &mut rsc_w,
+                        &mut rusi_w,
+                        Some(&mut mask_w),
+                        &tile_rows,
+                        &disable_lr_filter,
+                    );
+                    (rsc_w, rusi_w, mask_w)
                 });
+                for (rsc_w, rusi_w, mask_w) in outs {
+                    for r in 0..RESTORE_TYPES {
+                        rsc.total_sse[r] += rsc_w.total_sse[r];
+                        rsc.total_bits[r] += rsc_w.total_bits[r];
+                    }
+                    for (i, &m) in mask_w.iter().enumerate() {
+                        if m {
+                            rusi[i] = rusi_w[i];
+                        }
+                    }
+                }
             } else {
                 restoration_search(ctx, input, &lr_geom, &mut rsc, &mut rusi, &disable_lr_filter);
             }

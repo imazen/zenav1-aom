@@ -60,6 +60,10 @@ c-oracle = ["dep:zenav1-aom-sys-ref", "dep:zensim"]
 # built WITHOUT it, which `content_census` asserts by failing loud on an empty
 # census.
 census = ["zenav1-aom-encode/census", "zenav1-aom-dsp/census"]
+# Run the encoder's multi-worker spans on the host's shared rayon pool
+# (forwarded to `zenav1-aom-encode/rayon`). Byte-identical; only the executor
+# changes. See `aom_dsp::par`.
+rayon = ["zenav1-aom-encode/rayon"]
 
 [dev-dependencies]
 zenbench = "0.1.9"

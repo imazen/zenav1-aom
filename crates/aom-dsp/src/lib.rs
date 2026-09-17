@@ -28,6 +28,7 @@ pub mod inter;
 pub mod intra;
 pub mod loopfilter;
 pub mod lowbd;
+pub mod par;
 pub mod quant;
 pub mod recon;
 pub mod restore;

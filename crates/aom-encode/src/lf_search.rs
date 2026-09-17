@@ -390,15 +390,12 @@ fn search_filter_level_impl(
                     filt_pair(plane, dir, filt_high, held_vert, held_horiz),
                 );
                 let mut scratch2 = Vec::new();
-                std::thread::scope(|s| {
-                    let h = s.spawn(|| {
-                        try_filter_plane(f, plane, hi.0, hi.1, hi.2, sharpness, &mut scratch2)
-                    });
-                    let l = try_filter_plane(f, plane, lo.0, lo.1, lo.2, sharpness, scratch);
-                    ss_err[filt_low as usize] = l;
-                    ss_err[filt_high as usize] =
-                        h.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
-                });
+                let (l, h) = aom_dsp::par::join(
+                    || try_filter_plane(f, plane, lo.0, lo.1, lo.2, sharpness, scratch),
+                    || try_filter_plane(f, plane, hi.0, hi.1, hi.2, sharpness, &mut scratch2),
+                );
+                ss_err[filt_low as usize] = l;
+                ss_err[filt_high as usize] = h;
             }
         }
 
@@ -534,12 +531,12 @@ pub fn pick_filter_level_mt(
         return pick_filter_level(f, allintra, sharpness_cfg, non_dual);
     }
     let sharpness = if allintra { sharpness_cfg } else { 0 };
-    let (mut level_y, mut level_u, mut level_v) = ([0i32; 2], 0i32, 0i32);
-    std::thread::scope(|s| {
-        let ty = s.spawn(|| {
+    // Y(2)+U(1)+V(1) = 4-way under `par` (std scope by default, the host's
+    // rayon pool under the `rayon` feature). The luma chain is the long
+    // pole — its low/high trial pairs run on a second worker.
+    let (level_y, (level_u, level_v)) = aom_dsp::par::join(
+        || {
             let mut scratch = Vec::new();
-            // The luma chain is the long pole — its low/high trial pairs run
-            // on a second worker, so 4 threads see Y(2)+U(1)+V(1).
             let combined =
                 search_filter_level_impl(f, 0, 2, 0, 0, sharpness, &mut scratch, true);
             let mut fl = [combined, combined];
@@ -550,19 +547,20 @@ pub fn pick_filter_level_mt(
                     search_filter_level_impl(f, 0, 1, fl[0], 0, sharpness, &mut scratch, true);
             }
             fl
-        });
-        let tu = s.spawn(|| {
-            let mut scratch = Vec::new();
-            search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch)
-        });
-        let tv = s.spawn(|| {
-            let mut scratch = Vec::new();
-            search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch)
-        });
-        level_y = ty.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
-        level_u = tu.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
-        level_v = tv.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
-    });
+        },
+        || {
+            aom_dsp::par::join(
+                || {
+                    let mut scratch = Vec::new();
+                    search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch)
+                },
+                || {
+                    let mut scratch = Vec::new();
+                    search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch)
+                },
+            )
+        },
+    );
     LoopFilterLevels {
         filter_level: level_y,
         filter_level_u: level_u,
@@ -697,40 +695,39 @@ pub fn build_lf_mi_grid_mt(
         bands.push(b);
         rest = r;
     }
-    let mut it = bands.into_iter();
-    std::thread::scope(|s| {
-        let mut rows_left = 0..n_sb_rows as usize;
-        let mut handles = Vec::new();
-        for w in 0..workers {
-            if rows_left.is_empty() {
-                break;
+    let bands = std::sync::Mutex::new(
+        bands
+            .into_iter()
+            .map(Some)
+            .chain(std::iter::repeat_with(|| None))
+            .take(n_sb_rows as usize)
+            .collect::<Vec<_>>(),
+    );
+    let bands = &bands;
+    aom_dsp::par::map_workers(workers, |w| {
+        // Worker w's contiguous chunk: per + (w < rem) — same static
+        // assignment as the serial build, so the grid is identical.
+        let start = w * per + w.min(rem);
+        let take = per + usize::from(w < rem);
+        for sb_r_i in start..start + take {
+            let band = &mut *{
+                let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
+                g[sb_r_i].take().expect("one band per SB row")
+            };
+            let band_rows = (band.len() / stride) as i32;
+            for c in 0..n_sb_cols {
+                let tree = &trees[sb_r_i * n_sb_cols as usize + c as usize];
+                stamp_lf_tree(
+                    band,
+                    stride,
+                    tree,
+                    0,
+                    c * sb_mi,
+                    sb_size,
+                    band_rows,
+                    mi_cols,
+                );
             }
-            let take = per + usize::from(w < rem);
-            let rows: Vec<usize> = rows_left.by_ref().take(take).collect();
-            let mut wbands: Vec<&mut [LfMi]> =
-                (0..take).map(|_| it.next().expect("one band per SB row")).collect();
-            handles.push(s.spawn(move || {
-                for (li, &sb_r) in rows.iter().enumerate() {
-                    let band = &mut *wbands[li];
-                    let band_rows = (band.len() / stride) as i32;
-                    for c in 0..n_sb_cols {
-                        let tree = &trees[sb_r * n_sb_cols as usize + c as usize];
-                        stamp_lf_tree(
-                            band,
-                            stride,
-                            tree,
-                            0,
-                            c * sb_mi,
-                            sb_size,
-                            band_rows,
-                            mi_cols,
-                        );
-                    }
-                }
-            }));
-        }
-        for h in handles {
-            h.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
         }
     });
     mi

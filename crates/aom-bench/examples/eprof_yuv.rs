@@ -63,6 +63,22 @@ fn main() {
         cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
+    // Optional 8th arg: tile grid `C,R` log2s (same spelling as eprof_x86).
+    if let Some(t) = std::env::args().nth(8) {
+        let (c, r) = match t.split_once(',') {
+            Some((c, r)) => (c.parse::<i32>().unwrap(), r.parse::<i32>().unwrap()),
+            None => {
+                let n = t.parse::<i32>().unwrap();
+                (n, n)
+            }
+        };
+        cfg.tile_columns_log2 = c;
+        cfg.tile_rows_log2 = r;
+    }
+    // Optional 9th arg: worker count for the port arm.
+    if let Some(t) = std::env::args().nth(9) {
+        cfg.threads = t.parse::<usize>().unwrap();
+    }
     cfg.enable_cdef = false;
     cfg.enable_restoration = true;
 
@@ -98,7 +114,7 @@ fn main() {
     };
 
     let warm = run(&arm);
-    if let Some(prefix) = a.get(8) {
+    if let Some(prefix) = a.get(10) {
         std::fs::write(format!("{prefix}.{arm}.obu"), &warm).unwrap();
     }
 

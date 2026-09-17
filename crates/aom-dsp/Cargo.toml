@@ -32,6 +32,9 @@ magetypes = "0.9.27"
 # are byte-identical. Same version aom-decode depends on, so the `dyn Stop`
 # vtable is shared across the crate boundary.
 enough = "0.4.4"
+# Optional: run the crate's multi-worker spans on the host's shared rayon
+# pool instead of dedicated `std::thread`s (see `src/par.rs`).
+rayon = { version = "1.11", optional = true }
 
 [features]
 # AVX-512 tiers (X64V4Token codegen), forwarded to archmage + magetypes.
@@ -63,6 +66,7 @@ avx512 = ["archmage/avx512", "magetypes/avx512"]
 # DEFAULT OFF and it must stay that way — a census build is NOT a timing build,
 # and `.github/workflows/winperf.yml` compiles its timing arms without it.
 census = []
+rayon = ["dep:rayon"]
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
