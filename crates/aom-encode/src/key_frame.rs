@@ -3883,6 +3883,15 @@ pub fn encode_key_frame_with(
         }
     } else if speed >= 6 {
         pick_filter_level_from_q(qindex, bd, true, lf_sharpness)
+    } else if bd == 8 {
+        // bd8 lowbd staging: narrow the six planes u8 ONCE so each trial
+        // copies/filters u8 natively — the u16 path's per-trial u16 copy +
+        // narrow + u8 filter + widen + scalar u16 SSE collapses to a u8
+        // copy + the SAME u8 filter walk + SIMD u8 SSE (picked levels are
+        // bit-identical: every trial SSE is the same integer either way).
+        let lf_bufs = lf_frame.stage_lowbd();
+        let lf_frame8 = lf_frame.as_lowbd(&lf_bufs);
+        pick_filter_level_mt(&lf_frame8, true, lf_sharpness, speed >= 4, n_workers)
     } else {
         pick_filter_level_mt(&lf_frame, true, lf_sharpness, speed >= 4, n_workers)
     };

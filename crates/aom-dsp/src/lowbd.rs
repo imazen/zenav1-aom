@@ -110,3 +110,27 @@
 //! This is the GO signal for the whole approach: bd8 lowbd is byte-identity-
 //! achievable, and the `i16` narrowing that produces the SIMD-lane win does not
 //! fight the normative clamping.
+
+/// `u16 -> u8` plane narrow for the bd8 lowbd split — `s.min(255) as u8` per
+/// sample. The `min` is a safety net only: every bd8 reconstruction sample is
+/// already `< 256` (predictors and edge extension both produce in-range
+/// values), so on real planes this is the codec-invariant `s as u8`.
+pub fn narrow_u16_to_u8(src: &[u16]) -> Vec<u8> {
+    src.iter().map(|&s| s.min(255) as u8).collect()
+}
+
+/// `u16 -> u8` narrow into an existing buffer — [`narrow_u16_to_u8`] without
+/// the allocation.
+pub fn narrow_u16_to_u8_into(src: &[u16], dst: &mut [u8]) {
+    for (d, s) in dst.iter_mut().zip(src.iter()) {
+        *d = (*s).min(255) as u8;
+    }
+}
+
+/// `u8 -> u16` plane widen into `dst` — `u8 as u16`, exact on every sample
+/// (the inverse of [`narrow_u16_to_u8`] on any in-range input).
+pub fn widen_u8_to_u16(src: &[u8], dst: &mut [u16]) {
+    for (d, s) in dst.iter_mut().zip(src.iter()) {
+        *d = u16::from(*s);
+    }
+}

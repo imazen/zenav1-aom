@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1857 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1860 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            639
+#   free functions                            642
 #   inherent methods                           97
 #   struct fields                             707
 #   enum variants                              13
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1814
+#   aom_dsp                        1817
 
-## items (1781 lines)
+## items (1784 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1469,6 +1469,9 @@ pub fn aom_dsp::loopfilter::vertical(u32, &mut [u8], usize, usize, u8, u8, u8)
 pub fn aom_dsp::loopfilter::vertical_n(u32, &mut [u8], usize, usize, u8, u8, u8, usize)
 pub fn aom_dsp::loopfilter::vertical_scalar(u32, &mut [u8], usize, usize, u8, u8, u8)
 pub mod aom_dsp::lowbd
+pub fn aom_dsp::lowbd::narrow_u16_to_u8(&[u16]) -> alloc::vec::Vec<u8>
+pub fn aom_dsp::lowbd::narrow_u16_to_u8_into(&[u16], &mut [u8])
+pub fn aom_dsp::lowbd::widen_u8_to_u16(&[u8], &mut [u16])
 pub mod aom_dsp::par
 pub fn aom_dsp::par::join<A, B, FA, FB>(FA, FB) -> (A, B) where FA: core::ops::function::FnOnce() -> A + core::marker::Send, FB: core::ops::function::FnOnce() -> B + core::marker::Send, A: core::marker::Send, B: core::marker::Send
 pub fn aom_dsp::par::map_workers<T, F>(usize, F) -> alloc::vec::Vec<T> where F: core::ops::function::Fn(usize) -> T + core::marker::Sync, T: core::marker::Send

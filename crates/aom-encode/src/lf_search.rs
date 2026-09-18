@@ -74,7 +74,8 @@
 use crate::encode_sb::{LeafWinner, SbTree};
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B};
 use aom_dsp::loopfilter::frame::{
-    LfFrameBuf, LfMi, LfMiGrid, LfParams, MAX_LOOP_FILTER, loop_filter_frame_opt,
+    LfFrameBuf, LfFrameBufU8, LfMi, LfMiGrid, LfParams, MAX_LOOP_FILTER,
+    loop_filter_frame_opt, loop_filter_frame_u8_opt,
 };
 
 /// `av1_set_default_ref_deltas`/`av1_set_default_mode_deltas`
@@ -116,18 +117,41 @@ pub fn sse_plane(
     total
 }
 
+/// The pixel type a [`pick_filter_level`] trial runs over. `u16` is the
+/// general path (all bit depths); `u8` is the bd8 lowbd path, where the
+/// per-trial u16-copy + narrow + u8-filter + widen round trip inside
+/// [`loop_filter_frame_opt`] collapses to a u8 copy + filter — same trials,
+/// same SSE values (bd8 samples are `< 256` on both representations, and
+/// `diff * diff` is representation-blind), so the picked levels are
+/// bit-identical.
+pub trait LfTrialPixel: Copy + Send + Sync + Sized {
+    /// One `try_filter_frame` trial (`picklpf.c`): copy `recon_*[plane]`
+    /// into `scratch`, run the loop-filter walk at `p`, return SSE vs
+    /// `src_*[plane]` over the crop dims. The `LfParams`/`LfMiGrid` setup
+    /// is pixel-independent — [`LfSearchFrame::try_filter_plane`] builds it
+    /// once per trial and delegates only the typed copy/filter/SSE here.
+    fn filter_trial(
+        f: &LfSearchFrame<'_, Self>,
+        plane: usize,
+        p: &LfParams,
+        grid: &LfMiGrid<'_>,
+        scratch: &mut Vec<Self>,
+    ) -> i64;
+}
+
 /// The frame state one [`pick_filter_level`] call searches over: this
 /// port's OWN reconstruction (pre-deblock) + the original source, both
 /// planes sharing one `stride` (matching [`crate::encode_sb::SbEncodeEnv`]'s
-/// own contract), plus the mi grid the filter reads.
+/// own contract), plus the mi grid the filter reads. `P` is `u16` for the
+/// general path and `u8` for the bd8 lowbd staging ([`LfTrialPixel`]).
 #[derive(Clone, Copy)]
-pub struct LfSearchFrame<'a> {
-    pub recon_y: &'a [u16],
-    pub recon_u: &'a [u16],
-    pub recon_v: &'a [u16],
-    pub src_y: &'a [u16],
-    pub src_u: &'a [u16],
-    pub src_v: &'a [u16],
+pub struct LfSearchFrame<'a, P: LfTrialPixel = u16> {
+    pub recon_y: &'a [P],
+    pub recon_u: &'a [P],
+    pub recon_v: &'a [P],
+    pub src_y: &'a [P],
+    pub src_u: &'a [P],
+    pub src_v: &'a [P],
     pub stride: usize,
     /// Luma CROP dims (the coded frame size — SSE is measured over crop
     /// dims, matching `aom_get_y_sse`'s use of `y_crop_width/height`, NOT
@@ -164,6 +188,60 @@ pub struct LoopFilterLevels {
     pub sharpness: i32,
 }
 
+/// Owning u8 staging of an [`LfSearchFrame<u16>`]'s six planes — the bd8
+/// codec-invariant narrow ([`aom_dsp::lowbd::narrow_u16_to_u8`]), allocated
+/// ONCE per pick so each trial filters u8 directly instead of paying a
+/// per-trial u16 copy + narrow + u8 filter + widen + u16 SSE round trip.
+/// [`LfSearchFrame::as_lowbd`] re-borrows these as the `u8` search frame.
+pub struct LfSearchFrameU8Bufs {
+    pub recon_y: Vec<u8>,
+    pub recon_u: Vec<u8>,
+    pub recon_v: Vec<u8>,
+    pub src_y: Vec<u8>,
+    pub src_u: Vec<u8>,
+    pub src_v: Vec<u8>,
+}
+
+impl LfSearchFrame<'_, u16> {
+    /// Stage the six planes u8 (bd8 narrow; `min(255)` inside
+    /// [`aom_dsp::lowbd::narrow_u16_to_u8`] is a safety net, bd8 samples are
+    /// already `< 256`). Callers hold the buffers, then [`Self::as_lowbd`].
+    pub fn stage_lowbd(&self) -> LfSearchFrameU8Bufs {
+        LfSearchFrameU8Bufs {
+            recon_y: aom_dsp::lowbd::narrow_u16_to_u8(self.recon_y),
+            recon_u: aom_dsp::lowbd::narrow_u16_to_u8(self.recon_u),
+            recon_v: aom_dsp::lowbd::narrow_u16_to_u8(self.recon_v),
+            src_y: aom_dsp::lowbd::narrow_u16_to_u8(self.src_y),
+            src_u: aom_dsp::lowbd::narrow_u16_to_u8(self.src_u),
+            src_v: aom_dsp::lowbd::narrow_u16_to_u8(self.src_v),
+        }
+    }
+
+    /// Borrow `bufs` ([`Self::stage_lowbd`]'s output) as the u8 search
+    /// frame — the scalar fields carry over unchanged.
+    pub fn as_lowbd<'b>(&'b self, bufs: &'b LfSearchFrameU8Bufs) -> LfSearchFrame<'b, u8> {
+        LfSearchFrame {
+            recon_y: &bufs.recon_y,
+            recon_u: &bufs.recon_u,
+            recon_v: &bufs.recon_v,
+            src_y: &bufs.src_y,
+            src_u: &bufs.src_u,
+            src_v: &bufs.src_v,
+            stride: self.stride,
+            crop_width: self.crop_width,
+            crop_height: self.crop_height,
+            ss_x: self.ss_x,
+            ss_y: self.ss_y,
+            bd: self.bd,
+            monochrome: self.monochrome,
+            mi: self.mi,
+            mi_rows: self.mi_rows,
+            mi_cols: self.mi_cols,
+            delta_lf_present: self.delta_lf_present,
+        }
+    }
+}
+
 /// One loop-filter trial (`try_filter_frame`, picklpf.c, MINUS the
 /// MT/YV12-buffer plumbing): clone only the plane under test (the other two
 /// are never dereferenced — see the `plane_start`/`plane_end` gating note
@@ -178,109 +256,142 @@ pub struct LoopFilterLevels {
 /// (`planes_to_lf`) skips the entire per-plane loop body — including the
 /// `match plane { .. }` buffer selection — for any plane outside
 /// `[plane_start, plane_end)`, so the dummy is provably never indexed.
-fn try_filter_plane(
-    f: &LfSearchFrame,
-    plane: usize,
-    filter_level: [i32; 2],
-    filter_level_u: i32,
-    filter_level_v: i32,
-    sharpness: i32,
-    scratch: &mut Vec<u16>,
-) -> i64 {
-    let p = LfParams {
-        filter_level,
-        filter_level_u,
-        filter_level_v,
-        sharpness,
-        mode_ref_delta_enabled: true,
-        ref_deltas: DEFAULT_REF_DELTAS,
-        mode_deltas: DEFAULT_MODE_DELTAS,
-        delta_lf_present: f.delta_lf_present,
-        delta_lf_multi: false,
-        lossless: [false; 8],
-        seg: Default::default(),
-    };
-    let grid = LfMiGrid {
-        mi: f.mi,
-        stride: f.mi_cols as usize,
-        mi_rows: f.mi_rows,
-        mi_cols: f.mi_cols,
-    };
-    let uv_w = ((f.crop_width + f.ss_x as u32) >> f.ss_x) as usize;
-    let uv_h = ((f.crop_height + f.ss_y as u32) >> f.ss_y) as usize;
-    // Two separate dummy buffers (never dereferenced -- see the doc comment
-    // above) since `LfFrameBuf` needs distinct mutable refs for its 3 plane
-    // fields even when only one plane is under test.
-    let mut dummy_a = [0u16; 1];
-    let mut dummy_b = [0u16; 1];
-    match plane {
-        0 => {
-            // C's try_filter_frame filters cur_frame->buf in place and
-            // restores from a saved copy; we keep the copy semantics but the
-            // buffer is REUSED across trials (C's pick_lf_lvl_frame_buffer).
-            scratch.clear();
-            scratch.extend_from_slice(f.recon_y);
-            let y = scratch.as_mut_slice();
-            let mut buf = LfFrameBuf {
-                y,
-                y_stride: f.stride,
-                u: &mut dummy_a,
-                v: &mut dummy_b,
-                uv_stride: f.stride,
-                crop_width: f.crop_width,
-                crop_height: f.crop_height,
-                ss_x: f.ss_x,
-                ss_y: f.ss_y,
-                bd: f.bd,
-            };
-            loop_filter_frame_opt(&mut buf, &grid, &p, 0, 1);
-            sse_plane(
-                f.src_y,
-                f.stride,
-                &buf.y[..],
-                f.stride,
-                f.crop_width as usize,
-                f.crop_height as usize,
-            )
-        }
-        1 => {
-            scratch.clear();
-            scratch.extend_from_slice(f.recon_u);
-            let u = scratch.as_mut_slice();
-            let mut buf = LfFrameBuf {
-                y: &mut dummy_a,
-                y_stride: f.stride,
-                u,
-                v: &mut dummy_b,
-                uv_stride: f.stride,
-                crop_width: f.crop_width,
-                crop_height: f.crop_height,
-                ss_x: f.ss_x,
-                ss_y: f.ss_y,
-                bd: f.bd,
-            };
-            loop_filter_frame_opt(&mut buf, &grid, &p, 1, 2);
-            sse_plane(f.src_u, f.stride, &buf.u[..], f.stride, uv_w, uv_h)
-        }
-        _ => {
-            scratch.clear();
-            scratch.extend_from_slice(f.recon_v);
-            let v = scratch.as_mut_slice();
-            let mut buf = LfFrameBuf {
-                y: &mut dummy_a,
-                y_stride: f.stride,
-                u: &mut dummy_b,
-                v,
-                uv_stride: f.stride,
-                crop_width: f.crop_width,
-                crop_height: f.crop_height,
-                ss_x: f.ss_x,
-                ss_y: f.ss_y,
-                bd: f.bd,
-            };
-            loop_filter_frame_opt(&mut buf, &grid, &p, 2, 3);
-            sse_plane(f.src_v, f.stride, &buf.v[..], f.stride, uv_w, uv_h)
-        }
+impl<P: LfTrialPixel> LfSearchFrame<'_, P> {
+    #[allow(clippy::too_many_arguments)]
+    fn try_filter_plane(
+        &self,
+        plane: usize,
+        filter_level: [i32; 2],
+        filter_level_u: i32,
+        filter_level_v: i32,
+        sharpness: i32,
+        scratch: &mut Vec<P>,
+    ) -> i64 {
+        let p = LfParams {
+            filter_level,
+            filter_level_u,
+            filter_level_v,
+            sharpness,
+            mode_ref_delta_enabled: true,
+            ref_deltas: DEFAULT_REF_DELTAS,
+            mode_deltas: DEFAULT_MODE_DELTAS,
+            delta_lf_present: self.delta_lf_present,
+            delta_lf_multi: false,
+            lossless: [false; 8],
+            seg: Default::default(),
+        };
+        let grid = LfMiGrid {
+            mi: self.mi,
+            stride: self.mi_cols as usize,
+            mi_rows: self.mi_rows,
+            mi_cols: self.mi_cols,
+        };
+        P::filter_trial(self, plane, &p, &grid, scratch)
+    }
+}
+
+/// The u16 trial — every bit depth. At bd8 [`loop_filter_frame_opt`] still
+/// narrows to u8, filters, and widens back internally; the lowbd path below
+/// stages that narrow once per pick instead of once per trial.
+impl LfTrialPixel for u16 {
+    fn filter_trial(
+        f: &LfSearchFrame<'_, u16>,
+        plane: usize,
+        p: &LfParams,
+        grid: &LfMiGrid<'_>,
+        scratch: &mut Vec<u16>,
+    ) -> i64 {
+        let uv_w = ((f.crop_width + f.ss_x as u32) >> f.ss_x) as usize;
+        let uv_h = ((f.crop_height + f.ss_y as u32) >> f.ss_y) as usize;
+        // Two separate dummy buffers (never dereferenced -- see the doc
+        // comment above) since `LfFrameBuf` needs distinct mutable refs for
+        // its 3 plane fields even when only one plane is under test.
+        let mut dummy_a = [0u16; 1];
+        let mut dummy_b = [0u16; 1];
+        let (recon, src, plane_start) = match plane {
+            0 => (f.recon_y, f.src_y, 0usize),
+            1 => (f.recon_u, f.src_u, 1),
+            _ => (f.recon_v, f.src_v, 2),
+        };
+        // C's try_filter_frame filters cur_frame->buf in place and
+        // restores from a saved copy; we keep the copy semantics but the
+        // buffer is REUSED across trials (C's pick_lf_lvl_frame_buffer).
+        scratch.clear();
+        scratch.extend_from_slice(recon);
+        let (y, u, v) = match plane {
+            0 => (scratch.as_mut_slice(), dummy_a.as_mut_slice(), dummy_b.as_mut_slice()),
+            1 => (dummy_a.as_mut_slice(), scratch.as_mut_slice(), dummy_b.as_mut_slice()),
+            _ => (dummy_a.as_mut_slice(), dummy_b.as_mut_slice(), scratch.as_mut_slice()),
+        };
+        let mut buf = LfFrameBuf {
+            y,
+            y_stride: f.stride,
+            u,
+            v,
+            uv_stride: f.stride,
+            crop_width: f.crop_width,
+            crop_height: f.crop_height,
+            ss_x: f.ss_x,
+            ss_y: f.ss_y,
+            bd: f.bd,
+        };
+        loop_filter_frame_opt(&mut buf, grid, p, plane_start, plane_start + 1);
+        let (dst, w, h) = match plane {
+            0 => (&buf.y[..], f.crop_width as usize, f.crop_height as usize),
+            1 => (&buf.u[..], uv_w, uv_h),
+            _ => (&buf.v[..], uv_w, uv_h),
+        };
+        sse_plane(src, f.stride, dst, f.stride, w, h)
+    }
+}
+
+/// The bd8 u8 trial — same search, half the bytes moved per trial: the
+/// staged-u8 plane copies straight into `scratch` and
+/// [`loop_filter_frame_u8_opt`] filters it natively (the identical walk
+/// `loop_filter_frame_opt`'s bd8 arm reaches through its own narrow/widen),
+/// and the SSE runs u8 x u8 through [`aom_dsp::dist::sse`].
+impl LfTrialPixel for u8 {
+    fn filter_trial(
+        f: &LfSearchFrame<'_, u8>,
+        plane: usize,
+        p: &LfParams,
+        grid: &LfMiGrid<'_>,
+        scratch: &mut Vec<u8>,
+    ) -> i64 {
+        let uv_w = ((f.crop_width + f.ss_x as u32) >> f.ss_x) as usize;
+        let uv_h = ((f.crop_height + f.ss_y as u32) >> f.ss_y) as usize;
+        let mut dummy_a = [0u8; 1];
+        let mut dummy_b = [0u8; 1];
+        let (recon, src, plane_start) = match plane {
+            0 => (f.recon_y, f.src_y, 0usize),
+            1 => (f.recon_u, f.src_u, 1),
+            _ => (f.recon_v, f.src_v, 2),
+        };
+        scratch.clear();
+        scratch.extend_from_slice(recon);
+        let (y, u, v) = match plane {
+            0 => (scratch.as_mut_slice(), dummy_a.as_mut_slice(), dummy_b.as_mut_slice()),
+            1 => (dummy_a.as_mut_slice(), scratch.as_mut_slice(), dummy_b.as_mut_slice()),
+            _ => (dummy_a.as_mut_slice(), dummy_b.as_mut_slice(), scratch.as_mut_slice()),
+        };
+        let mut buf = LfFrameBufU8 {
+            y,
+            y_stride: f.stride,
+            u,
+            v,
+            uv_stride: f.stride,
+            crop_width: f.crop_width,
+            crop_height: f.crop_height,
+            ss_x: f.ss_x,
+            ss_y: f.ss_y,
+        };
+        loop_filter_frame_u8_opt(&mut buf, grid, p, plane_start, plane_start + 1);
+        let (dst, w, h) = match plane {
+            0 => (&buf.y[..], f.crop_width as usize, f.crop_height as usize),
+            1 => (&buf.u[..], uv_w, uv_h),
+            _ => (&buf.v[..], uv_w, uv_h),
+        };
+        aom_dsp::dist::sse(src, f.stride, dst, f.stride, w, h)
     }
 }
 
@@ -318,14 +429,14 @@ fn filt_pair(
 /// are the ALREADY-COMMITTED other-axis levels from a prior stage of
 /// [`pick_filter_level`] (only one is read per `dir`).
 #[allow(clippy::too_many_arguments)]
-fn search_filter_level(
-    f: &LfSearchFrame,
+fn search_filter_level<P: LfTrialPixel>(
+    f: &LfSearchFrame<P>,
     plane: usize,
     dir: usize,
     held_vert: i32,
     held_horiz: i32,
     sharpness: i32,
-    scratch: &mut Vec<u16>,
+    scratch: &mut Vec<P>,
 ) -> i32 {
     search_filter_level_impl(f, plane, dir, held_vert, held_horiz, sharpness, scratch, false)
 }
@@ -336,14 +447,14 @@ fn search_filter_level(
 /// its own trial scratch. Results are per-level deterministic, so the
 /// parallel pre-fill is bit-identical to the serial `trial()` calls.
 #[allow(clippy::too_many_arguments)]
-fn search_filter_level_impl(
-    f: &LfSearchFrame,
+fn search_filter_level_impl<P: LfTrialPixel>(
+    f: &LfSearchFrame<P>,
     plane: usize,
     dir: usize,
     held_vert: i32,
     held_horiz: i32,
     sharpness: i32,
-    scratch: &mut Vec<u16>,
+    scratch: &mut Vec<P>,
     par: bool,
 ) -> i32 {
     const MIN_FILTER_LEVEL: i32 = 0;
@@ -355,12 +466,12 @@ fn search_filter_level_impl(
 
     let trial = |level: i32,
                  ss_err: &mut [i64; (MAX_LOOP_FILTER + 1) as usize],
-                 scratch: &mut Vec<u16>|
+                 scratch: &mut Vec<P>|
      -> i64 {
         if ss_err[level as usize] < 0 {
             let (fl, flu, flv) = filt_pair(plane, dir, level, held_vert, held_horiz);
             ss_err[level as usize] =
-                try_filter_plane(f, plane, fl, flu, flv, sharpness, scratch);
+                f.try_filter_plane(plane, fl, flu, flv, sharpness, scratch);
         }
         ss_err[level as usize]
     };
@@ -391,8 +502,8 @@ fn search_filter_level_impl(
                 );
                 let mut scratch2 = Vec::new();
                 let (l, h) = aom_dsp::par::join(
-                    || try_filter_plane(f, plane, lo.0, lo.1, lo.2, sharpness, scratch),
-                    || try_filter_plane(f, plane, hi.0, hi.1, hi.2, sharpness, &mut scratch2),
+                    || f.try_filter_plane(plane, lo.0, lo.1, lo.2, sharpness, scratch),
+                    || f.try_filter_plane(plane, hi.0, hi.1, hi.2, sharpness, &mut scratch2),
                 );
                 ss_err[filt_low as usize] = l;
                 ss_err[filt_high as usize] = h;
@@ -469,8 +580,8 @@ pub fn frame_lf_sharpness(
     level
 }
 
-pub fn pick_filter_level(
-    f: &LfSearchFrame,
+pub fn pick_filter_level<P: LfTrialPixel>(
+    f: &LfSearchFrame<P>,
     allintra: bool,
     sharpness_cfg: i32,
     non_dual: bool,
@@ -520,8 +631,8 @@ pub fn pick_filter_level(
 /// but the U and V searches depend on nothing in it — three disjoint
 /// `search_filter_level` walks, each with its own trial scratch. The result
 /// is identical to the serial pick.
-pub fn pick_filter_level_mt(
-    f: &LfSearchFrame,
+pub fn pick_filter_level_mt<P: LfTrialPixel>(
+    f: &LfSearchFrame<P>,
     allintra: bool,
     sharpness_cfg: i32,
     non_dual: bool,

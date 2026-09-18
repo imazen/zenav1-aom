@@ -970,9 +970,9 @@ pub fn loop_filter_frame_opt(
         // (`loopfilter_lowbd_diff`), widen back. `min(255)` is a safety
         // net only: every bd8 recon sample is already < 256 (predictors
         // and the edge extension both produce in-range values).
-        let mut y8: Vec<u8> = buf.y.iter().map(|&s| s.min(255) as u8).collect();
-        let mut u8p: Vec<u8> = buf.u.iter().map(|&s| s.min(255) as u8).collect();
-        let mut v8: Vec<u8> = buf.v.iter().map(|&s| s.min(255) as u8).collect();
+        let mut y8 = crate::lowbd::narrow_u16_to_u8(buf.y);
+        let mut u8p = crate::lowbd::narrow_u16_to_u8(buf.u);
+        let mut v8 = crate::lowbd::narrow_u16_to_u8(buf.v);
         {
             let mut b8 = LfFrameBufU8 {
                 y: &mut y8,
@@ -987,15 +987,9 @@ pub fn loop_filter_frame_opt(
             };
             loop_filter_frame_u8_opt(&mut b8, grid, p, plane_start, plane_end);
         }
-        for (d, s) in buf.y.iter_mut().zip(y8.iter()) {
-            *d = u16::from(*s);
-        }
-        for (d, s) in buf.u.iter_mut().zip(u8p.iter()) {
-            *d = u16::from(*s);
-        }
-        for (d, s) in buf.v.iter_mut().zip(v8.iter()) {
-            *d = u16::from(*s);
-        }
+        crate::lowbd::widen_u8_to_u16(&y8, buf.y);
+        crate::lowbd::widen_u8_to_u16(&u8p, buf.u);
+        crate::lowbd::widen_u8_to_u16(&v8, buf.v);
         return;
     }
     let _ = loop_filter_frame_impl(buf, grid, p, plane_start, plane_end, None, true);
