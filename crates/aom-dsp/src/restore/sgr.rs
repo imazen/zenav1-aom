@@ -307,12 +307,14 @@ fn boxsum_ii_px(ii: &[i32], yt: usize, yb: usize, x: usize, r: usize) -> i32 {
 
 /// Scalar tier of the fused pass — the transcribed boxsum feeding `ab_one`.
 #[allow(clippy::too_many_arguments)]
-fn calc_ab_row_impl_scalar(
+fn calc_ab_impl_scalar(
     _t: archmage::ScalarToken,
     ii_sq: &[i32],
     ii_sum: &[i32],
     ii_stride: usize,
-    y: usize,
+    y0: usize,
+    ystep: usize,
+    rows: usize,
     x0: usize,
     count: usize,
     r: usize,
@@ -321,24 +323,32 @@ fn calc_ab_row_impl_scalar(
     one_by_x: u32,
     shift_a: u32,
     shift_b: u32,
-    a_row: &mut [i32],
-    b_row: &mut [i32],
+    a_buf: &mut [i32],
+    b_buf: &mut [i32],
+    ab_off: usize,
+    abstep: usize,
 ) {
-    let yt = (y - r) * ii_stride;
-    let yb = (y + r + 1) * ii_stride;
-    for t in 0..count {
-        let x = x0 + t;
-        let (a_out, b_out) = ab_one(
-            boxsum_ii_px(ii_sq, yt, yb, x, r),
-            boxsum_ii_px(ii_sum, yt, yb, x, r),
-            n,
-            s,
-            one_by_x,
-            shift_a,
-            shift_b,
-        );
-        a_row[t] = a_out;
-        b_row[t] = b_out;
+    for t in 0..rows {
+        let y = y0 + t * ystep;
+        let yt = (y - r) * ii_stride;
+        let yb = (y + r + 1) * ii_stride;
+        let ab = ab_off + t * abstep;
+        let a_row = &mut a_buf[ab..ab + count];
+        let b_row = &mut b_buf[ab..ab + count];
+        for u in 0..count {
+            let x = x0 + u;
+            let (a_out, b_out) = ab_one(
+                boxsum_ii_px(ii_sq, yt, yb, x, r),
+                boxsum_ii_px(ii_sum, yt, yb, x, r),
+                n,
+                s,
+                one_by_x,
+                shift_a,
+                shift_b,
+            );
+            a_row[u] = a_out;
+            b_row[u] = b_out;
+        }
     }
 }
 
@@ -448,12 +458,14 @@ const _: () = assert!(SGRPROJ_RECIP_BITS == 12);
 /// is `#![forbid(unsafe_code)]`, so elimination has to be structural).
 #[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn calc_ab_row_impl(
+fn calc_ab_impl(
     token: Token,
     ii_sq: &[i32],
     ii_sum: &[i32],
     ii_stride: usize,
-    y: usize,
+    y0: usize,
+    ystep: usize,
+    rows: usize,
     x0: usize,
     count: usize,
     r: usize,
@@ -462,23 +474,11 @@ fn calc_ab_row_impl(
     one_by_x: u32,
     shift_a: u32,
     shift_b: u32,
-    a_row: &mut [i32],
-    b_row: &mut [i32],
+    a_buf: &mut [i32],
+    b_buf: &mut [i32],
+    ab_off: usize,
+    abstep: usize,
 ) {
-    let yt = (y - r) * ii_stride;
-    let yb = (y + r + 1) * ii_stride;
-    let xl = x0 - r;
-    let xr = x0 + r + 1;
-    let sq_tl = &ii_sq[yt + xl..yt + xl + count];
-    let sq_tr = &ii_sq[yt + xr..yt + xr + count];
-    let sq_bl = &ii_sq[yb + xl..yb + xl + count];
-    let sq_br = &ii_sq[yb + xr..yb + xr + count];
-    let sm_tl = &ii_sum[yt + xl..yt + xl + count];
-    let sm_tr = &ii_sum[yt + xr..yt + xr + count];
-    let sm_bl = &ii_sum[yb + xl..yb + xl + count];
-    let sm_br = &ii_sum[yb + xr..yb + xr + count];
-    let a_row = &mut a_row[..count];
-    let b_row = &mut b_row[..count];
     // The two `ROUND_POWER_OF_TWO` shifts are frame-level constants but not
     // COMPILE-time ones, and this vocabulary has only const-generic shifts
     // (no `shr_logical_uniform` in 0.9.28). `bit_depth` is 8, 10 or 12, so
@@ -504,85 +504,109 @@ fn calc_ab_row_impl(
     // u32 bit patterns — the unsigned compare `saturating_sub` needs.
     let bias = i32x8::splat(token, i32::MIN);
 
-    let mut o = 0usize;
-    while o + 8 <= count {
-        let a_raw = (i32x8::from_slice(token, &sq_br[o..o + 8])
-            - i32x8::from_slice(token, &sq_tr[o..o + 8]))
-            - (i32x8::from_slice(token, &sq_bl[o..o + 8])
-                - i32x8::from_slice(token, &sq_tl[o..o + 8]));
-        let b_raw = (i32x8::from_slice(token, &sm_br[o..o + 8])
-            - i32x8::from_slice(token, &sm_tr[o..o + 8]))
-            - (i32x8::from_slice(token, &sm_bl[o..o + 8])
-                - i32x8::from_slice(token, &sm_tl[o..o + 8]));
+    for t in 0..rows {
+        let y = y0 + t * ystep;
+        let yt = (y - r) * ii_stride;
+        let yb = (y + r + 1) * ii_stride;
+        let xl = x0 - r;
+        let xr = x0 + r + 1;
+        let sq_tl = &ii_sq[yt + xl..yt + xl + count];
+        let sq_tr = &ii_sq[yt + xr..yt + xr + count];
+        let sq_bl = &ii_sq[yb + xl..yb + xl + count];
+        let sq_br = &ii_sq[yb + xr..yb + xr + count];
+        let sm_tl = &ii_sum[yt + xl..yt + xl + count];
+        let sm_tr = &ii_sum[yt + xr..yt + xr + count];
+        let sm_bl = &ii_sum[yb + xl..yb + xl + count];
+        let sm_br = &ii_sum[yb + xr..yb + xr + count];
+        let ab = ab_off + t * abstep;
+        let a_row = &mut a_buf[ab..ab + count];
+        let b_row = &mut b_buf[ab..ab + count];
 
-        // a = ROUND_POWER_OF_TWO(a_raw, shift_a), b likewise, in u32.
-        let xa = a_raw + half_a;
-        let a = i32x8::blend(
-            m_a8,
-            xa.shr_logical::<8>(),
-            i32x8::blend(m_a4, xa.shr_logical::<4>(), xa),
-        );
-        let xb = b_raw + half_b;
-        let b = i32x8::blend(
-            m_b4,
-            xb.shr_logical::<4>(),
-            i32x8::blend(m_b2, xb.shr_logical::<2>(), xb),
-        );
+        let mut o = 0usize;
+        while o + 8 <= count {
+            let a_raw = (i32x8::from_slice(token, &sq_br[o..o + 8])
+                - i32x8::from_slice(token, &sq_tr[o..o + 8]))
+                - (i32x8::from_slice(token, &sq_bl[o..o + 8])
+                    - i32x8::from_slice(token, &sq_tl[o..o + 8]));
+            let b_raw = (i32x8::from_slice(token, &sm_br[o..o + 8])
+                - i32x8::from_slice(token, &sm_tr[o..o + 8]))
+                - (i32x8::from_slice(token, &sm_bl[o..o + 8])
+                    - i32x8::from_slice(token, &sm_tl[o..o + 8]));
 
-        // p = (a * n).saturating_sub(b * b), on the u32 bit patterns.
-        let an = a * nv;
-        let bb = b * b;
-        let ge = (an ^ bias).simd_ge(bb ^ bias);
-        let p = i32x8::blend(ge, an - bb, none);
+            // a = ROUND_POWER_OF_TWO(a_raw, shift_a), b likewise, in u32.
+            let xa = a_raw + half_a;
+            let a = i32x8::blend(
+                m_a8,
+                xa.shr_logical::<8>(),
+                i32x8::blend(m_a4, xa.shr_logical::<4>(), xa),
+            );
+            let xb = b_raw + half_b;
+            let b = i32x8::blend(
+                m_b4,
+                xb.shr_logical::<4>(),
+                i32x8::blend(m_b2, xb.shr_logical::<2>(), xb),
+            );
 
-        // z = ROUND_POWER_OF_TWO(p.wrapping_mul(s), SGRPROJ_MTABLE_BITS).
-        let zc = (((p * sv) + half_z).shr_logical::<20>()).min(c255);
+            // p = (a * n).saturating_sub(b * b), on the u32 bit patterns.
+            let an = a * nv;
+            let bb = b * b;
+            let ge = (an ^ bias).simd_ge(bb ^ bias);
+            let p = i32x8::blend(ge, an - bb, none);
 
-        let mut zs = [0i32; 8];
-        zc.store(&mut zs);
-        let mut lut = [0i32; 8];
-        for t in 0..8 {
-            lut[t] = X_BY_XPLUS1[(zs[t] as usize) & 255];
+            // z = ROUND_POWER_OF_TWO(p.wrapping_mul(s), SGRPROJ_MTABLE_BITS).
+            let zc = (((p * sv) + half_z).shr_logical::<20>()).min(c255);
+
+            let mut zs = [0i32; 8];
+            zc.store(&mut zs);
+            let mut lut = [0i32; 8];
+            for t in 0..8 {
+                lut[t] = X_BY_XPLUS1[(zs[t] as usize) & 255];
+            }
+            let a_out = i32x8::from_slice(token, &lut[..]);
+
+            let b_out = (((sgr - a_out) * b_raw * obx) + half_r).shr_logical::<12>();
+
+            {
+                let d: &mut [i32; 8] = (&mut a_row[o..o + 8]).try_into().unwrap();
+                a_out.store(d);
+            }
+            {
+                let d: &mut [i32; 8] = (&mut b_row[o..o + 8]).try_into().unwrap();
+                b_out.store(d);
+            }
+            o += 8;
         }
-        let a_out = i32x8::from_slice(token, &lut[..]);
 
-        let b_out = (((sgr - a_out) * b_raw * obx) + half_r).shr_logical::<12>();
-
-        {
-            let d: &mut [i32; 8] = (&mut a_row[o..o + 8]).try_into().unwrap();
-            a_out.store(d);
+        // Column tail: the shared scalar body, so the tiers cannot drift.
+        for t in o..count {
+            let x = x0 + t;
+            let (a_out, b_out) = ab_one(
+                boxsum_ii_px(ii_sq, yt, yb, x, r),
+                boxsum_ii_px(ii_sum, yt, yb, x, r),
+                n,
+                s,
+                one_by_x,
+                shift_a,
+                shift_b,
+            );
+            a_row[t] = a_out;
+            b_row[t] = b_out;
         }
-        {
-            let d: &mut [i32; 8] = (&mut b_row[o..o + 8]).try_into().unwrap();
-            b_out.store(d);
-        }
-        o += 8;
-    }
-
-    // Column tail: the shared scalar body, so the tiers cannot drift.
-    for t in o..count {
-        let x = x0 + t;
-        let (a_out, b_out) = ab_one(
-            boxsum_ii_px(ii_sq, yt, yb, x, r),
-            boxsum_ii_px(ii_sum, yt, yb, x, r),
-            n,
-            s,
-            one_by_x,
-            shift_a,
-            shift_b,
-        );
-        a_row[t] = a_out;
-        b_row[t] = b_out;
     }
 }
 
-/// `calc_ab` over one row of the ring — fused boxsum + A/B transform.
+/// `calc_ab` over a run of rows of the ring — fused boxsum + A/B transform.
+/// Row `t` of the run reads ii row `y0 + t * ystep` and writes
+/// `a_buf[ab_off + t * abstep .. + count]` (likewise `b_buf`) — one dispatch
+/// and one constant setup per run rather than per row.
 #[allow(clippy::too_many_arguments)]
-fn calc_ab_row(
+fn calc_ab(
     ii_sq: &[i32],
     ii_sum: &[i32],
     ii_stride: usize,
-    y: usize,
+    y0: usize,
+    ystep: usize,
+    rows: usize,
     x0: usize,
     count: usize,
     r: usize,
@@ -591,13 +615,15 @@ fn calc_ab_row(
     one_by_x: u32,
     shift_a: u32,
     shift_b: u32,
-    a_row: &mut [i32],
-    b_row: &mut [i32],
+    a_buf: &mut [i32],
+    b_buf: &mut [i32],
+    ab_off: usize,
+    abstep: usize,
 ) {
     archmage::incant!(
-        calc_ab_row_impl(
-            ii_sq, ii_sum, ii_stride, y, x0, count, r, n, s, one_by_x, shift_a, shift_b,
-            a_row, b_row
+        calc_ab_impl(
+            ii_sq, ii_sum, ii_stride, y0, ystep, rows, x0, count, r, n, s, one_by_x,
+            shift_a, shift_b, a_buf, b_buf, ab_off, abstep
         ),
         [v3, neon, wasm128, scalar]
     )
@@ -645,28 +671,30 @@ fn calculate_intermediate(
     // the A/B pass touches get box sums — the integral image makes skipped
     // rows free, where the old vert/horz boxsum had to cover the plane.
     let count = width + 2;
-    let mut i: i32 = -1;
-    while i < height as i32 + 1 {
-        let k0 = (org as i32 + i * buf_stride as i32 - 1) as usize;
-        let y = (SGRPROJ_BORDER_VERT as i32 + i) as usize;
-        calc_ab_row(
-            ii_sq,
-            ii_sum,
-            ii_stride,
-            y,
-            2,
-            count,
-            r,
-            n,
-            s,
-            one_by_x,
-            shift_a,
-            shift_b,
-            &mut a_buf[k0..k0 + count],
-            &mut b_buf[k0..k0 + count],
-        );
-        i += step;
-    }
+    // Ring rows are i = -1, -1 + step, ... while i < height + 1 — one
+    // `calc_ab` run for all of them so the dispatch and constant setup
+    // happen once per pass rather than once per row.
+    let rows = (height + 2).div_ceil(step);
+    calc_ab(
+        ii_sq,
+        ii_sum,
+        ii_stride,
+        SGRPROJ_BORDER_VERT - 1,
+        step,
+        rows,
+        2,
+        count,
+        r,
+        n,
+        s,
+        one_by_x,
+        shift_a,
+        shift_b,
+        a_buf,
+        b_buf,
+        org - buf_stride - 1,
+        step * buf_stride,
+    );
     (buf_stride, org)
 }
 
