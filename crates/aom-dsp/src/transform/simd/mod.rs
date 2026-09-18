@@ -2894,6 +2894,146 @@ fn inv_w16_fused_i16(
         ]
     };
 
+    // ---- ymm twins of the 8-pt kernels for the rect shapes ---------------
+    // Stacked-halves: each ymm carries the xmm version's two 8-lane groups
+    // (row-groups for 8x16's row pass, column-groups for 16x8's col pass).
+    // Every op is per-128-half consistent, so the network is bit-identical.
+    let pair_y = |a: i32, b: i32| -> __m256i {
+        _mm256_set1_epi32((a as u16 as u32 | ((b as u16 as u32) << 16)) as i32)
+    };
+    let btf_y =
+        |w0: __m256i, w1: __m256i, i0: __m256i, i1: __m256i| -> (__m256i, __m256i) {
+            let rnd = _mm256_set1_epi32(1 << (cos_bit - 1));
+            let cnt = _mm_cvtsi32_si128(cos_bit);
+            let t0 = _mm256_unpacklo_epi16(i0, i1);
+            let t1 = _mm256_unpackhi_epi16(i0, i1);
+            let c0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w0), rnd), cnt);
+            let c1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w0), rnd), cnt);
+            let d0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w1), rnd), cnt);
+            let d1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w1), rnd), cnt);
+            (_mm256_packs_epi32(c0, c1), _mm256_packs_epi32(d0, d1))
+        };
+    let adds_subs_y = |a: __m256i, b: __m256i| -> (__m256i, __m256i) {
+        (_mm256_adds_epi16(a, b), _mm256_subs_epi16(a, b))
+    };
+    let subs_adds_y = adds_subs_y;
+
+    // `av1_idct8_sse2` at ymm width.
+    let idct8y = |i: &[__m256i; 8]| -> [__m256i; 8] {
+        let c = crate::transform::cospi::cospi_arr(cos_bit);
+        let mut x = [i[0], i[4], i[2], i[6], i[1], i[5], i[3], i[7]];
+        let (x4, x7) = btf_y(pair_y(c[56], -c[8]), pair_y(c[8], c[56]), x[4], x[7]);
+        x[4] = x4;
+        x[7] = x7;
+        let (x5, x6) = btf_y(pair_y(c[24], -c[40]), pair_y(c[40], c[24]), x[5], x[6]);
+        x[5] = x5;
+        x[6] = x6;
+        let (x0, x1) = btf_y(pair_y(c[32], c[32]), pair_y(c[32], -c[32]), x[0], x[1]);
+        x[0] = x0;
+        x[1] = x1;
+        let (x2, x3) = btf_y(pair_y(c[48], -c[16]), pair_y(c[16], c[48]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x4, x5) = adds_subs_y(x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x7, x6) = subs_adds_y(x[7], x[6]);
+        x[7] = x7;
+        x[6] = x6;
+        let (x0, x3) = adds_subs_y(x[0], x[3]);
+        let (x1, x2) = adds_subs_y(x[1], x[2]);
+        x[0] = x0;
+        x[3] = x3;
+        x[1] = x1;
+        x[2] = x2;
+        let (x5, x6) = btf_y(pair_y(-c[32], c[32]), pair_y(c[32], c[32]), x[5], x[6]);
+        x[5] = x5;
+        x[6] = x6;
+        [
+            _mm256_adds_epi16(x[0], x[7]),
+            _mm256_adds_epi16(x[1], x[6]),
+            _mm256_adds_epi16(x[2], x[5]),
+            _mm256_adds_epi16(x[3], x[4]),
+            _mm256_subs_epi16(x[3], x[4]),
+            _mm256_subs_epi16(x[2], x[5]),
+            _mm256_subs_epi16(x[1], x[6]),
+            _mm256_subs_epi16(x[0], x[7]),
+        ]
+    };
+
+    // `av1_iadst8_sse2` at ymm width.
+    let iadst8y = |i: &[__m256i; 8]| -> [__m256i; 8] {
+        let c = crate::transform::cospi::cospi_arr(cos_bit);
+        let mut x = [i[7], i[0], i[5], i[2], i[3], i[4], i[1], i[6]];
+        let (x0, x1) = btf_y(pair_y(c[4], c[60]), pair_y(c[60], -c[4]), x[0], x[1]);
+        x[0] = x0;
+        x[1] = x1;
+        let (x2, x3) = btf_y(pair_y(c[20], c[44]), pair_y(c[44], -c[20]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x4, x5) = btf_y(pair_y(c[36], c[28]), pair_y(c[28], -c[36]), x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x6, x7) = btf_y(pair_y(c[52], c[12]), pair_y(c[12], -c[52]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        for (a, b) in [(0usize, 4usize), (1, 5), (2, 6), (3, 7)] {
+            let (s, d) = adds_subs_y(x[a], x[b]);
+            x[a] = s;
+            x[b] = d;
+        }
+        let (x4, x5) = btf_y(pair_y(c[16], c[48]), pair_y(c[48], -c[16]), x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x6, x7) = btf_y(pair_y(-c[48], c[16]), pair_y(c[16], c[48]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        for (a, b) in [(0usize, 2usize), (1, 3), (4, 6), (5, 7)] {
+            let (s, d) = adds_subs_y(x[a], x[b]);
+            x[a] = s;
+            x[b] = d;
+        }
+        let (x2, x3) = btf_y(pair_y(c[32], c[32]), pair_y(c[32], -c[32]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x6, x7) = btf_y(pair_y(c[32], c[32]), pair_y(c[32], -c[32]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        let z = _mm256_setzero_si256();
+        [
+            x[0],
+            _mm256_subs_epi16(z, x[4]),
+            x[6],
+            _mm256_subs_epi16(z, x[2]),
+            x[3],
+            _mm256_subs_epi16(z, x[7]),
+            x[5],
+            _mm256_subs_epi16(z, x[1]),
+        ]
+    };
+
+    // `iidentity8_sse2` at ymm width.
+    let iidtx8y = |i: &[__m256i; 8]| -> [__m256i; 8] {
+        [
+            _mm256_adds_epi16(i[0], i[0]),
+            _mm256_adds_epi16(i[1], i[1]),
+            _mm256_adds_epi16(i[2], i[2]),
+            _mm256_adds_epi16(i[3], i[3]),
+            _mm256_adds_epi16(i[4], i[4]),
+            _mm256_adds_epi16(i[5], i[5]),
+            _mm256_adds_epi16(i[6], i[6]),
+            _mm256_adds_epi16(i[7], i[7]),
+        ]
+    };
+
+    let run8y = |k: Inv16, i: &[__m256i; 8]| -> [__m256i; 8] {
+        match k {
+            Inv16::Dct => idct8y(i),
+            Inv16::Adst => iadst8y(i),
+            Inv16::Idtx => iidtx8y(i),
+        }
+    };
+
     // Dispatch on transform length: `i.len()` is `col_n` on the row pass and
     // `row_n` on the col pass. The enum selects dct/adst/idtx; the width picks
     // the 8-pt or 16-pt instance.
@@ -2987,10 +3127,170 @@ fn inv_w16_fused_i16(
         return false;
     }
 
+    let row_shift = _mm_set1_epi16(if rect { 1 << 14 } else { 1 << 13 });
+
+    // Rect shapes lane-double their 16-element axis onto ymm (the same
+    // stacked-halves construction as `inv_16x16_fused_i16_w16`):
+    //   8x16 — the 8-pt ROW pass runs on ymm (`wy[c]` = rows [0-7 | 8-15] of
+    //          column c); the 16-pt col pass stays xmm (8 col lanes).
+    //   16x8 — the 16-pt row pass stays xmm; the 8-pt COL pass runs on ymm
+    //          (`cy[r]` = cols [0-7 | 8-15] of row r).
+    if col_n == 8 && row_n == 16 {
+        // ymm row pass over the two stacked row-groups.
+        let mut wy = [_mm256_setzero_si256(); 8];
+        for c in 0..8 {
+            wy[c] = _mm256_set_m128i(w[1][c], w[0][c]);
+        }
+        let o = run8y(kr, &wy);
+        let rs = _mm256_set1_epi16(1 << 14);
+        for (v, o) in wy.iter_mut().zip(o.iter()) {
+            *v = _mm256_mulhrs_epi16(*o, rs);
+        }
+        // Transpose 8 ymm -> 16 xmm: each ymm's halves are row-groups 0/1;
+        // tr8 on the lo halves gives rows 0-7, hi halves rows 8-15.
+        let mut m0 = [_mm_setzero_si128(); 8];
+        let mut m1 = [_mm_setzero_si128(); 8];
+        for c in 0..8 {
+            m0[c] = _mm256_castsi256_si128(wy[c]);
+            m1[c] = _mm256_extracti128_si256::<1>(wy[c]);
+        }
+        let t0 = tr8(&m0);
+        let t1 = tr8(&m1);
+        let mut ci = [_mm_setzero_si128(); 16];
+        for r in 0..8 {
+            ci[r] = t0[r];
+            ci[8 + r] = t1[r];
+        }
+        if lr_flip {
+            for v in ci.iter_mut() {
+                *v = _mm_shuffle_epi32::<0x4E>(_mm_shufflehi_epi16::<0x1B>(
+                    _mm_shufflelo_epi16::<0x1B>(*v),
+                ));
+            }
+        }
+        let o = run(kc, &ci[..16]);
+        let mut co = [_mm_setzero_si128(); 16];
+        for (v, o) in co.iter_mut().zip(o.iter()) {
+            *v = _mm_mulhrs_epi16(*o, _mm_set1_epi16(2048));
+        }
+        // Write 16 rows x 8 cols (single column-group).
+        let zero = _mm_setzero_si128();
+        return match output {
+            InvDst::U16(output) => {
+                let hi = _mm_set1_epi16(((1i32 << bd) - 1) as i16);
+                for r in 0..16usize {
+                    let src_i = if ud_flip { 15 - r } else { r };
+                    let idx = r * stride;
+                    let dst: &mut [u16; 8] = match output
+                        .get_mut(idx..idx + 8)
+                        .and_then(|s| s.try_into().ok())
+                    {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let d = _mm_loadu_si128(dst);
+                    let sum =
+                        _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, co[src_i]), zero), hi);
+                    _mm_storeu_si128(dst, sum);
+                }
+                true
+            }
+            InvDst::U8(output) => {
+                for r in 0..16usize {
+                    let src_i = if ud_flip { 15 - r } else { r };
+                    let idx = r * stride;
+                    let dst: &mut [u8; 8] = match output
+                        .get_mut(idx..idx + 8)
+                        .and_then(|s| s.try_into().ok())
+                    {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let d = _mm_cvtepu8_epi16(_mm_loadu_si64(dst));
+                    let sum = _mm_packus_epi16(_mm_add_epi16(d, co[src_i]), zero);
+                    _mm_storeu_si64(dst, sum);
+                }
+                true
+            }
+        };
+    }
+    if col_n == 16 && row_n == 8 {
+        // xmm row pass (16-pt over the 16 column registers).
+        let o = run(kr, &w[0][..16]);
+        for (v, o) in w[0].iter_mut().zip(o.iter()) {
+            *v = _mm_mulhrs_epi16(*o, row_shift);
+        }
+        // Transpose 16 xmm -> 8 ymm: tr8 on each 8-column half, then stack.
+        let ta = tr8(<&[__m128i; 8]>::try_from(&w[0][..8]).unwrap());
+        let tb = tr8(<&[__m128i; 8]>::try_from(&w[0][8..]).unwrap());
+        let mut cy = [_mm256_setzero_si256(); 8];
+        for r in 0..8 {
+            cy[r] = _mm256_set_m128i(tb[r], ta[r]);
+        }
+        // lr_flip reverses all 16 column lanes: half-swap + per-half reverse.
+        if lr_flip {
+            for v in cy.iter_mut() {
+                let s = _mm256_permute2x128_si256::<0x01>(*v, *v);
+                *v = _mm256_shuffle_epi32::<0x4E>(_mm256_shufflehi_epi16::<0x1B>(
+                    _mm256_shufflelo_epi16::<0x1B>(s),
+                ));
+            }
+        }
+        // ymm col pass (8-pt over the 8 row registers).
+        let oy = run8y(kc, &cy);
+        let mut co = [_mm256_setzero_si256(); 8];
+        let cs = _mm256_set1_epi16(2048);
+        for (v, o) in co.iter_mut().zip(oy.iter()) {
+            *v = _mm256_mulhrs_epi16(*o, cs);
+        }
+        // Write 8 rows x 16 cols.
+        let zeroy = _mm256_setzero_si256();
+        return match output {
+            InvDst::U16(output) => {
+                let hi = _mm256_set1_epi16(((1i32 << bd) - 1) as i16);
+                for r in 0..8usize {
+                    let src_i = if ud_flip { 7 - r } else { r };
+                    let idx = r * stride;
+                    let dst: &mut [u16; 16] = match output
+                        .get_mut(idx..idx + 16)
+                        .and_then(|s| s.try_into().ok())
+                    {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let d = _mm256_loadu_si256(dst);
+                    let sum = _mm256_min_epi16(_mm256_max_epi16(
+                        _mm256_add_epi16(d, co[src_i]),
+                        zeroy,
+                    ), hi);
+                    _mm256_storeu_si256(dst, sum);
+                }
+                true
+            }
+            InvDst::U8(output) => {
+                for r in 0..8usize {
+                    let src_i = if ud_flip { 7 - r } else { r };
+                    let idx = r * stride;
+                    let dst: &mut [u8; 16] = match output
+                        .get_mut(idx..idx + 16)
+                        .and_then(|s| s.try_into().ok())
+                    {
+                        Some(d) => d,
+                        None => return false,
+                    };
+                    let d = _mm256_cvtepu8_epi16(_mm_loadu_si128(dst));
+                    let sum = _mm256_add_epi16(d, co[src_i]);
+                    let p = _mm256_permute4x64_epi64::<0x08>(_mm256_packus_epi16(sum, zeroy));
+                    _mm_storeu_si128(dst, _mm256_castsi256_si128(p));
+                }
+                true
+            }
+        };
+    }
+
     // Pass 1 (rows): `col_n` registers per row-group, lanes = rows.
     // `round_shift_array(., 2)` == `mulhrs(1 << 13)`; the rect shapes' `>> 1`
     // == `mulhrs(1 << 14)`.
-    let row_shift = _mm_set1_epi16(if rect { 1 << 14 } else { 1 << 13 });
     for rg in 0..rg_n {
         let o = run(kr, &w[rg][..col_n]);
         for (v, o) in w[rg][..col_n].iter_mut().zip(o.iter()) {
