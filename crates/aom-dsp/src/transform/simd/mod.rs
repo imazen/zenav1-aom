@@ -1707,6 +1707,25 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
         && *sr_col == [16i8; 12]
     {
         if let (Some(kr16), Some(kc16)) = (inv16_kind(kr), inv16_kind(kc)) {
+            let bound = INV16_I16_BOUND[kr16 as usize][kc16 as usize];
+            // ymm first — identical gate to the xmm twin, which it obsoletes
+            // for the square shape; a decline falls to the i32 fused path.
+            if incant!(
+                inv_16x16_fused_i16_w16(
+                    kr16,
+                    kc16,
+                    input,
+                    inv_dst_reborrow(&mut output),
+                    stride,
+                    bound,
+                    ud_flip,
+                    lr_flip,
+                    bd
+                ),
+                [v3, scalar]
+            ) {
+                return true;
+            }
             if incant!(
                 inv_w16_fused_i16(
                     kr16,
@@ -1716,7 +1735,7 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
                     stride,
                     16,
                     16,
-                    INV16_I16_BOUND[kr16 as usize][kc16 as usize],
+                    bound,
                     ud_flip,
                     lr_flip,
                     bd
@@ -3051,6 +3070,465 @@ fn inv_w16_fused_i16(
                         _mm_packus_epi16(_mm_add_epi16(d, co[cg][src_i]), _mm_setzero_si128());
                     _mm_storeu_si64(dst, sum);
                 }
+            }
+        }
+    }
+    true
+}
+
+/// The `incant!` fallback: decline to the i32 fused path.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn inv_16x16_fused_i16_w16_scalar(
+    _t: archmage::ScalarToken,
+    _kr: Inv16,
+    _kc: Inv16,
+    _input: &[i32],
+    _output: InvDst<'_>,
+    _stride: usize,
+    _bound: i32,
+    _ud_flip: bool,
+    _lr_flip: bool,
+    _bd: i32,
+) -> bool {
+    false
+}
+
+/// ymm 16x16 fused inverse — C's `lowbd_inv_txfm2d_add_no_identity_avx2` shape,
+/// the lane-doubled twin of [`inv_w16_fused_i16`]. Each `__m256i` stacks the
+/// xmm version's two 8-row groups (`w[c]` lanes = rows `[0-7 | 8-15]` of
+/// column `c`); every kernel op (`unpack`/`madd`/`packs`/`adds`/`subs`/
+/// `mulhrs`) is per-128-half consistent, so the identical network produces
+/// bit-identical lanes at half the instruction count. Between passes the
+/// layout change is `transpose_16bit_16x16_avx2` (same network as
+/// [`fwd_16x16_fused_i16_w16`]). Same `INV16_I16_BOUND` gate, so the
+/// accept/decline domain is unchanged.
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i32x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn inv_16x16_fused_i16_w16(
+    t: Token,
+    kr: Inv16,
+    kc: Inv16,
+    input: &[i32],
+    output: InvDst,
+    stride: usize,
+    bound: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+    bd: i32,
+) -> bool {
+    use archmage::intrinsics::x86_64::*;
+    let _ = t;
+    let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
+
+    let pair = |a: i32, b: i32| -> __m256i {
+        _mm256_set1_epi32((a as u16 as u32 | ((b as u16 as u32) << 16)) as i32)
+    };
+    let btf = |w0: __m256i, w1: __m256i, i0: __m256i, i1: __m256i| -> (__m256i, __m256i) {
+        let rnd = _mm256_set1_epi32(1 << (cos_bit - 1));
+        let cnt = _mm_cvtsi32_si128(cos_bit);
+        let t0 = _mm256_unpacklo_epi16(i0, i1);
+        let t1 = _mm256_unpackhi_epi16(i0, i1);
+        let c0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w0), rnd), cnt);
+        let c1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w0), rnd), cnt);
+        let d0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w1), rnd), cnt);
+        let d1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w1), rnd), cnt);
+        (_mm256_packs_epi32(c0, c1), _mm256_packs_epi32(d0, d1))
+    };
+    let adds_subs = |a: __m256i, b: __m256i| -> (__m256i, __m256i) {
+        (_mm256_adds_epi16(a, b), _mm256_subs_epi16(a, b))
+    };
+    let subs_adds = adds_subs;
+
+    // `idct16_avx2` — `idct16_sse2` verbatim at ymm width.
+    let idct16 = |i: &[__m256i; 16]| -> [__m256i; 16] {
+        let c = crate::transform::cospi::cospi_arr(cos_bit);
+        let mut x = [
+            i[0], i[8], i[4], i[12], i[2], i[10], i[6], i[14], i[1], i[9], i[5], i[13], i[3], i[11],
+            i[7], i[15],
+        ];
+        // stage 2
+        let (x8, x15) = btf(pair(c[60], -c[4]), pair(c[4], c[60]), x[8], x[15]);
+        x[8] = x8;
+        x[15] = x15;
+        let (x9, x14) = btf(pair(c[28], -c[36]), pair(c[36], c[28]), x[9], x[14]);
+        x[9] = x9;
+        x[14] = x14;
+        let (x10, x13) = btf(pair(c[44], -c[20]), pair(c[20], c[44]), x[10], x[13]);
+        x[10] = x10;
+        x[13] = x13;
+        let (x11, x12) = btf(pair(c[12], -c[52]), pair(c[52], c[12]), x[11], x[12]);
+        x[11] = x11;
+        x[12] = x12;
+        // stage 3
+        let (x4, x7) = btf(pair(c[56], -c[8]), pair(c[8], c[56]), x[4], x[7]);
+        x[4] = x4;
+        x[7] = x7;
+        let (x5, x6) = btf(pair(c[24], -c[40]), pair(c[40], c[24]), x[5], x[6]);
+        x[5] = x5;
+        x[6] = x6;
+        let (x8, x9) = adds_subs(x[8], x[9]);
+        x[8] = x8;
+        x[9] = x9;
+        let (x11, x10) = subs_adds(x[11], x[10]);
+        x[11] = x11;
+        x[10] = x10;
+        let (x12, x13) = adds_subs(x[12], x[13]);
+        x[12] = x12;
+        x[13] = x13;
+        let (x15, x14) = subs_adds(x[15], x[14]);
+        x[15] = x15;
+        x[14] = x14;
+        // stage 4
+        let (x0, x1) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x[0], x[1]);
+        x[0] = x0;
+        x[1] = x1;
+        let (x2, x3) = btf(pair(c[48], -c[16]), pair(c[16], c[48]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x4, x5) = adds_subs(x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x7, x6) = subs_adds(x[7], x[6]);
+        x[7] = x7;
+        x[6] = x6;
+        let (x9, x14) = btf(pair(-c[16], c[48]), pair(c[48], c[16]), x[9], x[14]);
+        x[9] = x9;
+        x[14] = x14;
+        let (x10, x13) = btf(pair(-c[48], -c[16]), pair(-c[16], c[48]), x[10], x[13]);
+        x[10] = x10;
+        x[13] = x13;
+        // stage 5
+        let (x0, x3) = adds_subs(x[0], x[3]);
+        let (x1, x2) = adds_subs(x[1], x[2]);
+        x[0] = x0;
+        x[3] = x3;
+        x[1] = x1;
+        x[2] = x2;
+        let (x5, x6) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x[5], x[6]);
+        x[5] = x5;
+        x[6] = x6;
+        let (x8, x11) = adds_subs(x[8], x[11]);
+        x[8] = x8;
+        x[11] = x11;
+        let (x9, x10) = adds_subs(x[9], x[10]);
+        x[9] = x9;
+        x[10] = x10;
+        let (x15, x12) = subs_adds(x[15], x[12]);
+        x[15] = x15;
+        x[12] = x12;
+        let (x14, x13) = subs_adds(x[14], x[13]);
+        x[14] = x14;
+        x[13] = x13;
+        // stage 6
+        let (x0, x7) = adds_subs(x[0], x[7]);
+        let (x1, x6) = adds_subs(x[1], x[6]);
+        let (x2, x5) = adds_subs(x[2], x[5]);
+        let (x3, x4) = adds_subs(x[3], x[4]);
+        x[0] = x0;
+        x[7] = x7;
+        x[1] = x1;
+        x[6] = x6;
+        x[2] = x2;
+        x[5] = x5;
+        x[3] = x3;
+        x[4] = x4;
+        let (x10, x13) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x[10], x[13]);
+        x[10] = x10;
+        x[13] = x13;
+        let (x11, x12) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x[11], x[12]);
+        x[11] = x11;
+        x[12] = x12;
+        // stage 7
+        let mut out = [_mm256_setzero_si256(); 16];
+        for k in 0..8 {
+            let (a, b) = adds_subs(x[k], x[15 - k]);
+            out[k] = a;
+            out[15 - k] = b;
+        }
+        out
+    };
+
+    // `iadst16_avx2` — `iadst16_sse2` verbatim at ymm width.
+    let iadst16 = |i: &[__m256i; 16]| -> [__m256i; 16] {
+        let c = crate::transform::cospi::cospi_arr(cos_bit);
+        let mut x = [
+            i[15], i[0], i[13], i[2], i[11], i[4], i[9], i[6], i[7], i[8], i[5], i[10], i[3], i[12],
+            i[1], i[14],
+        ];
+        // stage 2
+        let (x0, x1) = btf(pair(c[2], c[62]), pair(c[62], -c[2]), x[0], x[1]);
+        x[0] = x0;
+        x[1] = x1;
+        let (x2, x3) = btf(pair(c[10], c[54]), pair(c[54], -c[10]), x[2], x[3]);
+        x[2] = x2;
+        x[3] = x3;
+        let (x4, x5) = btf(pair(c[18], c[46]), pair(c[46], -c[18]), x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x6, x7) = btf(pair(c[26], c[38]), pair(c[38], -c[26]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        let (x8, x9) = btf(pair(c[34], c[30]), pair(c[30], -c[34]), x[8], x[9]);
+        x[8] = x8;
+        x[9] = x9;
+        let (x10, x11) = btf(pair(c[42], c[22]), pair(c[22], -c[42]), x[10], x[11]);
+        x[10] = x10;
+        x[11] = x11;
+        let (x12, x13) = btf(pair(c[50], c[14]), pair(c[14], -c[50]), x[12], x[13]);
+        x[12] = x12;
+        x[13] = x13;
+        let (x14, x15) = btf(pair(c[58], c[6]), pair(c[6], -c[58]), x[14], x[15]);
+        x[14] = x14;
+        x[15] = x15;
+        // stage 3
+        for k in 0..8 {
+            let (a, b) = adds_subs(x[k], x[k + 8]);
+            x[k] = a;
+            x[k + 8] = b;
+        }
+        // stage 4
+        let (x8, x9) = btf(pair(c[8], c[56]), pair(c[56], -c[8]), x[8], x[9]);
+        x[8] = x8;
+        x[9] = x9;
+        let (x10, x11) = btf(pair(c[40], c[24]), pair(c[24], -c[40]), x[10], x[11]);
+        x[10] = x10;
+        x[11] = x11;
+        let (x12, x13) = btf(pair(-c[56], c[8]), pair(c[8], c[56]), x[12], x[13]);
+        x[12] = x12;
+        x[13] = x13;
+        let (x14, x15) = btf(pair(-c[24], c[40]), pair(c[40], c[24]), x[14], x[15]);
+        x[14] = x14;
+        x[15] = x15;
+        // stage 5
+        for (a, b) in [
+            (0usize, 4usize),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+            (8, 12),
+            (9, 13),
+            (10, 14),
+            (11, 15),
+        ] {
+            let (s, d) = adds_subs(x[a], x[b]);
+            x[a] = s;
+            x[b] = d;
+        }
+        // stage 6
+        let (x4, x5) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x[4], x[5]);
+        x[4] = x4;
+        x[5] = x5;
+        let (x6, x7) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x[6], x[7]);
+        x[6] = x6;
+        x[7] = x7;
+        let (x12, x13) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x[12], x[13]);
+        x[12] = x12;
+        x[13] = x13;
+        let (x14, x15) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x[14], x[15]);
+        x[14] = x14;
+        x[15] = x15;
+        // stage 7
+        for (a, b) in [
+            (0usize, 2usize),
+            (1, 3),
+            (4, 6),
+            (5, 7),
+            (8, 10),
+            (9, 11),
+            (12, 14),
+            (13, 15),
+        ] {
+            let (s, d) = adds_subs(x[a], x[b]);
+            x[a] = s;
+            x[b] = d;
+        }
+        // stage 8
+        for (a, b) in [(2usize, 3usize), (6, 7), (10, 11), (14, 15)] {
+            let (s, d) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x[a], x[b]);
+            x[a] = s;
+            x[b] = d;
+        }
+        // stage 9
+        let z = _mm256_setzero_si256();
+        [
+            x[0],
+            _mm256_subs_epi16(z, x[8]),
+            x[12],
+            _mm256_subs_epi16(z, x[4]),
+            x[6],
+            _mm256_subs_epi16(z, x[14]),
+            x[10],
+            _mm256_subs_epi16(z, x[2]),
+            x[3],
+            _mm256_subs_epi16(z, x[11]),
+            x[15],
+            _mm256_subs_epi16(z, x[7]),
+            x[5],
+            _mm256_subs_epi16(z, x[13]),
+            x[9],
+            _mm256_subs_epi16(z, x[1]),
+        ]
+    };
+
+    // `iidentity16_avx2` — the ssse3 shape at ymm width:
+    // adds(mulhrs(v, frac << 3), adds(v, v)), frac = 2 * (NEW_SQRT2 - 4096).
+    let iidtx16 = |i: &[__m256i; 16]| -> [__m256i; 16] {
+        let sc = _mm256_set1_epi16(
+            ((2 * (crate::transform::cospi::NEW_SQRT2
+                - (1 << crate::transform::cospi::NEW_SQRT2_BITS)))
+                << (15 - crate::transform::cospi::NEW_SQRT2_BITS)) as i16,
+        );
+        let mut out = [_mm256_setzero_si256(); 16];
+        for (o, v) in out.iter_mut().zip(i.iter()) {
+            *o = _mm256_adds_epi16(_mm256_mulhrs_epi16(*v, sc), _mm256_adds_epi16(*v, *v));
+        }
+        out
+    };
+
+    let run16 = |k: Inv16, i: &[__m256i; 16]| -> [__m256i; 16] {
+        match k {
+            Inv16::Dct => idct16(i),
+            Inv16::Adst => iadst16(i),
+            Inv16::Idtx => iidtx16(i),
+        }
+    };
+
+    // `load_buffer_32bit_to_16bit_w16_avx2`: `w[c]` = column `c`, lanes = rows
+    // `[0-7 | 8-15]` (stacked row-groups); `packs_epi32` + `permute4x64 0xD8`
+    // is C's per-half pack fix. The max-abs bound accumulates on the raw i32
+    // input, exactly as the xmm version.
+    let mut mx = _mm256_setzero_si256();
+    let mut w = [_mm256_setzero_si256(); 16];
+    for (c, v) in w.iter_mut().enumerate() {
+        let base = c * 16;
+        let (a, b) = match (
+            input.get(base..base + 8).and_then(|s| <&[i32; 8]>::try_from(s).ok()),
+            input
+                .get(base + 8..base + 16)
+                .and_then(|s| <&[i32; 8]>::try_from(s).ok()),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return false,
+        };
+        let va = _mm256_loadu_si256(a);
+        let vb = _mm256_loadu_si256(b);
+        mx = _mm256_max_epu32(mx, _mm256_max_epu32(_mm256_abs_epi32(va), _mm256_abs_epi32(vb)));
+        *v = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(va, vb));
+    }
+    let over = _mm256_cmpgt_epi32(
+        _mm256_sub_epi32(mx, _mm256_set1_epi32(bound)),
+        _mm256_setzero_si256(),
+    );
+    if _mm256_testz_si256(over, over) == 0 {
+        return false;
+    }
+
+    // Pass 1 (rows): 16 registers = columns, lanes = rows. `mulhrs(1<<13)` is
+    // `round_shift_array(., 2)` — `INV_SHIFT[TX_16X16][0] == -2`.
+    let o = run16(kr, &w);
+    let row_shift = _mm256_set1_epi16(1 << 13);
+    for (v, o) in w.iter_mut().zip(o.iter()) {
+        *v = _mm256_mulhrs_epi16(*o, row_shift);
+    }
+
+    // `transpose_16bit_16x16_avx2` verbatim: LOADL/LOADR gather the 128-lane
+    // halves (permute2x128), then two `transpose2_8x8_avx2` networks. Input
+    // `w[c]` lanes = rows; output `ci[r]` = row `r`, lanes = columns.
+    let mut tt = [_mm256_setzero_si256(); 16];
+    for i in 0..8 {
+        tt[i] = _mm256_permute2x128_si256::<0x20>(w[i], w[i + 8]);
+        tt[8 + i] = _mm256_permute2x128_si256::<0x31>(w[i], w[i + 8]);
+    }
+    let tr8x8 = |m: &[__m256i; 8]| -> [__m256i; 8] {
+        let mut tt2 = [_mm256_setzero_si256(); 8];
+        let mut uu = [_mm256_setzero_si256(); 8];
+        for i in 0..4 {
+            tt2[2 * i] = _mm256_unpacklo_epi16(m[2 * i], m[2 * i + 1]);
+            tt2[2 * i + 1] = _mm256_unpackhi_epi16(m[2 * i], m[2 * i + 1]);
+        }
+        for i in 0..2 {
+            uu[i] = _mm256_unpacklo_epi32(tt2[i], tt2[i + 2]);
+            uu[i + 2] = _mm256_unpackhi_epi32(tt2[i], tt2[i + 2]);
+            uu[i + 4] = _mm256_unpacklo_epi32(tt2[i + 4], tt2[i + 6]);
+            uu[i + 6] = _mm256_unpackhi_epi32(tt2[i + 4], tt2[i + 6]);
+        }
+        let mut o = [_mm256_setzero_si256(); 8];
+        for i in 0..2 {
+            o[2 * i] = _mm256_unpacklo_epi64(uu[2 * i], uu[2 * i + 4]);
+            o[2 * i + 1] = _mm256_unpackhi_epi64(uu[2 * i], uu[2 * i + 4]);
+            o[2 * i + 4] = _mm256_unpacklo_epi64(uu[2 * i + 1], uu[2 * i + 5]);
+            o[2 * i + 5] = _mm256_unpackhi_epi64(uu[2 * i + 1], uu[2 * i + 5]);
+        }
+        o
+    };
+    let tlo = tr8x8(<&[__m256i; 8]>::try_from(&tt[..8]).unwrap());
+    let thi = tr8x8(<&[__m256i; 8]>::try_from(&tt[8..]).unwrap());
+    let mut ci = [_mm256_setzero_si256(); 16];
+    for i in 0..8 {
+        ci[i] = tlo[i];
+        ci[8 + i] = thi[i];
+    }
+    // lr_flip: output column c reads input column 15-c — a full 16-lane
+    // reversal = half-swap (permute2x128) + per-half 8-lane reverse (the xmm
+    // version's shufflehi/shufflelo/0x4E triplet).
+    if lr_flip {
+        for v in ci.iter_mut() {
+            let s = _mm256_permute2x128_si256::<0x01>(*v, *v);
+            *v = _mm256_shuffle_epi32::<0x4E>(_mm256_shufflehi_epi16::<0x1B>(
+                _mm256_shufflelo_epi16::<0x1B>(s),
+            ));
+        }
+    }
+
+    // Pass 2 (columns): `ci[r]` = row r, lanes = columns. `mulhrs(2048)` is
+    // `round_shift_array(., 4)` — `INV_SHIFT[TX_16X16][1] == -4`.
+    let mut co = [_mm256_setzero_si256(); 16];
+    let o = run16(kc, &ci);
+    let col_shift = _mm256_set1_epi16(2048);
+    for (v, o) in co.iter_mut().zip(o.iter()) {
+        *v = _mm256_mulhrs_epi16(*o, col_shift);
+    }
+
+    // `lowbd_write_buffer_16xn_avx2`: register index = row (`ud_flip` reads
+    // `co[15 - r]`), lanes = the 16 output columns.
+    let zero = _mm256_setzero_si256();
+    match output {
+        InvDst::U16(output) => {
+            let hi = _mm256_set1_epi16(((1i32 << bd) - 1) as i16);
+            for r in 0..16usize {
+                let src_i = if ud_flip { 15 - r } else { r };
+                let idx = r * stride;
+                let dst: &mut [u16; 16] = match output
+                    .get_mut(idx..idx + 16)
+                    .and_then(|s| s.try_into().ok())
+                {
+                    Some(d) => d,
+                    None => return false,
+                };
+                let d = _mm256_loadu_si256(dst);
+                let sum = _mm256_min_epi16(_mm256_max_epi16(_mm256_add_epi16(d, co[src_i]), zero), hi);
+                _mm256_storeu_si256(dst, sum);
+            }
+        }
+        InvDst::U8(output) => {
+            for r in 0..16usize {
+                let src_i = if ud_flip { 15 - r } else { r };
+                let idx = r * stride;
+                let dst: &mut [u8; 16] = match output
+                    .get_mut(idx..idx + 16)
+                    .and_then(|s| s.try_into().ok())
+                {
+                    Some(d) => d,
+                    None => return false,
+                };
+                let d = _mm256_cvtepu8_epi16(_mm_loadu_si128(dst));
+                let sum = _mm256_add_epi16(d, co[src_i]);
+                // Per-half pack leaves [u8 s0-7 | u8 s8-15] in qwords 0 and 2;
+                // `permute4x64 0x08` gathers them into the low xmm.
+                let p = _mm256_permute4x64_epi64::<0x08>(_mm256_packus_epi16(sum, zero));
+                _mm_storeu_si128(dst, _mm256_castsi256_si128(p));
             }
         }
     }
