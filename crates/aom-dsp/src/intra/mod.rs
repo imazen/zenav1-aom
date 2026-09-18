@@ -760,7 +760,11 @@ pub fn dr_predict_high(
     let dy = dir::get_dy(angle);
     if angle > 0 && angle < 90 {
         let above = dir::EdgeRef16::new(above_data, pad);
-        dir::z1_high(dst, dst_stride, bw, bh, &above, upsample_above, dx);
+        if bd == 8 {
+            dir::z1_high_u8e(dst, dst_stride, bw, bh, &above, upsample_above, dx);
+        } else {
+            dir::z1_high(dst, dst_stride, bw, bh, &above, upsample_above, dx);
+        }
     } else if angle > 90 && angle < 180 {
         let above = dir::EdgeRef16::new(above_data, pad);
         let left = dir::EdgeRef16::new(left_data, pad);

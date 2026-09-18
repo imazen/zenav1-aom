@@ -56,7 +56,7 @@ fn rpo2_5(v: i32) -> u8 {
 }
 
 #[inline]
-fn rpo2_5_16(v: i32) -> u16 {
+pub(crate) fn rpo2_5_16(v: i32) -> u16 {
     ((v + 16) >> 5) as u16
 }
 
@@ -190,7 +190,7 @@ pub fn z3(dst: &mut [u8], stride: usize, bw: usize, bh: usize, left: &EdgeRef, u
 // references the differentials compare against (`tests/dir_simd_diff.rs`) and
 // are exactly the C transcriptions they always were.
 
-use crate::intra::dir_simd::{span_fits_i16, z1_rows};
+use crate::intra::dir_simd::{span_fits_i16, z1_rows, z1_rows_u8e};
 
 /// The z1 vector-path predicate, named so the driver and the reach test cannot
 /// drift apart (`dir_simd::reach`). `up <= 1`: `up == 1` makes the taps
@@ -258,6 +258,41 @@ pub fn z1_high(
         dx,
         up,
     );
+}
+
+/// bd8 z1: downcast the assembled edge to u8 once, then run
+/// [`z1_rows_u8e`] — `av1_dr_prediction_z1_avx2`'s lowbd shape (u8 loads
+/// widened to i16 lanes) storing straight into the u16 dst. Every stored
+/// lane is the identical `rpo2_5_16` output [`z1_high`] produces; at bd8 all
+/// edge samples fit u8 by definition. Callers must gate on `bd == 8`.
+pub fn z1_high_u8e(
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &EdgeRef16,
+    up: i32,
+    dx: i32,
+) {
+    let max_base_x = (((bw + bh) as i32) - 1) << up;
+    let lo = above.idx(0);
+    let hi = above.idx(max_base_x);
+    // Same shape gate as `z1_vec_applies` (up <= 1, bw >= 8, span in range).
+    // The bd8 contract makes the span u8-bounded by construction — assembled
+    // edges carry recon samples (<=255), defaults (base+-1 = 127/129) or
+    // filtered pixel-domain values — so the downcast is exact, the same trust
+    // libaom's lowbd path places in its u8 buffers. `debug_assert` keeps the
+    // claim honest in test builds without costing the hot path a scan.
+    if !(0..=1).contains(&up) || bw < 8 || hi >= above.data().len() || hi + 1 > 320 {
+        z1_high(dst, stride, bw, bh, above, up, dx);
+        return;
+    }
+    debug_assert!(above.data()[lo..=hi].iter().all(|&v| v <= u8::MAX as u16));
+    let mut e8 = [0u8; 320];
+    for (d, &s) in e8[..hi + 1].iter_mut().zip(above.data().iter()) {
+        *d = s as u8;
+    }
+    z1_rows_u8e(dst, stride, bw, bh, &e8, lo, dx, up);
 }
 
 /// `av1_highbd_dr_prediction_z1_c` — the never-dispatched scalar core.

@@ -260,3 +260,71 @@ fn the_angle_grid_reaches_all_three_predictors() {
     assert!(n1 >= 8 && n2 >= 8 && n3 >= 4, "{n1}/{n2}/{n3}");
     assert_ne!(DR_INTRA_DERIVATIVE[3], 0);
 }
+
+/// `z1_high_u8e` (the bd8 lowbd-shape kernel: u8 edge loads widened to i16
+/// lanes, stored into the u16 dst) must be bit-identical to `z1_high` on
+/// every bd8 cell — the path's contract is that the edge fits u8, which the
+/// `bd == 8` dispatcher guarantees by construction.
+#[test]
+fn z1_u8e_bit_identical_to_z1_high() {
+    use aom_dsp::intra::dir::z1_high_u8e;
+    let _serial = crate::dispatch_serial::dispatch_serial();
+    let mut simd_perms = 0usize;
+    let mut u8e_cells = 0usize;
+    let mut u8e_up_cells = 0usize;
+    let report = for_each_token_permutation(CompileTimePolicy::Warn, |_tier| {
+        if if cfg!(target_arch = "aarch64") {
+            archmage::NeonToken::summon().is_some()
+        } else {
+            archmage::X64V3Token::summon().is_some()
+        } {
+            simd_perms += 1;
+        }
+        let mut rng = Rng(0x_08e5_1770_9032_026a);
+        let mut above = vec![0u16; BUF];
+        for kind in 0..6usize {
+            fill_edge(&mut above, kind, 255, &mut rng);
+            let a = EdgeRef16::new(&above, PAD);
+            for &(bw, bh) in &TX_DIMS {
+                for &stride in &[bw, bw + 5] {
+                    for &filter_type in &[0i32, 1] {
+                        for angle in angles() {
+                            if !(angle > 0 && angle < 90) {
+                                continue;
+                            }
+                            let dx = get_dx(angle);
+                            let up =
+                                use_upsample(bw as i32, bh as i32, angle - 90, filter_type);
+                            let n = bh * stride;
+                            let (mut got, mut want) = (vec![0u16; n], vec![0u16; n]);
+                            z1_high_u8e(&mut got, stride, bw, bh, &a, up, dx);
+                            z1_high(&mut want, stride, bw, bh, &a, up, dx);
+                            if up == 0 && bw >= 8 {
+                                u8e_cells += 1;
+                            }
+                            if up == 1 && bw >= 8 {
+                                u8e_up_cells += 1;
+                            }
+                            assert_eq!(
+                                got, want,
+                                "z1u8e {bw}x{bh} stride={stride} up={up} angle={angle} \
+                                 kind={kind}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+    eprintln!(
+        "z1 u8e parity: {report}  (vec-admitted cells up0={u8e_cells} up1={u8e_up_cells})"
+    );
+    assert!(simd_perms >= 1);
+    assert!(report.permutations_run >= 2);
+    assert!(
+        u8e_cells > 0 && u8e_up_cells > 0,
+        "no u8e cells admitted: up0={u8e_cells} up1={u8e_up_cells} — the \
+         comparison would be vacuous"
+    );
+}
+

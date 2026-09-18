@@ -1057,6 +1057,215 @@ pub(crate) fn z1_rows(
     );
 }
 
+/// Dispatch entry for the z1 u8-edge path — `av1_dr_prediction_z1_avx2`'s
+/// shape (`cvtepu8_epi16` + `mullo` per 16) for the encode loop's bd8 case:
+/// the assembled edge is downcast to u8 once per call and the i16-lane
+/// results are stored straight into the u16 dst (no `packus` — the values
+/// are the identical `rpo2_5` outputs, already pixel-domain).
+pub(crate) fn z1_rows_u8e(
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u8],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = crate::dispatch::scalar_forced();
+        archmage::incant!(
+            z1_rows_u8e_impl(dst, stride, bw, bh, edge, pad, dx, up),
+            [v3, scalar]
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let mut e16 = [0u16; 320];
+        let need = edge.len().min(e16.len());
+        for (d, &s) in e16[..need].iter_mut().zip(edge.iter()) {
+            *d = s as u16;
+        }
+        super::dir::z1_high_scalar(
+            dst,
+            stride,
+            bw,
+            bh,
+            &super::dir::EdgeRef16::new(&e16, pad),
+            up,
+            dx,
+        );
+    }
+}
+
+/// Scalar tier — `super::dir::z1_high_scalar` verbatim on the u8 edge
+/// (identical math; every edge value fits u8 by construction).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn z1_rows_u8e_impl_scalar(
+    _t: archmage::ScalarToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u8],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    let frac_bits = 6 - up;
+    let inc = 1i32 << up;
+    let max_base_x = (((bw + bh) as i32) - 1) << up;
+    let fillv = edge[(pad as i32 + max_base_x) as usize] as u16;
+    let mut x = dx;
+    for r in 0..bh {
+        let base0 = x >> frac_bits;
+        let shift = ((x << up) & 0x3F) >> 1;
+        x += dx;
+        if base0 >= max_base_x {
+            for rr in r..bh {
+                dst[rr * stride..rr * stride + bw].fill(fillv);
+            }
+            return;
+        }
+        let n_act = bw.min(((max_base_x - base0 + inc - 1) >> up) as usize);
+        let start = (pad as i32 + base0) as usize;
+        for (i, p) in dst[r * stride..r * stride + bw].iter_mut().enumerate() {
+            *p = if i < n_act {
+                let t = start + i * inc as usize;
+                super::dir::rpo2_5_16(edge[t] as i32 * (32 - shift) + edge[t + 1] as i32 * shift)
+            } else {
+                fillv
+            };
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[magetypes(define(i16x8), v3, -scalar)]
+#[allow(clippy::too_many_arguments)]
+fn z1_rows_u8e_impl(
+    _t: Token,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u8],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    use archmage::intrinsics::x86_64::*;
+    const EVENS: [u8; 32] = [
+        0, 2, 4, 6, 8, 10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0, 2, 4, 6, 8, 10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
+    const EVENS128: [u8; 16] = [
+        0, 2, 4, 6, 8, 10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
+    let frac_bits = 6 - up;
+    let inc = 1i32 << up;
+    let inc_us = inc as usize;
+    let max_base_x = (((bw + bh) as i32) - 1) << up;
+    let fillv = edge[(pad as i32 + max_base_x) as usize] as u16;
+    let sixteen = _mm256_set1_epi16(16);
+    let evens = _mm256_loadu_si256(&EVENS);
+    let evens128 = _mm_loadu_si128(&EVENS128);
+    let mut x = dx;
+    for r in 0..bh {
+        let base0 = x >> frac_bits;
+        let shift = ((x << up) & 0x3F) >> 1;
+        x += dx;
+        if base0 >= max_base_x {
+            for rr in r..bh {
+                dst[rr * stride..rr * stride + bw].fill(fillv);
+            }
+            return;
+        }
+        let n_act = bw.min(((max_base_x - base0 + inc - 1) >> up) as usize);
+        let sv = _mm256_set1_epi16(shift as i16);
+        let start = (pad as i32 + base0) as usize;
+        let drow = &mut dst[r * stride..r * stride + bw];
+        let mut i = 0usize;
+        while i + 16 <= n_act {
+            let s = start + i * inc_us;
+            let (v0, v1) = if up == 0 {
+                let a: &[u8; 16] = edge[s..s + 16].try_into().unwrap();
+                let b: &[u8; 16] = edge[s + 1..s + 17].try_into().unwrap();
+                (
+                    _mm256_cvtepu8_epi16(_mm_loadu_si128(a)),
+                    _mm256_cvtepu8_epi16(_mm_loadu_si128(b)),
+                )
+            } else {
+                let w: &[u8; 32] = edge[s..s + 32].try_into().unwrap();
+                let w2: &[u8; 32] = edge[s + 1..s + 33].try_into().unwrap();
+                let e0 = _mm256_permute4x64_epi64::<0xD8>(_mm256_shuffle_epi8(
+                    _mm256_loadu_si256(w),
+                    evens,
+                ));
+                let e1 = _mm256_permute4x64_epi64::<0xD8>(_mm256_shuffle_epi8(
+                    _mm256_loadu_si256(w2),
+                    evens,
+                ));
+                (
+                    _mm256_cvtepu8_epi16(_mm256_castsi256_si128(e0)),
+                    _mm256_cvtepu8_epi16(_mm256_castsi256_si128(e1)),
+                )
+            };
+            let res = _mm256_srai_epi16::<5>(_mm256_add_epi16(
+                _mm256_add_epi16(
+                    _mm256_slli_epi16::<5>(v0),
+                    _mm256_mullo_epi16(_mm256_sub_epi16(v1, v0), sv),
+                ),
+                sixteen,
+            ));
+            let t: &mut [u16; 16] = (&mut drow[i..i + 16]).try_into().unwrap();
+            _mm256_storeu_si256(t, res);
+            i += 16;
+        }
+        if i + 8 <= n_act {
+            let s = start + i * inc_us;
+            let sv128 = _mm_set1_epi16(shift as i16);
+            let (v0, v1) = if up == 0 {
+                let a: &[u8; 8] = edge[s..s + 8].try_into().unwrap();
+                let b: &[u8; 8] = edge[s + 1..s + 9].try_into().unwrap();
+                (
+                    _mm_cvtepu8_epi16(_mm_loadu_si64(a)),
+                    _mm_cvtepu8_epi16(_mm_loadu_si64(b)),
+                )
+            } else {
+                let w: &[u8; 16] = edge[s..s + 16].try_into().unwrap();
+                let w2: &[u8; 16] = edge[s + 1..s + 17].try_into().unwrap();
+                (
+                    _mm_cvtepu8_epi16(_mm_shuffle_epi8(_mm_loadu_si128(w), evens128)),
+                    _mm_cvtepu8_epi16(_mm_shuffle_epi8(_mm_loadu_si128(w2), evens128)),
+                )
+            };
+            let res = _mm_srai_epi16::<5>(_mm_add_epi16(
+                _mm_add_epi16(
+                    _mm_slli_epi16::<5>(v0),
+                    _mm_mullo_epi16(_mm_sub_epi16(v1, v0), sv128),
+                ),
+                _mm_set1_epi16(16),
+            ));
+            let t: &mut [u16; 8] = (&mut drow[i..i + 8]).try_into().unwrap();
+            _mm_storeu_si128(t, res);
+            i += 8;
+        }
+        for j in i..n_act {
+            let t = start + j * inc_us;
+            drow[j] = super::dir::rpo2_5_16(
+                edge[t] as i32 * (32 - shift) + edge[t + 1] as i32 * shift,
+            );
+        }
+        if n_act < bw {
+            drow[n_act..].fill(fillv);
+        }
+    }
+}
+
 /// Dispatch entry for the z3 vec path — ALL columns in ONE `incant!`.
 ///
 /// # Shape: transposed z1, the same trick `av1_highbd_dr_prediction_z3_avx2`
