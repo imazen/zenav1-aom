@@ -93,7 +93,7 @@ use crate::encode_intra::{
     encode_intra_block_plane_uv, encode_intra_block_plane_y,
 };
 use crate::intra_uv_rd::{
-    UV_CFL_PRED, UvRdEnv, av1_get_tx_size_uv, chroma_plane_offset, is_chroma_reference,
+    UV_CFL_PRED, UvRdEnv, av1_get_tx_size_uv, is_chroma_reference,
 };
 use crate::partition::PartRdStats;
 use crate::encode_intra::{TxbEncode, TxbsVec};
@@ -578,6 +578,29 @@ pub struct SbEncodeEnv<'a> {
 }
 
 impl SbEncodeEnv<'_> {
+    /// Band-relative luma offset of the block at absolute mi (`mi_row`,
+    /// `mi_col`): `(mi_row*4)*stride + mi_col*4 - base_y`. The one place the
+    /// src/recon band convention lives — see [`SbEncodeEnv::src_y`].
+    #[inline]
+    pub fn y_off(&self, mi_row: i32, mi_col: i32) -> usize {
+        (mi_row as usize * 4) * self.stride + mi_col as usize * 4 - self.base_y
+    }
+
+    /// Band-relative chroma offset — [`crate::intra_uv_rd::chroma_plane_offset`]
+    /// on this env's `base_uv`/`stride`/`ss_x`/`ss_y`.
+    #[inline]
+    pub fn uv_off(&self, mi_row: i32, mi_col: i32, bsize: usize) -> usize {
+        crate::intra_uv_rd::chroma_plane_offset(
+            self.base_uv,
+            self.stride,
+            mi_row,
+            mi_col,
+            bsize,
+            self.ss_x,
+            self.ss_y,
+        )
+    }
+
     /// `AOMMIN(cm->width, cm->height)` — the input to every `is_480p_or_larger`
     /// / `is_720p_or_larger` framesize predicate. See
     /// [`frame_width`](Self::frame_width) for why this is not `min(mi_cols,
@@ -1080,7 +1103,7 @@ pub fn encode_b_intra_dry(
             .expect("an inter leaf needs SbEncodeEnv::ref_frame");
         let bw = crate::tx_search::BLK_W_B[bsize];
         let bh = crate::tx_search::BLK_H_B[bsize];
-        let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+        let ref_off_y = env.y_off(mi_row, mi_col);
         let a0 = mi_col as usize;
         let l0 = (mi_row & 31) as usize;
         // Luma: co-located copy, clipped to the recon's mi-aligned extent
@@ -1107,9 +1130,7 @@ pub fn encode_b_intra_dry(
         let mut u_out = None;
         let mut v_out = None;
         if !env.monochrome && is_chroma_ref {
-            let ref_off_uv = chroma_plane_offset(
-                env.base_uv, env.stride, mi_row, mi_col, bsize, env.ss_x, env.ss_y,
-            );
+            let ref_off_uv = env.uv_off(mi_row, mi_col, bsize);
             let plane_bsize = get_plane_block_size(bsize, env.ss_x, env.ss_y);
             let (pmw, pmh) = (MI_SIZE_WIDE_B[plane_bsize], MI_SIZE_HIGH_B[plane_bsize]);
             // Padded plane-block extent (4x4 minimum for sub-8x8 luma) at the
@@ -1191,7 +1212,7 @@ pub fn encode_b_intra_dry(
     if winner.use_intrabc {
         let bw = crate::tx_search::BLK_W_B[bsize];
         let bh = crate::tx_search::BLK_H_B[bsize];
-        let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+        let ref_off_y = env.y_off(mi_row, mi_col);
         let a0 = mi_col as usize;
         let l0 = (mi_row & 31) as usize;
         let (fm_r, fm_c) = (winner.dv_row / 8, winner.dv_col / 8);
@@ -1231,8 +1252,7 @@ pub fn encode_b_intra_dry(
         let mut u_out = None;
         let mut v_out = None;
         if !env.monochrome && is_chroma_ref {
-            let ref_off_uv =
-                chroma_plane_offset(env.base_uv, env.stride, mi_row, mi_col, bsize, env.ss_x, env.ss_y);
+            let ref_off_uv = env.uv_off(mi_row, mi_col, bsize);
             let plane_bsize = get_plane_block_size(bsize, env.ss_x, env.ss_y);
             let (pmw, pmh) = (MI_SIZE_WIDE_B[plane_bsize], MI_SIZE_HIGH_B[plane_bsize]);
             // The chroma PLANE block is padded to a 4x4 minimum, so for sub-8x8
@@ -1297,7 +1317,7 @@ pub fn encode_b_intra_dry(
     let store_y = store_cfl_required(env.monochrome, is_chroma_ref, winner.uv_mode);
 
     // Step 2, plane 0: av1_encode_intra_block_plane(AOM_PLANE_Y).
-    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+    let ref_off_y = env.y_off(mi_row, mi_col);
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
     let mut above_y = [0i8; 32];
@@ -1403,7 +1423,7 @@ pub fn encode_b_intra_dry(
     if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
         let bw = crate::tx_search::BLK_W_B[bsize];
         let bh = crate::tx_search::BLK_H_B[bsize];
-        let off = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+        let off = env.y_off(mi_row, mi_col);
         let mut rh = 0u64;
         let mut col = String::new();
         for r in 0..bh.min(16) {
@@ -1424,15 +1444,7 @@ pub fn encode_b_intra_dry(
     let mut v_out = None;
     let uv_tx = av1_get_tx_size_uv(bsize, env.lossless, env.ss_x, env.ss_y);
     if !env.monochrome && is_chroma_ref {
-        let ref_off_uv = chroma_plane_offset(
-            env.base_uv,
-            env.stride,
-            mi_row,
-            mi_col,
-            bsize,
-            env.ss_x,
-            env.ss_y,
-        );
+        let ref_off_uv = env.uv_off(mi_row, mi_col, bsize);
         let plane_bsize = get_plane_block_size(bsize, env.ss_x, env.ss_y);
         let (pmw, pmh) = (MI_SIZE_WIDE_B[plane_bsize], MI_SIZE_HIGH_B[plane_bsize]);
         let au = (mi_col >> env.ss_x) as usize;
@@ -2668,7 +2680,7 @@ fn encode_b_intrabc_coeff(
     let mi_h = MI_SIZE_HIGH_B[bsize];
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
-    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+    let ref_off_y = env.y_off(mi_row, mi_col);
     let use_trellis = crate::encode_intra::is_trellis_used(env.enable_optimize_b, output_enabled);
     // Frame-edge-clipped extents via the validated `max_block_wide/high` port
     // (av1_common_int.h:1567/1581) — hand-rolled mi-difference clips are wrong
@@ -2782,15 +2794,7 @@ fn encode_b_intrabc_coeff(
     let mut u_out = None;
     let mut v_out = None;
     if !env.monochrome && is_chroma_ref {
-        let ref_off_uv = chroma_plane_offset(
-            env.base_uv,
-            env.stride,
-            mi_row,
-            mi_col,
-            bsize,
-            env.ss_x,
-            env.ss_y,
-        );
+        let ref_off_uv = env.uv_off(mi_row, mi_col, bsize);
         let plane_bsize = get_plane_block_size(bsize, env.ss_x, env.ss_y);
         let (pmw, pmh) = (MI_SIZE_WIDE_B[plane_bsize], MI_SIZE_HIGH_B[plane_bsize]);
         // The chroma plane block is padded to a 4x4 minimum, so for sub-8x8

@@ -196,7 +196,7 @@ use crate::encode_sb::{
 use crate::hog::{prune_intra_mode_with_hog_uv, prune_intra_mode_with_hog_y};
 use crate::intra_rd::{Block4x4VarInfo, IntraSbyGates, IntraSbySearchCfg, WinnerModeCfg};
 use crate::intra_uv_rd::{
-    UV_CFL_PRED, UvLoopPolicy, UvRdEnv, av1_get_tx_size_uv, chroma_plane_offset,
+    UV_CFL_PRED, UvLoopPolicy, UvRdEnv, av1_get_tx_size_uv,
     is_chroma_reference,
 };
 use crate::mode_costs::TxSizeCosts;
@@ -851,7 +851,7 @@ fn leaf_pick_sb_modes(
     let up_available = mi_row > env.tile_row_start;
     let left_available = mi_col > env.tile_col_start;
     let is_chroma_ref = is_chroma_reference(mi_row, mi_col, bsize, env.ss_x, env.ss_y);
-    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+    let ref_off_y = env.y_off(mi_row, mi_col);
     let a0 = mi_col as usize;
     let l0 = (mi_row & 31) as usize;
 
@@ -1296,15 +1296,7 @@ fn leaf_pick_sb_modes(
     let mut var_cache = vc.entries;
 
     // Chroma args (num_planes > 1).
-    let ref_off_uv = chroma_plane_offset(
-        env.base_uv,
-        env.stride,
-        mi_row,
-        mi_col,
-        bsize,
-        env.ss_x,
-        env.ss_y,
-    );
+    let ref_off_uv = env.uv_off(mi_row, mi_col, bsize);
     let mut chroma_up_available = up_available;
     let mut chroma_left_available = left_available;
     if env.ss_x != 0 && mi_w < 2 {
@@ -3324,7 +3316,7 @@ pub fn rd_pick_partition_real(
     // same established simplification as the AB stage's handling).
     let prune_rect_part_using_4x4_var_deviation = cfg.allintra && cfg.speed >= 6;
     if cfg.allintra && (bsize >= 6 || prune_rect_part_using_4x4_var_deviation) {
-        let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+        let ref_off_y = env.y_off(mi_row, mi_col);
         let mb_right = (env.mi_cols - mi_w as i32 - mi_col) * 4 * 8;
         let mb_bottom = (env.mi_rows - MI_SIZE_HIGH_B[bsize] as i32 - mi_row) * 4 * 8;
         let (var_min, var_max) = log_sub_block_var(
@@ -3947,7 +3939,7 @@ pub fn rd_pick_partition_real(
         // (harmless duplication, matches this crate's established per-site
         // convention for small helper computations -- e.g. pack.rs's own
         // PARTITION_* const duplication, module docs).
-        let ab_node_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+        let ab_node_off_y = env.y_off(mi_row, mi_col);
         let pb_source_variance =
             perpixel_variance_y(env.src_y, ab_node_off_y, env.stride, bsize, env.bd);
 
@@ -4208,7 +4200,7 @@ pub fn rd_pick_partition_real(
             const BLK_H: [usize; 22] = [
                 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
             ];
-            let node_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+            let node_off_y = env.y_off(mi_row, mi_col);
             // pb_source_variance = x->source_variance: identical to the
             // NONE-stage leaf's own value regardless of whether NONE ran
             // (av1_get_perpixel_variance_facade is a pure fn of block
@@ -5722,7 +5714,7 @@ fn nonrd_leaf_pick_and_encode(
     // x->source_variance: pick_sb_modes_nonrd:2306-2311 recomputes per leaf
     // (bsize < sb_size, or the SB-level value is the identical
     // perpixel-variance — module docs in nonrd_pickmode.rs).
-    let ref_off_y = (mi_row as usize * 4) * env.stride + mi_col as usize * 4 - env.base_y;
+    let ref_off_y = env.y_off(mi_row, mi_col);
     let source_variance = perpixel_variance_y(env.src_y, ref_off_y, env.stride, bsize, env.bd);
     *last_source_variance = source_variance;
 

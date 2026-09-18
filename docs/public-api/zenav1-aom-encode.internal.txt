@@ -13,7 +13,7 @@
 #   pub types (struct/enum/trait/alias)       285
 #   pub consts/statics                        639
 #   free functions                            623
-#   inherent methods                          960
+#   inherent methods                          962
 #   struct fields                            1943
 #   enum variants                             174
 #   re-exports                                  1
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4675
+#   aom_encode                     4677
 #   u16                               4
 #   u8                                4
 
-## items (4669 lines)
+## items (4671 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -2905,6 +2905,8 @@ pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::frame_min_dim(&self) -> i32
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::frame_num_pixels(&self) -> i64
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::node_env(&self, usize, i32, i32) -> Self
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::node_rdmult(&self, usize, i32, i32) -> i32
+pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::uv_off(&self, i32, i32, usize) -> usize
+pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::y_off(&self, i32, i32) -> usize
 pub fn aom_encode::encode_sb::SbTree::any_intrabc(&self) -> bool
 pub fn aom_encode::encode_sb::SbTree::clone(&self) -> aom_encode::encode_sb::SbTree
 pub fn aom_encode::encode_sb::SbTree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
