@@ -86,3 +86,49 @@ Named, bounded, and no cheap lever found:
   byte-identical kernels.
 - **memcpy/memset classes**: diffuse across call sites (no dominant
   site; already class-mined on 2026-09-15).
+
+## Batch 3 tail (evening): bd8-u8 predictor probe + restoration folds
+
+Commits: `5441b36` (acc_stat_line 16-bit madd pair-fold + highbd_sse/variance
+SIMD swap in pick.rs), `10084a3` (calc_ab setup hoisted to per-rect),
+`00201ae` (z1 u8e: staged u8 edge → cvtepu8/pshufb i16-lane kernel → u16 dst).
+
+photo_512 cq27 s3 serial: 13,392,435,2xx → **13,324,204,447 Ir** (-68M this
+phase; session start 13,950,629,3xx → -626M total). Byte-identical at every
+step (8,822 B).
+
+### The u8-predictor verdict, measured
+
+- **z1 u8e −8.6M net.** The kernel is -13.3M (89.5M→76.2M); the per-call
+  u16→u8 edge stage costs ~14M after dropping the defensive >255 scan to a
+  `debug_assert` (the bd==8 gate makes u8 a codec invariant, same trust C's
+  lowbd buffers carry).
+- **z2 u8e REJECTED (+5M, reverted).** Its per-row suffix shrinks
+  (`c_end` grows down the rows), so most rows land on the 8-px arm where
+  `loadu_si64 + cvtepu8` (2 ops) costs more than one u16 `loadu` for the
+  same 8 i16 lanes. **u8 widens the load window, not the arithmetic
+  density** — it only pays on rows that fill the 16-px arm.
+- **z3 u8e not attempted**: the 8-row band transpose fixes lanes at 8
+  regardless of load width; u8 halves bytes loaded, not instructions.
+- **wiener/convolve pair-fold analyzed, skipped**: each output lane
+  consumes a different src position, so no load sharing — the madd fold
+  trades widen+mul+add for load+unpack+madd at par (~1.6x best case via
+  u8 staging ≈ -25M on a 94M kernel).
+
+### Updated residual map deltas
+
+- restoration flat self ≈ 740M vs C ≈ 300M: `calc_ab` 108M is i32
+  box-sum bound (LUT gather needs `vpgatherdd`, no safe archmage form);
+  `acc_stat_line` 120M still 3x C's win5 40M — the remaining gap is C's
+  maddubs u8-pair density needing a stats-layout rewrite (~deferred);
+  `integral_image` 3-pass vs running-sum is algorithmic.
+- predict: port ~1.39G vs C ~976M; `plan_dir_intra_high`+`assemble_dir_edges`
+  (196M) ≈ C's builder (165M) — edge pipeline is already competitive; the
+  gap concentrates in z2 (368M vs 194M — left-half gather; C uses
+  maskload+pshufb windows) and z1/z3 scalar arms on small blocks.
+- fwd txfm: port ~1.42G vs C ~890M — 4x4 at par, 16x16 ahead, 8x8 xmm-vs-ymm
+  (~285M vs 215M); generic-driver overhead ~140M self on unfused sizes.
+- chroma (`intra_sbuv` +490M) and committed-recon u16 paths: unchanged
+  verdict — the u8 recon-plane split (~300 sites) is the real fix and its
+  ROI per measured u8e kernel results is now demonstrably marginal; stays
+  a documented structural residual, not a blind spot.
