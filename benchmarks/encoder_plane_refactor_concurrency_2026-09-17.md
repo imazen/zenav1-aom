@@ -173,3 +173,40 @@ dual-walk complexity — same thing, honest framing.
    pixel path.
 3. Do NOT stage `src` to u8 inside tx search (measured: `sse_u16_u8` beats
    `sse_u8_u8` by an op per 16 px — 6 vs 7 ops; `subtract_block` is scalar).
+
+## 7. Addendum — what landed and what the measurement said (2026-09-18)
+
+Landed (all byte-identical, all pushed):
+
+- `b8f9cd6` — `LfSearchFrame<P: LfTrialPixel>` + `stage_lowbd`/`as_lowbd`:
+  lf pick stages the six planes u8 once and runs trials u8-native.
+  **−92.5M Ir** at 512² (2x2/4w), levels bit-identical vs live C.
+- `944ee88` — the deblock APPLY at bd8 filters the staged-u8 recon in
+  place and widens once into `deblocked` (clone + narrow + widen round
+  trip gone). Ir-neutral; structural win is the single staging owner.
+- `d174bc8` — panic-free band handout (`into_iter` cursor) +
+  `KeyFrameError::InternalInvariant`; `9ebf4e8` — `SbEncodeEnv::
+  {y_off,uv_off}` centralizing the band-offset convention.
+
+Measured-and-deferred, contra §6 step 1's breadth:
+
+- **CDEF stays u16.** `cdef_frame_u8` exists and is byte-identical but
+  measures ~6.6% heavier than narrow→u16-CDEF→widen (its working domain
+  is u16 and the u8 stores don't vectorize in the current abstraction).
+  Routing CDEF search/apply through u8 planes would be a pessimization.
+- **LR stays u16 for now, and that is a kernel program, not a storage
+  one.** `PlaneCtx` stages padded u16 copies (`dgd_pad`/`dst_pad`) and
+  borrows `src` regardless of the walk's plane representation; the
+  residual is the u16 SIMD kernel set (~1.0G Ir at 512²: acc_stat_line
+  177M, calc_ab 145M, wiener 129M, pixel_proj_error 112M, sgr_final
+  123M, …) vs C's ~380M lowbd twins. The fix is u8 twins of C's
+  `compute_stats`/`pixel_proj_error`/`sgr_*` lowbd kernels reading
+  staged u8 buffers — bounded per-kernel, byte-gated each.
+- **Option C (committed-recon u8 in the walk) remains deferred** — the
+  walk's residual is codegen density in already-SIMD kernels
+  (optimize_txb at parity+, quantize_fp/z3/nz_map bounded), and the
+  storage swap's unmeasured ROI does not cover its blast radius
+  (predictors, transforms, CFL, IntraBC, pack, phase-2 repack).
+
+Ship cell re-measured at HEAD: **1.29×** (median, 6 pairs, byte-exact
+40,237 B); real photo_1024 cross-check 1.27×.

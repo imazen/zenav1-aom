@@ -1,5 +1,50 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Post-walk u8 staging complete; ship cell re-measured 1.29× (2026-09-18)
+
+`944ee88` finishes the post-walk half of the u8 split: at bd8 the
+deblock APPLY now filters the lf pick's staged-u8 recon natively
+(`loop_filter_frame_u8_opt` in place) and widens once into the u16
+`deblocked` planes CDEF/LR read — the u16 clone + narrow + widen round
+trip is gone (a fresh narrow covers the speed>=6 no-pick path).
+Byte-identical 8928 B at 512²; `encoder_gate_lf_level_bit_exact_vs_real`
++ `encoder_gate_e2e_nonzero_lf_sweep` pass vs live C; Ir-neutral
+(21.115G vs 21.113G at 512² — the win is one less full-plane u16
+round-trip and a single staging owner, not instructions).
+
+**Ship cell re-measured at HEAD** (`eprof_x86 {port,c} 1024 1024 27 3
+1`, 6 interleaved pairs, byte-identical 40,237 B): port median
+**2113.5 ms** vs C **1634.3 ms** = **1.29×** (was 1.384× at the
+2026-09-15 record — the inv16x16/rect816 ymm + lf-u8-staging landings
+moved it). Real-image cross-check (`eprof_yuv`, photo_1024.yuv real
+frame, 1x1/1w): port 2413 ms vs C 1901 ms = **1.27×**; the port stream
+is byte-identical to HEAD~1 (no regression), and its port-vs-C byte
+difference on that cell is the pre-existing fleet-photo divergence
+class, unchanged by this work.
+
+**Evaluated and deferred, with the evidence:** the remaining pending
+items — a `PlaneView`/typed-carrier refactor over `SbEncodeEnv`'s
+planes and the committed-recon u16→u8 storage swap inside the tile
+walk — are NOT currently justified. The measured residual at 512² is
+kernel arithmetic, not storage: restoration's u16 SIMD kernels total
+~1.0G Ir (acc_stat_line 177M, try_restoration_unit 156M, sgr calc_ab
+145M, wiener 129M, pixel_proj_error 112M, calc_proj_params 83M,
+integral_image 70M, sgr_final 123M) vs C's ~380M lowbd u8 twins — and
+`PlaneCtx` stages padded u16 copies (`dgd_pad`/`dst_pad`) regardless of
+the walk's plane type, so a storage swap would not touch it. Closing
+it needs u8 twins of the LR statistics/projection kernel family (C's
+`compute_stats`/`pixel_proj_error`/`sgr_*` lowbd set) reading staged u8
+buffers — a kernel-port program, not a refactor. CDEF's `cdef_frame_u8`
+is already documented 6.6% SLOWER than widening→u16-CDEF→narrowing
+(narrow stores don't vectorize in the current abstraction), so CDEF
+stays u16. The committed-storage swap additionally reaches predictors,
+inverse transforms, CFL, IntraBC, pack and phase-2 repack — the
+highest-risk surface in the encoder — for unmeasured ROI. What IS
+landed: every post-walk stage that profits from u8 runs u8; every
+conversion routes through `aom_dsp::lowbd`; offsets are one named seam;
+band ownership is panic-free. aarch64 cross-compile clean;
+`api-doc-check` green (no new pub items).
+
 ## u8 lowbd prep: lf-search staging lands −92.5M; band handout panic-free (2026-09-18)
 
 The first slice of the u8 plane-storage split (the "u16-at-bd8 tax" —
