@@ -132,3 +132,41 @@ step (8,822 B).
   verdict — the u8 recon-plane split (~300 sites) is the real fix and its
   ROI per measured u8e kernel results is now demonstrably marginal; stays
   a documented structural residual, not a blind spot.
+
+## Batch 4 (same day, later): inverse-ymm landings + matched re-baseline
+
+Witness: `/tmp/real/photo_512.yuv` 512x512, cq27, `--cpu-used 3`, tile 1x1,
+1 worker — now a MATCHED pair (C arm re-profiled on the same cell).
+
+- `7719f35` inv 16x16 ymm fused inverse (stacked-halves): 21.659G -> 21.322G,
+  **-337M**, byte-identical.
+- `f329857` rect816 lane-doubling (ymm on the 16-element axis, xmm on the
+  other; ymm twins of idct8/iadst8/iidtx8): 21.322G -> 21.195G, **-127M**,
+  byte-identical.
+- `6884d15` fwd_8x8 rnd/cnt hoist + output preflight: -> 21.184G, **-11M**
+  (real; a -104M apparent kernel drop was LLVM un-merging a closure shared
+  with fwd_rect816 — renumbering noise, net measured on the total).
+
+### Matched re-baseline (same witness, same settings)
+
+Port **21.184G** vs C **15.256G** = **1.388x** (this cell; the retained
+1024^2 ship-cell gate stands at 1.384x median). Matched flat deltas:
+
+| item | port | C | note |
+|---|---|---|---|
+| optimize_txb | 5.75G | 5.45G | near parity (+5%) |
+| fwd txfm cluster | ~1.45G | ~0.80G | 8x8 428M vs 272M; per-call 397 vs 208 — codegen, not lanes (both xmm) |
+| inv txfm cluster | ~1.0G | ~0.55G | post-ymm: 16x16 w16 394M, rect816 xmm+ymm 351M, 8x8 214M |
+| quantize_fp | 498M | 276M | per-call 245 vs 143 Ir; instruction-level mirror already — residual is safe-Rust codegen + dispatch |
+| z3_cols | 196M | 77M | already band-transposed; per-8col scalar setup |
+| z2 cluster | 328M | 237M | left gather already tile-transposed |
+| txb_init_levels | 265M | 180M | already AVX2, shape arms; residual is pack fixups |
+| nz_map_contexts | 138M | 38M | safe-Rust scatter + per-tile checks; bounded ~1.4x on scatter |
+| getenv | ~0 | 350M | port caches env reads (OnceLock) — a port WIN |
+
+The transform gap is no longer lane-width on the inverse side (ymm landed);
+what remains is per-instruction codegen density inside already-SIMD kernels
+— the same class as the measured `#[inline]`/hoist experiments that net
+~0-11M each. The next real structural lever remains the bd8 u8 plane split
+(documented in `encoder_plane_refactor_concurrency_2026-09-17.md`), whose
+ROI is bounded by the measured u8e results: ~15% on 16px-dominant paths.
