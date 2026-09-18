@@ -3882,6 +3882,11 @@ pub fn encode_key_frame_with(
     // `cm->lf`'s zeroed levels (byte-inert — the header writer skips the whole
     // loop-filter block — but running a search C never runs would be a lie
     // about what this models).
+    // bd8 only: the staged u8 planes, kept past the pick so the deblock
+    // APPLY can filter the u8 recon natively and widen once into
+    // `deblocked` (the u16 clone + narrow + widen round trip collapses to
+    // one widen).
+    let mut recon8: Option<crate::lf_search::LfSearchFrameU8Bufs> = None;
     let derived_lf = if coded_lossless {
         LoopFilterLevels {
             filter_level: [0, 0],
@@ -3899,7 +3904,9 @@ pub fn encode_key_frame_with(
         // bit-identical: every trial SSE is the same integer either way).
         let lf_bufs = lf_frame.stage_lowbd();
         let lf_frame8 = lf_frame.as_lowbd(&lf_bufs);
-        pick_filter_level_mt(&lf_frame8, true, lf_sharpness, speed >= 4, n_workers)
+        let levels = pick_filter_level_mt(&lf_frame8, true, lf_sharpness, speed >= 4, n_workers);
+        recon8 = Some(lf_bufs);
+        levels
     } else {
         pick_filter_level_mt(&lf_frame, true, lf_sharpness, speed >= 4, n_workers)
     };
@@ -3943,12 +3950,11 @@ pub fn encode_key_frame_with(
     let mut deblocked_u = Vec::new();
     let mut deblocked_v = Vec::new();
     if postfilter {
-        deblocked_y = recon_y.clone();
-        deblocked_u = recon_u.clone();
-        deblocked_v = recon_v.clone();
         // `loop_filter_frame` no-ops per plane on a zero level, exactly like
         // C's apply site (`encoder.c:2887`).
-        if derived_lf.filter_level[0] != 0 || derived_lf.filter_level[1] != 0 {
+        let lf_runs =
+            derived_lf.filter_level[0] != 0 || derived_lf.filter_level[1] != 0;
+        if bd == 8 && lf_runs {
             let params = LfParams {
                 filter_level: derived_lf.filter_level,
                 filter_level_u: derived_lf.filter_level_u,
@@ -3968,19 +3974,81 @@ pub fn encode_key_frame_with(
                 mi_rows,
                 mi_cols,
             };
-            let mut buf = LfFrameBuf {
-                y: &mut deblocked_y,
+            // bd8: filter the staged-u8 recon natively (the lf pick's
+            // `stage_lowbd` output, or a fresh narrow when the pick was
+            // skipped), then widen ONCE into the u16 `deblocked` planes the
+            // CDEF/LR searches read — identical pixels to the u16 path's
+            // clone + narrow + u8 filter + widen.
+            let (mut y8, mut u8p, mut v8) = match recon8.take() {
+                Some(b) => (b.recon_y, b.recon_u, b.recon_v),
+                None => (
+                    aom_dsp::lowbd::narrow_u16_to_u8(&recon_y),
+                    aom_dsp::lowbd::narrow_u16_to_u8(&recon_u),
+                    aom_dsp::lowbd::narrow_u16_to_u8(&recon_v),
+                ),
+            };
+            let mut buf8 = aom_dsp::loopfilter::frame::LfFrameBufU8 {
+                y: &mut y8,
                 y_stride: stride,
-                u: &mut deblocked_u,
-                v: &mut deblocked_v,
+                u: &mut u8p,
+                v: &mut v8,
                 uv_stride: stride,
                 crop_width: enc_w as u32,
                 crop_height: h as u32,
                 ss_x: cfg.ss_x,
                 ss_y: cfg.ss_y,
-                bd: i32::from(bd),
             };
-            loop_filter_frame_opt(&mut buf, &grid, &params, 0, cfg.num_planes());
+            aom_dsp::loopfilter::frame::loop_filter_frame_u8_opt(
+                &mut buf8,
+                &grid,
+                &params,
+                0,
+                cfg.num_planes(),
+            );
+            deblocked_y = vec![0u16; y8.len()];
+            deblocked_u = vec![0u16; u8p.len()];
+            deblocked_v = vec![0u16; v8.len()];
+            aom_dsp::lowbd::widen_u8_to_u16(&y8, &mut deblocked_y);
+            aom_dsp::lowbd::widen_u8_to_u16(&u8p, &mut deblocked_u);
+            aom_dsp::lowbd::widen_u8_to_u16(&v8, &mut deblocked_v);
+        } else {
+            deblocked_y = recon_y.clone();
+            deblocked_u = recon_u.clone();
+            deblocked_v = recon_v.clone();
+            if lf_runs {
+                let params = LfParams {
+                    filter_level: derived_lf.filter_level,
+                    filter_level_u: derived_lf.filter_level_u,
+                    filter_level_v: derived_lf.filter_level_v,
+                    sharpness: derived_lf.sharpness,
+                    mode_ref_delta_enabled: true,
+                    ref_deltas: KF_REF_DELTAS,
+                    mode_deltas: KF_MODE_DELTAS,
+                    delta_lf_present,
+                    delta_lf_multi: false,
+                    lossless: [false; 8],
+                    seg: Default::default(),
+                };
+                let grid = LfMiGrid {
+                    mi: &mi_grid,
+                    stride: mi_cols as usize,
+                    mi_rows,
+                    mi_cols,
+                };
+                let mut buf = LfFrameBuf {
+                    y: &mut deblocked_y,
+                    y_stride: stride,
+                    u: &mut deblocked_u,
+                    v: &mut deblocked_v,
+                    uv_stride: stride,
+                    crop_width: enc_w as u32,
+                    crop_height: h as u32,
+                    ss_x: cfg.ss_x,
+                    ss_y: cfg.ss_y,
+                    bd: i32::from(bd),
+                };
+                loop_filter_frame_opt(&mut buf, &grid, &params, 0, cfg.num_planes());
+            }
         }
     }
 
