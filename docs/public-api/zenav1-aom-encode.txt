@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 286 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-encode.internal.txt 4909 lines (332 hidden + 7682 excluded-feature)
+# files: zenav1-aom-encode.txt 287 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-encode.internal.txt 4911 lines (332 hidden + 7684 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
@@ -16,7 +16,7 @@
 #   pub consts/statics                         11
 #   free functions                             24
 #   inherent methods                           27
-#   struct fields                             138
+#   struct fields                             139
 #   enum variants                              24
 #   re-exports                                  1
 #   trait roster entries (type × trait)       131
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            7
-#   aom_encode                      248
+#   aom_encode                      249
 
-## items (255 lines)
+## items (256 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -260,6 +260,7 @@ pub aom_encode::XformQuantResult::qcoeff: alloc::vec::Vec<i32>
 pub aom_encode::XformQuantResult::txb_entropy_ctx: u8
 pub struct aom_encode::XformQuantScratch
 pub aom_encode::XformQuantScratch::coeff: alloc::vec::Vec<i32>
+pub aom_encode::XformQuantScratch::cost_ctx: alloc::vec::Vec<i8>
 pub aom_encode::XformQuantScratch::dqcoeff: alloc::vec::Vec<i32>
 pub aom_encode::XformQuantScratch::fwd: aom_dsp::transform::txfm2d::FwdTxfmScratch
 pub aom_encode::XformQuantScratch::inv: aom_dsp::transform::inv_txfm2d::InvTxfmScratch

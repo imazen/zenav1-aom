@@ -14,7 +14,7 @@
 #   pub consts/statics                        639
 #   free functions                            621
 #   inherent methods                          957
-#   struct fields                            1935
+#   struct fields                            1937
 #   enum variants                             174
 #   re-exports                                  1
 #   trait roster entries (type × trait)      1119
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4662
+#   aom_encode                     4664
 #   u16                               3
 #   u8                                3
 
-## items (4654 lines)
+## items (4656 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -1843,6 +1843,7 @@ pub aom_encode::tx_search::TxTypeSearchInputs::mode: usize
 pub aom_encode::tx_search::TxTypeSearchInputs::plane: usize
 pub aom_encode::tx_search::TxTypeSearchInputs::pred: &'a [u16]
 pub aom_encode::tx_search::TxTypeSearchInputs::pred_stride: usize
+pub aom_encode::tx_search::TxTypeSearchInputs::pred_u8: core::option::Option<&'a [u8]>
 pub aom_encode::tx_search::TxTypeSearchInputs::predict_skip_zero_blk_rate: i32
 pub aom_encode::tx_search::TxTypeSearchInputs::qm_level: core::option::Option<usize>
 pub aom_encode::tx_search::TxTypeSearchInputs::rdmult: i32
@@ -1904,6 +1905,7 @@ pub aom_encode::tx_search::TxTypeSearchSummary::rate: i32
 pub aom_encode::tx_search::TxTypeSearchSummary::rd: i64
 pub aom_encode::tx_search::TxTypeSearchSummary::skip_txfm: bool
 pub aom_encode::tx_search::TxWalkScratch::pred: alloc::vec::Vec<u16>
+pub aom_encode::tx_search::TxWalkScratch::pred_u8: alloc::vec::Vec<u8>
 pub aom_encode::tx_search::TxWalkScratch::residual: alloc::vec::Vec<i16>
 pub aom_encode::tx_search::TxWalkScratch::satd: alloc::vec::Vec<i32>
 pub aom_encode::tx_search::TxWalkScratch::tight: alloc::vec::Vec<u16>
@@ -4160,7 +4162,7 @@ pub fn aom_encode::tx_search::TxbWinner::fmt(&self, &mut core::fmt::Formatter<'_
 pub fn aom_encode::tx_search::av1_pixel_diff_dist(&[i16], usize, usize, usize, usize, usize) -> (u64, u32)
 pub fn aom_encode::tx_search::choose_tx_size_type_from_rd_intra(&aom_encode::tx_search::TxfmYrdEnv<'_>, &mut [u16], i64, &aom_encode::tx_search::TxTypeSearchPolicy, u32, bool, bool, core::option::Option<&aom_encode::tx_search::PaletteYrd<'_>>, &mut aom_encode::tx_search::IntraTxScratch) -> core::option::Option<aom_encode::tx_search::TxSizeChoice>
 pub fn aom_encode::tx_search::dist_block_px_domain(&[i32], usize, usize, &[u16], &[u16], usize, usize, u8, usize, usize, usize, bool) -> i64
-pub fn aom_encode::tx_search::dist_block_px_domain_into(&[i32], usize, usize, &[u16], usize, &[u16], usize, usize, u8, usize, usize, usize, bool, &mut alloc::vec::Vec<u16>, &mut alloc::vec::Vec<u8>, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch) -> i64
+pub fn aom_encode::tx_search::dist_block_px_domain_into(&[i32], usize, usize, &[u16], usize, core::option::Option<&[u8]>, &[u16], usize, usize, u8, usize, usize, usize, bool, &mut alloc::vec::Vec<u16>, &mut alloc::vec::Vec<u8>, &mut aom_dsp::transform::inv_txfm2d::InvTxfmScratch) -> i64
 pub fn aom_encode::tx_search::get_default_tx_type_y(usize, usize, bool, bool) -> usize
 pub fn aom_encode::tx_search::get_mean_dev_features(&[i16], usize, usize, usize, &mut [f32]) -> usize
 pub fn aom_encode::tx_search::get_search_init_depth_intra(usize, usize, i32, i32) -> i32

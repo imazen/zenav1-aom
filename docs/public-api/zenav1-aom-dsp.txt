@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1853 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1857 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 2
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        93
 #   pub consts/statics                        205
 #   pub macros                                  1
-#   free functions                            635
+#   free functions                            639
 #   inherent methods                           97
 #   struct fields                             707
 #   enum variants                              13
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1810
+#   aom_dsp                        1814
 
-## items (1777 lines)
+## items (1781 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -295,10 +295,12 @@ pub fn aom_dsp::dist::masked_sad(&[u8], usize, &[u8], usize, &[u8], &[u8], usize
 pub fn aom_dsp::dist::obmc_sad(&[u8], usize, &[i32], &[i32], usize, usize) -> u32
 pub fn aom_dsp::dist::sad(&[u8], usize, &[u8], usize, usize, usize) -> u32
 pub fn aom_dsp::dist::sad_avg(&[u8], usize, &[u8], usize, &[u8], usize, usize) -> u32
+pub fn aom_dsp::dist::sse_scalar(&[u8], usize, &[u8], usize, usize, usize) -> i64
 pub fn aom_dsp::dist::sse_u16_u8(&[u16], usize, &[u8], usize, usize, usize) -> i64
 pub fn aom_dsp::dist::sse_u16_u8_scalar(&[u16], usize, &[u8], usize, usize, usize) -> i64
 pub fn aom_dsp::dist::sub_pixel_variance(&[u8], usize, usize, usize, &[u8], usize, usize, usize) -> (u32, u32)
 pub fn aom_dsp::dist::subtract_block(usize, usize, &mut [i16], usize, &[u8], usize, &[u8], usize)
+pub fn aom_dsp::dist::subtract_block_u16_u8(usize, usize, &mut [i16], usize, &[u16], usize, &[u8], usize)
 pub fn aom_dsp::dist::sum_squares_2d_i16(&[i16], usize, usize, usize) -> u64
 pub fn aom_dsp::dist::sum_squares_i16(&[i16]) -> u64
 pub fn aom_dsp::dist::variance(&[u8], usize, &[u8], usize, usize, usize) -> (u32, u32)
@@ -1337,6 +1339,7 @@ pub fn aom_dsp::intra::dir::get_dy(i32) -> i32
 pub fn aom_dsp::intra::dir::z1(&mut [u8], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef<'_>, i32, i32)
 pub fn aom_dsp::intra::dir::z1_high(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32)
 pub fn aom_dsp::intra::dir::z1_high_scalar(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32)
+pub fn aom_dsp::intra::dir::z1_high_u8e(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32)
 pub fn aom_dsp::intra::dir::z2(&mut [u8], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef<'_>, &aom_dsp::intra::dir::EdgeRef<'_>, i32, i32, i32, i32)
 pub fn aom_dsp::intra::dir::z2_high(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32, i32, i32)
 pub fn aom_dsp::intra::dir::z2_high_scalar(&mut [u16], usize, usize, usize, &aom_dsp::intra::dir::EdgeRef16<'_>, &aom_dsp::intra::dir::EdgeRef16<'_>, i32, i32, i32, i32)
@@ -1766,6 +1769,7 @@ pub fn aom_dsp::txb::coeff_cost_eob(usize, i32, usize, usize, usize, &aom_dsp::t
 pub fn aom_dsp::txb::coeff_cost_general(bool, usize, i32, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>, u32, aom_dsp::txb::TxClass, &[u8]) -> i32
 pub fn aom_dsp::txb::cost_coeffs_txb(&[i32], usize, usize, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>) -> i32
 pub fn aom_dsp::txb::cost_coeffs_txb_laplacian(&[i32], usize, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>) -> i32
+pub fn aom_dsp::txb::cost_coeffs_txb_scratch(&[i32], usize, usize, usize, usize, usize, &aom_dsp::txb::CoeffCostTables<'_>, &mut [u8], &mut [i8]) -> i32
 pub fn aom_dsp::txb::cost_symbol(i32) -> i32
 pub fn aom_dsp::txb::cost_tokens_from_cdf(&mut [i32], &[u16], core::option::Option<&[i32]>)
 pub fn aom_dsp::txb::dequant_txb(&[i32], &mut [i32], usize, [i16; 2], core::option::Option<&[u8]>, i32)
