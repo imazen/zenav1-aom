@@ -1193,6 +1193,11 @@ pub enum KeyFrameError {
         /// The reservation that failed, in bytes.
         bytes: usize,
     },
+    /// An internal bookkeeping invariant failed — unreachable on any
+    /// caller-producible configuration (e.g. the tile grid covers every
+    /// superblock by construction); it exists so a broken invariant reports
+    /// rather than panics.
+    InternalInvariant(&'static str),
     /// A caller-supplied [`EncodeLimits`] cap would be exceeded. Refused before
     /// anything is allocated.
     LimitExceeded {
@@ -1232,6 +1237,7 @@ impl KeyFrameError {
             KeyFrameError::LimitExceeded { .. } => "limit-exceeded",
             KeyFrameError::AllocFailed { .. } => "alloc-failed",
             KeyFrameError::Cancelled(_) => "cancelled",
+            KeyFrameError::InternalInvariant(_) => "internal",
         }
     }
 
@@ -1250,6 +1256,7 @@ impl KeyFrameError {
             | KeyFrameError::SampleRange { .. }
             | KeyFrameError::Unsupported(_)
             | KeyFrameError::LimitExceeded { .. }
+            | KeyFrameError::InternalInvariant(_)
             | KeyFrameError::Cancelled(_) => false,
             // The one variant the CALLER need not change anything to get past.
             KeyFrameError::AllocFailed { .. } => true,
@@ -1279,6 +1286,9 @@ impl core::fmt::Display for KeyFrameError {
             }
             KeyFrameError::LimitExceeded { what, actual, max } => {
                 write!(f, "exceeds the caller's {what} limit: {actual} > {max}")
+            }
+            KeyFrameError::InternalInvariant(what) => {
+                write!(f, "internal invariant failed: {what} (a bug — please report)")
             }
         }
     }
@@ -3702,14 +3712,16 @@ pub fn encode_key_frame_with(
         // Bands are handed out through a shared cursor instead of a static
         // assignment: a worker that finishes a cheap row early pulls the next
         // untaken row rather than idling behind whoever drew the heavy chunk.
-        // Each `&mut` band is `take`n exactly once, so ownership stays
-        // disjoint; the merge below keys on the tile index, so the schedule
-        // can vary run to run while the OUTPUT stays deterministic.
+        // Each `&mut` band comes out of its `Vec::into_iter` exactly once, so
+        // ownership stays disjoint; the merge below keys on the tile index,
+        // so the schedule can vary run to run while the OUTPUT stays
+        // deterministic. All three iterators hold exactly `n_tr` bands and
+        // advance under the same lock, so they exhaust together — `None`
+        // means the grid is fully claimed, not an error path.
         let bands = std::sync::Mutex::new((
-            0usize,
-            y_bands.into_iter().map(Some).collect::<Vec<_>>(),
-            u_bands.into_iter().map(Some).collect::<Vec<_>>(),
-            v_bands.into_iter().map(Some).collect::<Vec<_>>(),
+            y_bands.into_iter().enumerate(),
+            u_bands.into_iter(),
+            v_bands.into_iter(),
         ));
         // `par::map_workers` = std::thread::scope by default, or the host's
         // rayon pool under the `rayon` feature — same tasks either way.
@@ -3718,18 +3730,10 @@ pub fn encode_key_frame_with(
             loop {
                 let Some((tr, wy, wu, wv)) = ({
                     let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
-                    let (cursor, y, u, v) = &mut *g;
-                    if *cursor >= n_tr {
-                        None
-                    } else {
-                        let tr = *cursor;
-                        *cursor += 1;
-                        Some((
-                            tr,
-                            y[tr].take().expect("one band per tile row"),
-                            u[tr].take().expect("one band per tile row"),
-                            v[tr].take().expect("one band per tile row"),
-                        ))
+                    let (y, u, v) = &mut *g;
+                    match (y.next(), u.next(), v.next()) {
+                        (Some((tr, wy)), Some(wu), Some(wv)) => Some((tr, wy, wu, wv)),
+                        _ => None,
                     }
                 }) else {
                     break;
@@ -3793,8 +3797,12 @@ pub fn encode_key_frame_with(
     }
     let trees: Vec<SbTree> = frame_trees
         .into_iter()
-        .map(|t| t.expect("every superblock belongs to exactly one tile"))
-        .collect();
+        .map(|t| {
+            t.ok_or(KeyFrameError::InternalInvariant(
+                "a superblock was not covered by any tile",
+            ))
+        })
+        .collect::<Result<_, _>>()?;
 
     // `av1_encode_frame` (encodeframe.c:2796-2799): the frame codes
     // TX_MODE_LARGEST when the search ran at TX_MODE_SELECT and NO block split
@@ -4284,12 +4292,13 @@ pub fn encode_key_frame_with(
         let lr_pack = lr_pack.as_ref();
         // Same dynamic band cursor as phase 1; `par::map_workers` is
         // std::thread::scope by default or the host's rayon pool under the
-        // `rayon` feature.
+        // `rayon` feature. The three iterators hold `n_tr` bands apiece and
+        // advance under one lock, so they exhaust together — `None` is the
+        // fully-claimed condition, not an error.
         let bands = std::sync::Mutex::new((
-            0usize,
-            y_bands.into_iter().map(Some).collect::<Vec<_>>(),
-            u_bands.into_iter().map(Some).collect::<Vec<_>>(),
-            v_bands.into_iter().map(Some).collect::<Vec<_>>(),
+            y_bands.into_iter().enumerate(),
+            u_bands.into_iter(),
+            v_bands.into_iter(),
         ));
         let bands = &bands;
         let worker_results = aom_dsp::par::map_workers(workers, move |_w| {
@@ -4297,18 +4306,10 @@ pub fn encode_key_frame_with(
             loop {
                 let Some((tr, wy, wu, wv)) = ({
                     let mut g = bands.lock().unwrap_or_else(|p| p.into_inner());
-                    let (cursor, y, u, v) = &mut *g;
-                    if *cursor >= n_tr {
-                        None
-                    } else {
-                        let tr = *cursor;
-                        *cursor += 1;
-                        Some((
-                            tr,
-                            y[tr].take().expect("one band per tile row"),
-                            u[tr].take().expect("one band per tile row"),
-                            v[tr].take().expect("one band per tile row"),
-                        ))
+                    let (y, u, v) = &mut *g;
+                    match (y.next(), u.next(), v.next()) {
+                        (Some((tr, wy)), Some(wu), Some(wv)) => Some((tr, wy, wu, wv)),
+                        _ => None,
                     }
                 }) else {
                     break;
@@ -4431,7 +4432,7 @@ fn superres_downscale_plane(
     use_opt: bool,
 ) -> Vec<u16> {
     if bd == 8 {
-        let src_u8: Vec<u8> = src.iter().map(|&p| p as u8).collect();
+        let src_u8 = aom_dsp::lowbd::narrow_u16_to_u8(src);
         let out_u8 = if use_opt {
             crate::resize::optimized_downscale_plane_8bit(&src_u8, w, h, coded_w, h)
         } else {
@@ -4448,7 +4449,9 @@ fn superres_downscale_plane(
             );
             out
         };
-        return out_u8.iter().map(|&p| u16::from(p)).collect();
+        let mut out = vec![0u16; coded_w * h];
+        aom_dsp::lowbd::widen_u8_to_u16(&out_u8, &mut out);
+        return out;
     }
     let mut out = vec![0u16; coded_w * h];
     crate::resize::highbd_resize_plane(

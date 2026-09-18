@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 287 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-encode.internal.txt 4925 lines (332 hidden + 7707 excluded-feature)
+# files: zenav1-aom-encode.txt 288 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-encode.internal.txt 4925 lines (332 hidden + 7707 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
@@ -17,7 +17,7 @@
 #   free functions                             24
 #   inherent methods                           27
 #   struct fields                             139
-#   enum variants                              24
+#   enum variants                              25
 #   re-exports                                  1
 #   trait roster entries (type × trait)       131
 #   auto-trait-complete types                  27
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            7
-#   aom_encode                      249
+#   aom_encode                      250
 
-## items (256 lines)
+## items (257 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -45,6 +45,7 @@ pub fn aom_encode::key_frame::DeltaQMode::aomenc_value(self) -> i32
 pub aom_encode::key_frame::KeyFrameError::AllocFailed
 pub aom_encode::key_frame::KeyFrameError::AllocFailed::bytes: usize
 pub aom_encode::key_frame::KeyFrameError::Cancelled(enough::reason::StopReason)
+pub aom_encode::key_frame::KeyFrameError::InternalInvariant(&'static str)
 pub aom_encode::key_frame::KeyFrameError::LimitExceeded
 pub aom_encode::key_frame::KeyFrameError::LimitExceeded::actual: u64
 pub aom_encode::key_frame::KeyFrameError::LimitExceeded::max: u64
