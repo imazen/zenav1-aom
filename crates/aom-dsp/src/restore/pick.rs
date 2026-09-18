@@ -664,10 +664,17 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
     let h: &mut [i32; WIENER_H_ROW_LEN] =
         (&mut h_row[..WIENER_H_ROW_LEN]).try_into().unwrap();
 
-    // Each `y` is zero-padded to a whole vector and NEVER written past
-    // `win2`, so the padding lanes contribute `0 * anything` — see
-    // `WIENER_H_STRIDE`.
-    let mut y = [[0i32; WIENER_H_STRIDE]; 4];
+    // `y01`/`y23` hold the four windows as PACKED i16 pairs in i32 lanes:
+    // `y01[k] = y0[k] | y1[k]<<16`. A `vpmaddwd` against a broadcast pair then
+    // produces `y0[a]*y0[b] + y1[a]*y1[b]` per lane — C's 16-bit-lane fold —
+    // and the second pair folds into the same read-modify-write. Values stay
+    // in [-255,255] (dgd - avg at bd8), products pair-sum to <= 130050 in i32,
+    // and the accumulation order over `h`/`m` is the same wrapping-i32 group
+    // as the four-term form it replaces, so the result is identical.
+    // Padding pairs are (0,0) — `0 * anything` — see `WIENER_H_STRIDE`.
+    let mut y01 = [0i32; WIENER_H_STRIDE];
+    let mut y23 = [0i32; WIENER_H_STRIDE];
+    let mut y_tail = [0i32; WIENER_H_STRIDE];
     let mut j = h_start;
     while j + 3 < h_end {
         // `gather_window_quad` with static bounds: one checked row slice per
@@ -689,58 +696,49 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
         let mut idx = 0usize;
         for k in 0..WIN {
             for l in 0..WIN {
-                y[0][idx] = col[k][l];
-                y[1][idx] = col[k + 1][l];
-                y[2][idx] = col[k + 2][l];
-                y[3][idx] = col[k + 3][l];
+                y01[idx] = (col[k][l] as u16 as i32) | (col[k + 1][l] << 16);
+                y23[idx] = (col[k + 2][l] as u16 as i32) | (col[k + 3][l] << 16);
                 idx += 1;
             }
         }
         let s4: &[u16; 4] = src_row[j as usize..j as usize + 4].try_into().unwrap();
-        let xv = [
-            _mm256_set1_epi32(i32::from(s4[0] as i16 - avg as i16)),
-            _mm256_set1_epi32(i32::from(s4[1] as i16 - avg as i16)),
-            _mm256_set1_epi32(i32::from(s4[2] as i16 - avg as i16)),
-            _mm256_set1_epi32(i32::from(s4[3] as i16 - avg as i16)),
-        ];
+        let x01 = _mm256_set1_epi32(
+            (i32::from(s4[0] as i16 - avg as i16) as u16 as i32)
+                | (i32::from(s4[1] as i16 - avg as i16) << 16),
+        );
+        let x23 = _mm256_set1_epi32(
+            (i32::from(s4[2] as i16 - avg as i16) as u16 as i32)
+                | (i32::from(s4[3] as i16 - avg as i16) << 16),
+        );
 
-        // M: lanes are k. Runs off the end into the padding, which stays zero.
+        // M: lanes are k, one madd per pixel pair. Runs off the end into the
+        // padding, which stays zero.
         let mut k = 0usize;
         while k < win2 {
             let acc = _mm256_add_epi32(
+                ld8!(m, k),
                 _mm256_add_epi32(
-                    _mm256_add_epi32(ld8!(m, k), _mm256_mullo_epi32(ld8!(&y[0], k), xv[0])),
-                    _mm256_mullo_epi32(ld8!(&y[1], k), xv[1]),
-                ),
-                _mm256_add_epi32(
-                    _mm256_mullo_epi32(ld8!(&y[2], k), xv[2]),
-                    _mm256_mullo_epi32(ld8!(&y[3], k), xv[3]),
+                    _mm256_madd_epi16(ld8!(&y01, k), x01),
+                    _mm256_madd_epi16(ld8!(&y23, k), x23),
                 ),
             );
             st8!(m, k, acc);
             k += 8;
         }
 
-        // H upper triangle: one read-modify-write of `H` per four pixels.
+        // H upper triangle: one read-modify-write of `H` per four pixels, two
+        // madds per eight `l` lanes.
         for k in 0..win2 {
-            let k0 = _mm256_set1_epi32(y[0][k]);
-            let k1 = _mm256_set1_epi32(y[1][k]);
-            let k2 = _mm256_set1_epi32(y[2][k]);
-            let k3 = _mm256_set1_epi32(y[3][k]);
+            let k01 = _mm256_set1_epi32(y01[k]);
+            let k23 = _mm256_set1_epi32(y23[k]);
             let base = k * hstride_v;
             let mut l = k;
             while l < win2 {
                 let acc = _mm256_add_epi32(
+                    ld8!(h, base + l),
                     _mm256_add_epi32(
-                        _mm256_add_epi32(
-                            ld8!(h, base + l),
-                            _mm256_mullo_epi32(ld8!(&y[0], l), k0),
-                        ),
-                        _mm256_mullo_epi32(ld8!(&y[1], l), k1),
-                    ),
-                    _mm256_add_epi32(
-                        _mm256_mullo_epi32(ld8!(&y[2], l), k2),
-                        _mm256_mullo_epi32(ld8!(&y[3], l), k3),
+                        _mm256_madd_epi16(ld8!(&y01, l), k01),
+                        _mm256_madd_epi16(ld8!(&y23, l), k23),
                     ),
                 );
                 st8!(h, base + l, acc);
@@ -753,7 +751,16 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
     // Column tail: up to three pixels, one at a time, the original shape.
     while j < h_end {
         let x = i32::from(src_row[j as usize] as i16 - avg as i16);
-        let idx = gather_window(dgd, dgd_origin, dgd_stride, avg, halfwin, j, count, &mut y[0]);
+        let idx = gather_window(
+            dgd,
+            dgd_origin,
+            dgd_stride,
+            avg,
+            halfwin,
+            j,
+            count,
+            &mut y_tail,
+        );
         debug_assert_eq!(idx, win2);
 
         let xv = _mm256_set1_epi32(x);
@@ -762,12 +769,12 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
             st8!(
                 m,
                 k,
-                _mm256_add_epi32(ld8!(m, k), _mm256_mullo_epi32(ld8!(&y[0], k), xv))
+                _mm256_add_epi32(ld8!(m, k), _mm256_mullo_epi32(ld8!(&y_tail, k), xv))
             );
             k += 8;
         }
         for k in 0..win2 {
-            let yk = _mm256_set1_epi32(y[0][k]);
+            let yk = _mm256_set1_epi32(y_tail[k]);
             let base = k * hstride_v;
             let mut l = k;
             while l < win2 {
@@ -776,7 +783,7 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
                     base + l,
                     _mm256_add_epi32(
                         ld8!(h, base + l),
-                        _mm256_mullo_epi32(ld8!(&y[0], l), yk),
+                        _mm256_mullo_epi32(ld8!(&y_tail, l), yk),
                     )
                 );
                 l += 8;
@@ -2506,49 +2513,50 @@ impl<'a> PlaneCtx<'a> {
     /// over the unit rect.
     fn sse_dst(&self, limits: (i32, i32, i32, i32)) -> i64 {
         let (v0, v1, h0, h1) = limits;
-        let mut sse: i64 = 0;
-        for r in v0..v1 {
-            let s = &self.src[r as usize * self.src_stride..];
-            let d = &self.dst_pad[self.pad_off(r, 0)..];
-            for c in h0..h1 {
-                let e = s[c as usize] as i64 - d[c as usize] as i64;
-                sse += e * e;
-            }
-        }
-        sse
+        let (w, h) = ((h1 - h0) as usize, (v1 - v0) as usize);
+        crate::dist::highbd_sse(
+            &self.src[v0 as usize * self.src_stride + h0 as usize..],
+            self.src_stride,
+            &self.dst_pad[self.pad_off(v0, h0)..],
+            self.w_stride,
+            w,
+            h,
+        )
     }
 
     /// SSE of source vs the CURRENT recon (RESTORE_NONE) over the rect.
     fn sse_none(&self, limits: (i32, i32, i32, i32)) -> i64 {
         let (v0, v1, h0, h1) = limits;
-        let mut sse: i64 = 0;
-        for r in v0..v1 {
-            let s = &self.src[r as usize * self.src_stride..];
-            let d = &self.dgd_pad[self.pad_off(r, 0)..];
-            for c in h0..h1 {
-                let e = s[c as usize] as i64 - d[c as usize] as i64;
-                sse += e * e;
-            }
-        }
-        sse
+        let (w, h) = ((h1 - h0) as usize, (v1 - v0) as usize);
+        crate::dist::highbd_sse(
+            &self.src[v0 as usize * self.src_stride + h0 as usize..],
+            self.src_stride,
+            &self.dgd_pad[self.pad_off(v0, h0)..],
+            self.w_stride,
+            w,
+            h,
+        )
     }
 
     /// `var_restoration_unit` (`aom_var_2d_u8/u16` / (w*h)): source variance
-    /// over the rect.
+    /// over the rect. `highbd_variance` against a stride-0 zero reference at
+    /// bd=8 returns the unnormalised `ss - s*s/n` (`src_var`'s numerator) —
+    /// the bd>8 normalisation shifts would scale the raw sums, so bd stays 8
+    /// regardless of stream depth.
     fn src_var(&self, limits: (i32, i32, i32, i32)) -> u64 {
+        const ZEROS: [u16; 256] = [0; 256];
         let (v0, v1, h0, h1) = limits;
-        let (w, h) = ((h1 - h0) as u64, (v1 - v0) as u64);
-        let mut ss: u64 = 0;
-        let mut s: u64 = 0;
-        for r in v0..v1 {
-            let row = &self.src[r as usize * self.src_stride..];
-            for c in h0..h1 {
-                let v = row[c as usize] as u64;
-                ss += v * v;
-                s += v;
-            }
-        }
-        (ss - s * s / (w * h)) / (w * h)
+        let (w, h) = ((h1 - h0) as usize, (v1 - v0) as usize);
+        let (var, _sse) = crate::dist::highbd_variance(
+            &self.src[v0 as usize * self.src_stride + h0 as usize..],
+            self.src_stride,
+            &ZEROS[..w.min(256)],
+            0,
+            w,
+            h,
+            8,
+        );
+        u64::from(var) / (w * h) as u64
     }
 
     /// `try_restoration_unit` (pickrst.c): run the REAL per-unit filter
