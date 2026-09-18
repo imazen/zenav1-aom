@@ -428,7 +428,7 @@ fn wiener_impl_v3(
     }
 }
 
-#[archmage::magetypes(define(i32x8), neon, wasm128, -scalar)]
+#[archmage::magetypes(define(i32x8), wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn wiener_impl(
     token: Token,
@@ -629,5 +629,249 @@ fn wiener_scalar_into(
             dst[dst_off + y * dst_stride + x] =
                 round_power_of_two(sum, round_1).clamp(0, pixel_max) as u16;
         }
+    }
+}
+
+/// The aarch64 NEON tier — a verbatim transcription of
+/// `av1_highbd_wiener_convolve_add_src_neon`
+/// (`av1/common/arm/highbd_wiener_convolve_neon.c`). C's NEON kernel is a
+/// different structure from both the scalar port and the AVX2 mirror: it
+/// exploits the wiener filter's symmetry, loading only the first four taps
+/// (`vld1_s16`, +128 on tap 3 for the `<< FILTER_BITS` centre term), pairing
+/// mirrored source rows/columns before a `vmlal_lane`/`vmlaq_lane`
+/// widening-multiply accumulate, and narrowing with `vqrshrun` saturating
+/// shifts. `i16` loads of the `u16` data are safe exactly as in C — source
+/// samples are <= (1<<bd)-1 and the intermediate clamp keeps `temp` at
+/// <= i16::MAX by construction (`conv_params_wiener`).
+///
+/// Two deviations from C's loop structure, both semantics-preserving:
+/// `w % 8 != 0` is handled by overlapping the LAST 8-wide column block back
+/// to `w - 8` (outputs are pure functions of the window — identical bytes,
+/// no stores outside `w`), and `w < 8` keeps the dispatch-time scalar route.
+/// Asymmetric filters (unreachable: wiener filters are symmetric by
+/// construction, `filter[7] == 0` always) produce what C NEON produces,
+/// not what the scalar port does — matching the oracle's priority.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn wiener_impl_neon(
+    t: archmage::NeonToken,
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_off: usize,
+    dst_stride: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    w: usize,
+    h: usize,
+    bd: i32,
+    temp: &mut [u16],
+) {
+    let _ = t;
+    use archmage::intrinsics::aarch64::*;
+    assert!(
+        w >= 8 && w <= MAX_SB_SIZE,
+        "wiener: restoration-unit width {w} outside 8..={MAX_SB_SIZE} — the SIMD path \
+         loads 8 lanes at a time and `temp` is strided by MAX_SB_SIZE"
+    );
+    let (round_0, round_1) = conv_params_wiener(bd);
+    // C's shifts are compiled constants: the `highbd` variants use
+    // WIENER_ROUND0_BITS / 2*FILTER_BITS-WIENER_ROUND0_BITS and `highbd_12`
+    // shifts them by 2 — the same values conv_params_wiener returns for
+    // bd<=10 / bd==12 respectively. For bd=11 (round_0=4) C NEON still uses
+    // the base shifts — mirror that, constants and all.
+    let extra: i32 = if bd == 12 { 2 } else { 0 };
+    let h_shift = 3 + extra; // WIENER_ROUND0_BITS(+2)
+    let v_shift = 11 - extra; // 2*FILTER_BITS - WIENER_ROUND0_BITS(-2)
+
+    let x_taps = if hfilter[0] == 0 && hfilter[6] == 0 { 5usize } else { 7 };
+    let y_taps = if vfilter[0] == 0 && vfilter[6] == 0 { 5usize } else { 7 };
+    // First four taps + (1<<FILTER_BITS) folded into tap 3 — C's
+    // `vld1_s16` + `vcreate_s16(128 << 48)`.
+    let xf = vld1_s16(<&[i16; 4]>::try_from(&hfilter[..4]).unwrap());
+    let xf = vadd_s16(xf, vcreate_s16(128u64 << 48));
+    let yf = vld1_s16(<&[i16; 4]>::try_from(&vfilter[..4]).unwrap());
+    let yf = vadd_s16(yf, vcreate_s16(128u64 << 48));
+    // The vertical pass widens the filter to i32 lanes once.
+    let yf32 = vmovl_s16(yf);
+    let yf_lo = vget_low_s32(yf32);
+    let yf_hi = vget_high_s32(yf32);
+
+    let im_stride = MAX_SB_SIZE;
+    let im_h = h + y_taps - 1;
+    let horiz_off = x_taps / 2;
+    let vert_off = (y_taps / 2) * src_stride;
+
+    let clamp_limit = 1i32 << (bd + 1 + FILTER_BITS - round_0); // WIENER_CLAMP_LIMIT
+    let im_max = vdupq_n_u16((clamp_limit - 1) as u16);
+    let h_round = vdupq_n_s32(1 << (bd + FILTER_BITS - 1));
+    let res_max = vdupq_n_u16(((1i32 << bd) - 1) as u16);
+    let v_round = vdupq_n_s32(-(1 << (bd + round_1 - 1)));
+
+    // ---- horizontal pass: u16 window rows -> clamped u16 im rows ----
+    // im row 0 = src row `-vert_off`, im col 0 = src col `-horiz_off`.
+    let ld = |s: &[u16]| vreinterpretq_s16_u16(vld1q_u16(<&[u16; 8]>::try_from(&s[..8]).unwrap()));
+    let h_base = src_off as isize - vert_off as isize - horiz_off as isize;
+    for y in 0..im_h {
+        let row = (h_base + (y * src_stride) as isize) as usize;
+        let mut xs = 0usize;
+        loop {
+            let x0 = xs.min(w - 8);
+            let s = row + x0;
+            let d = if x_taps == 5 {
+                let (s0, s4) = (ld(&src[s..]), ld(&src[s + 4..]));
+                let (s1, s3) = (ld(&src[s + 1..]), ld(&src[s + 3..]));
+                let s2 = ld(&src[s + 2..]);
+                let s04 = vaddq_s16(s0, s4);
+                let s13 = vaddq_s16(s1, s3);
+                let lo = vmlal_lane_s16::<1>(h_round, vget_low_s16(s04), xf);
+                let lo = vmlal_lane_s16::<2>(lo, vget_low_s16(s13), xf);
+                let lo = vmlal_lane_s16::<3>(lo, vget_low_s16(s2), xf);
+                let hi = vmlal_lane_s16::<1>(h_round, vget_high_s16(s04), xf);
+                let hi = vmlal_lane_s16::<2>(hi, vget_high_s16(s13), xf);
+                let hi = vmlal_lane_s16::<3>(hi, vget_high_s16(s2), xf);
+                let res = match h_shift {
+                    3 => vcombine_u16(vqrshrun_n_s32::<3>(lo), vqrshrun_n_s32::<3>(hi)),
+                    _ => vcombine_u16(vqrshrun_n_s32::<5>(lo), vqrshrun_n_s32::<5>(hi)),
+                };
+                vminq_u16(res, im_max)
+            } else {
+                let (s0, s6) = (ld(&src[s..]), ld(&src[s + 6..]));
+                let (s1, s5) = (ld(&src[s + 1..]), ld(&src[s + 5..]));
+                let (s2, s4) = (ld(&src[s + 2..]), ld(&src[s + 4..]));
+                let s3 = ld(&src[s + 3..]);
+                let s06 = vaddq_s16(s0, s6);
+                let s15 = vaddq_s16(s1, s5);
+                let s24 = vaddq_s16(s2, s4);
+                let lo = vmlal_lane_s16::<0>(h_round, vget_low_s16(s06), xf);
+                let lo = vmlal_lane_s16::<1>(lo, vget_low_s16(s15), xf);
+                let lo = vmlal_lane_s16::<2>(lo, vget_low_s16(s24), xf);
+                let lo = vmlal_lane_s16::<3>(lo, vget_low_s16(s3), xf);
+                let hi = vmlal_lane_s16::<0>(h_round, vget_high_s16(s06), xf);
+                let hi = vmlal_lane_s16::<1>(hi, vget_high_s16(s15), xf);
+                let hi = vmlal_lane_s16::<2>(hi, vget_high_s16(s24), xf);
+                let hi = vmlal_lane_s16::<3>(hi, vget_high_s16(s3), xf);
+                let res = match h_shift {
+                    3 => vcombine_u16(vqrshrun_n_s32::<3>(lo), vqrshrun_n_s32::<3>(hi)),
+                    _ => vcombine_u16(vqrshrun_n_s32::<5>(lo), vqrshrun_n_s32::<5>(hi)),
+                };
+                vminq_u16(res, im_max)
+            };
+            vst1q_u16(
+                <&mut [u16; 8]>::try_from(&mut temp[y * im_stride + x0..y * im_stride + x0 + 8])
+                    .unwrap(),
+                d,
+            );
+            if x0 + 8 >= w {
+                break;
+            }
+            xs += 8;
+        }
+    }
+
+    // ---- vertical pass: 5/7 im rows -> clamped u16 output rows ----
+    let vrow = |s: &[u16], y: usize, x0: usize| {
+        vreinterpretq_s16_u16(vld1q_u16(
+            <&[u16; 8]>::try_from(&s[y * im_stride + x0..y * im_stride + x0 + 8]).unwrap(),
+        ))
+    };
+    // One 8-lane vertical output from rows s0.. — shared by both tap counts.
+    macro_rules! vtap5 {
+        ($s0:expr, $s1:expr, $s2:expr, $s3:expr, $s4:expr) => {{
+            let s04_lo = vaddl_s16(vget_low_s16($s0), vget_low_s16($s4));
+            let s13_lo = vaddl_s16(vget_low_s16($s1), vget_low_s16($s3));
+            let lo = vmlaq_lane_s32::<1>(v_round, s04_lo, yf_lo);
+            let lo = vmlaq_lane_s32::<0>(lo, s13_lo, yf_hi);
+            let lo = vmlaq_lane_s32::<1>(lo, vmovl_s16(vget_low_s16($s2)), yf_hi);
+            let s04_hi = vaddl_s16(vget_high_s16($s0), vget_high_s16($s4));
+            let s13_hi = vaddl_s16(vget_high_s16($s1), vget_high_s16($s3));
+            let hi = vmlaq_lane_s32::<1>(v_round, s04_hi, yf_lo);
+            let hi = vmlaq_lane_s32::<0>(hi, s13_hi, yf_hi);
+            let hi = vmlaq_lane_s32::<1>(hi, vmovl_s16(vget_high_s16($s2)), yf_hi);
+            let res = match v_shift {
+                9 => vcombine_u16(vqrshrun_n_s32::<9>(lo), vqrshrun_n_s32::<9>(hi)),
+                _ => vcombine_u16(vqrshrun_n_s32::<11>(lo), vqrshrun_n_s32::<11>(hi)),
+            };
+            vminq_u16(res, res_max)
+        }};
+    }
+    macro_rules! vtap7 {
+        ($s0:expr, $s1:expr, $s2:expr, $s3:expr, $s4:expr, $s5:expr, $s6:expr) => {{
+            let s06_lo = vaddl_s16(vget_low_s16($s0), vget_low_s16($s6));
+            let s15_lo = vaddl_s16(vget_low_s16($s1), vget_low_s16($s5));
+            let s24_lo = vaddl_s16(vget_low_s16($s2), vget_low_s16($s4));
+            let lo = vmlaq_lane_s32::<0>(v_round, s06_lo, yf_lo);
+            let lo = vmlaq_lane_s32::<1>(lo, s15_lo, yf_lo);
+            let lo = vmlaq_lane_s32::<0>(lo, s24_lo, yf_hi);
+            let lo = vmlaq_lane_s32::<1>(lo, vmovl_s16(vget_low_s16($s3)), yf_hi);
+            let s06_hi = vaddl_s16(vget_high_s16($s0), vget_high_s16($s6));
+            let s15_hi = vaddl_s16(vget_high_s16($s1), vget_high_s16($s5));
+            let s24_hi = vaddl_s16(vget_high_s16($s2), vget_high_s16($s4));
+            let hi = vmlaq_lane_s32::<0>(v_round, s06_hi, yf_lo);
+            let hi = vmlaq_lane_s32::<1>(hi, s15_hi, yf_lo);
+            let hi = vmlaq_lane_s32::<0>(hi, s24_hi, yf_hi);
+            let hi = vmlaq_lane_s32::<1>(hi, vmovl_s16(vget_high_s16($s3)), yf_hi);
+            let res = match v_shift {
+                9 => vcombine_u16(vqrshrun_n_s32::<9>(lo), vqrshrun_n_s32::<9>(hi)),
+                _ => vcombine_u16(vqrshrun_n_s32::<11>(lo), vqrshrun_n_s32::<11>(hi)),
+            };
+            vminq_u16(res, res_max)
+        }};
+    }
+    let mut xs = 0usize;
+    loop {
+        let x0 = xs.min(w - 8);
+        let mut y = 0usize;
+        while y + 4 <= h {
+            let r = |k: usize| vrow(temp, y + k, x0);
+            let (d0, d1, d2, d3) = if y_taps == 5 {
+                (
+                    vtap5!(r(0), r(1), r(2), r(3), r(4)),
+                    vtap5!(r(1), r(2), r(3), r(4), r(5)),
+                    vtap5!(r(2), r(3), r(4), r(5), r(6)),
+                    vtap5!(r(3), r(4), r(5), r(6), r(7)),
+                )
+            } else {
+                (
+                    vtap7!(r(0), r(1), r(2), r(3), r(4), r(5), r(6)),
+                    vtap7!(r(1), r(2), r(3), r(4), r(5), r(6), r(7)),
+                    vtap7!(r(2), r(3), r(4), r(5), r(6), r(7), r(8)),
+                    vtap7!(r(3), r(4), r(5), r(6), r(7), r(8), r(9)),
+                )
+            };
+            for (dy, dv) in [d0, d1, d2, d3].iter().enumerate() {
+                vst1q_u16(
+                    <&mut [u16; 8]>::try_from(
+                        &mut dst[dst_off + (y + dy) * dst_stride + x0
+                            ..dst_off + (y + dy) * dst_stride + x0 + 8],
+                    )
+                    .unwrap(),
+                    *dv,
+                );
+            }
+            y += 4;
+        }
+        while y < h {
+            let r = |k: usize| vrow(temp, y + k, x0);
+            let d = if y_taps == 5 {
+                vtap5!(r(0), r(1), r(2), r(3), r(4))
+            } else {
+                vtap7!(r(0), r(1), r(2), r(3), r(4), r(5), r(6))
+            };
+            vst1q_u16(
+                <&mut [u16; 8]>::try_from(
+                    &mut dst[dst_off + y * dst_stride + x0..dst_off + y * dst_stride + x0 + 8],
+                )
+                .unwrap(),
+                d,
+            );
+            y += 1;
+        }
+        if x0 + 8 >= w {
+            break;
+        }
+        xs += 8;
     }
 }

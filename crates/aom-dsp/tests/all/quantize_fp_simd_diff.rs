@@ -100,7 +100,23 @@ fn assert_case(
         );
         return;
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    if v3_live {
+        // The neon tier mirrors the REAL exported C neon kernel — a
+        // different algorithm from both the scalar port and the avx2 body
+        // (vqdmulh + compensating shift, truncating vmovn, backward zbin
+        // pre-scan, eob = max(iscan[nz]) + 1).
+        let (q_ref, dq_ref, eob_ref) =
+            aom_sys_ref::ref_quantize_fp_neon(log_scale, coeff, round, quant, dequant, scan, iscan);
+        assert_eq!(eob_got, eob_ref, "{label}: eob (vs C-neon)");
+        assert_eq!(q_got, q_ref, "{label}: qcoeff (vs C-neon)\ncoeff={coeff:?}");
+        assert_eq!(
+            dq_got, dq_ref,
+            "{label}: dqcoeff (vs C-neon)\ncoeff={coeff:?}"
+        );
+        return;
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     debug_assert!(!v3_live, "the v3 token is a stub off x86-64");
     let _ = v3_live;
     {
@@ -156,12 +172,12 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
         // Per-architecture: this family's vector path is X64V3 on x86-64 and
         // Neon on aarch64. Testing only X64V3Token counts every aarch64
         // permutation as scalar (that token is a stub off x86).
-        let v3_live = !cfg!(target_arch = "aarch64") && archmage::X64V3Token::summon().is_some();
-        if if cfg!(target_arch = "aarch64") {
+        let v3_live = if cfg!(target_arch = "aarch64") {
             archmage::NeonToken::summon().is_some()
         } else {
-            v3_live
-        } {
+            archmage::X64V3Token::summon().is_some()
+        };
+        if v3_live {
             simd_perms += 1;
         }
         let mut rng = Rng(0x_9e37_79b9_7f4a_7c15);

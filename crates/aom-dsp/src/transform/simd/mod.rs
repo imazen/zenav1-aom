@@ -107,6 +107,15 @@ use hand_v3::*;
 use inv1d_v3_gen::*;
 use txfm1d_v3_gen::*;
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod fwd_neon;
+
+// `__m128i` in the `*_i16_core` signatures below must resolve at module scope
+// on both arches: the x86_64 prelude provides it natively, the shim provides
+// it as `int32x4_t` on aarch64.
+#[cfg(target_arch = "aarch64")]
+use crate::sse_neon::__m128i;
+
 /// Does a HALF-WIDTH lane batch (4 active lanes of 8) pay off here?
 ///
 /// A transform whose vectorized dimension is 4 runs ONE batch with half the
@@ -337,7 +346,7 @@ fn run_fwd1d(
 /// to the scalar loop (module-docs argument + the `tests` differential).
 #[allow(clippy::too_many_arguments)]
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect48_fused_scalar(
     _t: archmage::ScalarToken,
@@ -379,8 +388,8 @@ fn inv_rect48_fused_scalar(
 /// one vector. At `col_n == 4` that is a reverse of the four LIVE lanes inside
 /// an eight-lane vector, which `revv` does not do, so the flipped path goes
 /// through `to_array` — paid only on FLIPADST types.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect48_fused(
     t: Token,
@@ -399,7 +408,7 @@ fn inv_rect48_fused(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
     if !((col_n == 4 && row_n == 8) || (col_n == 8 && row_n == 4)) {
         return false;
@@ -429,7 +438,7 @@ fn inv_rect48_fused(
         k[c] = clampv(t, v, row_clamp);
     }
     let mut w = [i32x8::zero(t); 8];
-    incant!(run_inv1d(kr, &k[..col_n], &mut w[..col_n], cos_bit, sr_row), [v3]);
+    incant!(run_inv1d(kr, &k[..col_n], &mut w[..col_n], cos_bit, sr_row), [v3, neon]);
     // shift[0] == 0 -> `round_shift_array` early-returns; nothing to do.
 
     // ---- transpose -> lane = column ----
@@ -481,7 +490,7 @@ fn inv_rect48_fused(
         ci[r] = clampv(t, v, col_clamp);
     }
     let mut co = [i32x8::zero(t); 8];
-    incant!(run_inv1d(kc, &ci[..row_n], &mut co[..row_n], cos_bit, sr_col), [v3]);
+    incant!(run_inv1d(kc, &ci[..row_n], &mut co[..row_n], cos_bit, sr_col), [v3, neon]);
     for x in co[..row_n].iter_mut() {
         *x = rshiftv(t, *x, 4); // -shift[1], shift[1] == -4
     }
@@ -522,7 +531,7 @@ fn inv_rect48_fused(
 }
 
 /// Dispatch for [`inv_rect48_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_inv_txfm2d_rect48_fused(
     txfm_type_row: i32,
@@ -574,7 +583,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
                     inv_rect48_fused_i16(
                         kr, kc, input, output, stride, col_n, row_n, bound, ud_flip, lr_flip, bd
                     ),
-                    [v3, scalar]
+                    [v3, neon, scalar]
                 ) {
                     return true;
                 }
@@ -592,7 +601,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
             kr, kc, input, output, stride, col_n, row_n, row_clamp, col_clamp, sr_row, sr_col,
             ud_flip, lr_flip, bd
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -701,7 +710,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused_u8(
 // Out-of-range inputs decline to the i32 fused path, which is always correct.
 
 /// The three kernel types shared by both axes (length resolved by axis).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy, Debug)]
 enum InvR48 {
     Dct,
@@ -710,7 +719,7 @@ enum InvR48 {
 }
 
 /// `INV48_I16_BOUND[row][col]` — 4x8: row kernel 4-pt, col kernel 8-pt.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const INV48_I16_BOUND: [[i32; 3]; 3] = [
     [11384, 7550, 8519],
     [11452, 7532, 8669],
@@ -718,7 +727,7 @@ const INV48_I16_BOUND: [[i32; 3]; 3] = [
 ];
 
 /// `INV84_I16_BOUND[row][col]` — 8x4: row kernel 8-pt, col kernel 4-pt.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const INV84_I16_BOUND: [[i32; 3]; 3] = [
     [6204, 3282, 6204],
     [6426, 3399, 6426],
@@ -726,7 +735,7 @@ const INV84_I16_BOUND: [[i32; 3]; 3] = [
 ];
 
 /// The `incant!` fallback: decline to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect48_fused_i16_scalar(
     _t: archmage::ScalarToken,
@@ -750,12 +759,13 @@ fn inv_rect48_fused_i16_scalar(
 /// ([`inv_rect48_fused_i16_u8`]); `None` is the bound/shape decline. Returns
 /// the post-shift `u` array (register index = output row, `ud_flip` applied
 /// by the store): row_n registers are live, col_n lanes wide each.
-/// `#[rite(v3)]` inlines into the callers' tier region.
-#[cfg(target_arch = "x86_64")]
-#[archmage::rite(v3)]
+/// `magetypes` emits the v3 (x86_64) and neon (aarch64) tier bodies; callers
+/// reach the matching one through `incant!`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect48_i16_core(
-    _t: archmage::X64V3Token,
+    t: Token,
     kr: InvR48,
     kc: InvR48,
     input: &[i32],
@@ -765,7 +775,8 @@ fn inv_rect48_i16_core(
     ud_flip: bool,
     lr_flip: bool,
 ) -> Option<[__m128i; 8]> {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
+    let _ = t;
     let _ = ud_flip;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
     if !((col_n == 4 && row_n == 8) || (col_n == 8 && row_n == 4)) {
@@ -1096,8 +1107,8 @@ fn inv_rect48_i16_core(
 
 /// The i16 fused 4x8 / 8x4 inverse transform — C's `lowbd_inv_txfm2d_add_4x8`
 /// / `_add_8x4` shape adapted to the port's u16 output.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect48_fused_i16(
     t: Token,
@@ -1113,9 +1124,11 @@ fn inv_rect48_fused_i16(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
-    let Some(u) = inv_rect48_i16_core(t, kr, kc, input, col_n, row_n, bound, ud_flip, lr_flip)
-    else {
+    use crate::sse_neon::*;
+    let Some(u) = incant!(
+        inv_rect48_i16_core(kr, kc, input, col_n, row_n, bound, ud_flip, lr_flip),
+        [v3, neon]
+    ) else {
         return false;
     };
     let zero = _mm_setzero_si128();
@@ -1155,7 +1168,7 @@ fn inv_rect48_fused_i16(
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect48_fused_i16_u8_scalar(
     _t: archmage::ScalarToken,
@@ -1194,8 +1207,10 @@ fn inv_rect48_fused_i16_u8(
     lr_flip: bool,
 ) -> bool {
     use archmage::intrinsics::x86_64::*;
-    let Some(u) = inv_rect48_i16_core(t, kr, kc, input, col_n, row_n, bound, ud_flip, lr_flip)
-    else {
+    let Some(u) = incant!(
+        inv_rect48_i16_core(kr, kc, input, col_n, row_n, bound, ud_flip, lr_flip),
+        [v3]
+    ) else {
         return false;
     };
     if col_n == 4 {
@@ -1229,7 +1244,7 @@ fn inv_rect48_fused_i16_u8(
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect816_fused_scalar(
     _t: archmage::ScalarToken,
@@ -1272,8 +1287,8 @@ fn inv_rect816_fused_scalar(
 /// reads `buf` column `col_n - 1 - c`), which at `CG == 2` makes the two column
 /// groups **exchange as well as reverse** — the shape the fused 16x16 inverse
 /// already had, generalised over `CG`.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect816_fused(
     t: Token,
@@ -1292,7 +1307,7 @@ fn inv_rect816_fused(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
     if !((col_n == 8 && row_n == 16) || (col_n == 16 && row_n == 8)) {
         return false;
@@ -1347,7 +1362,7 @@ fn inv_rect816_fused(
             k[c] = clampv(t, v, row_clamp);
         }
         let mut o = [i32x8::zero(t); 16];
-        incant!(run_inv1d(kr, &k[..col_n], &mut o[..col_n], cos_bit, sr_row), [v3]);
+        incant!(run_inv1d(kr, &k[..col_n], &mut o[..col_n], cos_bit, sr_row), [v3, neon]);
         for c in 0..col_n {
             w[rg][c] = rshiftv(t, o[c], 1); // -shift[0], shift[0] == -1
         }
@@ -1378,7 +1393,7 @@ fn inv_rect816_fused(
             ci[r] = clampv(t, v, col_clamp);
         }
         let mut o = [i32x8::zero(t); 16];
-        incant!(run_inv1d(kc, &ci[..row_n], &mut o[..row_n], cos_bit, sr_col), [v3]);
+        incant!(run_inv1d(kc, &ci[..row_n], &mut o[..row_n], cos_bit, sr_col), [v3, neon]);
         for r in 0..row_n {
             co[cg][r] = rshiftv(t, o[r], 4); // -shift[1], shift[1] == -4
         }
@@ -1430,7 +1445,7 @@ fn inv_rect816_fused(
 }
 
 /// Dispatch for [`inv_rect816_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_inv_txfm2d_rect816_fused(
     txfm_type_row: i32,
@@ -1486,7 +1501,7 @@ pub(crate) fn try_inv_txfm2d_rect816_fused(
                         lr_flip,
                         bd
                     ),
-                    [v3, scalar]
+                    [v3, neon, scalar]
                 )
             {
                 return true;
@@ -1498,12 +1513,12 @@ pub(crate) fn try_inv_txfm2d_rect816_fused(
             kr, kc, input, output, stride, col_n, row_n, row_clamp, col_clamp, sr_row, sr_col,
             ud_flip, lr_flip, bd
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_16x16_fused_scalar(
     _t: archmage::ScalarToken,
@@ -1530,8 +1545,8 @@ fn inv_16x16_fused_scalar(
 /// the column shift is again 4. As at 8x8 the input is COLUMN-major, so the row
 /// pass loads contiguously with lane = r and needs no transpose; the four 8x8
 /// block transposes sit between the passes.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_16x16_fused(
     t: Token,
@@ -1548,7 +1563,7 @@ fn inv_16x16_fused(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
     let tr8 = |m: &[i32x8]| -> [i32x8; 8] {
@@ -1595,8 +1610,8 @@ fn inv_16x16_fused(
     }
     let mut wa = [i32x8::zero(t); 16];
     let mut wb = [i32x8::zero(t); 16];
-    incant!(run_inv1d(kr, &ka, &mut wa, cos_bit, sr_row), [v3]);
-    incant!(run_inv1d(kr, &kb, &mut wb, cos_bit, sr_row), [v3]);
+    incant!(run_inv1d(kr, &ka, &mut wa, cos_bit, sr_row), [v3, neon]);
+    incant!(run_inv1d(kr, &kb, &mut wb, cos_bit, sr_row), [v3, neon]);
     for i in 0..16usize {
         wa[i] = rshiftv(t, wa[i], 2); // -shift[0], shift[0] == -2
         wb[i] = rshiftv(t, wb[i], 2);
@@ -1621,8 +1636,8 @@ fn inv_16x16_fused(
     }
     let mut colo = [i32x8::zero(t); 16];
     let mut cohi = [i32x8::zero(t); 16];
-    incant!(run_inv1d(kc, &cilo, &mut colo, cos_bit, sr_col), [v3]);
-    incant!(run_inv1d(kc, &cihi, &mut cohi, cos_bit, sr_col), [v3]);
+    incant!(run_inv1d(kc, &cilo, &mut colo, cos_bit, sr_col), [v3, neon]);
+    incant!(run_inv1d(kc, &cihi, &mut cohi, cos_bit, sr_col), [v3, neon]);
     for i in 0..16usize {
         colo[i] = rshiftv(t, colo[i], 4); // -shift[1], shift[1] == -4
         cohi[i] = rshiftv(t, cohi[i], 4);
@@ -1674,7 +1689,7 @@ fn inv_16x16_fused(
 }
 
 /// Dispatch for [`inv_16x16_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_inv_txfm2d_16x16_fused(
     txfm_type_row: i32,
@@ -1740,7 +1755,7 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
                     lr_flip,
                     bd
                 ),
-                [v3, scalar]
+                [v3, neon, scalar]
             ) {
                 return true;
             }
@@ -1751,12 +1766,12 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
             kr, kc, input, output, stride, row_clamp, col_clamp, sr_row, sr_col, ud_flip, lr_flip,
             bd
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_8x8_fused_scalar(
     _t: archmage::ScalarToken,
@@ -1803,8 +1818,8 @@ fn inv_8x8_fused_scalar(
 ///   `tout[row_n-1-r]`); it is not a lane operation;
 /// * reconstruction is the same wrapping add then clamp to `[0, (1<<bd)-1]`,
 ///   so the `as u16` narrowing is exact.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_8x8_fused(
     t: Token,
@@ -1821,7 +1836,7 @@ fn inv_8x8_fused(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
     // ---- row pass: lane = r, and the loads are already contiguous ----
@@ -1834,7 +1849,7 @@ fn inv_8x8_fused(
         *kc_ = clampv(t, v, row_clamp);
     }
     let mut w = [i32x8::zero(t); 8];
-    incant!(run_inv1d(kr, &k, &mut w, cos_bit, sr_row), [v3]);
+    incant!(run_inv1d(kr, &k, &mut w, cos_bit, sr_row), [v3, neon]);
     for x in w.iter_mut() {
         *x = rshiftv(t, *x, 1); // -shift[0], shift[0] == -1
     }
@@ -1875,7 +1890,7 @@ fn inv_8x8_fused(
         *x = clampv(t, v, col_clamp);
     }
     let mut co = [i32x8::zero(t); 8];
-    incant!(run_inv1d(kc, &ci, &mut co, cos_bit, sr_col), [v3]);
+    incant!(run_inv1d(kc, &ci, &mut co, cos_bit, sr_col), [v3, neon]);
     for x in co.iter_mut() {
         *x = rshiftv(t, *x, 4); // -shift[1], shift[1] == -4
     }
@@ -1900,7 +1915,7 @@ fn inv_8x8_fused(
 }
 
 /// Dispatch for [`inv_8x8_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_inv_txfm2d_8x8_fused(
     txfm_type_row: i32,
@@ -1939,7 +1954,7 @@ pub(crate) fn try_inv_txfm2d_8x8_fused(
                     lr_flip,
                     bd
                 ),
-                [v3, scalar]
+                [v3, neon, scalar]
             ) {
                 return true;
             }
@@ -1956,7 +1971,7 @@ pub(crate) fn try_inv_txfm2d_8x8_fused(
             kr, kc, input, output, stride, row_clamp, col_clamp, sr_row, sr_col, ud_flip, lr_flip,
             bd
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -2035,7 +2050,7 @@ pub(crate) fn try_inv_txfm2d_8x8_fused_u8(
 // decline to the i32 fused path, which is always correct.
 
 /// The three 8-point kernels of C's `lowbd_txfm_all_1d_w8_arr` row.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
 enum Inv8 {
     Dct,
@@ -2043,7 +2058,7 @@ enum Inv8 {
     Idtx,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn inv8_kernel(txfm_type: i32) -> Option<Inv8> {
     match txfm_type {
         1 => Some(Inv8::Dct),
@@ -2055,7 +2070,7 @@ fn inv8_kernel(txfm_type: i32) -> Option<Inv8> {
 
 /// `INV8_BOUND[row][col]` — max `|input[i32]|` for exact i16 lanes (see the
 /// block comment above for the derivation).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const INV8_I16_BOUND: [[i32; 3]; 3] = [
     [2347, 2431, 6201],
     [2432, 2518, 6423],
@@ -2063,7 +2078,7 @@ const INV8_I16_BOUND: [[i32; 3]; 3] = [
 ];
 
 /// The `incant!` fallback: decline to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_8x8_fused_i16_scalar(
     _t: archmage::ScalarToken,
@@ -2084,13 +2099,13 @@ fn inv_8x8_fused_i16_scalar(
 /// including) the destination store. Shared by the u16 epilogue
 /// ([`inv_8x8_fused_i16`]) and the u8 epilogue ([`inv_8x8_fused_i16_u8`]):
 /// `None` is the bound/len decline that routes the caller to the next path.
-/// `#[rite(v3)]` so the call inlines into each caller's target-feature
-/// region (both callers are v3-only tier bodies).
-#[cfg(target_arch = "x86_64")]
-#[archmage::rite(v3)]
+/// `magetypes` emits the v3 (x86_64) and neon (aarch64) tier bodies; callers
+/// reach the matching one through `incant!`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_8x8_i16_core(
-    _t: archmage::X64V3Token,
+    t: Token,
     kr: Inv8,
     kc: Inv8,
     input: &[i32],
@@ -2098,7 +2113,9 @@ fn inv_8x8_i16_core(
     ud_flip: bool,
     lr_flip: bool,
 ) -> Option<[__m128i; 8]> {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
+    let _ = t;
+    let _ = ud_flip;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
     // `pair_set_epi16(a, b)` — i16 pair (a lo, b hi) per 32-bit group.
@@ -2323,8 +2340,8 @@ fn inv_8x8_i16_core(
 
 /// The i16 fused 8x8 inverse transform — C's `av1_lowbd_inv_txfm2d_add_8x8`
 /// shape adapted to the port's u16 output (`highbd_clip_pixel_add` store).
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_8x8_fused_i16(
     t: Token,
@@ -2338,8 +2355,11 @@ fn inv_8x8_fused_i16(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
-    let Some(u) = inv_8x8_i16_core(t, kr, kc, input, bound, ud_flip, lr_flip) else {
+    use crate::sse_neon::*;
+    let Some(u) = incant!(
+        inv_8x8_i16_core(kr, kc, input, bound, ud_flip, lr_flip),
+        [v3, neon]
+    ) else {
         return false;
     };
 
@@ -2398,7 +2418,10 @@ fn inv_8x8_fused_i16_u8(
     lr_flip: bool,
 ) -> bool {
     use archmage::intrinsics::x86_64::*;
-    let Some(u) = inv_8x8_i16_core(t, kr, kc, input, bound, ud_flip, lr_flip) else {
+    let Some(u) = incant!(
+        inv_8x8_i16_core(kr, kc, input, bound, ud_flip, lr_flip),
+        [v3]
+    ) else {
         return false;
     };
     for r in 0..8usize {
@@ -2416,7 +2439,7 @@ fn inv_8x8_fused_i16_u8(
 }
 
 /// The three 16-point kernels of C's `lowbd_txfm_all_1d_w8_arr` row.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
 enum Inv16 {
     Dct,
@@ -2427,7 +2450,7 @@ enum Inv16 {
 /// Map an already-width-checked [`Inv1d`] to the dct/adst/idtx selector —
 /// 8-pt and 16-pt ids share the same row of [`INV16_I16_BOUND`] etc.; the
 /// transform length (`col_n`/`row_n`) picks the kernel instance.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn inv16_kind(k: Inv1d) -> Option<Inv16> {
     match k {
         Inv1d::Dct8 | Inv1d::Dct16 => Some(Inv16::Dct),
@@ -2444,7 +2467,7 @@ fn inv16_kind(k: Inv1d) -> Option<Inv16> {
 /// `clamp_value(_, 16)`, so mid-stage agreement needs no extra room. The
 /// chained bound also requires `round_shift(pass1_out_max, 2)` to stay inside
 /// the col kernel's proven input box.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const INV16_I16_BOUND: [[i32; 3]; 3] = [
     [2474, 1238, 6424],
     [2521, 1261, 3215],
@@ -2454,7 +2477,7 @@ const INV16_I16_BOUND: [[i32; 3]; 3] = [
 /// `INV816_I16_BOUND[row][col]` — 8x16: row kernel 8-pt, col kernel 16-pt, with
 /// the rect `NEW_INV_SQRT2` prescale before the row kernel (the bound is on the
 /// RAW input; the prescale shrinks |v| by ~0.707 before the gate propagates).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const INV816_I16_BOUND: [[i32; 3]; 3] = [
     [3439, 1721, 6201],
     [3562, 1782, 6424],
@@ -2462,7 +2485,7 @@ const INV816_I16_BOUND: [[i32; 3]; 3] = [
 ];
 
 /// `INV168_I16_BOUND[row][col]` — 16x8: row kernel 16-pt, col kernel 8-pt.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const INV168_I16_BOUND: [[i32; 3]; 3] = [
     [3482, 1750, 4463],
     [3549, 1782, 4547],
@@ -2470,7 +2493,7 @@ const INV168_I16_BOUND: [[i32; 3]; 3] = [
 ];
 
 /// The `incant!` fallback: decline to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_w16_fused_i16_scalar(
     _t: archmage::ScalarToken,
@@ -2498,8 +2521,8 @@ fn inv_w16_fused_i16_scalar(
 /// `NEW_INV_SQRT2` prescale before pass 1 (C's `round_shift_ssse3` = `mulhrs`).
 /// Pass-1 shift is `mulhrs(1<<13)` (`>>2`) for 16x16 and `mulhrs(1<<14)`
 /// (`>>1`) for the rect shapes; pass 2 is `mulhrs(1<<11)` (`>>4`) for all.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_w16_fused_i16(
     t: Token,
@@ -2515,7 +2538,7 @@ fn inv_w16_fused_i16(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let _ = t;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
@@ -3377,7 +3400,7 @@ fn inv_w16_fused_i16(
 }
 
 /// The `incant!` fallback: decline to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_16x16_fused_i16_w16_scalar(
     _t: archmage::ScalarToken,
@@ -4068,7 +4091,7 @@ fn inv_row_pass_core(
 /// Returns `false` → caller runs the scalar loop.
 #[allow(clippy::too_many_arguments)]
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect816_fused_scalar(
     _t: archmage::ScalarToken,
@@ -4104,8 +4127,8 @@ fn fwd_rect816_fused_scalar(
 /// `FWD_SHIFT` is `[2, -2, 0]` for both sizes — 16x16's recipe — and
 /// `rect_type == +-1`, so the row pass carries the `NEW_SQRT2` scaling.
 /// `lr_flip` is the ARRAY-ORDER reversal KB-PERF-27 introduced.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect816_fused(
     t: Token,
@@ -4121,7 +4144,7 @@ fn fwd_rect816_fused(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let sr = [0i8; 12];
     if !((col_n == 8 && row_n == 16) || (col_n == 16 && row_n == 8)) {
         return false;
@@ -4174,7 +4197,7 @@ fn fwd_rect816_fused(
             v[r] = shl_clamp64v(t, x, 2);
         }
         let mut o = [i32x8::zero(t); 16];
-        incant!(run_fwd1d(kc, &v[..row_n], &mut o[..row_n], cos_bit_col, &sr), [v3]);
+        incant!(run_fwd1d(kc, &v[..row_n], &mut o[..row_n], cos_bit_col, &sr), [v3, neon]);
         for r in 0..row_n {
             w[cg][r] = rshiftv(t, o[r], 2); // -shift[1], shift[1] == -2
         }
@@ -4198,7 +4221,7 @@ fn fwd_rect816_fused(
             ri[p] = if lr_flip { tt[rg][col_n - 1 - p] } else { tt[rg][p] };
         }
         let mut u = [i32x8::zero(t); 16];
-        incant!(run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr), [v3]);
+        incant!(run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr), [v3, neon]);
         // shift[2] == 0; rect_type == +-1 so the NEW_SQRT2 scaling applies.
         for c in 0..col_n {
             let val = mul_rshiftv(t, u[c], NEW_SQRT2, NEW_SQRT2_BITS);
@@ -4214,7 +4237,7 @@ fn fwd_rect816_fused(
 }
 
 /// Dispatch for [`fwd_rect816_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_fwd_txfm2d_rect816_fused(
     txfm_type_col: i32,
@@ -4242,7 +4265,7 @@ pub(crate) fn try_fwd_txfm2d_rect816_fused(
                 ic, ir, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip,
                 lr_flip
             ),
-            [v3, scalar]
+            [v3, neon, scalar]
         ) {
             return true;
         }
@@ -4251,12 +4274,12 @@ pub(crate) fn try_fwd_txfm2d_rect816_fused(
         fwd_rect816_fused(
             kc, kr, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip, lr_flip
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect48_fused_scalar(
     _t: archmage::ScalarToken,
@@ -4300,8 +4323,8 @@ fn fwd_rect48_fused_scalar(
 ///
 /// `FWD_SHIFT` is `[2, -1, 0]` for both sizes — the same recipe as 8x8 — and
 /// `shift[2] == 0`, so the only tail is the rect scaling.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect48_fused(
     t: Token,
@@ -4317,7 +4340,7 @@ fn fwd_rect48_fused(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let sr = [0i8; 12];
     if !((col_n == 4 && row_n == 8) || (col_n == 8 && row_n == 4)) {
         return false;
@@ -4340,7 +4363,7 @@ fn fwd_rect48_fused(
     }
 
     let mut w = [i32x8::zero(t); 8];
-    incant!(run_fwd1d(kc, &v[..row_n], &mut w[..row_n], cos_bit_col, &sr), [v3]);
+    incant!(run_fwd1d(kc, &v[..row_n], &mut w[..row_n], cos_bit_col, &sr), [v3, neon]);
     for x in w[..row_n].iter_mut() {
         *x = rshiftv(t, *x, 1); // -shift[1], shift[1] == -1
     }
@@ -4381,7 +4404,7 @@ fn fwd_rect48_fused(
     }
 
     let mut u = [i32x8::zero(t); 8];
-    incant!(run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr), [v3]);
+    incant!(run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr), [v3, neon]);
 
     // shift[2] == 0; `rect_type == +-1` so the NEW_SQRT2 scaling applies.
     for c in 0..col_n {
@@ -4397,7 +4420,7 @@ fn fwd_rect48_fused(
 }
 
 /// Dispatch for [`fwd_rect48_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_fwd_txfm2d_rect48_fused(
     txfm_type_col: i32,
@@ -4422,7 +4445,7 @@ pub(crate) fn try_fwd_txfm2d_rect48_fused(
                 kc, kr, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip,
                 lr_flip
             ),
-            [v3, scalar]
+            [v3, neon, scalar]
         ) {
             return true;
         }
@@ -4437,12 +4460,12 @@ pub(crate) fn try_fwd_txfm2d_rect48_fused(
         fwd_rect48_fused(
             kc, kr, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip, lr_flip
         ),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_16x16_fused_scalar(
     _t: archmage::ScalarToken,
@@ -4474,8 +4497,8 @@ fn fwd_16x16_fused_scalar(
 /// (8x8's is 1) and the tail is again a no-op; `rect_type == 0`. Note
 /// `COS_BIT_ROW[2][2]` is **12**, not 13 — the row and column cos bits differ
 /// at this size, unlike 8x8.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_16x16_fused(
     t: Token,
@@ -4489,7 +4512,7 @@ fn fwd_16x16_fused(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let sr = [0i8; 12];
 
     // One 8x8 i32 transpose, written out (KB-PERF-23/24: an index-computed
@@ -4541,8 +4564,8 @@ fn fwd_16x16_fused(
     }
     let mut wlo = [i32x8::zero(t); 16];
     let mut whi = [i32x8::zero(t); 16];
-    incant!(run_fwd1d(kc, &vlo, &mut wlo, cos_bit_col, &sr), [v3]);
-    incant!(run_fwd1d(kc, &vhi, &mut whi, cos_bit_col, &sr), [v3]);
+    incant!(run_fwd1d(kc, &vlo, &mut wlo, cos_bit_col, &sr), [v3, neon]);
+    incant!(run_fwd1d(kc, &vhi, &mut whi, cos_bit_col, &sr), [v3, neon]);
 
     // `round_shift_array(_, -shift[1])` with shift[1] == -2, then the lr flip:
     // source column c lands at column 15-c, i.e. the halves swap AND reverse.
@@ -4576,8 +4599,8 @@ fn fwd_16x16_fused(
     // ---- row pass: lane = row, one call per 8-row group ----
     let mut ua = [i32x8::zero(t); 16];
     let mut ub = [i32x8::zero(t); 16];
-    incant!(run_fwd1d(kr, &ga, &mut ua, cos_bit_row, &sr), [v3]);
-    incant!(run_fwd1d(kr, &gb, &mut ub, cos_bit_row, &sr), [v3]);
+    incant!(run_fwd1d(kr, &ga, &mut ua, cos_bit_row, &sr), [v3, neon]);
+    incant!(run_fwd1d(kr, &gb, &mut ub, cos_bit_row, &sr), [v3, neon]);
 
     // shift[2] == 0 and rect_type == 0: `output[c*16 + r]`.
     for c in 0..16usize {
@@ -4598,7 +4621,7 @@ fn fwd_16x16_fused(
 }
 
 /// Dispatch for [`fwd_16x16_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_fwd_txfm2d_16x16_fused(
     txfm_type_col: i32,
@@ -4618,12 +4641,12 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
     // shares `FWD16_I16_BOUND`, so its declines mean the 8-lane would too —
     // it stays only as the non-v3 tier.
     if let (Some(kc), Some(kr)) = (fwd16_kernel(txfm_type_col), fwd16_kernel(txfm_type_row)) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if incant!(
             fwd_16x16_fused_i16_w16(
                 kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
             ),
-            [v3, scalar]
+            [v3, neon, scalar]
         ) {
             return true;
         }
@@ -4631,7 +4654,7 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
             fwd_16x16_fused_i16(
                 kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
             ),
-            [v3, scalar]
+            [v3, neon, scalar]
         ) {
             return true;
         }
@@ -4644,7 +4667,7 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
     }
     incant!(
         fwd_16x16_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -4676,15 +4699,15 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
 // callers decline to the scalar fused path, which is always correct.
 
 /// The three 4-point kernels of C's `col_txfm4x4_arr` / `row_txfm4x4_arr`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
-enum Fwd4 {
+pub(crate) enum Fwd4 {
     Dct,
     Adst,
     Idtx,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn fwd4_kernel(txfm_type: i32) -> Option<Fwd4> {
     match txfm_type {
         0 => Some(Fwd4::Dct),
@@ -4695,7 +4718,7 @@ fn fwd4_kernel(txfm_type: i32) -> Option<Fwd4> {
 }
 
 /// Scalar twin — declines, routing the caller to the scalar fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_4x4_fused_scalar(
     _t: archmage::ScalarToken,
@@ -4713,7 +4736,9 @@ fn fwd_4x4_fused_scalar(
 }
 
 /// The SIMD fused 4x4 forward transform — `av1_lowbd_fwd_txfm2d_4x4_sse2`.
-#[cfg(target_arch = "x86_64")]
+/// aarch64 resolves the neon tier to the verbatim C-NEON transcription in
+/// `fwd_neon` (see `fwd_4x4_fused_neon` below), not this body.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[magetypes(define(i32x8), v3, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_4x4_fused(
@@ -4728,7 +4753,7 @@ fn fwd_4x4_fused(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let _ = t;
 
     // `pair_set_epi16(a, b)` — i16 pair (a lo, b hi) per 32-bit group.
@@ -4875,7 +4900,7 @@ fn fwd_4x4_fused(
 }
 
 /// Dispatch for [`fwd_4x4_fused`]; `false` routes to the scalar fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_fwd_txfm2d_4x4_fused(
     txfm_type_col: i32,
@@ -4897,14 +4922,14 @@ pub(crate) fn try_fwd_txfm2d_4x4_fused(
     // returns false to the same fallback either way.
     incant!(
         fwd_4x4_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
 /// The three 4-point inverse kernels of C's `lowbd_txfm_all_1d_w4_arr` row —
 /// `idct4_w4_sse2`, `iadst4_w4_sse2`, `iidentity4_ssse3`: one `__m128i` per
 /// 4-point vector, i16 lanes, `madd` butterflies.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
 enum Inv4 {
     Dct,
@@ -4912,7 +4937,7 @@ enum Inv4 {
     Idtx,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn inv4_kernel(txfm_type: i32) -> Option<Inv4> {
     match txfm_type {
         0 => Some(Inv4::Dct),
@@ -4923,7 +4948,7 @@ fn inv4_kernel(txfm_type: i32) -> Option<Inv4> {
 }
 
 /// Scalar twin — declines, routing the caller to the scalar fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn inv_4x4_fused_scalar(
     _t: archmage::ScalarToken,
@@ -4945,8 +4970,8 @@ fn inv_4x4_fused_scalar(
 /// loads are contiguous and the row transform sees the transpose; C's lowbd
 /// kernel loads rows contiguously because its input is row-major. The clip-add
 /// is `highbd_clip_pixel_add` (u16 dest), not C's u8 `packus` write.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_4x4_fused(
     t: Token,
@@ -4959,8 +4984,11 @@ fn inv_4x4_fused(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
-    let Some(u) = inv_4x4_i16_core(t, kr, kc, input, ud_flip, lr_flip) else {
+    use crate::sse_neon::*;
+    let Some(u) = incant!(
+        inv_4x4_i16_core(kr, kc, input, ud_flip, lr_flip),
+        [v3, neon]
+    ) else {
         return false;
     };
 
@@ -5020,7 +5048,10 @@ fn inv_4x4_fused_u8(
     lr_flip: bool,
 ) -> bool {
     use archmage::intrinsics::x86_64::*;
-    let Some(u) = inv_4x4_i16_core(t, kr, kc, input, ud_flip, lr_flip) else {
+    let Some(u) = incant!(
+        inv_4x4_i16_core(kr, kc, input, ud_flip, lr_flip),
+        [v3]
+    ) else {
         return false;
     };
     for r in 0..4usize {
@@ -5042,20 +5073,22 @@ fn inv_4x4_fused_u8(
 
 /// The i16 fused 4x4 compute — shared by the u16 epilogue
 /// ([`inv_4x4_fused`]) and the u8 epilogue ([`inv_4x4_fused_u8`]); `None` is
-/// the bound/len decline. `#[rite(v3)]` inlines into the callers' tier
-/// region.
-#[cfg(target_arch = "x86_64")]
-#[archmage::rite(v3)]
+/// the bound/len decline. `magetypes` emits the v3 (x86_64) and neon
+/// (aarch64) tier bodies; callers reach the matching one through `incant!`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn inv_4x4_i16_core(
-    _t: archmage::X64V3Token,
+    t: Token,
     kr: Inv4,
     kc: Inv4,
     input: &[i32],
     ud_flip: bool,
     lr_flip: bool,
 ) -> Option<[__m128i; 4]> {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
+    let _ = t;
+    let _ = ud_flip;
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
     // Runtime input bound (was a scalar scan in the dispatcher — moved inside
@@ -5220,7 +5253,7 @@ fn inv_4x4_i16_core(
 /// The i16 lanes are exact only while every stage bound is 16 — i.e. bd 8,
 /// where `opt_range` is `(16, 16)` and both `clamp_buf` bounds are 16. Above
 /// that the row-pass intermediates can exceed i16 and the kernel declines.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_inv_txfm2d_4x4_fused(
     txfm_type_row: i32,
@@ -5248,7 +5281,7 @@ pub(crate) fn try_inv_txfm2d_4x4_fused(
     // here identically.
     incant!(
         inv_4x4_fused(kr, kc, input, output, stride, ud_flip, lr_flip, bd),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -5283,7 +5316,7 @@ pub(crate) fn try_inv_txfm2d_4x4_fused_u8(
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_8x8_fused_scalar(
     _t: archmage::ScalarToken,
@@ -5336,8 +5369,8 @@ fn fwd_8x8_fused_scalar(
 /// result to column `col_n-1-j` — reversing before the kernel would be wrong.
 /// `ud_flip` is the source-row reversal at load. The transpose only moves
 /// lanes.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_8x8_fused(
     t: Token,
@@ -5351,7 +5384,7 @@ fn fwd_8x8_fused(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let sr = [0i8; 12];
 
     // Lane = column. `shift[0] == 2` -> the NEGATIVE-bit arm of
@@ -5375,7 +5408,7 @@ fn fwd_8x8_fused(
     }
 
     let mut w = [i32x8::zero(t); 8];
-    incant!(run_fwd1d(kc, &v, &mut w, cos_bit_col, &sr), [v3]);
+    incant!(run_fwd1d(kc, &v, &mut w, cos_bit_col, &sr), [v3, neon]);
 
     // `round_shift_array(_, -shift[1])` with shift[1] == -1, then the lr flip:
     // lane j held source column j, and the generic writes it to column 7-j.
@@ -5416,7 +5449,7 @@ fn fwd_8x8_fused(
     ];
 
     let mut u = [i32x8::zero(t); 8];
-    incant!(run_fwd1d(kr, &tr, &mut u, cos_bit_row, &sr), [v3]);
+    incant!(run_fwd1d(kr, &tr, &mut u, cos_bit_row, &sr), [v3, neon]);
 
     // shift[2] == 0 and rect_type == 0, so no tail. `output[k*8 + r]` is
     // lane `r` of `u[k]` — one contiguous vector store per k.
@@ -5431,7 +5464,7 @@ fn fwd_8x8_fused(
 }
 
 /// Dispatch for [`fwd_8x8_fused`]; `false` routes to the generic driver.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_fwd_txfm2d_8x8_fused(
     txfm_type_col: i32,
@@ -5453,7 +5486,7 @@ pub(crate) fn try_fwd_txfm2d_8x8_fused(
             fwd_8x8_fused_i16(
                 kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
             ),
-            [v3, scalar]
+            [v3, neon, scalar]
         ) {
             return true;
         }
@@ -5466,7 +5499,7 @@ pub(crate) fn try_fwd_txfm2d_8x8_fused(
     }
     incant!(
         fwd_8x8_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
-        [v3, scalar]
+        [v3, neon, scalar]
     )
 }
 
@@ -5492,15 +5525,15 @@ pub(crate) fn try_fwd_txfm2d_8x8_fused(
 // path, which is always correct.
 
 /// The three 8-point kernels of C's `col_txfm8x8_arr` / `row_txfm8x8_arr`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
-enum Fwd8 {
+pub(crate) enum Fwd8 {
     Dct,
     Adst,
     Idtx,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn fwd8_kernel(txfm_type: i32) -> Option<Fwd8> {
     match txfm_type {
         1 => Some(Fwd8::Dct),
@@ -5511,7 +5544,7 @@ fn fwd8_kernel(txfm_type: i32) -> Option<Fwd8> {
 }
 
 /// Scalar twin — declines, routing the caller to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_8x8_fused_i16_scalar(
     _t: archmage::ScalarToken,
@@ -5529,7 +5562,9 @@ fn fwd_8x8_fused_i16_scalar(
 }
 
 /// The i16 fused 8x8 forward transform — `av1_lowbd_fwd_txfm2d_8x8_sse2`.
-#[cfg(target_arch = "x86_64")]
+/// aarch64 resolves the neon tier to the verbatim C-NEON transcription in
+/// `fwd_neon` (see `fwd_8x8_fused_i16_neon` below), not this body.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[magetypes(define(i32x8), v3, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_8x8_fused_i16(
@@ -5544,7 +5579,7 @@ fn fwd_8x8_fused_i16(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let _ = t;
 
     // `pair_set_epi16(a, b)` — i16 pair (a lo, b hi) per 32-bit group.
@@ -5795,15 +5830,15 @@ fn fwd_8x8_fused_i16(
 // pass.
 
 /// Kernel kind for the rect48 family — the SIZE comes from `col_n`/`row_n`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
-enum FwdR {
+pub(crate) enum FwdR {
     Dct,
     Adst,
     Idtx,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn fwd_r_kernel(txfm_type: i32) -> Option<FwdR> {
     match txfm_type {
         0 | 1 => Some(FwdR::Dct),
@@ -5814,7 +5849,7 @@ fn fwd_r_kernel(txfm_type: i32) -> Option<FwdR> {
 }
 
 /// Scalar twin — declines, routing the caller to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect48_fused_i16_scalar(
     _t: archmage::ScalarToken,
@@ -5834,7 +5869,9 @@ fn fwd_rect48_fused_i16_scalar(
 }
 
 /// The i16 fused 4x8/8x4 forward transforms.
-#[cfg(target_arch = "x86_64")]
+/// aarch64 resolves the neon tier to the verbatim C-NEON transcriptions in
+/// `fwd_neon` (see `fwd_rect48_fused_i16_neon` below), not this body.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[magetypes(define(i32x8), v3, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect48_fused_i16(
@@ -5851,7 +5888,7 @@ fn fwd_rect48_fused_i16(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let _ = t;
     if !((col_n == 4 && row_n == 8) || (col_n == 8 && row_n == 4)) {
         return false;
@@ -6270,16 +6307,16 @@ fn fwd_rect48_fused_i16(
 // wider-than-bd8 inputs decline to the i32 fused path.
 
 /// Kernel kind for the 16x16 family (both passes are 16-point).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
-enum Fwd16 {
+pub(crate) enum Fwd16 {
     Dct,
     Adst,
     Idtx,
 }
 
-#[cfg(target_arch = "x86_64")]
-fn fwd16_kernel(txfm_type: i32) -> Option<Fwd16> {
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) fn fwd16_kernel(txfm_type: i32) -> Option<Fwd16> {
     match txfm_type {
         2 => Some(Fwd16::Dct),
         7 => Some(Fwd16::Adst),
@@ -6289,12 +6326,12 @@ fn fwd16_kernel(txfm_type: i32) -> Option<Fwd16> {
 }
 
 /// `max|input|` per (col, row) kernel pair — see the module note above.
-#[cfg(target_arch = "x86_64")]
-const FWD16_I16_BOUND: [[i16; 3]; 3] =
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) const FWD16_I16_BOUND: [[i16; 3]; 3] =
     [[255, 284, 723], [284, 315, 803], [1023, 1136, 2895]];
 
-#[cfg(target_arch = "x86_64")]
-fn fwd16_idx(k: Fwd16) -> usize {
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) fn fwd16_idx(k: Fwd16) -> usize {
     match k {
         Fwd16::Dct => 0,
         Fwd16::Adst => 1,
@@ -6303,7 +6340,7 @@ fn fwd16_idx(k: Fwd16) -> usize {
 }
 
 /// Scalar twin — declines, routing the caller to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_16x16_fused_i16_scalar(
     _t: archmage::ScalarToken,
@@ -6321,7 +6358,9 @@ fn fwd_16x16_fused_i16_scalar(
 }
 
 /// The i16 fused 16x16 forward transform.
-#[cfg(target_arch = "x86_64")]
+/// aarch64 resolves the neon tier to the verbatim C-NEON transcription in
+/// `fwd_neon` (see `fwd_16x16_fused_i16_neon` below), not this body.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[magetypes(define(i32x8), v3, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_16x16_fused_i16(
@@ -6336,7 +6375,7 @@ fn fwd_16x16_fused_i16(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let _ = t;
 
     let pair = |a: i32, b: i32| -> __m128i {
@@ -6721,7 +6760,7 @@ fn fwd_16x16_fused_i16(
 }
 
 /// Scalar twin — declines, routing the caller to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_16x16_fused_i16_w16_scalar(
     _t: archmage::ScalarToken,
@@ -6746,8 +6785,8 @@ fn fwd_16x16_fused_i16_w16_scalar(
 /// already proven bit-identical to the same scalar reference within `M*`.
 /// Same `FWD16_I16_BOUND` gate, so the accept/decline domain is unchanged and
 /// the two widths produce identical bytes on it.
-#[cfg(target_arch = "x86_64")]
-#[magetypes(define(i16x16, i32x8), v3, -scalar)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[magetypes(define(i16x16, i32x8), v3, neon, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_16x16_fused_i16_w16(
     t: Token,
@@ -6761,8 +6800,12 @@ fn fwd_16x16_fused_i16_w16(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
-    use lowbd16_fwd::{run_fwd1d_i16_v3, Fwd1dI16};
+    use crate::sse_neon::*;
+    #[cfg(target_arch = "x86_64")]
+    use lowbd16_fwd::run_fwd1d_i16_v3;
+    #[cfg(target_arch = "aarch64")]
+    use lowbd16_fwd::run_fwd1d_i16_neon;
+    use lowbd16_fwd::Fwd1dI16;
     use prims16::{mulhrs16, widen_hi, widen_lo};
     let _ = t;
 
@@ -6791,7 +6834,7 @@ fn fwd_16x16_fused_i16_w16(
         };
         let rv = _mm256_loadu_si256(row);
         mx = _mm256_max_epu16(mx, _mm256_abs_epi16(rv));
-        *v = i16x16::from_repr(t, _mm256_slli_epi16::<2>(rv));
+        *v = i16x16_of_m256(t, _mm256_slli_epi16::<2>(rv));
     }
     let over = _mm256_subs_epu16(mx, _mm256_set1_epi16(bound));
     if _mm256_testz_si256(over, over) == 0 {
@@ -6809,7 +6852,7 @@ fn fwd_16x16_fused_i16_w16(
 
     // `transpose_16bit_16x16_avx2` verbatim: LOADL/LOADR gather the 128-lane
     // halves (permute2x128), then two `transpose2_8x8_avx2` networks.
-    let cw: [__m256i; 16] = core::array::from_fn(|i| mulhrs16(t, col[i], 1 << 13).into_repr());
+    let cw: [__m256i; 16] = core::array::from_fn(|i| m256_of_i16x16(mulhrs16(t, col[i], 1 << 13)));
     let mut tt = [_mm256_setzero_si256(); 16];
     for i in 0..8 {
         tt[i] = _mm256_permute2x128_si256::<0x20>(cw[i], cw[i + 8]);
@@ -6841,8 +6884,8 @@ fn fwd_16x16_fused_i16_w16(
     let thi = tr8x8(<&[__m256i; 8]>::try_from(&tt[8..]).unwrap());
     let mut buf = [i16x16::zero(t); 16];
     for i in 0..8 {
-        buf[i] = i16x16::from_repr(t, tlo[i]);
-        buf[8 + i] = i16x16::from_repr(t, thi[i]);
+        buf[i] = i16x16_of_m256(t, tlo[i]);
+        buf[8 + i] = i16x16_of_m256(t, thi[i]);
     }
     // lr_flip reverses the register axis (register = column here).
     if lr_flip {
@@ -6884,17 +6927,17 @@ fn fwd_16x16_fused_i16_w16(
 // residual range, so shipping-cell blocks accept and wider inputs decline.
 
 /// Kernel kind for the rect816 family — width is fixed by the axis.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[derive(Clone, Copy)]
-enum FwdRB {
+pub(crate) enum FwdRB {
     Dct,
     Adst,
     Idtx,
 }
 
 /// 8/16-pt forward codes share the same kind tag (the shape fixes which).
-#[cfg(target_arch = "x86_64")]
-fn fwdrb_kernel(txfm_type: i32) -> Option<FwdRB> {
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) fn fwdrb_kernel(txfm_type: i32) -> Option<FwdRB> {
     match txfm_type {
         1 | 2 => Some(FwdRB::Dct),
         6 | 7 => Some(FwdRB::Adst),
@@ -6907,15 +6950,15 @@ fn fwdrb_kernel(txfm_type: i32) -> Option<FwdRB> {
 /// Both tables also require the pass-1 output to stay `<= 32,765` so the
 /// inter-pass `adds(v, 2)` cannot saturate where scalar's `(v + 2) >> 2`
 /// does not — that constraint binds the IDTX-row cells.
-#[cfg(target_arch = "x86_64")]
-const FWD816_I16_BOUND: [[i16; 3]; 3] =
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) const FWD816_I16_BOUND: [[i16; 3]; 3] =
     [[511, 567, 723], [568, 630, 803], [2047, 2270, 2895]];
-#[cfg(target_arch = "x86_64")]
-const FWD168_I16_BOUND: [[i16; 3]; 3] =
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) const FWD168_I16_BOUND: [[i16; 3]; 3] =
     [[511, 568, 1447], [567, 630, 1605], [1448, 1607, 4095]];
 
-#[cfg(target_arch = "x86_64")]
-fn fwdrb_idx(k: FwdRB) -> usize {
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) fn fwdrb_idx(k: FwdRB) -> usize {
     match k {
         FwdRB::Dct => 0,
         FwdRB::Adst => 1,
@@ -6924,7 +6967,7 @@ fn fwdrb_idx(k: FwdRB) -> usize {
 }
 
 /// Scalar twin — declines, routing the caller to the i32 fused path.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect816_fused_i16_scalar(
     _t: archmage::ScalarToken,
@@ -6944,7 +6987,9 @@ fn fwd_rect816_fused_i16_scalar(
 }
 
 /// The i16 fused 8x16 / 16x8 forward transforms.
-#[cfg(target_arch = "x86_64")]
+/// aarch64 resolves the neon tier to the verbatim C-NEON transcriptions in
+/// `fwd_neon` (see `fwd_rect816_fused_i16_neon` below), not this body.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[magetypes(define(i32x8), v3, -scalar)]
 #[allow(clippy::too_many_arguments)]
 fn fwd_rect816_fused_i16(
@@ -6961,7 +7006,7 @@ fn fwd_rect816_fused_i16(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    use archmage::intrinsics::x86_64::*;
+    use crate::sse_neon::*;
     let _ = t;
     if !((col_n == 8 && row_n == 16) || (col_n == 16 && row_n == 8)) {
         return false;
@@ -8524,4 +8569,136 @@ mod tests {
 
 
 
+}
+
+/// The aarch64 NEON tier for [`try_fwd_txfm2d_4x4_fused`] — a verbatim
+/// transcription of `lowbd_fwd_txfm2d_4x4_neon` (q13 lane-multiply kernels,
+/// `vtrn` transpose) replacing the SSE2-mirror body, which on this
+/// architecture runs ~5x slower than the kernel C actually dispatches.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn fwd_4x4_fused_neon(
+    t: archmage::NeonToken,
+    kc: Fwd4,
+    kr: Fwd4,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    fwd_neon::fwd_4x4_fused(
+        t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+    )
+}
+
+/// The aarch64 NEON tier for [`try_fwd_txfm2d_8x8_fused`] — verbatim
+/// `lowbd_fwd_txfm2d_8x8_neon`.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn fwd_8x8_fused_i16_neon(
+    t: archmage::NeonToken,
+    kc: Fwd8,
+    kr: Fwd8,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    fwd_neon::fwd_8x8_fused(
+        t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+    )
+}
+
+/// The aarch64 NEON tier for [`try_fwd_txfm2d_rect48_fused`] — verbatim
+/// `lowbd_fwd_txfm2d_4x8_neon` / `lowbd_fwd_txfm2d_8x4_neon`.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn fwd_rect48_fused_i16_neon(
+    t: archmage::NeonToken,
+    kc: FwdR,
+    kr: FwdR,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    if col_n == 4 && row_n == 8 {
+        fwd_neon::fwd_4x8_fused(
+            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+        )
+    } else if col_n == 8 && row_n == 4 {
+        fwd_neon::fwd_8x4_fused(
+            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+        )
+    } else {
+        false
+    }
+}
+
+/// The aarch64 NEON tier for [`try_fwd_txfm2d_rect816_fused`] — verbatim
+/// `lowbd_fwd_txfm2d_8x16_neon` / `lowbd_fwd_txfm2d_16x8_neon`.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn fwd_rect816_fused_i16_neon(
+    t: archmage::NeonToken,
+    kc: FwdRB,
+    kr: FwdRB,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    col_n: usize,
+    row_n: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    if col_n == 8 && row_n == 16 {
+        fwd_neon::fwd_8x16_fused(
+            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+        )
+    } else if col_n == 16 && row_n == 8 {
+        fwd_neon::fwd_16x8_fused(
+            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+        )
+    } else {
+        false
+    }
+}
+
+/// The aarch64 NEON tier for [`try_fwd_txfm2d_16x16_fused`] — verbatim
+/// `lowbd_fwd_txfm2d_16x16_neon`.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn fwd_16x16_fused_i16_neon(
+    t: archmage::NeonToken,
+    kc: Fwd16,
+    kr: Fwd16,
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    cos_bit_col: i32,
+    cos_bit_row: i32,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    fwd_neon::fwd_16x16_fused(
+        t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+    )
 }

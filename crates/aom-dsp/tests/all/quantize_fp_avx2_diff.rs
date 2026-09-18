@@ -50,6 +50,10 @@ fn perm_pair(rng: &mut Rng, n: usize) -> (Vec<i16>, Vec<i16>) {
     (v, inv)
 }
 
+// This differential pins the port's v3 tier against the REAL exported AVX2 C
+// symbol, which `aom-sys-ref` only wraps on x86-64 — there is no aarch64 arm
+// to compare against, so the whole test is x86-64-only.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn quantize_fp_v3_bit_identical_to_real_avx2_full_domain() {
     if archmage::X64V3Token::summon().is_none() {

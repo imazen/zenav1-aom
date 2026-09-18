@@ -7120,6 +7120,54 @@ extern "C" {
     );
 }
 
+// The REAL neon runtime kernels — what an aarch64 libaom build dispatches to.
+// Same i16-lane semantics family as the avx2 mirrors.
+#[cfg(target_arch = "aarch64")]
+extern "C" {
+    pub fn av1_quantize_fp_neon(
+        coeff: *const i32,
+        n: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+    pub fn av1_quantize_fp_32x32_neon(
+        coeff: *const i32,
+        n: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+    pub fn av1_quantize_fp_64x64_neon(
+        coeff: *const i32,
+        n: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+}
+
 /// Reference `av1_quantize_fp` family. `log_scale` selects 0/1/2. Returns
 /// (qcoeff, dqcoeff, eob).
 pub fn ref_quantize_fp(
@@ -7234,6 +7282,62 @@ pub fn ref_quantize_fp_avx2(
     (qcoeff, dqcoeff, eob)
 }
 
+/// Reference `av1_quantize_fp` family — the REAL neon kernels
+/// (`av1_quantize_fp_neon`/`_32x32_neon`/`_64x64_neon` by `log_scale`), what
+/// an aarch64 libaom build dispatches to. `n` must be a multiple of 16.
+/// NEON loads are unaligned-tolerant; the param rows still get the full
+/// 8-lane ac-replicated layout the kernel reads. Returns (qcoeff, dqcoeff,
+/// eob).
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_quantize_fp_neon(
+    log_scale: i32,
+    coeff: &[i32],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    dequant: &[i16; 2],
+    scan: &[i16],
+    iscan: &[i16],
+) -> (Vec<i32>, Vec<i32>, u16) {
+    let n = coeff.len();
+    let mut qcoeff = vec![0i32; n];
+    let mut dqcoeff = vec![0i32; n];
+    let mut eob: u16 = 0;
+    let dummy = vec![0i16; n.max(2)];
+    let round8: [i16; 8] =
+        [round[0], round[1], round[1], round[1], round[1], round[1], round[1], round[1]];
+    let quant8: [i16; 8] =
+        [quant[0], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1]];
+    let dequant8: [i16; 8] = [
+        dequant[0], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1],
+        dequant[1],
+    ];
+    let f: QuantFpFn = match log_scale {
+        0 => av1_quantize_fp_neon,
+        1 => av1_quantize_fp_32x32_neon,
+        2 => av1_quantize_fp_64x64_neon,
+        _ => unreachable!(),
+    };
+    unsafe {
+        f(
+            coeff.as_ptr(),
+            n as isize,
+            dummy.as_ptr(),
+            round8.as_ptr(),
+            quant8.as_ptr(),
+            dummy.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            dequant8.as_ptr(),
+            &mut eob,
+            scan.as_ptr(),
+            iscan.as_ptr(),
+        )
+    }
+    (qcoeff, dqcoeff, eob)
+}
+
+
 // aom_dsp/quantize.c — "b" quantizer helper (dead-zone + quant/quant_shift).
 extern "C" {
     #[allow(clippy::too_many_arguments)]
@@ -7291,6 +7395,102 @@ pub fn ref_quantize_b(
             std::ptr::null(),
             std::ptr::null(),
             log_scale,
+        )
+    }
+    (qcoeff, dqcoeff, eob)
+}
+
+/// Real exported C NEON `aom_quantize_b` tier — the oracle for the port's
+/// `quantize_b_impl_neon` mirror. Dispatches by `log_scale` the same way C's
+/// rtcd table does: 0 -> `aom_quantize_b_neon`, 1 -> `_32x32_neon`,
+/// 2 -> `_64x64_neon`. aarch64 only.
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    pub fn aom_quantize_b_neon(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+    #[allow(clippy::too_many_arguments)]
+    pub fn aom_quantize_b_32x32_neon(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+    #[allow(clippy::too_many_arguments)]
+    pub fn aom_quantize_b_64x64_neon(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        eob: *mut u16,
+        scan: *const i16,
+        iscan: *const i16,
+    );
+}
+
+/// Reference `aom_quantize_b_{,32x32,64x64}_neon` by `log_scale`. Returns
+/// (qcoeff, dqcoeff, eob). aarch64 only.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+pub fn ref_quantize_b_neon(
+    log_scale: i32,
+    coeff: &[i32],
+    zbin: &[i16; 2],
+    round: &[i16; 2],
+    quant: &[i16; 2],
+    quant_shift: &[i16; 2],
+    dequant: &[i16; 2],
+    scan: &[i16],
+    iscan: &[i16],
+) -> (Vec<i32>, Vec<i32>, u16) {
+    let n = coeff.len();
+    let mut qcoeff = vec![0i32; n];
+    let mut dqcoeff = vec![0i32; n];
+    let mut eob: u16 = 0;
+    let f = match log_scale {
+        0 => aom_quantize_b_neon,
+        1 => aom_quantize_b_32x32_neon,
+        _ => aom_quantize_b_64x64_neon,
+    };
+    unsafe {
+        f(
+            coeff.as_ptr(),
+            n as isize,
+            zbin.as_ptr(),
+            round.as_ptr(),
+            quant.as_ptr(),
+            quant_shift.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            dequant.as_ptr(),
+            &mut eob,
+            scan.as_ptr(),
+            iscan.as_ptr(),
         )
     }
     (qcoeff, dqcoeff, eob)

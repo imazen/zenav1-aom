@@ -252,9 +252,12 @@ fn lpf_impl(
     };
 
     // Scatter helper values into `buf` for taps `ks` — direct indexing so the
-    // (immutable) `load` closure's borrow has ended by this point.
+    // (immutable) `load` closure's borrow has ended by this point. `c` is taken
+    // as an argument (like `load!`): a free `c` would resolve with def-site
+    // hygiene under the `magetypes` tier expansion and not see the loop local.
     macro_rules! store {
-        ($($k:expr => $v:expr),+ $(,)?) => {{
+        ($c:expr, $($k:expr => $v:expr),+ $(,)?) => {{
+            let c = $c;
             $(
                 let a = ($v).to_array();
                 buf[(c + ($k) * ts) as usize] = a[0] as u16;
@@ -276,7 +279,7 @@ fn lpf_impl(
             let oq1 = load!(c, 1);
             let mask = fmask2(op1, op0, oq0, oq1);
             let (n1, n0, m0, m1) = filter4(op1, op0, oq0, oq1, mask);
-            store!(-2 => n1, -1 => n0, 0 => m0, 1 => m1);
+            store!(c, -2 => n1, -1 => n0, 0 => m0, 1 => m1);
         }
         6 => {
             // taps p2(-3) p1(-2) p0(-1) q0(0) q1(1) q2(2)
@@ -299,7 +302,7 @@ fn lpf_impl(
             let o_p0 = i32x4::blend(use_wide, w_p0, f_p0);
             let o_q0 = i32x4::blend(use_wide, w_q0, f_q0);
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
-            store!(-2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1);
+            store!(c, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1);
         }
         8 => {
             // taps p3(-4) p2(-3) p1(-2) p0(-1) q0(0) q1(1) q2(2) q3(3)
@@ -329,7 +332,7 @@ fn lpf_impl(
             let o_q0 = i32x4::blend(use_wide, w_q0, f_q0);
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
             let o_q2 = i32x4::blend(use_wide, w_q2, q2);
-            store!(-3 => o_p2, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1, 2 => o_q2);
+            store!(c, -3 => o_p2, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1, 2 => o_q2);
         }
         14 => {
             // taps p6(-7)..p0(-1), q0(0)..q6(6)
@@ -400,7 +403,7 @@ fn lpf_impl(
             let o_q4 = i32x4::blend(use14, w14_q4, q4);
             let o_q5 = i32x4::blend(use14, w14_q5, q5);
             store!(
-                -6 => o_p5, -5 => o_p4, -4 => o_p3, -3 => o_p2, -2 => o_p1, -1 => o_p0,
+                c, -6 => o_p5, -5 => o_p4, -4 => o_p3, -3 => o_p2, -2 => o_p1, -1 => o_p0,
                 0 => o_q0, 1 => o_q1, 2 => o_q2, 3 => o_q3, 4 => o_q4, 5 => o_q5,
             );
         }
@@ -1238,8 +1241,12 @@ fn lpf_impl_u8(
         .not()
     };
 
+    // `c` is taken as an argument (like the u16 twin's `store!`): a free `c`
+    // would resolve with def-site hygiene under the `magetypes` tier
+    // expansion and not see the loop local.
     macro_rules! store {
-        ($($k:expr => $v:expr),+ $(,)?) => {{
+        ($c:expr, $($k:expr => $v:expr),+ $(,)?) => {{
+            let c = $c;
             $(
                 let a = ($v).to_array();
                 buf[(c + ($k) * ts) as usize] = a[0] as u8;
@@ -1269,7 +1276,9 @@ fn lpf_impl_u8(
     // harness) takes the original strided-gather path unchanged.
     let z4 = i32x4::splat(token, 0);
     macro_rules! load_taps {
-        ($t:ident, $rows:ident, $kmin:expr, $vfast:expr, $hfast:expr) => {
+        ($c:expr, $load:expr, $t:ident, $rows:ident, $kmin:expr, $vfast:expr, $hfast:expr) => {{
+            let c = $c;
+            let load = $load;
             if $vfast {
                 for (r, row) in $rows.iter_mut().enumerate() {
                     let s = (c + r as isize * step + $kmin) as usize;
@@ -1301,11 +1310,12 @@ fn lpf_impl_u8(
                     *tv = load(i as isize + $kmin);
                 }
             }
-        };
+        }};
     }
     macro_rules! store_taps {
-        ($out:expr, $rows:ident, $kmin:expr, $col0:expr, $vfast:expr, $hfast:expr,
-         $($fb:tt)+) => {
+        ($c:expr, $out:expr, $rows:ident, $kmin:expr, $col0:expr, $vfast:expr, $hfast:expr,
+         $($fb:tt)+) => {{
+            let c = $c;
             if $vfast {
                 for (j, v) in $out.iter().enumerate() {
                     let a = v.to_array();
@@ -1326,9 +1336,9 @@ fn lpf_impl_u8(
                         .copy_from_slice(&[a[0] as u8, a[1] as u8, a[2] as u8, a[3] as u8]);
                 }
             } else {
-                store!($($fb)+);
+                store!(c, $($fb)+);
             }
-        };
+        }};
     }
 
     for s in 0..nseg {
@@ -1350,19 +1360,19 @@ fn lpf_impl_u8(
             let vfast = ts == 1 && step >= 4;
             let hfast = step == 1 && ts >= 4;
             let mut t = [z4; 4];
-            load_taps!(t, rows, -2, vfast, hfast);
+            load_taps!(c, load, t, rows, -2, vfast, hfast);
             let [op1, op0, oq0, oq1] = t;
             let mask = fmask2(op1, op0, oq0, oq1);
             let (n1, n0, m0, m1) = filter4(op1, op0, oq0, oq1, mask);
             let out = [n1, n0, m0, m1];
-            store_taps!(out, rows, -2, 0, vfast, hfast, -2 => n1, -1 => n0, 0 => m0, 1 => m1);
+            store_taps!(c, out, rows, -2, 0, vfast, hfast, -2 => n1, -1 => n0, 0 => m0, 1 => m1);
         }
         6 => {
             let mut rows = [[0u8; 6]; 4];
             let vfast = ts == 1 && step >= 6;
             let hfast = step == 1 && ts >= 4;
             let mut t = [z4; 6];
-            load_taps!(t, rows, -3, vfast, hfast);
+            load_taps!(c, load, t, rows, -3, vfast, hfast);
             let [p2, p1, p0, q0, q1, q2] = t;
             let mask = fmask6(p2, p1, p0, q0, q1, q2);
             let flat = flat3(p2, p1, p0, q0, q1, q2);
@@ -1377,7 +1387,7 @@ fn lpf_impl_u8(
             let o_q0 = i32x4::blend(use_wide, w_q0, f_q0);
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
             let out = [o_p1, o_p0, o_q0, o_q1];
-            store_taps!(out, rows, -3, 1, vfast, hfast,
+            store_taps!(c, out, rows, -3, 1, vfast, hfast,
                 -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1);
         }
         8 => {
@@ -1385,7 +1395,7 @@ fn lpf_impl_u8(
             let vfast = ts == 1 && step >= 8;
             let hfast = step == 1 && ts >= 4;
             let mut t = [z4; 8];
-            load_taps!(t, rows, -4, vfast, hfast);
+            load_taps!(c, load, t, rows, -4, vfast, hfast);
             let [p3, p2, p1, p0, q0, q1, q2, q3] = t;
             let mask = fmask8(p3, p2, p1, p0, q0, q1, q2, q3);
             let flat = flat4(p3, p2, p1, p0, q0, q1, q2, q3);
@@ -1404,7 +1414,7 @@ fn lpf_impl_u8(
             let o_q1 = i32x4::blend(use_wide, w_q1, f_q1);
             let o_q2 = i32x4::blend(use_wide, w_q2, q2);
             let out = [o_p2, o_p1, o_p0, o_q0, o_q1, o_q2];
-            store_taps!(out, rows, -4, 1, vfast, hfast,
+            store_taps!(c, out, rows, -4, 1, vfast, hfast,
                 -3 => o_p2, -2 => o_p1, -1 => o_p0, 0 => o_q0, 1 => o_q1, 2 => o_q2);
         }
         14 => {
@@ -1412,7 +1422,7 @@ fn lpf_impl_u8(
             let vfast = ts == 1 && step >= 14;
             let hfast = step == 1 && ts >= 4;
             let mut t = [z4; 14];
-            load_taps!(t, rows, -7, vfast, hfast);
+            load_taps!(c, load, t, rows, -7, vfast, hfast);
             let [p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6] = t;
 
             let mask = fmask8(p3, p2, p1, p0, q0, q1, q2, q3);
@@ -1461,7 +1471,7 @@ fn lpf_impl_u8(
             let out = [
                 o_p5, o_p4, o_p3, o_p2, o_p1, o_p0, o_q0, o_q1, o_q2, o_q3, o_q4, o_q5,
             ];
-            store_taps!(out, rows, -7, 1, vfast, hfast,
+            store_taps!(c, out, rows, -7, 1, vfast, hfast,
                 -6 => o_p5, -5 => o_p4, -4 => o_p3, -3 => o_p2, -2 => o_p1, -1 => o_p0,
                 0 => o_q0, 1 => o_q1, 2 => o_q2, 3 => o_q3, 4 => o_q4, 5 => o_q5,
             );

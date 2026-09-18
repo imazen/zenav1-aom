@@ -60,6 +60,16 @@ fn check(rng: &mut Rng, log_scale: i32, n: usize, scan: &[i16]) {
         &mut q_got, &mut dq_got,
     );
 
+    // Per-arch oracle: on x86-64 the live tier mirrors C AVX2, which agrees
+    // with `aom_quantize_b_helper_c` on this domain; on aarch64 the live
+    // tier mirrors C NEON — a DIFFERENT algorithm (vqdmulh accumulation,
+    // truncating vmovn loads) that does not agree with the C scalar helper
+    // lane-for-lane, so compare against the real exported NEON kernel.
+    #[cfg(target_arch = "aarch64")]
+    let (q_want, dq_want, eob_want) = c::ref_quantize_b_neon(
+        log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, scan, &iscan,
+    );
+    #[cfg(not(target_arch = "aarch64"))]
     let (q_want, dq_want, eob_want) =
         c::ref_quantize_b(log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, scan);
 

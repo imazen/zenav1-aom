@@ -235,27 +235,11 @@ fn integral_image(
     ii_sum: &mut [i32],
     ii_stride: usize,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        archmage::incant!(
-            integral_image_impl(
-                src, src_off, src_stride, width, height, ii_sq, ii_sum, ii_stride
-            ),
-            [v3, scalar]
-        );
-        return;
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    integral_image_impl_scalar(
-        archmage::ScalarToken::summon().unwrap(),
-        src,
-        src_off,
-        src_stride,
-        width,
-        height,
-        ii_sq,
-        ii_sum,
-        ii_stride,
+    archmage::incant!(
+        integral_image_impl(
+            src, src_off, src_stride, width, height, ii_sq, ii_sum, ii_stride
+        ),
+        [v3, scalar]
     );
 }
 
