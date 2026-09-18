@@ -1,5 +1,43 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## u8 lowbd prep: lf-search staging lands −92.5M; band handout panic-free (2026-09-18)
+
+The first slice of the u8 plane-storage split (the "u16-at-bd8 tax" —
+the named clause-(4) residual) landed as the stacked-PR prep:
+
+- `aom_dsp::lowbd::{narrow_u16_to_u8, narrow_u16_to_u8_into,
+  widen_u8_to_u16}` — the canonical conversion helpers the split will
+  use; `loop_filter_frame_opt`'s bd8 arm and `superres_downscale_plane`
+  now route through them (`b8f9cd6`, `d174bc8`).
+- `LfSearchFrame<P: LfTrialPixel>` (`b8f9cd6`): the trial loop is
+  pixel-typed; `u16` keeps the old path, `u8` copies the staged plane
+  straight into scratch, filters via `loop_filter_frame_u8_opt` (the
+  identical walk the u16 arm reached through its own narrow/widen) and
+  SSEs u8×u8 SIMD. `key_frame` stages the six planes u8 ONCE per pick
+  at bd8 — the per-trial u16 copy + all-3-plane narrow + widen +
+  scalar u16 SSE is gone. Measured: **21.113G vs 21.205G Ir = −92.5M**
+  at 512² cq27 s3 2x2-tile/4-worker callgrind (≈−370M projected at the
+  1024² ship cell). Byte-identical 8928 B; the live-C differentials
+  `encoder_gate_lf_level_bit_exact_vs_real` +
+  `encoder_gate_e2e_nonzero_lf_sweep` pass — picked levels are the same
+  integers on either representation.
+- Band-handout panic paths removed (`d174bc8`): the phase-1/phase-2
+  tile-row cursors moved from `Vec<Option<&mut>> + take().expect(...)`
+  to `Vec::into_iter` under the same mutex — iterator position IS the
+  cursor, disjoint `&mut` ownership and deterministic merge unchanged,
+  three `expect`s gone. The merge's `expect("every superblock belongs
+  to exactly one tile")` became `KeyFrameError::InternalInvariant`
+  (new `#[non_exhaustive]` variant — reports, never panics, on an
+  unreachable path). Byte-identical under both 2x2/4w and 4x4/8w.
+- `SbEncodeEnv::{y_off, uv_off}` (`9ebf4e8`): the `(mi*4)*stride +
+  mi*4 - base_*` band convention — open-coded at ~21 sites across
+  encode_sb/pack/partition_pick/nonrd_pickmode — is now one named
+  seam, so the storage-type split's diff is about STORAGE, not
+  re-derived offsets. `#[inline]`, byte-identical.
+
+aarch64: `cargo check --target aarch64-unknown-linux-gnu` clean at
+HEAD (the merge's NEON work + this refactor both compile).
+
 ## aarch64 encode reaches Gate 3: 1.47× C via verbatim NEON quantize + wiener + fwd-txfm twins (2026-09-17)
 
 First aarch64-apple-darwin run of the encoder gates on this branch —
