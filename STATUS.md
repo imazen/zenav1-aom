@@ -1,5 +1,55 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## LR u8 kernel twins landed + measured: committed-plane swap evaluated NO (2026-09-18)
+
+The kernel-twin program the prior entry named as the next lever is now
+landed and measured, in two commits:
+
+- `937f9ea` — read side: `PlaneCtx` stages `dgd_pad8`/`src8` once per
+  plane at bd8 and the whole read-side kernel family is generic over a
+  new `LrPixel` trait (`compute_stats`/`acc_stat_line`,
+  `pixel_proj_error`, `calc_proj_params`/`get_proj_subspace`,
+  `selfguided_restoration` + `integral_image` + `sgr_final_*`,
+  `sse_none` u8×u8, `sse_dst` mixed-width). Per-type x86 loads ride as
+  associated const fn-pointers to small `#[arcane]` widen helpers —
+  LLVM devirtualizes, so the v3 bodies monomorphize to their previous
+  code.
+- `152da43` — apply side: `filter_unit`, `StripeBoundaries`,
+  `StripeScratch`, `extend_frame`/`extend_lines`,
+  `wiener_convolve_add_src_into`, `apply_selfguided_restoration` generic
+  over `LrPixel`; boundary rows staged u8 via a `BndStore` narrow (~2
+  rows/stripe from the u16 source planes — no `LrPlanePixels` API
+  change); aarch64 got a third `NeonToken` const-pointer load shape
+  (`vld1_u8`+`vmovl_u8`). At bd8 the u16 `dgd_pad` is not even
+  allocated; `dst_pad` stays u16 (apply narrows i32→u16 either way).
+
+**Measured** (eprof_yuv, real photo_1024, 1024² cq27 s3, interleaved
+pairs): **~1% wall** total vs pre-change HEAD (1503–1512 ms vs
+1510–1522 ms; ship cell unchanged at 1.295× — the LR bandwidth win is
+under noise on mirror-tiled content); **−112M Ir at 512²** (21.000G vs
+21.113G). Byte-identical at both sizes; all 466 aom-dsp tests pass
+incl. `compute_stats_lowbd_matches_c` and the every-tier SIMD sweep;
+aarch64 cross-check clean; api-doc regenerated.
+
+**The committed-plane u8 storage swap is now measured and rejected, not
+deferred.** The complete u8-twin program for LR yields ~1% wall — the
+staging pattern captures the locality win without touching the walk.
+The residual port-vs-C gap in restoration is ALGORITHMIC: port's
+integral-image SGR stats (~349M Ir) vs C's boxsum sliding window
+(~120M), `acc_stat_line` 88M vs C ~40M — per-kernel instruction-count
+differences a storage swap cannot close (u8 instantiation was Ir-flat
+to slightly-negative: `pixel_proj_error<u8>` +5% Ir from the extra
+`cvtepu8` per load). The swap's remaining upside is the staging narrows
+themselves — two passes per plane — against a ~44-site blast radius
+across predictors/transforms/CFL/IntraBC/pack. Named residual, bounded:
+the LR algorithm-structure gap (boxsum-vs-integral SGR, maddubs-shaped
+wiener stats) is a kernel-port program, documented here; `dst_pad` u8
+stores left as a tail item (~0.1-0.2% class).
+
+**Side measurement worth keeping:** at 4 workers on real photo_1024
+(eprof_yuv, 1x1/4w), port **1508 ms vs C 1890 ms = 0.80×** — the port
+scales with workers where the C shim arm does not (1w: 1.27×).
+
 ## Post-walk u8 staging complete; ship cell re-measured 1.29× (2026-09-18)
 
 `944ee88` finishes the post-walk half of the u8 split: at bd8 the

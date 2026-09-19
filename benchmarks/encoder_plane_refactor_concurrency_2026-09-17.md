@@ -210,3 +210,35 @@ Measured-and-deferred, contra §6 step 1's breadth:
 
 Ship cell re-measured at HEAD: **1.29×** (median, 6 pairs, byte-exact
 40,237 B); real photo_1024 cross-check 1.27×.
+
+## 8. Addendum 2 — the u8 twins landed and Option C is now measured NO (2026-09-18)
+
+The "kernel program, not a storage one" from addendum 1 is DONE and
+measured:
+
+- `937f9ea` — `LrPixel` generic read side: `dgd_pad8`/`src8` staged
+  once per plane; `compute_stats`/`pixel_proj_error`/`calc_proj_params`/
+  `get_proj_subspace`/`selfguided_restoration`/`integral_image`/
+  `sgr_final_*`/`sse_*` consume u8 at bd8. x86 per-type loads as
+  const-fn-pointer arcane helpers (devirtualized at monomorphization).
+- `152da43` — apply side: `filter_unit`/`wiener`/`apply_selfguided`/
+  `StripeBoundaries`/`StripeScratch` generic; boundary rows narrowed u8
+  via `BndStore`; u16 `dgd_pad` unallocated at bd8; `dst_pad` u16.
+
+Measured (eprof_yuv real photo_1024, 1024² cq27 s3, interleaved):
+**~1% wall** total; **−112M Ir at 512²** (21.000G vs 21.113G). Every
+kernel Ir-flat to +5% — the gain is bandwidth/cache, confirming the
+twice-the-bytes hypothesis but bounding its value at ~1% for the
+entire LR read+apply conversion.
+
+**Option C verdict: measured, rejected.** With read-side staging in,
+the committed-storage swap's remaining upside is the two staging
+narrows per plane plus apply-side stores — versus a ~44-site blast
+radius over predictors/transforms/CFL/IntraBC/pack/phase-2. The
+residual LR gap is ALGORITHMIC (integral-image vs C boxsum ~349M vs
+~120M; acc_stat 88M vs ~40M — instruction counts a storage swap does
+not move). That is now the named residual: a boxsum/maddubs-shaped
+kernel-port program, byte-gated per kernel.
+
+Ship cell unchanged: **1.295×** (byte-exact 40,237 B). Side finding:
+at 4 workers the port beats the C shim on real photo_1024, 0.80×.
