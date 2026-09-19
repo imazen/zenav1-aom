@@ -242,3 +242,10 @@ kernel-port program, byte-gated per kernel.
 
 Ship cell unchanged: **1.295×** (byte-exact 40,237 B). Side finding:
 at 4 workers the port beats the C shim on real photo_1024, 0.80×.
+
+**1T re-verified** (ruling out core-count compensation): at workers=1
+the same interleaved A/B is new 2391.3 ms vs base ~2409.7 ms = **−0.8%**
+— the gain is single-core-real, not a scheduling/bandwidth-contention
+artifact. Port-vs-C at 1T is **1.27×** (C is worker-insensitive; the
+0.80× at 4T is the port scaling). Output bytes identical across 1T/4T
+and across arms — the staging is deterministic by construction.

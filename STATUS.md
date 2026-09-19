@@ -48,7 +48,10 @@ stores left as a tail item (~0.1-0.2% class).
 
 **Side measurement worth keeping:** at 4 workers on real photo_1024
 (eprof_yuv, 1x1/4w), port **1508 ms vs C 1890 ms = 0.80×** — the port
-scales with workers where the C shim arm does not (1w: 1.27×).
+scales with workers where the C shim arm does not (1w: 1.27×). 1T
+re-verification: new-vs-base **−0.8% at workers=1** — the twin gain is
+single-core-real, not core-count compensation; output bytes identical
+across 1T/4T.
 
 ## Post-walk u8 staging complete; ship cell re-measured 1.29× (2026-09-18)
 
