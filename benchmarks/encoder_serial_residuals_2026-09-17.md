@@ -212,3 +212,38 @@ cache-level transitions, or code bloat? Measured answers on the matched
   profile cannot see — an additive wall cost on top of instruction
   count. Lever implication: shrinking hot-loop code size (fewer inlined
   check paths, slimmer dispatch) buys back Ir AND fetch cost.
+
+## Batch 6 (2026-09-18): PGO bound — the I1/codegen-bloat ceiling is ~7%
+
+Trained `-Cprofile-generate` on one cell (`photo_512` cq27 s3, 2 reps),
+merged with `llvm-profdata`, rebuilt `-Cprofile-use`. Instrumented
+overhead ~48% during training (normal). Results (interleaved pairs,
+1 worker, byte-identical):
+
+| | non-PGO | PGO | delta |
+|---|---|---|---|
+| wall 1024x1024 photo (untrained size) | ~1997 ms | ~1848 ms | **-7.4%** |
+| wall 512x512 photo | ~368.6 ms | ~342.3 ms | **-7.2%** |
+| I1 misses (512^2 cache-sim) | 320.6M | 189.4M | **-41% — now ~C's 183M** |
+| I1 miss rate | 2.46% | 1.56% | below C's 1.95% |
+| Ir | 13.02G | 12.14G | -6.7% |
+| D-refs | 4.65G | 4.20G | -9.7% |
+
+Same-witness 1T ratio: C ~1484 ms / port ~1997 ms = 1.35x -> port-PGO
+~1848 ms = **1.25x** — PGO alone recovers ~half the residual gap.
+
+Read: the I1 hypothesis is confirmed in full — profile-driven layout +
+inlining brings the port's I1 miss count to C's level and removes ~880M
+Ir of call/dispatch/branch residue at the same time. The bloat tax was
+larger than the 1-4% estimate because it compounds (fetch + residue +
+stack traffic). Post-PGO Ir residual (12.14G vs C 9.39G) is the
+orchestration/algorithmic work — unchanged verdict.
+
+Deployment caveat: `-Cprofile-use` applies at final-binary build time —
+a library cannot self-apply it. Ship paths: (a) `merged.profdata` in
+repo + zenavif release-build RUSTFLAGS (two-repo step, documented),
+(b) harvest PGO's per-fn decisions into permanent `#[cold]`/`#[inline]`
+source hints (partial recovery, zero machinery), (c) both — source hints
+for the crate, PGO flag for the ship binary. Training corpus needs
+widening (speeds, sizes, hbd, screen cells) before (a) is production
+quality; the single-cell profile already generalizes across size.
