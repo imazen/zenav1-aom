@@ -94,9 +94,9 @@ fn rpot_u32(v: u32, n: u32) -> u32 {
 /// two integral images in ONE pass over the raw pixel plane and get every
 /// box sum from four corner loads. This ports that structure.
 #[allow(clippy::too_many_arguments)]
-fn integral_image_impl_scalar(
+fn integral_image_impl_scalar<P: crate::restore::pick::LrPixel>(
     _t: archmage::ScalarToken,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     width: usize,
@@ -115,7 +115,7 @@ fn integral_image_impl_scalar(
         let mut rs = 0i32;
         let mut rq = 0i32;
         for x in 0..width {
-            let v = src[s0 + x] as i32;
+            let v = src[s0 + x].to_i32();
             rs = rs.wrapping_add(v);
             rq = rq.wrapping_add(v.wrapping_mul(v));
             ii_sum[cur + 1 + x] = ii_sum[above + 1 + x].wrapping_add(rs);
@@ -133,9 +133,9 @@ fn integral_image_impl_scalar(
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 #[allow(clippy::too_many_arguments)]
-fn integral_image_impl_v3(
+fn integral_image_impl_v3<P: crate::restore::pick::LrPixel>(
     _t: archmage::X64V3Token,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     width: usize,
@@ -184,10 +184,10 @@ fn integral_image_impl_v3(
             let above2 = _mm_loadu_si128(above2);
 
             let x1 = _mm_set_epi32(
-                px[3] as i32,
-                px[2] as i32,
-                px[1] as i32,
-                px[0] as i32,
+                px[3].to_i32(),
+                px[2].to_i32(),
+                px[1].to_i32(),
+                px[0].to_i32(),
             );
             let x2 = _mm_madd_epi16(x1, x1);
 
@@ -214,7 +214,7 @@ fn integral_image_impl_v3(
         let mut rs = dst1[j].wrapping_sub(abv1[j]);
         let mut rq = dst2[j].wrapping_sub(abv2[j]);
         for x in j..width {
-            let v = srow[x] as i32;
+            let v = srow[x].to_i32();
             rs = rs.wrapping_add(v);
             rq = rq.wrapping_add(v.wrapping_mul(v));
             dst1[1 + x] = abv1[1 + x].wrapping_add(rs);
@@ -225,8 +225,8 @@ fn integral_image_impl_v3(
 
 /// Dispatch the integral-image build.
 #[allow(clippy::too_many_arguments)]
-fn integral_image(
-    src: &[u16],
+fn integral_image<P: crate::restore::pick::LrPixel>(
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     width: usize,
@@ -709,8 +709,8 @@ thread_local! {
 
 /// `selfguided_restoration_fast_internal` (the r=2 pass, A/B at odd rows).
 #[allow(clippy::too_many_arguments)]
-fn selfguided_fast(
-    dgd: &[u16],
+fn selfguided_fast<P: crate::restore::pick::LrPixel>(
+    dgd: &[P],
     dgd_off: usize,
     dgd_stride: usize,
     ii_sq: &[i32],
@@ -735,8 +735,8 @@ fn selfguided_fast(
 
 /// `selfguided_restoration_internal` (the r=1 pass, every row).
 #[allow(clippy::too_many_arguments)]
-fn selfguided_full(
-    dgd: &[u16],
+fn selfguided_full<P: crate::restore::pick::LrPixel>(
+    dgd: &[P],
     dgd_off: usize,
     dgd_stride: usize,
     ii_sq: &[i32],
@@ -790,13 +790,13 @@ fn sgr_final_px(buf: &[i32], k: usize, bs: usize, kind: u32) -> i32 {
 /// the same thing the scalar `*` produces).
 #[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn sgr_final_full_impl(
+fn sgr_final_full_impl<P: crate::restore::pick::LrPixel>(
     token: Token,
     a: &[i32],
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -850,7 +850,7 @@ fn sgr_final_full_impl(
             let vb = (fb + tb) * c4 - tb;
             let src = i32x8::from_array(
                 token,
-                core::array::from_fn(|t| drow[j + t] as i32),
+                core::array::from_fn(|t| drow[j + t].to_i32()),
             );
             let w = (va * src + vb + rnd).shr_arithmetic_const::<9>();
             w.store((&mut dout[j..j + 8]).try_into().unwrap());
@@ -858,7 +858,7 @@ fn sgr_final_full_impl(
         }
         while j < width {
             let k = k0 + j;
-            let v = sgr_final_px(a, k, bs, 0) * drow[j] as i32
+            let v = sgr_final_px(a, k, bs, 0) * drow[j].to_i32()
                 + sgr_final_px(b, k, bs, 0);
             dout[j] = rpot_i32(v, SH);
             j += 1;
@@ -868,13 +868,13 @@ fn sgr_final_full_impl(
 
 /// Scalar tier — the transcribed port loop, verbatim.
 #[allow(clippy::too_many_arguments)]
-fn sgr_final_full_impl_scalar(
+fn sgr_final_full_impl_scalar<P: crate::restore::pick::LrPixel>(
     _t: archmage::ScalarToken,
     a: &[i32],
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -887,7 +887,7 @@ fn sgr_final_full_impl_scalar(
         for j in 0..width {
             let k = org + i * bs + j;
             let v = sgr_final_px(a, k, bs, 0)
-                * dgd[dgd_origin + i * dgd_stride + j] as i32
+                * dgd[dgd_origin + i * dgd_stride + j].to_i32()
                 + sgr_final_px(b, k, bs, 0);
             dst[i * dst_stride + j] = rpot_i32(v, SH);
         }
@@ -899,13 +899,13 @@ fn sgr_final_full_impl_scalar(
 /// 3-tap horizontal sum (`nb = 4`).
 #[archmage::magetypes(define(i32x8), v3, neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn sgr_final_fast_impl(
+fn sgr_final_fast_impl<P: crate::restore::pick::LrPixel>(
     token: Token,
     a: &[i32],
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -955,7 +955,7 @@ fn sgr_final_fast_impl(
                 let vb = (fb + sb) * c5 + sb;
                 let src = i32x8::from_array(
                     token,
-                    core::array::from_fn(|t| drow[j + t] as i32),
+                    core::array::from_fn(|t| drow[j + t].to_i32()),
                 );
                 let w = (va * src + vb + rnd_even).shr_arithmetic_const::<9>();
                 w.store((&mut dout[j..j + 8]).try_into().unwrap());
@@ -963,7 +963,7 @@ fn sgr_final_fast_impl(
             }
             while j < width {
                 let k = k0 + j;
-                let v = sgr_final_px(a, k, bs, 1) * drow[j] as i32
+                let v = sgr_final_px(a, k, bs, 1) * drow[j].to_i32()
                     + sgr_final_px(b, k, bs, 1);
                 dout[j] = rpot_i32(v, SH_EVEN);
                 j += 1;
@@ -981,7 +981,7 @@ fn sgr_final_fast_impl(
                 let vb = (fb + sb) * c5 + sb;
                 let src = i32x8::from_array(
                     token,
-                    core::array::from_fn(|t| drow[j + t] as i32),
+                    core::array::from_fn(|t| drow[j + t].to_i32()),
                 );
                 let w = (va * src + vb + rnd_odd).shr_arithmetic_const::<8>();
                 w.store((&mut dout[j..j + 8]).try_into().unwrap());
@@ -989,7 +989,7 @@ fn sgr_final_fast_impl(
             }
             while j < width {
                 let k = k0 + j;
-                let v = sgr_final_px(a, k, bs, 2) * drow[j] as i32
+                let v = sgr_final_px(a, k, bs, 2) * drow[j].to_i32()
                     + sgr_final_px(b, k, bs, 2);
                 dout[j] = rpot_i32(v, SH_ODD);
                 j += 1;
@@ -1000,13 +1000,13 @@ fn sgr_final_fast_impl(
 
 /// Scalar tier — the transcribed port loops, verbatim.
 #[allow(clippy::too_many_arguments)]
-fn sgr_final_fast_impl_scalar(
+fn sgr_final_fast_impl_scalar<P: crate::restore::pick::LrPixel>(
     _t: archmage::ScalarToken,
     a: &[i32],
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1023,14 +1023,14 @@ fn sgr_final_fast_impl_scalar(
         if i & 1 == 0 {
             for j in 0..width {
                 let k = k_row + j;
-                let v = sgr_final_px(a, k, bs, 1) * dgd[l_row + j] as i32
+                let v = sgr_final_px(a, k, bs, 1) * dgd[l_row + j].to_i32()
                     + sgr_final_px(b, k, bs, 1);
                 dst[m_row + j] = rpot_i32(v, SH_EVEN);
             }
         } else {
             for j in 0..width {
                 let k = k_row + j;
-                let v = sgr_final_px(a, k, bs, 2) * dgd[l_row + j] as i32
+                let v = sgr_final_px(a, k, bs, 2) * dgd[l_row + j].to_i32()
                     + sgr_final_px(b, k, bs, 2);
                 dst[m_row + j] = rpot_i32(v, SH_ODD);
             }
@@ -1040,12 +1040,12 @@ fn sgr_final_fast_impl_scalar(
 
 /// Dispatch the r=1 apply pass.
 #[allow(clippy::too_many_arguments)]
-fn sgr_final_full(
+fn sgr_final_full<P: crate::restore::pick::LrPixel>(
     a: &[i32],
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1063,12 +1063,12 @@ fn sgr_final_full(
 
 /// Dispatch the r=2 apply pass.
 #[allow(clippy::too_many_arguments)]
-fn sgr_final_fast(
+fn sgr_final_fast<P: crate::restore::pick::LrPixel>(
     a: &[i32],
     b: &[i32],
     org: usize,
     bs: usize,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: usize,
     dst: &mut [i32],
@@ -1091,8 +1091,8 @@ fn sgr_final_fast(
 /// `flt_stride = width`. `ii[0]` holds the square sums (C's `C`), `ii[1]`
 /// the plain sums (C's `D`).
 #[allow(clippy::too_many_arguments)]
-pub fn selfguided_restoration(
-    dgd: &[u16],
+pub fn selfguided_restoration<P: crate::restore::pick::LrPixel>(
+    dgd: &[P],
     dgd_off: usize,
     dgd_stride: usize,
     width: usize,

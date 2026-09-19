@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1860 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
-# arch-unique surface: aarch64 2 | x86_64 2
+# files: zenav1-aom-dsp.txt 1864 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# arch-unique surface: aarch64 2 | x86_64 8
 
 ## summary
 #
 #   pub modules                                62
-#   pub types (struct/enum/trait/alias)        93
+#   pub types (struct/enum/trait/alias)        94
 #   pub consts/statics                        205
 #   pub macros                                  1
 #   free functions                            642
-#   inherent methods                           97
+#   inherent methods                          100
 #   struct fields                             707
 #   enum variants                              13
-#   trait roster entries (type × trait)       264
+#   trait roster entries (type × trait)       266
 #   auto-trait-complete types                  85
 #   auto-trait exceptions                       3
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1817
+#   aom_dsp                        1821
 
-## items (1784 lines)
+## items (1788 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1629,21 +1629,25 @@ pub const aom_dsp::restore::pick::WIENER_FILT_STEP: i64
 pub const aom_dsp::restore::pick::WIENER_STATS_DOWNSAMPLE_FACTOR: i32
 pub const aom_dsp::restore::pick::WIENER_WIN2: usize
 pub const aom_dsp::restore::pick::WIENER_WIN_REDUCED: usize
-pub fn aom_dsp::restore::pick::calc_proj_params(&[u16], usize, usize, usize, usize, &[u16], usize, usize, &[i32], usize, &[i32], usize, usize) -> ([[i64; 2]; 2], [i64; 2])
+pub trait aom_dsp::restore::pick::LrPixel: core::marker::Copy
+pub fn aom_dsp::restore::pick::LrPixel::to_i16(self) -> i16
+pub fn aom_dsp::restore::pick::LrPixel::to_i32(self) -> i32
+pub fn aom_dsp::restore::pick::LrPixel::to_u64(self) -> u64
+pub fn aom_dsp::restore::pick::calc_proj_params<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, usize, usize, &[P], usize, usize, &[i32], usize, &[i32], usize, usize) -> ([[i64; 2]; 2], [i64; 2])
 pub fn aom_dsp::restore::pick::compute_score(usize, &[i64], &[i64], &[i16; 8], &[i16; 8]) -> i64
-pub fn aom_dsp::restore::pick::compute_stats(usize, &[u16], usize, &[u16], i32, i32, i32, i32, i32, i32, &mut [i64], &mut [i64], bool)
+pub fn aom_dsp::restore::pick::compute_stats<P: aom_dsp::restore::pick::LrPixel>(usize, &[P], usize, &[P], i32, i32, i32, i32, i32, i32, &mut [i64], &mut [i64], bool)
 pub fn aom_dsp::restore::pick::compute_stats_highbd(usize, &[u16], usize, &[u16], i32, i32, i32, i32, i32, i32, &mut [i64], &mut [i64], i32)
 pub fn aom_dsp::restore::pick::encode_xq([i32; 2], usize) -> [i32; 2]
 pub fn aom_dsp::restore::pick::finalize_sym_filter(usize, &[i32; 7], &mut [i16; 8])
-pub fn aom_dsp::restore::pick::get_proj_subspace(&[u16], usize, usize, usize, usize, &[u16], usize, usize, &[i32], usize, &[i32], usize, usize) -> [i32; 2]
+pub fn aom_dsp::restore::pick::get_proj_subspace<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, usize, usize, &[P], usize, usize, &[i32], usize, &[i32], usize, usize) -> [i32; 2]
 pub fn aom_dsp::restore::pick::pick_filter_restoration(&aom_dsp::restore::pick::LrSearchInput<'_>) -> aom_dsp::restore::pick::LrSearchOutcome
-pub fn aom_dsp::restore::pick::pixel_proj_error(&[u16], usize, usize, usize, usize, &[u16], usize, usize, &[i32], usize, &[i32], usize, [i32; 2], usize, bool) -> i64
+pub fn aom_dsp::restore::pick::pixel_proj_error<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, usize, usize, &[P], usize, usize, &[i32], usize, &[i32], usize, [i32; 2], usize, bool) -> i64
 pub fn aom_dsp::restore::pick::wiener_decompose_sep_sym(usize, &[i64], &[i64], &mut [i32; 7], &mut [i32; 7])
 pub mod aom_dsp::restore::sgr
 pub const aom_dsp::restore::sgr::SGR_PARAMS: [([i32; 2], [i32; 2]); 16]
 pub fn aom_dsp::restore::sgr::apply_selfguided_restoration(&[u16], usize, usize, usize, usize, usize, &[i32; 2], &mut [u16], usize, usize, i32)
 pub fn aom_dsp::restore::sgr::decode_xq(&[i32; 2], usize) -> [i32; 2]
-pub fn aom_dsp::restore::sgr::selfguided_restoration(&[u16], usize, usize, usize, usize, &mut [i32], &mut [i32], usize, usize, i32)
+pub fn aom_dsp::restore::sgr::selfguided_restoration<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, usize, usize, &mut [i32], &mut [i32], usize, usize, i32)
 pub mod aom_dsp::restore::wiener
 pub struct aom_dsp::restore::wiener::WienerScratch
 pub fn aom_dsp::restore::wiener::WienerScratch::new() -> Self
@@ -1886,8 +1890,8 @@ aom_dsp::transform::txfm2d::FwdTxfmScratch: Clone, Debug, Default
 aom_dsp::txb::ExtTxDeriv: Debug, Eq, PartialEq
 aom_dsp::txb::LvMapCoeffCost: Clone, Debug
 aom_dsp::txb::TxClass: Clone, Copy, Debug, Eq, PartialEq
-u16: aom_dsp::cdef::frame::CdefPixel
-u8: aom_dsp::cdef::frame::CdefPixel
+u16: aom_dsp::cdef::frame::CdefPixel, aom_dsp::restore::pick::LrPixel
+u8: aom_dsp::cdef::frame::CdefPixel, aom_dsp::restore::pick::LrPixel
 
 ## auto traits
 
@@ -1895,8 +1899,14 @@ u8: aom_dsp::cdef::frame::CdefPixel
 aom_dsp::loopfilter::frame::LfFrameBuf<'a>: !UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBufU8<'a>: !UnwindSafe
 aom_dsp::restore::frame::LrPlaneInput<'a>: !UnwindSafe
-## arch shapes (2 shapes: 2 on every recorded arch, 0 arch-unique)
+## arch shapes (8 shapes: 2 on every recorded arch, 6 arch-unique)
 
+[x86_64] pub const aom_dsp::restore::pick::LrPixel::LD16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[Self; 16]) -> core::core_arch::<arch>::__m256i
+[x86_64] pub const aom_dsp::restore::pick::LrPixel::LD8: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[Self; 8]) -> core::core_arch::<arch>::__m256i
+[x86_64] pub const u16::LD16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u16; 16]) -> core::core_arch::<arch>::__m256i
+[x86_64] pub const u16::LD8: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u16; 8]) -> core::core_arch::<arch>::__m256i
+[x86_64] pub const u8::LD16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u8; 16]) -> core::core_arch::<arch>::__m256i
+[x86_64] pub const u8::LD8: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u8; 8]) -> core::core_arch::<arch>::__m256i
 [all] pub fn aom_dsp::dist::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> i64
 [all] pub fn aom_dsp::dist::highbd_<tier>(&[u16], usize, &[u16], usize, usize, usize) -> i64
 
@@ -1905,7 +1915,13 @@ aom_dsp::restore::frame::LrPlaneInput<'a>: !UnwindSafe
 pub fn aom_dsp::dist::highbd_sse(&[u16], usize, &[u16], usize, usize, usize) -> i64
 pub fn aom_dsp::dist::sse(&[u8], usize, &[u8], usize, usize, usize) -> i64
 
-## arch surface: x86_64 (2 lines)
+## arch surface: x86_64 (8 lines)
 
+pub const aom_dsp::restore::pick::LrPixel::LD16: fn(archmage::tokens::generated::x86::X64V3Token, &[Self; 16]) -> core::core_arch::x86::__m256i
+pub const aom_dsp::restore::pick::LrPixel::LD8: fn(archmage::tokens::generated::x86::X64V3Token, &[Self; 8]) -> core::core_arch::x86::__m256i
+pub const u16::LD16: fn(archmage::tokens::generated::x86::X64V3Token, &[u16; 16]) -> core::core_arch::x86::__m256i
+pub const u16::LD8: fn(archmage::tokens::generated::x86::X64V3Token, &[u16; 8]) -> core::core_arch::x86::__m256i
+pub const u8::LD16: fn(archmage::tokens::generated::x86::X64V3Token, &[u8; 16]) -> core::core_arch::x86::__m256i
+pub const u8::LD8: fn(archmage::tokens::generated::x86::X64V3Token, &[u8; 8]) -> core::core_arch::x86::__m256i
 pub fn aom_dsp::dist::highbd_sse(&[u16], usize, &[u16], usize, usize, usize) -> i64
 pub fn aom_dsp::dist::sse(&[u8], usize, &[u8], usize, usize, usize) -> i64

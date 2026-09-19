@@ -73,10 +73,109 @@ const WIENER_TAP_SCALE_FACTOR: i64 = 1 << 16;
 /// `NUM_WIENER_ITERS` (pickrst.c).
 const NUM_WIENER_ITERS: i32 = 5;
 
+/// Pixel carrier for the lowbd restoration-statistics kernels — `u8` at
+/// bd8, `u16` for the highbd-shaped callers. The kernels' arithmetic is
+/// identical on either carrier (bd8 pixel values fit `i16`/`u8`), so the
+/// load-site conversions below are the only pixel-width surface; halving
+/// them halves the `dgd`/`src` read bandwidth the window gathers pay.
+pub trait LrPixel: Copy {
+    fn to_i16(self) -> i16;
+    fn to_i32(self) -> i32;
+    fn to_u64(self) -> u64;
+    /// Widen 16 pixels to the `i16x16` lanes both carriers produce (u8
+    /// through `cvtepu8`, u16 as the direct load).
+    #[cfg(target_arch = "x86_64")]
+    const LD16: fn(
+        archmage::X64V3Token,
+        &[Self; 16],
+    ) -> archmage::intrinsics::x86_64::__m256i;
+    /// Widen 8 pixels to the `i32x8` lanes both carriers produce.
+    #[cfg(target_arch = "x86_64")]
+    const LD8: fn(
+        archmage::X64V3Token,
+        &[Self; 8],
+    ) -> archmage::intrinsics::x86_64::__m256i;
+}
+
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn lr_ld16_u8(_t: archmage::X64V3Token, c: &[u8; 16]) -> archmage::intrinsics::x86_64::__m256i {
+    use archmage::intrinsics::x86_64::*;
+    _mm256_cvtepu8_epi16(_mm_loadu_si128(c))
+}
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn lr_ld8_u8(_t: archmage::X64V3Token, c: &[u8; 8]) -> archmage::intrinsics::x86_64::__m256i {
+    use archmage::intrinsics::x86_64::*;
+    _mm256_cvtepu16_epi32(_mm_cvtepu8_epi16(_mm_loadu_si64(c)))
+}
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn lr_ld16_u16(_t: archmage::X64V3Token, c: &[u16; 16]) -> archmage::intrinsics::x86_64::__m256i {
+    use archmage::intrinsics::x86_64::*;
+    _mm256_loadu_si256(c)
+}
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn lr_ld8_u16(_t: archmage::X64V3Token, c: &[u16; 8]) -> archmage::intrinsics::x86_64::__m256i {
+    use archmage::intrinsics::x86_64::*;
+    _mm256_cvtepu16_epi32(_mm_loadu_si128(c))
+}
+
+impl LrPixel for u8 {
+    #[inline(always)]
+    fn to_i16(self) -> i16 {
+        self as i16
+    }
+    #[inline(always)]
+    fn to_i32(self) -> i32 {
+        self as i32
+    }
+    #[inline(always)]
+    fn to_u64(self) -> u64 {
+        self as u64
+    }
+    #[cfg(target_arch = "x86_64")]
+    const LD16: fn(
+        archmage::X64V3Token,
+        &[u8; 16],
+    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld16_u8;
+    #[cfg(target_arch = "x86_64")]
+    const LD8: fn(
+        archmage::X64V3Token,
+        &[u8; 8],
+    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld8_u8;
+}
+
+impl LrPixel for u16 {
+    #[inline(always)]
+    fn to_i16(self) -> i16 {
+        self as i16
+    }
+    #[inline(always)]
+    fn to_i32(self) -> i32 {
+        self as i32
+    }
+    #[inline(always)]
+    fn to_u64(self) -> u64 {
+        self as u64
+    }
+    #[cfg(target_arch = "x86_64")]
+    const LD16: fn(
+        archmage::X64V3Token,
+        &[u16; 16],
+    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld16_u16;
+    #[cfg(target_arch = "x86_64")]
+    const LD8: fn(
+        archmage::X64V3Token,
+        &[u16; 8],
+    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld8_u16;
+}
+
 /// `find_average` (pickrst.h): the u8-truncating mean of the lowbd window.
 /// `u16` values in u8 range; identical arithmetic.
-fn find_average(
-    dgd: &[u16],
+fn find_average<P: LrPixel>(
+    dgd: &[P],
     dgd_origin: usize,
     h_start: i32,
     h_end: i32,
@@ -87,7 +186,7 @@ fn find_average(
     let mut sum: u64 = 0;
     for i in v_start..v_end {
         for j in h_start..h_end {
-            sum += dgd[dgd_origin + (i * stride + j) as usize] as u64;
+            sum += dgd[dgd_origin + (i * stride + j) as usize].to_u64();
         }
     }
     (sum / (((v_end - v_start) * (h_end - h_start)) as u64)) as u16
@@ -119,10 +218,10 @@ fn find_average(
 /// at most 65025 and a row of at most 256 pixels accumulates below 16.7 M —
 /// well inside `i32`, which is why C uses `int32_t` here too.
 #[allow(clippy::too_many_arguments)]
-fn acc_stat_one_line(
-    dgd: &[u16],
+fn acc_stat_one_line<P: LrPixel>(
+    dgd: &[P],
     dgd_origin: usize,
-    src_row: &[u16],
+    src_row: &[P],
     dgd_stride: i32,
     h_start: i32,
     h_end: i32,
@@ -162,8 +261,8 @@ fn acc_stat_one_line(
 /// drift would be invisible to a lane-level review.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn gather_window(
-    dgd: &[u16],
+fn gather_window<P: LrPixel>(
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: i32,
     avg: u16,
@@ -179,7 +278,7 @@ fn gather_window(
             // plane coords land in the extended border BEFORE the
             // origin (C pointer semantics).
             let off = dgd_origin as isize + ((count + l) * dgd_stride + (j + k)) as isize;
-            y[idx] = i32::from(dgd[off as usize] as i16 - avg as i16);
+            y[idx] = i32::from(dgd[off as usize].to_i16() - avg as i16);
             idx += 1;
         }
     }
@@ -201,8 +300,8 @@ fn gather_window(
 #[allow(clippy::too_many_arguments)]
 // x86-64's v3 tier inlines its own const-generic copy of this gather.
 #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
-fn gather_window_quad(
-    dgd: &[u16],
+fn gather_window_quad<P: LrPixel>(
+    dgd: &[P],
     dgd_origin: usize,
     dgd_stride: i32,
     avg: u16,
@@ -221,7 +320,7 @@ fn gather_window_quad(
             // Same ±halfwin border reach as `gather_window`.
             let off = dgd_origin as isize
                 + ((count - wiener_halfwin + l as i32) * dgd_stride + x) as isize;
-            *v = i32::from(dgd[off as usize] as i16 - avg as i16);
+            *v = i32::from(dgd[off as usize].to_i16() - avg as i16);
         }
     }
     let mut idx = 0usize;
@@ -239,11 +338,11 @@ fn gather_window_quad(
 
 /// Scalar tier = the transcribed port, verbatim.
 #[allow(clippy::too_many_arguments)]
-fn acc_stat_line_impl_scalar(
+fn acc_stat_line_impl_scalar<P: LrPixel>(
     _t: archmage::ScalarToken,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
-    src_row: &[u16],
+    src_row: &[P],
     dgd_stride: i32,
     h_start: i32,
     h_end: i32,
@@ -276,10 +375,10 @@ fn acc_stat_line_impl_scalar(
 /// inputs its window-size specialization does not cover (identical behaviour,
 /// identical panics).
 #[allow(clippy::too_many_arguments)]
-fn acc_stat_line_recipe(
-    dgd: &[u16],
+fn acc_stat_line_recipe<P: LrPixel>(
+    dgd: &[P],
     dgd_origin: usize,
-    src_row: &[u16],
+    src_row: &[P],
     dgd_stride: i32,
     h_start: i32,
     h_end: i32,
@@ -293,7 +392,7 @@ fn acc_stat_line_recipe(
 ) {
     let mut y = [0i32; WIENER_H_STRIDE];
     for j in h_start..h_end {
-        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
+        let x = i32::from(src_row[j as usize].to_i16() - avg as i16);
         let idx = gather_window(dgd, dgd_origin, dgd_stride, avg, wiener_halfwin, j, count, &mut y);
         debug_assert_eq!(idx, wiener_win2);
         for k in 0..wiener_win2 {
@@ -393,11 +492,11 @@ fn acc_stat_line_recipe(
 /// wasm128 tier.
 #[archmage::magetypes(define(i32x8), neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn acc_stat_line_impl(
+fn acc_stat_line_impl<P: LrPixel>(
     token: Token,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
-    src_row: &[u16],
+    src_row: &[P],
     dgd_stride: i32,
     h_start: i32,
     h_end: i32,
@@ -454,7 +553,7 @@ fn acc_stat_line_impl(
         );
         debug_assert_eq!(idx, wiener_win2);
         let xv = [0usize, 1, 2, 3].map(|p| {
-            i32x8::splat(token, i32::from(src_row[j as usize + p] as i16 - avg as i16))
+            i32x8::splat(token, i32::from(src_row[j as usize + p].to_i16() - avg as i16))
         });
 
         // M: lanes are k. Runs off the end into the padding, which stays zero.
@@ -505,7 +604,7 @@ fn acc_stat_line_impl(
 
     // Column tail: up to three pixels, one at a time, the original shape.
     while j < h_end {
-        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
+        let x = i32::from(src_row[j as usize].to_i16() - avg as i16);
         let idx = gather_window(
             dgd,
             dgd_origin,
@@ -549,11 +648,11 @@ fn acc_stat_line_impl(
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 #[allow(clippy::too_many_arguments)]
-fn acc_stat_line_impl_v3(
+fn acc_stat_line_impl_v3<P: LrPixel>(
     t: archmage::X64V3Token,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
-    src_row: &[u16],
+    src_row: &[P],
     dgd_stride: i32,
     h_start: i32,
     h_end: i32,
@@ -566,11 +665,11 @@ fn acc_stat_line_impl_v3(
     count: i32,
 ) {
     match wiener_halfwin {
-        2 => acc_stat_line_v3_x86::<5>(
+        2 => acc_stat_line_v3_x86::<5, P>(
             t, dgd, dgd_origin, src_row, dgd_stride, h_start, h_end, avg, wiener_halfwin,
             wiener_win2, m_row, h_row, hstride, count,
         ),
-        3 => acc_stat_line_v3_x86::<7>(
+        3 => acc_stat_line_v3_x86::<7, P>(
             t, dgd, dgd_origin, src_row, dgd_stride, h_start, h_end, avg, wiener_halfwin,
             wiener_win2, m_row, h_row, hstride, count,
         ),
@@ -595,11 +694,11 @@ fn acc_stat_line_impl_v3(
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 #[allow(clippy::too_many_arguments)]
-fn acc_stat_line_v3_x86<const WIN: usize>(
+fn acc_stat_line_v3_x86<const WIN: usize, P: LrPixel>(
     _t: archmage::X64V3Token,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
-    src_row: &[u16],
+    src_row: &[P],
     dgd_stride: i32,
     h_start: i32,
     h_end: i32,
@@ -690,7 +789,7 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
                 as usize;
             let wrow = &dgd[lo..lo + WIN + 3];
             for c in 0..WIN + 3 {
-                col[c][l] = i32::from(wrow[c] as i16 - avg as i16);
+                col[c][l] = i32::from(wrow[c].to_i16() - avg as i16);
             }
         }
         let mut idx = 0usize;
@@ -701,14 +800,14 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
                 idx += 1;
             }
         }
-        let s4: &[u16; 4] = src_row[j as usize..j as usize + 4].try_into().unwrap();
+        let s4: &[P; 4] = src_row[j as usize..j as usize + 4].try_into().unwrap();
         let x01 = _mm256_set1_epi32(
-            (i32::from(s4[0] as i16 - avg as i16) as u16 as i32)
-                | (i32::from(s4[1] as i16 - avg as i16) << 16),
+            (i32::from(s4[0].to_i16() - avg as i16) as u16 as i32)
+                | (i32::from(s4[1].to_i16() - avg as i16) << 16),
         );
         let x23 = _mm256_set1_epi32(
-            (i32::from(s4[2] as i16 - avg as i16) as u16 as i32)
-                | (i32::from(s4[3] as i16 - avg as i16) << 16),
+            (i32::from(s4[2].to_i16() - avg as i16) as u16 as i32)
+                | (i32::from(s4[3].to_i16() - avg as i16) << 16),
         );
 
         // M: lanes are k, one madd per pixel pair. Runs off the end into the
@@ -750,7 +849,7 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
 
     // Column tail: up to three pixels, one at a time, the original shape.
     while j < h_end {
-        let x = i32::from(src_row[j as usize] as i16 - avg as i16);
+        let x = i32::from(src_row[j as usize].to_i16() - avg as i16);
         let idx = gather_window(
             dgd,
             dgd_origin,
@@ -799,11 +898,11 @@ fn acc_stat_line_v3_x86<const WIN: usize>(
 /// dgd mean, optionally with 4x vertical downsampling
 /// (`lpf_sf.use_downsampled_wiener_stats`).
 #[allow(clippy::too_many_arguments)]
-pub fn compute_stats(
+pub fn compute_stats<P: LrPixel>(
     wiener_win: usize,
-    dgd: &[u16],
+    dgd: &[P],
     dgd_origin: usize,
-    src: &[u16],
+    src: &[P],
     h_start: i32,
     h_end: i32,
     v_start: i32,
@@ -1241,13 +1340,13 @@ const SGRPROJ_PRJ_BITS: i32 = 7;
 /// against the source. The lowbd and highbd forms round differently
 /// (ROUND_POWER_OF_TWO vs add-half-then-shift with `+d - s` recomposition) —
 /// Scalar tier = the transcribed port, verbatim.
-fn pixel_proj_error_scalar(
-    src: &[u16],
+fn pixel_proj_error_scalar<P: LrPixel>(
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -1265,8 +1364,8 @@ fn pixel_proj_error_scalar(
     if !highbd {
         for i in 0..height {
             for j in 0..width {
-                let d = dat[dat_off + i * dat_stride + j] as i32;
-                let s = src[src_off + i * src_stride + j] as i32;
+                let d = dat[dat_off + i * dat_stride + j].to_i32();
+                let s = src[src_off + i * src_stride + j].to_i32();
                 let u = d << SGRPROJ_RST_BITS;
                 let mut v = u << SGRPROJ_PRJ_BITS;
                 if r0 {
@@ -1290,8 +1389,8 @@ fn pixel_proj_error_scalar(
         let half: i32 = 1 << (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS - 1);
         for i in 0..height {
             for j in 0..width {
-                let d = dat[dat_off + i * dat_stride + j] as i32;
-                let s = src[src_off + i * src_stride + j] as i32;
+                let d = dat[dat_off + i * dat_stride + j].to_i32();
+                let s = src[src_off + i * src_stride + j].to_i32();
                 if r0 || r1 {
                     let u = d << SGRPROJ_RST_BITS;
                     let mut v = half;
@@ -1343,13 +1442,13 @@ fn pixel_proj_error_scalar(
 /// `SGRPROJ_PRJ_MIN0/MAX0` and the SGR output range first, and gate it at
 /// runtime the way `intra/dir_simd.rs` gates its tap bound.
 #[allow(clippy::too_many_arguments)]
-pub fn pixel_proj_error(
-    src: &[u16],
+pub fn pixel_proj_error<P: LrPixel>(
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -1377,14 +1476,14 @@ pub fn pixel_proj_error(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn pixel_proj_error_impl_scalar(
+fn pixel_proj_error_impl_scalar<P: LrPixel>(
     _t: archmage::ScalarToken,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -1429,14 +1528,14 @@ fn pixel_proj_error_impl_scalar(
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 #[allow(clippy::too_many_arguments)]
-fn pixel_proj_error_impl_v3(
+fn pixel_proj_error_impl_v3<P: LrPixel>(
     _t: archmage::X64V3Token,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -1521,8 +1620,8 @@ fn pixel_proj_error_impl_v3(
             let f0r = i * flt0_stride;
             let f1r = i * flt1_stride;
             for j in $j..width {
-                let d = dat[dr + j] as i32;
-                let s = src[sr + j] as i32;
+                let d = dat[dr + j].to_i32();
+                let s = src[sr + j].to_i32();
                 let e = if r0 || r1 {
                     let u = d << SGRPROJ_RST_BITS;
                     let mut v = if highbd {
@@ -1584,8 +1683,8 @@ fn pixel_proj_error_impl_v3(
                 let (d16, s16, f016, f116) = rows16!(dr, sr, f0r, f1r);
                 for k in 0..d16.len() {
                     let (dc, sc, f0c, f1c) = (&d16[k], &s16[k], &f016[k], &f116[k]);
-                    let s0 = _mm256_loadu_si256(sc);
-                    let d0 = _mm256_loadu_si256(dc);
+                    let s0 = P::LD16(_t, sc);
+                    let d0 = P::LD16(_t, dc);
                     let u0 = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0);
                     let u0l = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(u0));
                     let u0h =
@@ -1638,8 +1737,8 @@ fn pixel_proj_error_impl_v3(
                     // px 0..7, v1 = px 8..15), so `packs(vr0,vr1)` lands back
                     // in packs order — exactly what `d0p`/`s0p` hold. The
                     // final madd sum is lane-order-invariant anyway.
-                    let d0 = _mm256_loadu_si256(dc);
-                    let s0 = _mm256_loadu_si256(sc);
+                    let d0 = P::LD16(_t, dc);
+                    let s0 = P::LD16(_t, sc);
                     let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
                     let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
                     let u0p = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0p);
@@ -1681,8 +1780,8 @@ fn pixel_proj_error_impl_v3(
                 let (d16, s16, f16) = rows16_1f!(flt, dr, sr, fr);
                 for k in 0..d16.len() {
                     let (dc, sc, fc) = (&d16[k], &s16[k], &f16[k]);
-                    let s0 = _mm256_loadu_si256(sc);
-                    let d0 = _mm256_loadu_si256(dc);
+                    let s0 = P::LD16(_t, sc);
+                    let d0 = P::LD16(_t, dc);
                     let d0l = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(d0));
                     let d0h =
                         _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(d0));
@@ -1729,8 +1828,8 @@ fn pixel_proj_error_impl_v3(
                     // unpacklo/hi restore i32-lane pixel order, and the final
                     // `packs(vr0,vr1)` lands back in packs order to match
                     // d0p/s0p — the madd accumulation is order-invariant.
-                    let d0 = _mm256_loadu_si256(dc);
-                    let s0 = _mm256_loadu_si256(sc);
+                    let d0 = P::LD16(_t, dc);
+                    let s0 = P::LD16(_t, sc);
                     let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
                     let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
                     let flt_16b =
@@ -1764,8 +1863,8 @@ fn pixel_proj_error_impl_v3(
                 src[sr..sr + width].as_chunks::<16>().0,
             );
             for k in 0..d16.len() {
-                let d0 = _mm256_loadu_si256(&d16[k]);
-                let s0 = _mm256_loadu_si256(&s16[k]);
+                let d0 = P::LD16(_t, &d16[k]);
+                let s0 = P::LD16(_t, &s16[k]);
                 let diff = _mm256_sub_epi16(d0, s0);
                 sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(diff, diff));
             }
@@ -1788,14 +1887,14 @@ fn pixel_proj_error_impl_v3(
 /// tier to that name, which is why `v3` is absent from this list.
 #[archmage::magetypes(define(i32x8), neon, wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn pixel_proj_error_impl(
+fn pixel_proj_error_impl<P: LrPixel>(
     token: Token,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -1812,13 +1911,13 @@ fn pixel_proj_error_impl(
     let mut err: i64 = 0;
     let vw = width & !7;
 
-    let widen = |s: &[u16]| -> i32x8 {
-        let a: [u16; 8] = s[..8].try_into().unwrap();
+    let widen = |s: &[P]| -> i32x8 {
+        let a: [P; 8] = s[..8].try_into().unwrap();
         i32x8::from_array(
             token,
             [
-                a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32,
-                a[4] as i32, a[5] as i32, a[6] as i32, a[7] as i32,
+                a[0].to_i32(), a[1].to_i32(), a[2].to_i32(), a[3].to_i32(),
+                a[4].to_i32(), a[5].to_i32(), a[6].to_i32(), a[7].to_i32(),
             ],
         )
     };
@@ -1868,8 +1967,8 @@ fn pixel_proj_error_impl(
             j += 8;
         }
         while j < width {
-            let d = dat[dr + j] as i32;
-            let s = src[sr + j] as i32;
+            let d = dat[dr + j].to_i32();
+            let s = src[sr + j].to_i32();
             let e = if r0 || r1 {
                 let u = d << SGRPROJ_RST_BITS;
                 let mut v = if highbd {
@@ -1905,13 +2004,13 @@ fn pixel_proj_error_impl(
 /// count. Identical arithmetic for lowbd/highbd on u16 planes (the C pair
 /// differs only in pointer types).
 #[allow(clippy::too_many_arguments)]
-pub fn calc_proj_params(
-    src: &[u16],
+pub fn calc_proj_params<P: LrPixel>(
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -1956,14 +2055,14 @@ pub fn calc_proj_params(
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 #[allow(clippy::too_many_arguments)]
-fn calc_proj_params_impl_v3(
+fn calc_proj_params_impl_v3<P: LrPixel>(
     _t: archmage::X64V3Token,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -1993,15 +2092,11 @@ fn calc_proj_params_impl_v3(
         while j < vw {
             // Safe load wrappers take `&[T; N]` — the `j..j+8` windows are
             // inside the caller's row slices, so the length checks cannot fail.
-            let dw: &[u16; 8] = dat[dr + j..dr + j + 8].try_into().unwrap();
-            let sw: &[u16; 8] = src[sr + j..sr + j + 8].try_into().unwrap();
-            let d = _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(_mm256_cvtepu16_epi32(
-                _mm_loadu_si128(dw),
-            ));
+            let dw: &[P; 8] = dat[dr + j..dr + j + 8].try_into().unwrap();
+            let sw: &[P; 8] = src[sr + j..sr + j + 8].try_into().unwrap();
+            let d = _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(P::LD8(_t, dw));
             let s = _mm256_sub_epi32(
-                _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(_mm256_cvtepu16_epi32(
-                    _mm_loadu_si128(sw),
-                )),
+                _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(P::LD8(_t, sw)),
                 d,
             );
             // Signed low-i32 x low-i32 -> i64 per 64-bit lane, even lanes plus
@@ -2039,8 +2134,8 @@ fn calc_proj_params_impl_v3(
             j += 8;
         }
         while j < width {
-            let u = (dat[dr + j] as i32) << SGRPROJ_RST_BITS;
-            let sv = ((src[sr + j] as i32) << SGRPROJ_RST_BITS) - u;
+            let u = dat[dr + j].to_i32() << SGRPROJ_RST_BITS;
+            let sv = (src[sr + j].to_i32() << SGRPROJ_RST_BITS) - u;
             if r0 && r1 {
                 let f1 = flt0[f0r + j] - u;
                 let f2 = flt1[f1r + j] - u;
@@ -2091,14 +2186,14 @@ fn calc_proj_params_impl_v3(
 /// Scalar tier (and non-x86 fallback) for [`calc_proj_params`] — the verbatim
 /// C transcription.
 #[allow(clippy::too_many_arguments)]
-fn calc_proj_params_impl_scalar(
+fn calc_proj_params_impl_scalar<P: LrPixel>(
     _t: archmage::ScalarToken,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -2114,8 +2209,8 @@ fn calc_proj_params_impl_scalar(
     let (r0, r1) = (rads[0] > 0, rads[1] > 0);
     for i in 0..height {
         for j in 0..width {
-            let u = (dat[dat_off + i * dat_stride + j] as i32) << SGRPROJ_RST_BITS;
-            let s = ((src[src_off + i * src_stride + j] as i32) << SGRPROJ_RST_BITS) - u;
+            let u = dat[dat_off + i * dat_stride + j].to_i32() << SGRPROJ_RST_BITS;
+            let s = (src[src_off + i * src_stride + j].to_i32() << SGRPROJ_RST_BITS) - u;
             if r0 && r1 {
                 let f1 = flt0[i * flt0_stride + j] - u;
                 let f2 = flt1[i * flt1_stride + j] - u;
@@ -2165,13 +2260,13 @@ fn signed_rounded_divide(dividend: i64, divisor: i64) -> i64 {
 /// `get_proj_subspace` (pickrst.c): solve the 2x2 (or scalar) normal
 /// equations for the projection weights `xq`, with the C overflow guards.
 #[allow(clippy::too_many_arguments)]
-pub fn get_proj_subspace(
-    src: &[u16],
+pub fn get_proj_subspace<P: LrPixel>(
+    src: &[P],
     src_off: usize,
     width: usize,
     height: usize,
     src_stride: usize,
-    dat: &[u16],
+    dat: &[P],
     dat_off: usize,
     dat_stride: usize,
     flt0: &[i32],
@@ -2436,6 +2531,11 @@ struct PlaneCtx<'a> {
     bnd: StripeBoundaries,
     src: &'a [u16],
     src_stride: usize,
+    // bd8 only (`!input.highbd`): the SAME buffers on a u8 carrier — the
+    // lowbd kernels' arithmetic is identical either way, the loads are
+    // half the width.
+    dgd_pad8: Vec<u8>,
+    src8: Vec<u8>,
     flt0: Vec<i32>,
     flt1: Vec<i32>,
     wiener_scratch: crate::restore::wiener::WienerScratch,
@@ -2484,6 +2584,18 @@ impl<'a> PlaneCtx<'a> {
         extend_frame(&mut dgd_pad, pwu, phu, w_stride);
         let dst_pad = vec![0u16; w_stride * (phu + 2 * MARGIN_V)];
 
+        // bd8: stage the u8 twins once per plane (the narrow of the already
+        // -extended dgd equals extending the narrow — replication commutes
+        // with the clamp).
+        let (dgd_pad8, src8) = if input.highbd {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                crate::lowbd::narrow_u16_to_u8(&dgd_pad),
+                crate::lowbd::narrow_u16_to_u8(p.src),
+            )
+        };
+
         PlaneCtx {
             plane,
             pw,
@@ -2496,6 +2608,8 @@ impl<'a> PlaneCtx<'a> {
             bnd,
             src: p.src,
             src_stride: p.stride,
+            dgd_pad8,
+            src8,
             flt0: vec![0i32; RESTORATION_UNITPELS_MAX],
             flt1: vec![0i32; RESTORATION_UNITPELS_MAX],
             wiener_scratch: crate::restore::wiener::WienerScratch::new(),
@@ -2514,6 +2628,16 @@ impl<'a> PlaneCtx<'a> {
     fn sse_dst(&self, limits: (i32, i32, i32, i32)) -> i64 {
         let (v0, v1, h0, h1) = limits;
         let (w, h) = ((h1 - h0) as usize, (v1 - v0) as usize);
+        if !self.src8.is_empty() {
+            return crate::dist::sse_u16_u8(
+                &self.dst_pad[self.pad_off(v0, h0)..],
+                self.w_stride,
+                &self.src8[v0 as usize * self.src_stride + h0 as usize..],
+                self.src_stride,
+                w,
+                h,
+            );
+        }
         crate::dist::highbd_sse(
             &self.src[v0 as usize * self.src_stride + h0 as usize..],
             self.src_stride,
@@ -2528,6 +2652,16 @@ impl<'a> PlaneCtx<'a> {
     fn sse_none(&self, limits: (i32, i32, i32, i32)) -> i64 {
         let (v0, v1, h0, h1) = limits;
         let (w, h) = ((h1 - h0) as usize, (v1 - v0) as usize);
+        if !self.src8.is_empty() {
+            return crate::dist::sse(
+                &self.dgd_pad8[self.pad_off(v0, h0)..],
+                self.w_stride,
+                &self.src8[v0 as usize * self.src_stride + h0 as usize..],
+                self.src_stride,
+                w,
+                h,
+            );
+        }
         crate::dist::highbd_sse(
             &self.src[v0 as usize * self.src_stride + h0 as usize..],
             self.src_stride,
@@ -2797,9 +2931,9 @@ fn search_wiener(
     } else {
         compute_stats(
             reduced_wiener_win,
-            &ctx.dgd_pad,
+            &ctx.dgd_pad8,
             dgd_origin,
-            ctx.src,
+            &ctx.src8,
             h0,
             h1,
             v0,
@@ -2914,18 +3048,33 @@ fn apply_sgr_unit(
             let w = pu_width.min(width - j);
             let flt_off = i * flt_stride + j;
             let (f0, f1) = (&mut ctx.flt0[flt_off..], &mut ctx.flt1[flt_off..]);
-            selfguided_restoration(
-                &ctx.dgd_pad,
-                dgd_off + i * ctx.w_stride + j,
-                ctx.w_stride,
-                w,
-                h,
-                f0,
-                f1,
-                flt_stride,
-                ep,
-                bit_depth,
-            );
+            if !ctx.dgd_pad8.is_empty() {
+                selfguided_restoration(
+                    &ctx.dgd_pad8,
+                    dgd_off + i * ctx.w_stride + j,
+                    ctx.w_stride,
+                    w,
+                    h,
+                    f0,
+                    f1,
+                    flt_stride,
+                    ep,
+                    bit_depth,
+                );
+            } else {
+                selfguided_restoration(
+                    &ctx.dgd_pad,
+                    dgd_off + i * ctx.w_stride + j,
+                    ctx.w_stride,
+                    w,
+                    h,
+                    f0,
+                    f1,
+                    flt_stride,
+                    ep,
+                    bit_depth,
+                );
+            }
             j += pu_width;
         }
         i += pu_height;
@@ -2947,6 +3096,25 @@ fn get_pixel_proj_error_xqd(
     ep: usize,
 ) -> i64 {
     let xq = decode_xq(&xqd, ep);
+    if !ctx.src8.is_empty() {
+        return pixel_proj_error(
+            &ctx.src8,
+            src_off,
+            width,
+            height,
+            ctx.src_stride,
+            &ctx.dgd_pad8,
+            dgd_off,
+            ctx.w_stride,
+            &ctx.flt0,
+            flt_stride,
+            &ctx.flt1,
+            flt_stride,
+            xq,
+            ep,
+            input.highbd,
+        );
+    }
     pixel_proj_error(
         ctx.src,
         src_off,
@@ -3061,21 +3229,39 @@ fn compute_sgrproj_err(
         flt_stride,
         input.bit_depth,
     );
-    let exq = get_proj_subspace(
-        ctx.src,
-        src_off,
-        width,
-        height,
-        ctx.src_stride,
-        &ctx.dgd_pad,
-        dgd_off,
-        ctx.w_stride,
-        &ctx.flt0,
-        flt_stride,
-        &ctx.flt1,
-        flt_stride,
-        ep,
-    );
+    let exq = if !ctx.src8.is_empty() {
+        get_proj_subspace(
+            &ctx.src8,
+            src_off,
+            width,
+            height,
+            ctx.src_stride,
+            &ctx.dgd_pad8,
+            dgd_off,
+            ctx.w_stride,
+            &ctx.flt0,
+            flt_stride,
+            &ctx.flt1,
+            flt_stride,
+            ep,
+        )
+    } else {
+        get_proj_subspace(
+            ctx.src,
+            src_off,
+            width,
+            height,
+            ctx.src_stride,
+            &ctx.dgd_pad,
+            dgd_off,
+            ctx.w_stride,
+            &ctx.flt0,
+            flt_stride,
+            &ctx.flt1,
+            flt_stride,
+            ep,
+        )
+    };
     let mut exqd = encode_xq(exq, ep);
     let err = finer_search_pixel_proj_error(
         ctx, input, src_off, dgd_off, width, height, flt_stride, 2, &mut exqd, ep,
