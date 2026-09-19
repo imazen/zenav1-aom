@@ -79,8 +79,10 @@ const NUM_WIENER_ITERS: i32 = 5;
 /// load-site conversions below are the only pixel-width surface; halving
 /// them halves the `dgd`/`src` read bandwidth the window gathers pay.
 pub trait LrPixel: Copy {
+    const ZERO: Self;
     fn to_i16(self) -> i16;
     fn to_i32(self) -> i32;
+    fn to_u16(self) -> u16;
     fn to_u64(self) -> u64;
     /// Widen 16 pixels to the `i16x16` lanes both carriers produce (u8
     /// through `cvtepu8`, u16 as the direct load).
@@ -95,6 +97,12 @@ pub trait LrPixel: Copy {
         archmage::X64V3Token,
         &[Self; 8],
     ) -> archmage::intrinsics::x86_64::__m256i;
+    /// Widen 8 pixels to the `s16x8` lanes both carriers produce.
+    #[cfg(target_arch = "aarch64")]
+    const LD8_S16: fn(
+        archmage::NeonToken,
+        &[Self; 8],
+    ) -> archmage::intrinsics::aarch64::int16x8_t;
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -121,8 +129,27 @@ fn lr_ld8_u16(_t: archmage::X64V3Token, c: &[u16; 8]) -> archmage::intrinsics::x
     use archmage::intrinsics::x86_64::*;
     _mm256_cvtepu16_epi32(_mm_loadu_si128(c))
 }
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+fn lr_ld8_s16_u8(
+    _t: archmage::NeonToken,
+    c: &[u8; 8],
+) -> archmage::intrinsics::aarch64::int16x8_t {
+    use archmage::intrinsics::aarch64::*;
+    vreinterpretq_s16_u16(vmovl_u8(vld1_u8(c)))
+}
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+fn lr_ld8_s16_u16(
+    _t: archmage::NeonToken,
+    c: &[u16; 8],
+) -> archmage::intrinsics::aarch64::int16x8_t {
+    use archmage::intrinsics::aarch64::*;
+    vreinterpretq_s16_u16(vld1q_u16(c))
+}
 
 impl LrPixel for u8 {
+    const ZERO: Self = 0;
     #[inline(always)]
     fn to_i16(self) -> i16 {
         self as i16
@@ -130,6 +157,10 @@ impl LrPixel for u8 {
     #[inline(always)]
     fn to_i32(self) -> i32 {
         self as i32
+    }
+    #[inline(always)]
+    fn to_u16(self) -> u16 {
+        self as u16
     }
     #[inline(always)]
     fn to_u64(self) -> u64 {
@@ -145,9 +176,15 @@ impl LrPixel for u8 {
         archmage::X64V3Token,
         &[u8; 8],
     ) -> archmage::intrinsics::x86_64::__m256i = lr_ld8_u8;
+    #[cfg(target_arch = "aarch64")]
+    const LD8_S16: fn(
+        archmage::NeonToken,
+        &[u8; 8],
+    ) -> archmage::intrinsics::aarch64::int16x8_t = lr_ld8_s16_u8;
 }
 
 impl LrPixel for u16 {
+    const ZERO: Self = 0;
     #[inline(always)]
     fn to_i16(self) -> i16 {
         self as i16
@@ -155,6 +192,10 @@ impl LrPixel for u16 {
     #[inline(always)]
     fn to_i32(self) -> i32 {
         self as i32
+    }
+    #[inline(always)]
+    fn to_u16(self) -> u16 {
+        self
     }
     #[inline(always)]
     fn to_u64(self) -> u64 {
@@ -170,6 +211,11 @@ impl LrPixel for u16 {
         archmage::X64V3Token,
         &[u16; 8],
     ) -> archmage::intrinsics::x86_64::__m256i = lr_ld8_u16;
+    #[cfg(target_arch = "aarch64")]
+    const LD8_S16: fn(
+        archmage::NeonToken,
+        &[u16; 8],
+    ) -> archmage::intrinsics::aarch64::int16x8_t = lr_ld8_s16_u16;
 }
 
 /// `find_average` (pickrst.h): the u8-truncating mean of the lowbd window.
@@ -2528,7 +2574,7 @@ struct PlaneCtx<'a> {
     w_stride: usize,
     dgd_pad: Vec<u16>,
     dst_pad: Vec<u16>,
-    bnd: StripeBoundaries,
+    bnd: StripeBoundaries<u16>,
     src: &'a [u16],
     src_stride: usize,
     // bd8 only (`!input.highbd`): the SAME buffers on a u8 carrier — the
@@ -2536,10 +2582,12 @@ struct PlaneCtx<'a> {
     // half the width.
     dgd_pad8: Vec<u8>,
     src8: Vec<u8>,
+    bnd8: StripeBoundaries<u8>,
+    stripe_scratch8: crate::restore::frame::StripeScratch<u8>,
     flt0: Vec<i32>,
     flt1: Vec<i32>,
     wiener_scratch: crate::restore::wiener::WienerScratch,
-    stripe_scratch: crate::restore::frame::StripeScratch,
+    stripe_scratch: crate::restore::frame::StripeScratch<u16>,
 }
 
 impl<'a> PlaneCtx<'a> {
@@ -2563,37 +2611,66 @@ impl<'a> PlaneCtx<'a> {
         let ext_h = RESTORATION_UNIT_OFFSET as usize + mi_h;
         let num_stripes = ext_h.div_ceil(64);
         let b_stride = (pwu + 2 * 4 + 31) & !31;
-        let mut bnd = StripeBoundaries {
-            above: vec![0; num_stripes * 2 * b_stride],
-            below: vec![0; num_stripes * 2 * b_stride],
+        let mut bnd: StripeBoundaries<u16> = StripeBoundaries {
+            above: Vec::new(),
+            below: Vec::new(),
+            stride: b_stride,
+        };
+        let mut bnd8: StripeBoundaries<u8> = StripeBoundaries {
+            above: Vec::new(),
+            below: Vec::new(),
             stride: b_stride,
         };
         // Encoder ordering (cdef_restoration_frame): pass 0 (internal stripe
         // context) on the DEBLOCKED frame BEFORE CDEF; pass 1 (frame edges)
         // on the CURRENT frame after CDEF.
-        save_boundary_lines(&mut bnd, p.deblocked, p.stride, pwu, phu, sy, false);
-        save_boundary_lines(&mut bnd, p.cur, p.stride, pwu, phu, sy, true);
-
-        // Padded dgd + trial dst (frame-walk layout).
-        let w_stride = pwu + 2 * MARGIN_H;
-        let mut dgd_pad = vec![0u16; w_stride * (phu + 2 * MARGIN_V)];
-        for r in 0..phu {
-            dgd_pad[at(w_stride, r as isize, 0)..at(w_stride, r as isize, pw as isize)]
-                .copy_from_slice(&p.cur[r * p.stride..][..pwu]);
+        if input.highbd {
+            bnd.above = vec![0; num_stripes * 2 * b_stride];
+            bnd.below = vec![0; num_stripes * 2 * b_stride];
+            save_boundary_lines(&mut bnd, p.deblocked, p.stride, pwu, phu, sy, false);
+            save_boundary_lines(&mut bnd, p.cur, p.stride, pwu, phu, sy, true);
+        } else {
+            bnd8.above = vec![0; num_stripes * 2 * b_stride];
+            bnd8.below = vec![0; num_stripes * 2 * b_stride];
+            save_boundary_lines(&mut bnd8, p.deblocked, p.stride, pwu, phu, sy, false);
+            save_boundary_lines(&mut bnd8, p.cur, p.stride, pwu, phu, sy, true);
         }
-        extend_frame(&mut dgd_pad, pwu, phu, w_stride);
-        let dst_pad = vec![0u16; w_stride * (phu + 2 * MARGIN_V)];
 
-        // bd8: stage the u8 twins once per plane (the narrow of the already
-        // -extended dgd equals extending the narrow — replication commutes
-        // with the clamp).
-        let (dgd_pad8, src8) = if input.highbd {
-            (Vec::new(), Vec::new())
+        // Padded dgd + trial dst (frame-walk layout). At bd8 the u16 carrier
+        // is skipped entirely — the kernels all read the u8 twin.
+        let w_stride = pwu + 2 * MARGIN_H;
+        let (mut dgd_pad, mut dgd_pad8) = if input.highbd {
+            (
+                vec![0u16; w_stride * (phu + 2 * MARGIN_V)],
+                Vec::new(),
+            )
         } else {
             (
-                crate::lowbd::narrow_u16_to_u8(&dgd_pad),
-                crate::lowbd::narrow_u16_to_u8(p.src),
+                Vec::new(),
+                vec![0u8; w_stride * (phu + 2 * MARGIN_V)],
             )
+        };
+        if input.highbd {
+            for r in 0..phu {
+                dgd_pad[at(w_stride, r as isize, 0)..at(w_stride, r as isize, pw as isize)]
+                    .copy_from_slice(&p.cur[r * p.stride..][..pwu]);
+            }
+            extend_frame(&mut dgd_pad, pwu, phu, w_stride);
+        } else {
+            for r in 0..phu {
+                crate::lowbd::narrow_u16_to_u8_into(
+                    &p.cur[r * p.stride..][..pwu],
+                    &mut dgd_pad8[at(w_stride, r as isize, 0)..at(w_stride, r as isize, pw as isize)],
+                );
+            }
+            extend_frame(&mut dgd_pad8, pwu, phu, w_stride);
+        }
+        let dst_pad = vec![0u16; w_stride * (phu + 2 * MARGIN_V)];
+
+        let src8 = if input.highbd {
+            Vec::new()
+        } else {
+            crate::lowbd::narrow_u16_to_u8(p.src)
         };
 
         PlaneCtx {
@@ -2610,10 +2687,12 @@ impl<'a> PlaneCtx<'a> {
             src_stride: p.stride,
             dgd_pad8,
             src8,
+            bnd8,
             flt0: vec![0i32; RESTORATION_UNITPELS_MAX],
             flt1: vec![0i32; RESTORATION_UNITPELS_MAX],
             wiener_scratch: crate::restore::wiener::WienerScratch::new(),
             stripe_scratch: crate::restore::frame::StripeScratch::default(),
+            stripe_scratch8: crate::restore::frame::StripeScratch::default(),
         }
     }
 
@@ -2702,6 +2781,24 @@ impl<'a> PlaneCtx<'a> {
         rui: &LrUnitInfo,
         bit_depth: i32,
     ) -> i64 {
+        if !self.dgd_pad8.is_empty() {
+            filter_unit(
+                &mut self.dgd_pad8,
+                &mut self.dst_pad,
+                self.w_stride,
+                rui,
+                &self.bnd8,
+                self.ph as usize,
+                self.sx,
+                self.sy,
+                bit_depth,
+                limits,
+                false,
+                &mut self.wiener_scratch,
+                &mut self.stripe_scratch8,
+            );
+            return self.sse_dst(limits);
+        }
         filter_unit(
             &mut self.dgd_pad,
             &mut self.dst_pad,

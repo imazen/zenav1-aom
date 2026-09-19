@@ -104,17 +104,36 @@ pub fn loop_restoration_filter_frame_stop(
 }
 
 #[derive(Clone)]
-pub(crate) struct StripeBoundaries {
-    pub(crate) above: Vec<u16>,
-    pub(crate) below: Vec<u16>,
+pub(crate) struct StripeBoundaries<P> {
+    pub(crate) above: Vec<P>,
+    pub(crate) below: Vec<P>,
     pub(crate) stride: usize,
+}
+
+/// The one type-dependent step of `save_boundary_lines`: staging a u16 source
+/// row into the boundary buffer — identical pixels for the u16 carrier, a
+/// lowbd narrow for u8.
+pub(crate) trait BndStore: Copy {
+    fn store_row(dst: &mut [Self], src: &[u16]);
+}
+impl BndStore for u16 {
+    #[inline]
+    fn store_row(dst: &mut [Self], src: &[u16]) {
+        dst.copy_from_slice(src);
+    }
+}
+impl BndStore for u8 {
+    #[inline]
+    fn store_row(dst: &mut [Self], src: &[u16]) {
+        crate::lowbd::narrow_u16_to_u8_into(src, dst);
+    }
 }
 
 /// `save_boundary_lines` geometry + both passes for one plane, into u16
 /// boundary buffers (`av1_alloc_restoration_buffers` sizing: stripes counted
 /// on the LUMA extent, stride 32-aligned incl. the ±4 extension columns).
-pub(crate) fn save_boundary_lines(
-    b: &mut StripeBoundaries,
+pub(crate) fn save_boundary_lines<P: BndStore>(
+    b: &mut StripeBoundaries<P>,
     src: &[u16],
     src_stride: usize,
     plane_w: usize,
@@ -166,7 +185,7 @@ pub(crate) fn save_boundary_lines(
 /// `extend_lines`: replicate `RESTORATION_EXTRA_HORZ` columns on each side of
 /// `RESTORATION_CTX_VERT` boundary rows starting at `row0`, columns offset by
 /// `RESTORATION_EXTRA_HORZ` in the buffer.
-fn extend_lines(buf: &mut [u16], row0: usize, stride: usize, width: usize) {
+fn extend_lines<T: Copy>(buf: &mut [T], row0: usize, stride: usize, width: usize) {
     for r in 0..RESTORATION_CTX_VERT {
         let base = (row0 + r) * stride + RESTORATION_EXTRA_HORZ;
         let first = buf[base];
@@ -182,8 +201,8 @@ fn extend_lines(buf: &mut [u16], row0: usize, stride: usize, width: usize) {
 /// rows at `row`, clamped against the crop bottom (a stripe can end 1px above
 /// it — then the one row is duplicated), extended ±4.
 #[allow(clippy::too_many_arguments)]
-fn save_deblock_lines(
-    b: &mut StripeBoundaries,
+fn save_deblock_lines<P: BndStore>(
+    b: &mut StripeBoundaries<P>,
     src: &[u16],
     src_stride: usize,
     plane_w: usize,
@@ -198,7 +217,7 @@ fn save_deblock_lines(
     debug_assert!(lines_to_save == 1 || lines_to_save == 2);
     for i in 0..lines_to_save {
         let d = (row0 + i) * b.stride + RESTORATION_EXTRA_HORZ;
-        buf[d..d + plane_w].copy_from_slice(&src[(row + i) * src_stride..][..plane_w]);
+        P::store_row(&mut buf[d..d + plane_w], &src[(row + i) * src_stride..][..plane_w]);
     }
     if lines_to_save == 1 {
         let s0 = row0 * b.stride + RESTORATION_EXTRA_HORZ;
@@ -210,8 +229,8 @@ fn save_deblock_lines(
 
 /// `save_cdef_boundary_lines`: the single CDEF row at `row` copied into both
 /// context lines, extended ±4.
-fn save_cdef_lines(
-    b: &mut StripeBoundaries,
+fn save_cdef_lines<P: BndStore>(
+    b: &mut StripeBoundaries<P>,
     src: &[u16],
     src_stride: usize,
     plane_w: usize,
@@ -223,7 +242,7 @@ fn save_cdef_lines(
     let row0 = RESTORATION_CTX_VERT * stripe;
     for i in 0..RESTORATION_CTX_VERT {
         let d = (row0 + i) * b.stride + RESTORATION_EXTRA_HORZ;
-        buf[d..d + plane_w].copy_from_slice(&src[row * src_stride..][..plane_w]);
+        P::store_row(&mut buf[d..d + plane_w], &src[row * src_stride..][..plane_w]);
     }
     extend_lines(buf, row0, b.stride, plane_w);
 }
@@ -237,7 +256,7 @@ pub(crate) fn at(w_stride: usize, row: isize, col: isize) -> usize {
 
 /// `av1_extend_frame`: replicate a `RESTORATION_BORDER`-pixel border around
 /// the `[0, w) x [0, h)` plane in the working buffer.
-pub(crate) fn extend_frame(buf: &mut [u16], w: usize, h: usize, w_stride: usize) {
+pub(crate) fn extend_frame<T: Copy>(buf: &mut [T], w: usize, h: usize, w_stride: usize) {
     const B: isize = RESTORATION_BORDER as isize;
     for r in 0..h as isize {
         let first = buf[at(w_stride, r, 0)];
@@ -280,7 +299,7 @@ fn filter_plane(
     let ext_h = RESTORATION_UNIT_OFFSET + mi_h;
     let num_stripes = ((ext_h + 63) / 64) as usize;
     let b_stride = (pw + 2 * RESTORATION_EXTRA_HORZ + 31) & !31;
-    let mut bnd = StripeBoundaries {
+    let mut bnd: StripeBoundaries<u16> = StripeBoundaries {
         above: vec![0; num_stripes * RESTORATION_CTX_VERT * b_stride],
         below: vec![0; num_stripes * RESTORATION_CTX_VERT * b_stride],
         stride: b_stride,
@@ -304,7 +323,7 @@ fn filter_plane(
 
     // --- the unit walk (foreach_rest_unit_in_plane) ---
     let mut wiener_scratch = WienerScratch::new();
-    let mut stripe_scratch = StripeScratch::default();
+    let mut stripe_scratch: StripeScratch<u16> = StripeScratch::default();
     let unit_size = lr.unit_size[plane];
     let (hu, _vu) = lr.plane_units(plane, ss_x, ss_y);
     let ext_size = unit_size * 3 / 2;
@@ -378,20 +397,20 @@ fn filter_plane(
 /// `tmp_buf` once in `av1_loop_restoration_filter_plane`; pooling keeps the
 /// per-stripe `to_vec`s (~6 allocs/unit) off the hot path.
 #[derive(Default, Clone)]
-pub(crate) struct StripeScratch {
-    above: [Vec<u16>; RESTORATION_BORDER],
-    below: [Vec<u16>; RESTORATION_BORDER],
+pub(crate) struct StripeScratch<P> {
+    above: [Vec<P>; RESTORATION_BORDER],
+    below: [Vec<P>; RESTORATION_BORDER],
 }
 
 /// `av1_loop_restoration_filter_unit`: the per-unit stripe loop with boundary
 /// row swapping. `limits = (v_start, v_end, h_start, h_end)` in plane coords.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn filter_unit(
-    src: &mut [u16],
+pub(crate) fn filter_unit<P: crate::restore::pick::LrPixel>(
+    src: &mut [P],
     dst: &mut [u16],
     w_stride: usize,
     rui: &LrUnitInfo,
-    rsb: &StripeBoundaries,
+    rsb: &StripeBoundaries<P>,
     plane_h: usize,
     ss_x: usize,
     ss_y: usize,
@@ -399,7 +418,7 @@ pub(crate) fn filter_unit(
     limits: (i32, i32, i32, i32),
     optimized_lr: bool,
     wiener_scratch: &mut WienerScratch,
-    stripe_scratch: &mut StripeScratch,
+    stripe_scratch: &mut StripeScratch<P>,
 ) {
     let (v_start, v_end, h_start, h_end) = limits;
     let unit_h = (v_end - v_start) as usize;
@@ -409,7 +428,9 @@ pub(crate) fn filter_unit(
         // copy_rest_unit — src/dst are distinct buffers, no staging row.
         for r in 0..unit_h {
             let s = at(w_stride, (v_start + r as i32) as isize, h_start as isize);
-            dst[s..s + unit_w].copy_from_slice(&src[s..s + unit_w]);
+            for (d, v) in dst[s..s + unit_w].iter_mut().zip(&src[s..s + unit_w]) {
+                *d = v.to_u16();
+            }
         }
         return;
     }
@@ -466,7 +487,7 @@ pub(crate) fn filter_unit(
                     let buf0 = buf_row * rsb.stride + h_start as usize;
                     let d = at(w_stride, rs_v_start as isize + i_off, data_x0);
                     tmp.clear();
-                    tmp.resize(line_width, 0);
+                    tmp.resize(line_width, P::ZERO);
                     tmp.copy_from_slice(&src[d..d + line_width]);
                     src[d..d + line_width].copy_from_slice(&rsb.above[buf0..buf0 + line_width]);
                 }
@@ -478,7 +499,7 @@ pub(crate) fn filter_unit(
                     let buf0 = buf_row * rsb.stride + h_start as usize;
                     let d = at(w_stride, (stripe_end + bi as i32) as isize, data_x0);
                     tmp.clear();
-                    tmp.resize(line_width, 0);
+                    tmp.resize(line_width, P::ZERO);
                     tmp.copy_from_slice(&src[d..d + line_width]);
                     src[d..d + line_width].copy_from_slice(&rsb.below[buf0..buf0 + line_width]);
                 }
@@ -488,7 +509,7 @@ pub(crate) fn filter_unit(
                 let d = at(w_stride, rs_v_start as isize - 3, data_x0);
                 let s = at(w_stride, rs_v_start as isize - 2, data_x0);
                 tmp_above[0].clear();
-                tmp_above[0].resize(line_width, 0);
+                tmp_above[0].resize(line_width, P::ZERO);
                 tmp_above[0].copy_from_slice(&src[d..d + line_width]);
                 src.copy_within(s..s + line_width, d);
             }
@@ -496,7 +517,7 @@ pub(crate) fn filter_unit(
                 let d = at(w_stride, stripe_end as isize + 2, data_x0);
                 let s = at(w_stride, stripe_end as isize + 1, data_x0);
                 tmp_below[2].clear();
-                tmp_below[2].resize(line_width, 0);
+                tmp_below[2].resize(line_width, P::ZERO);
                 tmp_below[2].copy_from_slice(&src[d..d + line_width]);
                 src.copy_within(s..s + line_width, d);
             }

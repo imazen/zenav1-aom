@@ -87,8 +87,8 @@ impl WienerScratch {
 /// every token permutation). Width < 8 and the `AOM_FORCE_SCALAR` pin run
 /// the scalar twin.
 #[allow(clippy::too_many_arguments)]
-pub fn wiener_convolve_add_src(
-    src: &[u16],
+pub fn wiener_convolve_add_src<P: crate::restore::pick::LrPixel>(
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     dst: &mut [u16],
@@ -121,8 +121,8 @@ pub fn wiener_convolve_add_src(
 /// frame walk's hot entry — one scratch per plane instead of one heap
 /// allocation per 64-wide chunk).
 #[allow(clippy::too_many_arguments)]
-pub fn wiener_convolve_add_src_into(
-    src: &[u16],
+pub fn wiener_convolve_add_src_into<P: crate::restore::pick::LrPixel>(
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     dst: &mut [u16],
@@ -152,9 +152,9 @@ pub fn wiener_convolve_add_src_into(
 
 /// Scalar tier = the transcribed port, verbatim.
 #[allow(clippy::too_many_arguments)]
-fn wiener_impl_scalar(
+fn wiener_impl_scalar<P: crate::restore::pick::LrPixel>(
     _t: archmage::ScalarToken,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     dst: &mut [u16],
@@ -240,9 +240,9 @@ macro_rules! shr_round_by {
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
 #[allow(clippy::too_many_arguments)]
-fn wiener_impl_v3(
+fn wiener_impl_v3<P: crate::restore::pick::LrPixel>(
     _t: archmage::X64V3Token,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     dst: &mut [u16],
@@ -312,7 +312,7 @@ fn wiener_impl_v3(
         // One checked view per row; every tile window inside provably fits
         // (`x0 <= w-16` => `x0+23 <= w+7`), so the inner loop carries no
         // bounds checks at all.
-        let rowview: &[u16] = &src[row..row + w + 7];
+        let rowview: &[P] = &src[row..row + w + 7];
         let trowview: &mut [u16] = &mut temp[y * MAX_SB_SIZE..y * MAX_SB_SIZE + w];
         let mut xs = 0usize;
         loop {
@@ -320,10 +320,10 @@ fn wiener_impl_v3(
             // One bounds-checked 23-sample window; the k-offset subslices of a
             // fixed-length array carry statically-known lengths, so the eight
             // loads below compile to bare vmovdqu.
-            let win: &[u16; 23] = rowview[x0..x0 + 23].try_into().unwrap();
+            let win: &[P; 23] = rowview[x0..x0 + 23].try_into().unwrap();
             let ld = |k: usize| -> __m256i {
-                let a: &[u16; 16] = win[k..k + 16].try_into().unwrap();
-                _mm256_loadu_si256(a)
+                let a: &[P; 16] = win[k..k + 16].try_into().unwrap();
+                P::LD16(_t, a)
             };
             // res_even: outputs x0+2i; res_odd: outputs x0+2i+1.
             let e = _mm256_add_epi32(
@@ -430,9 +430,9 @@ fn wiener_impl_v3(
 
 #[archmage::magetypes(define(i32x8), wasm128, -scalar)]
 #[allow(clippy::too_many_arguments)]
-fn wiener_impl(
+fn wiener_impl<P: crate::restore::pick::LrPixel>(
     token: Token,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     dst: &mut [u16],
@@ -457,8 +457,8 @@ fn wiener_impl(
     // One-bounds-check `[u16; 8]` fixed-array load + `as i32` widen (LLVM:
     // vpmovzxwd) instead of 8 checked scalar loads via `from_fn`; the
     // lane VALUES are identical, so the arithmetic is untouched.
-    let widen = |s: &[u16]| -> i32x8 {
-        let a: [u16; 8] = s[..8].try_into().unwrap();
+    let widen = |s: &[P]| -> i32x8 {
+        let a: [P; 8] = s[..8].try_into().unwrap();
         i32x8::from_array(
             token,
             [
@@ -573,8 +573,8 @@ pub fn wiener_convolve_add_src_scalar(
 /// arithmetic; `temp` is fully written before it is read, so a reused
 /// buffer is byte-identical to a fresh zeroed one).
 #[allow(clippy::too_many_arguments)]
-fn wiener_scalar_into(
-    src: &[u16],
+fn wiener_scalar_into<P: crate::restore::pick::LrPixel>(
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     dst: &mut [u16],
@@ -604,10 +604,10 @@ fn wiener_scalar_into(
         for x in 0..w {
             let s = (horiz_base + (y * src_stride + x) as isize) as usize;
             let src_x = &src[s..s + SUBPEL_TAPS];
-            let rounding = ((src_x[3] as i32) << FILTER_BITS) + (1 << (bd + FILTER_BITS - 1));
+            let rounding = (src_x[3].to_i32() << FILTER_BITS) + (1 << (bd + FILTER_BITS - 1));
             let mut sum = rounding;
             for k in 0..SUBPEL_TAPS {
-                sum += src_x[k] as i32 * hfilter[k] as i32;
+                sum += src_x[k].to_i32() * hfilter[k] as i32;
             }
             temp[y * MAX_SB_SIZE + x] =
                 round_power_of_two(sum, round_0).clamp(0, clamp_limit - 1) as u16;
@@ -654,9 +654,9 @@ fn wiener_scalar_into(
 #[cfg(target_arch = "aarch64")]
 #[archmage::arcane]
 #[allow(clippy::too_many_arguments)]
-fn wiener_impl_neon(
+fn wiener_impl_neon<P: crate::restore::pick::LrPixel>(
     t: archmage::NeonToken,
-    src: &[u16],
+    src: &[P],
     src_off: usize,
     src_stride: usize,
     dst: &mut [u16],
@@ -712,7 +712,7 @@ fn wiener_impl_neon(
 
     // ---- horizontal pass: u16 window rows -> clamped u16 im rows ----
     // im row 0 = src row `-vert_off`, im col 0 = src col `-horiz_off`.
-    let ld = |s: &[u16]| vreinterpretq_s16_u16(vld1q_u16(<&[u16; 8]>::try_from(&s[..8]).unwrap()));
+    let ld = |s: &[P]| P::LD8_S16(t, <&[P; 8]>::try_from(&s[..8]).unwrap());
     let h_base = src_off as isize - vert_off as isize - horiz_off as isize;
     for y in 0..im_h {
         let row = (h_base + (y * src_stride) as isize) as usize;

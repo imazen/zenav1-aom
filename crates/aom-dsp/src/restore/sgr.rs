@@ -1185,8 +1185,8 @@ pub fn decode_xq(xqd: &[i32; 2], ep: usize) -> [i32; 2] {
 /// the pixel range. Reads `dat[dat_off..]` at `[-3, +3)` margins; writes the
 /// `w x h` block at `dst[dst_off..]`.
 #[allow(clippy::too_many_arguments)]
-pub fn apply_selfguided_restoration(
-    dat: &[u16],
+pub fn apply_selfguided_restoration<P: crate::restore::pick::LrPixel>(
+    dat: &[P],
     dat_off: usize,
     stride: usize,
     width: usize,
@@ -1219,7 +1219,7 @@ pub fn apply_selfguided_restoration(
     for i in 0..height {
         for j in 0..width {
             let k = i * width + j;
-            let pre_u = dat[dat_off + i * stride + j] as i32;
+            let pre_u = dat[dat_off + i * stride + j].to_i32();
             let u = pre_u << SGRPROJ_RST_BITS;
             let mut v = u << SGRPROJ_PRJ_BITS;
             if rads[0] > 0 {

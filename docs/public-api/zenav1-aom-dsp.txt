@@ -6,17 +6,17 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1864 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1866 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 8
 
 ## summary
 #
 #   pub modules                                62
 #   pub types (struct/enum/trait/alias)        94
-#   pub consts/statics                        205
+#   pub consts/statics                        206
 #   pub macros                                  1
 #   free functions                            642
-#   inherent methods                          100
+#   inherent methods                          101
 #   struct fields                             707
 #   enum variants                              13
 #   trait roster entries (type × trait)       266
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            3
-#   aom_dsp                        1821
+#   aom_dsp                        1823
 
-## items (1788 lines)
+## items (1790 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1630,8 +1630,10 @@ pub const aom_dsp::restore::pick::WIENER_STATS_DOWNSAMPLE_FACTOR: i32
 pub const aom_dsp::restore::pick::WIENER_WIN2: usize
 pub const aom_dsp::restore::pick::WIENER_WIN_REDUCED: usize
 pub trait aom_dsp::restore::pick::LrPixel: core::marker::Copy
+pub const aom_dsp::restore::pick::LrPixel::ZERO: Self
 pub fn aom_dsp::restore::pick::LrPixel::to_i16(self) -> i16
 pub fn aom_dsp::restore::pick::LrPixel::to_i32(self) -> i32
+pub fn aom_dsp::restore::pick::LrPixel::to_u16(self) -> u16
 pub fn aom_dsp::restore::pick::LrPixel::to_u64(self) -> u64
 pub fn aom_dsp::restore::pick::calc_proj_params<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, usize, usize, &[P], usize, usize, &[i32], usize, &[i32], usize, usize) -> ([[i64; 2]; 2], [i64; 2])
 pub fn aom_dsp::restore::pick::compute_score(usize, &[i64], &[i64], &[i16; 8], &[i16; 8]) -> i64
@@ -1645,15 +1647,15 @@ pub fn aom_dsp::restore::pick::pixel_proj_error<P: aom_dsp::restore::pick::LrPix
 pub fn aom_dsp::restore::pick::wiener_decompose_sep_sym(usize, &[i64], &[i64], &mut [i32; 7], &mut [i32; 7])
 pub mod aom_dsp::restore::sgr
 pub const aom_dsp::restore::sgr::SGR_PARAMS: [([i32; 2], [i32; 2]); 16]
-pub fn aom_dsp::restore::sgr::apply_selfguided_restoration(&[u16], usize, usize, usize, usize, usize, &[i32; 2], &mut [u16], usize, usize, i32)
+pub fn aom_dsp::restore::sgr::apply_selfguided_restoration<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, usize, usize, usize, &[i32; 2], &mut [u16], usize, usize, i32)
 pub fn aom_dsp::restore::sgr::decode_xq(&[i32; 2], usize) -> [i32; 2]
 pub fn aom_dsp::restore::sgr::selfguided_restoration<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, usize, usize, &mut [i32], &mut [i32], usize, usize, i32)
 pub mod aom_dsp::restore::wiener
 pub struct aom_dsp::restore::wiener::WienerScratch
 pub fn aom_dsp::restore::wiener::WienerScratch::new() -> Self
 pub fn aom_dsp::restore::wiener::conv_params_wiener(i32) -> (i32, i32)
-pub fn aom_dsp::restore::wiener::wiener_convolve_add_src(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
-pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_into(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32, &mut aom_dsp::restore::wiener::WienerScratch)
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_into<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32, &mut aom_dsp::restore::wiener::WienerScratch)
 pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_scalar(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
 pub mod aom_dsp::transform
 pub mod aom_dsp::transform::cospi
