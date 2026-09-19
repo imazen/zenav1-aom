@@ -170,3 +170,45 @@ what remains is per-instruction codegen density inside already-SIMD kernels
 ~0-11M each. The next real structural lever remains the bd8 u8 plane split
 (documented in `encoder_plane_refactor_concurrency_2026-09-17.md`), whose
 ROI is bounded by the measured u8e results: ~15% on 16px-dominant paths.
+
+## Batch 5 (2026-09-18): cache-sim + codegen-bloat attribution of the residual
+
+Question: is the last ~1.3x wall gap register spills, data-cache misses,
+cache-level transitions, or code bloat? Measured answers on the matched
+`photo_512` cell (1 rep, 1 worker, `eprof_yuv` port vs C):
+
+### Cachegrind cache-sim (`--cache-sim=yes`)
+
+| metric | port | C | verdict |
+|---|---|---|---|
+| Ir | 13.02G | 9.39G | 1.39x |
+| D-refs | 4.65G | 3.53G | +32% accesses |
+| **D1 miss RATE** | **1.6%** | **1.7%** | identical — data misses NOT the gap |
+| **LL miss rate** | 0.0% | 0.0% | no L2->L3 transition cost either arm |
+| **I1 misses** | **320.6M** | **183.2M** | **+137M, 1.75x** |
+| I1 miss rate | 2.46% | 1.95% | L1i->L2 transitions only (LLi ~0%) |
+
+### objdump matched kernels (same binary)
+
+| kernel | C bytes | port bytes | branch cmp/jcc | calls |
+|---|---|---|---|---|
+| quantize_fp | 535 | 2,642 (4.9x) | 5/7 vs 36/42 | 0 vs 5 |
+| get_txb_ctx | 115 | 2,831 (24.6x) | — | — |
+| txb_init_levels | 627 | 1,741 (2.8x) | 8/10 vs 36/49 | 1 vs 16 |
+| pixel_proj_error | 3,121 | 7,265 (2.3x) | 52/59 vs 104/100 | 0 vs 30 |
+| optimize_txb | 22,216 | 31,998 (1.4x) | — | — |
+| fwd_8x8 | 1,112 | 1,996 (1.8x) | 5/11 vs 4/4 | 3 vs 1 |
+
+### Verdicts, measured
+
+- **Register spills: NO.** Port fwd_8x8 has zero `[rsp]` refs (C spills
+  48 xmm); wiener 50 vs C 61; optimize_txb +14%. Not the mechanism.
+- **Data-cache misses: NO.** Identical D1 rate, 0% LLC both arms.
+  The u8-staging win was ref-count reduction, not miss-rate — which is
+  why it capped at ~1% wall.
+- **Code bloat: YES.** 1.4-4.9x code bytes on mirrored kernels, 2-4x
+  branch density (bounds/shape checks), 5-30 call residue vs C's 0-1.
+- **I1 misses: YES, the hidden half of bloat.** +137M L1i misses the Ir
+  profile cannot see — an additive wall cost on top of instruction
+  count. Lever implication: shrinking hot-loop code size (fewer inlined
+  check paths, slimmer dispatch) buys back Ir AND fetch cost.
