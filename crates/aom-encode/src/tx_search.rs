@@ -224,6 +224,7 @@ fn tx_mask_memo_idx(key: u64) -> usize {
 /// `use_default_intra_tx_type` (`get_default_tx_type`; sf OFF at speed 0), the
 /// `rd_model == LOW_TXFM_RD` DCT-only override (the pick loop runs
 /// `FULL_TXFM_RD`), and the UV path (tx type inherited from Y).
+#[inline(always)]
 pub fn get_tx_mask_intra(
     tx_size: usize,
     mode: usize,
@@ -424,6 +425,7 @@ pub fn uv_intra_tx_type(
 /// Returns `(mask, txk_allowed)`; for chroma the mask is always exactly one
 /// bit.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn get_tx_mask_uv_intra(
     tx_size: usize,
     uv_mode: usize,
@@ -2580,6 +2582,7 @@ pub struct PaletteYrd<'a> {
 /// entry; `Some(stats)` otherwise. `recon` and the working contexts are
 /// modified as the C does (the caller snapshots/restores between tx sizes).
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn txfm_rd_in_plane_intra(
     env: &TxfmYrdEnv,
     recon: &mut [u16],

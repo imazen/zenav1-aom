@@ -533,6 +533,7 @@ fn inv_rect48_fused(
 /// Dispatch for [`inv_rect48_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_rect48_fused(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -610,6 +611,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
 /// type-compatible here, so a decline is a decline).
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_rect48_fused_u8(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -1447,6 +1449,7 @@ fn inv_rect816_fused(
 /// Dispatch for [`inv_rect816_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_rect816_fused(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -1691,6 +1694,7 @@ fn inv_16x16_fused(
 /// Dispatch for [`inv_16x16_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_16x16_fused(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -1917,6 +1921,7 @@ fn inv_8x8_fused(
 /// Dispatch for [`inv_8x8_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_8x8_fused(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -1981,6 +1986,7 @@ pub(crate) fn try_inv_txfm2d_8x8_fused(
 /// type-compatible here).
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_8x8_fused_u8(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -3858,6 +3864,7 @@ fn inv_16x16_fused_i16_w16(
     true
 }
 
+#[inline]
 pub(crate) fn try_inv_col_pass(
     txfm_type_col: i32,
     buf: &[i32],
@@ -4239,6 +4246,7 @@ fn fwd_rect816_fused(
 /// Dispatch for [`fwd_rect816_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_fwd_txfm2d_rect816_fused(
     txfm_type_col: i32,
     txfm_type_row: i32,
@@ -4422,6 +4430,7 @@ fn fwd_rect48_fused(
 /// Dispatch for [`fwd_rect48_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_fwd_txfm2d_rect48_fused(
     txfm_type_col: i32,
     txfm_type_row: i32,
@@ -4623,6 +4632,7 @@ fn fwd_16x16_fused(
 /// Dispatch for [`fwd_16x16_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_fwd_txfm2d_16x16_fused(
     txfm_type_col: i32,
     txfm_type_row: i32,
@@ -4902,6 +4912,7 @@ fn fwd_4x4_fused(
 /// Dispatch for [`fwd_4x4_fused`]; `false` routes to the scalar fused path.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_fwd_txfm2d_4x4_fused(
     txfm_type_col: i32,
     txfm_type_row: i32,
@@ -5255,6 +5266,7 @@ fn inv_4x4_i16_core(
 /// that the row-pass intermediates can exceed i16 and the kernel declines.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_4x4_fused(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -5289,6 +5301,7 @@ pub(crate) fn try_inv_txfm2d_4x4_fused(
 /// generic two-pass u8 driver (same decline conditions as the u16 twin).
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_txfm2d_4x4_fused_u8(
     txfm_type_row: i32,
     txfm_type_col: i32,
@@ -5466,6 +5479,7 @@ fn fwd_8x8_fused(
 /// Dispatch for [`fwd_8x8_fused`]; `false` routes to the generic driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_fwd_txfm2d_8x8_fused(
     txfm_type_col: i32,
     txfm_type_row: i32,
@@ -7553,6 +7567,7 @@ fn fwd_rect816_fused_i16(
     true
 }
 
+#[inline]
 pub(crate) fn try_fwd_col_pass(
     txfm_type_col: i32,
     input: &[i16],
@@ -7778,6 +7793,7 @@ fn fwd_col_pass_scalar(
 /// contiguous stores (`output[c*row_n + r..r+8]` — output is column-major).
 /// Returns `false` → caller runs the scalar loop.
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_fwd_row_pass(
     txfm_type_row: i32,
     buf: &[i32],
@@ -8108,6 +8124,7 @@ fn inv_col_pass_core(
 /// bd8/u8 counterpart of [`try_inv_col_pass`]. `bd` is fixed at 8, so the pixel
 /// ceiling is 255 and the column clamp is 16 (`(8+6).max(16)`).
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn try_inv_col_pass_u8(
     txfm_type_col: i32,
     buf: &[i32],

@@ -237,6 +237,7 @@ fn block_error_impl_v3(
 /// sum on every reachable input (residuals are `|v| <= 4095` at bd12), and
 /// bug-compatible with real `aomenc` even where it does wrap (`i16::MIN`
 /// pairs). See `_v3` for the per-shape semantics.
+#[inline]
 pub fn sum_squares_2d_i16_simd(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(

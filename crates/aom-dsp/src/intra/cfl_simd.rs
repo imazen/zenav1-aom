@@ -58,6 +58,7 @@ pub(crate) fn cfl_predict_row_scalar(
 
 /// Dispatch entry: `dst[r][i] = clip(dst[r][i] + scaled(ac[r][i]))` for
 /// `r < height`, `i < width`.
+#[inline]
 pub(crate) fn cfl_predict_scaled_add(
     ac: &[i16],
     dst: &mut [u16],

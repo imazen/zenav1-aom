@@ -1,5 +1,20 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## PGO harvest: source-level capture of the layout win (−6% ship, −2.2% plain) (2026-09-18)
+
+Diverse-corpus PGO (10 cells) bound measured at **−7.4% wall**; harvested
+into source: 41 `#[inline]`/`#[inline(always)]` hints on fns LLVM inlined
+under PGO (txfm_rd_in_plane_intra, intra-predict chain, try_* dispatch,
+OdEcEnc::normalize, ...) + `#[cold]` on scalar SIMD-fallback twins.
+Plain-release build now **−2.2%**; new opt-in `[profile.ship]`
+(lto="fat", codegen-units=1) reaches **−6.0%** — ~80% of the PGO bound
+with no profile machinery. Byte-identical, deterministic 1w/4w,
+466/466 dsp tests, aarch64 clean. Profile notes: root-workspace
+profiles don't propagate to consumers — zenavif-side `lto="fat"` is
+the documented consumer lever; `#[inline(always)]` errors on
+`#[target_feature]` fns. Full record:
+benchmarks/encoder_serial_residuals_2026-09-17.md batch 6-7.
+
 ## LR u8 kernel twins landed + measured: committed-plane swap evaluated NO (2026-09-18)
 
 The kernel-twin program the prior entry named as the next lever is now

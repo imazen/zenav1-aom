@@ -1164,6 +1164,7 @@ fn right_signed_shift_i64(value: i64, n: i32) -> i64 {
 /// (`tx_scale == 2`). `coeff` / `dqcoeff` must each hold at least
 /// `av1_get_max_eob(tx_size) = txb_wide * txb_high` entries; only that prefix is
 /// read (matching C's `buffer_length`). Returns `(dist, sse)`.
+#[inline(always)]
 pub fn dist_block_tx_domain(coeff: &[i32], dqcoeff: &[i32], tx_size: usize, bd: u8) -> (i64, i64) {
     let n = txb_wide(tx_size) * txb_high(tx_size);
     let (dist, sse) = if bd > 8 {

@@ -573,6 +573,7 @@ pub fn wiener_convolve_add_src_scalar(
 /// arithmetic; `temp` is fully written before it is read, so a reused
 /// buffer is byte-identical to a fresh zeroed one).
 #[allow(clippy::too_many_arguments)]
+#[cold]
 fn wiener_scalar_into<P: crate::restore::pick::LrPixel>(
     src: &[P],
     src_off: usize,

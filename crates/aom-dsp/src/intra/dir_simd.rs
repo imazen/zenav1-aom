@@ -1062,6 +1062,7 @@ pub(crate) fn z1_rows(
 /// the assembled edge is downcast to u8 once per call and the i16-lane
 /// results are stored straight into the u16 dst (no `packus` — the values
 /// are the identical `rpo2_5` outputs, already pixel-domain).
+#[inline(always)]
 pub(crate) fn z1_rows_u8e(
     dst: &mut [u16],
     stride: usize,

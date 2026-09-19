@@ -1386,6 +1386,7 @@ const SGRPROJ_PRJ_BITS: i32 = 7;
 /// against the source. The lowbd and highbd forms round differently
 /// (ROUND_POWER_OF_TWO vs add-half-then-shift with `+d - s` recomposition) —
 /// Scalar tier = the transcribed port, verbatim.
+#[cold]
 fn pixel_proj_error_scalar<P: LrPixel>(
     src: &[P],
     src_off: usize,
@@ -2232,6 +2233,7 @@ fn calc_proj_params_impl_v3<P: LrPixel>(
 /// Scalar tier (and non-x86 fallback) for [`calc_proj_params`] — the verbatim
 /// C transcription.
 #[allow(clippy::too_many_arguments)]
+#[cold]
 fn calc_proj_params_impl_scalar<P: LrPixel>(
     _t: archmage::ScalarToken,
     src: &[P],
@@ -2704,6 +2706,7 @@ impl<'a> PlaneCtx<'a> {
 
     /// `sse_restoration_unit` (pickrst.c): SSE of source vs the trial dst
     /// over the unit rect.
+    #[inline(always)]
     fn sse_dst(&self, limits: (i32, i32, i32, i32)) -> i64 {
         let (v0, v1, h0, h1) = limits;
         let (w, h) = ((h1 - h0) as usize, (v1 - v0) as usize);

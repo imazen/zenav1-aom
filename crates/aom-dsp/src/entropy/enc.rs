@@ -94,6 +94,7 @@ impl OdEcEnc {
     }
 
     /// `od_ec_enc_normalize`
+    #[inline(always)]
     fn normalize(&mut self, mut low: u64, rng: u32) {
         if self.error {
             return;

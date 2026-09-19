@@ -105,6 +105,7 @@ impl ScreenContentDecision {
 /// `av1_count_colors_with_threshold` (intra_mode_search.c:383): counts the
 /// distinct 8-bit values of a block, bailing (returns `(false, thresh + 1)`)
 /// the moment the count exceeds `threshold`.
+#[inline(always)]
 fn count_colors_with_threshold(
     blk: &[u8],
     stride: usize,

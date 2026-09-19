@@ -224,6 +224,7 @@ impl AboveRef16<'_> {
 /// copy, H per-row fill) are memset/memcpy slice ops — the optimal form for a
 /// fill/copy, byte-trivially identical to the scalar loops.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn predict_highbd(
     mode: usize,
     dst: &mut [u16],
@@ -743,6 +744,7 @@ fn write_nd_intra_high(
 /// the top-left corner (z2 and V/H read into the pad, so `pad >= 2`). z1/z2/z3
 /// handle the non-cardinal zones; the cardinals fall to V (90) / H (180).
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn dr_predict_high(
     dst: &mut [u16],
     dst_stride: usize,
@@ -852,6 +854,7 @@ pub(crate) const FILTER_INTRA_TAPS: [[[i8; 8]; 8]; 5] = [
 /// later sub-blocks see earlier outputs. `above` is a `[-1..]` view (index 0 the
 /// top-left corner, `1+i` the above samples); `left` is `left[0..bh]`. `mode` is
 /// the `FILTER_INTRA_MODE` (0..5). Filter-intra is luma-only and `bw, bh ≤ 32`.
+#[inline(always)]
 pub fn filter_intra_predict_high(
     dst: &mut [u16],
     dst_stride: usize,
@@ -982,6 +985,7 @@ fn copy_edge<T: Copy>(dst: &mut [T], src: &[T], n: usize) {
 /// strided left-column gather stays scalar. `above_data`/`left_data` are the full
 /// [`NUM_INTRA_NEIGHBOUR_PIXELS`] buffers with the edge origin at [`DIR_PAD`].
 #[autoversion]
+#[inline(always)]
 fn assemble_dir_edges(recon: &[u16], g: &DirEdge, above_data: &mut [u16], left_data: &mut [u16]) {
     let DirEdge {
         ref_off,
@@ -1149,6 +1153,7 @@ pub fn build_directional_intra_high(
 /// arm — into owned local arrays, and returns before [`write_dir_intra_high`]
 /// touches the destination.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn build_directional_intra_high_in_place(
     buf: &mut [u16],
     off: usize,
@@ -1570,6 +1575,7 @@ pub fn build_filter_intra_high(
 /// read of `buf`, and the recursive predictor reads only its own three-row
 /// scratch plus the assembled edges — never the destination.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn build_filter_intra_high_in_place(
     buf: &mut [u16],
     off: usize,
@@ -1866,6 +1872,7 @@ fn dr_predict_u8(
 
 /// bd8 lowbd twin of [`assemble_dir_edges`]: reads `recon` as `u8`, writes `u8`
 /// reference edges (edge origin at [`DIR_PAD`]). `base == 128` at bd8.
+#[inline(always)]
 fn assemble_dir_edges_u8(recon: &[u8], g: &DirEdge, above_data: &mut [u8], left_data: &mut [u8]) {
     let DirEdge {
         ref_off,

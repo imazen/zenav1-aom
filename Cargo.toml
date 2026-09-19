@@ -17,6 +17,15 @@ edition = "2021"
 license = "AGPL-3.0-only OR LicenseRef-Imazen-Commercial"
 repository = "https://github.com/imazen/zenav1-aom"
 
+# Maximum-optimization opt-in for ship/gate binaries: whole-program inlining
+# that source-level hints can't reach. Measured ~-6% encode wall vs plain
+# release on the Gate-3 cell (see benchmarks/encoder_serial_residuals_2026-09-17.md).
+# Use via `cargo build --profile ship`; heavy build time, not for iteration.
+[profile.ship]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 # Release + debug symbols, for callgrind/perf profiling of the Gate-3 harness
 # (`cargo build --profile profiling -p aom-bench --bin gate3_profile`).
 [profile.profiling]

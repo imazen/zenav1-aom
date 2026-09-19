@@ -1155,6 +1155,7 @@ pub fn intrabc_predict_luma(
 /// 2-tap {64,64} average (bit-identical closed form of the intrabc bilinear
 /// convolve at FILTER_BITS=7).
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub fn intrabc_predict_chroma(
     recon: &[u16],
     block_off: usize,

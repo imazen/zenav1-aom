@@ -81,6 +81,7 @@ const SCALE: i32 = 1 << SMOOTH_WEIGHT_LOG2_SCALE; // 256
 /// Dispatch entry for the SMOOTH predictor (highbd `u16`). `above_row` is the
 /// `bw` above samples (`above.at(0..bw)`), `left` the `bh` left samples,
 /// `sw_w`/`sw_h` the `SMOOTH_WEIGHTS` slices for the block's width/height.
+#[inline(always)]
 pub(crate) fn smooth(
     dst: &mut [u16],
     stride: usize,
@@ -232,6 +233,7 @@ fn smooth_impl(
 // ===========================================================================
 
 /// Dispatch entry for SMOOTH_V. `below = left[bh-1]`, `sw_h` the height weights.
+#[inline(always)]
 pub(crate) fn smooth_v(
     dst: &mut [u16],
     stride: usize,
@@ -344,6 +346,7 @@ fn smooth_v_impl(
 // ===========================================================================
 
 /// Dispatch entry for SMOOTH_H. `right = above.at(bw-1)`, `sw_w` the width weights.
+#[inline(always)]
 pub(crate) fn smooth_h(
     dst: &mut [u16],
     stride: usize,

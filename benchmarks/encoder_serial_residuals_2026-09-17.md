@@ -247,3 +247,48 @@ source hints (partial recovery, zero machinery), (c) both — source hints
 for the crate, PGO flag for the ship binary. Training corpus needs
 widening (speeds, sizes, hbd, screen cells) before (a) is production
 quality; the single-cell profile already generalizes across size.
+
+## Batch 7 (2026-09-18): PGO harvest — source-level capture of the layout win
+
+Diverse training corpus (10 cells: photo/photo2/screen, 512+1024, s0/s3/s6,
+cq10/27/50) -> instrumented run per cell (`LLVM_PROFILE_FILE` per cell —
+the compiled-in default filename OVERWRITES between processes), merged,
+`-Cprofile-use` rebuild. Harvest = nm-diff on demangled names:
+
+- **Inlined-away fns** -> `#[inline]`/`#[inline(always)]` at source:
+  txfm_rd_in_plane_intra (9.5KB), predict_highbd, dr_predict_high,
+  filter_intra_predict_high, assemble_dir_edges{,_u8},
+  build_{directional,filter}_intra_high_in_place, smooth{,_v,_h},
+  cfl_predict_scaled_add, z1_rows_u8e, try_{fwd,inv}_* dispatch wrappers,
+  OdEcEnc::normalize, sum_squares_2d_i16_simd, sse_dst,
+  get_tx_mask_{intra,uv_intra}, pick_intra_angle_routine_sbuv,
+  dist_block_tx_domain, count_colors_with_threshold,
+  intrabc_predict_chroma — 41 fns.
+- **`#[cold]` on scalar SIMD-fallback twins**: pixel_proj_error_scalar,
+  calc_proj_params_impl_scalar, wiener_scalar_into.
+- Caveat recorded: `#[inline(always)]` is a hard error with
+  `#[target_feature]` — z2_col_full/z2_left_chunk8 stay `#[inline]`.
+- Not harvested: generic <u16> monomorph shrinkage (corpus has no hbd
+  cells — can't distinguish cold-from-coverage from cold-in-envelope).
+
+### Measured ladder (1024x1024 photo, cq27 s3, 1 worker, interleaved)
+
+| build | wall | delta | byte output |
+|---|---|---|---|
+| baseline | ~1986 ms | — | 81,017 B |
+| source hints only | ~1947 ms | -2.2% | identical |
+| + `lto = "thin"` | ~1925 ms | -3.2% | identical |
+| + `lto = "fat"` | ~1892 ms | -4.7% | identical |
+| + `lto = "fat"` + `codegen-units = 1` | ~1867 ms | **-6.0%** | identical |
+| full PGO (bound) | ~1848 ms | -7.4% | identical |
+
+Source-level machinery captures ~80% of the PGO bound. Landed: the 44
+attr hints (travel with the crate in every consumer build) + a new
+opt-in `[profile.ship]` (fat LTO + cgu=1) for gate/ship binaries —
+`release` stays fast for iteration. Profiles belong to the ROOT
+workspace, so `profile.ship` does not affect zenavif builds; the
+consumer-side recommendation is `lto = "fat"` in zenavif's release
+profile, optionally + `-Cprofile-use` for the last ~1.4%.
+
+Verification: 466/466 aom-dsp tests, aarch64 `cargo check` clean,
+byte-identical + deterministic across 1w/4w.

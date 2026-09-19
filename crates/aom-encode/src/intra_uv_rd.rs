@@ -1684,6 +1684,7 @@ pub struct UvModeResult {
 
 /// `pick_intra_angle_routine_sbuv` (intra_mode_search.c:496).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[inline(always)]
 fn pick_intra_angle_routine_sbuv(
     env: &UvRdEnv,
     recon_u: &mut [u16],
