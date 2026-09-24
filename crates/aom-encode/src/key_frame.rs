@@ -4246,9 +4246,16 @@ pub fn encode_key_frame_with(
         allow_intrabc: p.allow_intrabc,
         ..phase1_pack_cfg
     };
-    let mut recon2_y = src_y.clone();
-    let mut recon2_u = src_u.clone();
-    let mut recon2_v = src_v.clone();
+    // The repack's re-encodes must see the SAME recon the phase-1 winner walk
+    // produced — seeding from `src` left source pixels where replayed leaves
+    // never wrote their reconstruction, and an IntraBC leaf whose DV landed on
+    // such a region read `src` instead of the coded recon (residual collapses
+    // to 0 -> eob 0 -> a false skip_txfm flip on re-encode). Phase-2 encodes
+    // re-derive identical content at their own positions, so mutating the
+    // phase-1 buffer in place is sound; nothing reads `recon_*` after this.
+    let mut recon2_y = recon_y;
+    let mut recon2_u = recon_u;
+    let mut recon2_v = recon_v;
     let lr_restores = lr_outcome.as_ref().is_some_and(|o| {
         o.frame_restoration_type
             .iter()

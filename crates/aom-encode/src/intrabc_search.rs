@@ -1934,10 +1934,27 @@ const MAX_PREDICT_SF_TX_SIZE: [usize; 22] = [
     0, 5, 6, 1, 7, 8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 13, 14, 1, 1, 2, 2,
 ];
 
-/// `predict_skip_txfm` (tx_search.c:183) at `skip_txfm_level == 1` (DEFAULT_EVAL
-/// speed 0). `residual` is the block's src−pred (i16, row-major, stride `bw`).
-/// Returns true iff the block is predicted to skip (all coeffs below the
-/// per-bd threshold). `sse` is the residual SSE (`av1_pixel_diff_dist`).
+/// `predict_skip_levels[use_skip_flag_prediction][MODE_EVAL]`
+/// (speed_features.c:120-122 into rdopt_utils.h:584-587): the intra mode
+/// search — and therefore `rd_pick_intrabc_mode_sb` — runs under MODE_EVAL
+/// params (`set_mode_eval_params`, rdopt.c:4456). ALLINTRA's cascade sets
+/// `use_skip_flag_prediction = 2` at `speed >= 3` (speed_features.c:459;
+/// `init_tx_sf`'s default is 1 at :2459), so MODE_EVAL's level is 2 from
+/// speed 3 — where C's predicate is the FULL-SSE gate below with NO
+/// DCT-coeff check at all. GOOD's `sharpness == 3 → 0` (:1505) and RT's
+/// :2033 are unreachable in this envelope (usage is pinned ALLINTRA).
+pub fn skip_txfm_level_mode_eval(speed: i32) -> u32 {
+    const PREDICT_SKIP_LEVELS: [[u32; 3]; 3] = [[0, 0, 0], [1, 1, 1], [1, 2, 1]];
+    let use_skip_flag_prediction = if speed >= 3 { 2usize } else { 1 };
+    PREDICT_SKIP_LEVELS[use_skip_flag_prediction][1]
+}
+
+/// `predict_skip_txfm` (tx_search.c:183). `residual` is the block's src−pred
+/// (i16, row-major, stride `bw`); `sse` is the residual SSE
+/// (`av1_pixel_diff_dist` — visible-clipped, same as C). `skip_txfm_level` is
+/// `txfm_params->skip_txfm_level` for the current eval stage: `0` mirrors C's
+/// `skip_txfm_level &&` gate (never predicts), `1` is the DCT-check shape,
+/// `>= 2` is the SSE-only gate that returns immediately (tx_search.c:202-207).
 pub fn predict_skip_txfm(
     residual: &[i16],
     bw: usize,
@@ -1947,11 +1964,21 @@ pub fn predict_skip_txfm(
     qindex: i32,
     bd: i32,
     reduced_tx_set: bool,
+    skip_txfm_level: u32,
 ) -> bool {
+    if skip_txfm_level == 0 {
+        return false;
+    }
     let dc_q = i64::from(aom_dsp::quant::av1_dc_quant_qtx(qindex, 0, bd as u8));
-    let mse = sse / (bw as i64) / (bh as i64);
     let normalized_dc_q = dc_q >> 3;
     let mse_thresh = normalized_dc_q * normalized_dc_q / 8;
+    // `pred_err = (level >= 2) ? *dist : mse; if (pred_err > thresh) return 0;
+    //  else if (level >= 2) return 1;` — at level >= 2 the full SSE is compared
+    //  and the answer is taken HERE, before the per-subblock DCT check.
+    if skip_txfm_level >= 2 {
+        return sse <= mse_thresh;
+    }
+    let mse = sse / (bw as i64) / (bh as i64);
     if mse > mse_thresh {
         return false;
     }
@@ -2117,6 +2144,12 @@ pub struct IntrabcVarTxKnobs {
     pub use_transform_domain_distortion: u8,
     /// DEFAULT_EVAL `txfm_params->tx_domain_dist_threshold`.
     pub tx_domain_dist_threshold: u32,
+    /// MODE_EVAL `txfm_params->skip_txfm_level`
+    /// (`predict_skip_levels[use_skip_flag_prediction][MODE_EVAL]` —
+    /// [`skip_txfm_level_mode_eval`]): 1 at allintra speeds 0..=2, 2 at
+    /// speed >= 3, where `predict_skip_txfm`'s gate is the full SSE with no
+    /// DCT-coeff check.
+    pub skip_txfm_level: u32,
     /// DEFAULT_EVAL `txfm_params->predict_dc_level` (1 at allintra speed >= 6).
     pub predict_dc_level: u32,
     /// `txfm_params->prune_2d_txfm_mode` at DEFAULT_EVAL (the raw sf: PRUNE_1
@@ -2472,6 +2505,7 @@ pub fn rd_pick_intrabc_mode_sb(
                 a.qindex,
                 i32::from(a.bd),
                 a.reduced_tx_set_used,
+                a.vartx.skip_txfm_level,
             );
 
         // --- av1_txfm_search (tx_search.c:3795) with ref_best_rd = INT64_MAX

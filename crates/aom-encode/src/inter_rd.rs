@@ -96,6 +96,9 @@ pub struct InterLeafArgs<'a> {
     pub skip_costs: &'a [[i32; 2]; 3],
     /// `av1_get_skip_txfm_context(xd)`.
     pub skip_ctx: usize,
+    /// MODE_EVAL `txfm_params->skip_txfm_level` for `predict_skip_txfm`
+    /// ([`crate::intrabc_search::skip_txfm_level_mode_eval`]).
+    pub skip_txfm_level: u32,
     /// `av1_get_intra_inter_context(xd)`.
     pub intra_inter_ctx: i32,
     /// The six `av1_get_pred_context_single_ref_pN` contexts.
@@ -474,6 +477,7 @@ fn rd_pick_inter_mode_sb_inner(
         a.qindex,
         i32::from(a.bd),
         a.reduced_tx_set_used,
+        a.skip_txfm_level,
     );
 
     let mut best: Option<InterBest> = None;

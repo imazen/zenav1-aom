@@ -862,9 +862,12 @@ impl SpeedFeatures {
         //   cells), `prune_ext_part_using_split_info = 1` (:446, 4-way split-info
         //   prune — HORZ_4/VERT_4 only, byte no-op on this grid), `adaptive_txb
         //   _search_level = 2` (:458, already 2 since speed 1), `use_skip_flag
-        //   _prediction = 2` (:459, vestigial — indexes `predict_skip_levels` into
-        //   `winner_mode_params->skip_txfm_level`, a table the port's non-winner-mode
-        //   intra tx path does not consume) and `use_rd_based_breakout_for_intra_tx
+        //   _prediction = 2` (:459 — LIVE via `predict_skip_levels[2] =
+        //   {1,2,1}`: `skip_txfm_level[MODE_EVAL]` = 2, which
+        //   `predict_skip_txfm` consumes in the IntraBC/inter txfm search as
+        //   the full-SSE gate — consumed as
+        //   `intrabc_search::skip_txfm_level_mode_eval`, NOT re-typed here)
+        //   and `use_rd_based_breakout_for_intra_tx
         //   _search` (:460, intra tx-size-search early-exit — byte no-op on this grid).
         if speed >= 3 {
             // mv_sf (:449) — LIVE on screen-detected intrabc frames (KB-41).
