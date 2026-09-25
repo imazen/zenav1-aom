@@ -187,6 +187,7 @@ non-idle box — take speed from `encbench`, quality/rate from the sweep.
 | command | what | wall |
 |---|---|---|
 | `just gate-landing` | upstream-check + ci-yaml + nextest both dispatch modes + census + whereat + api-doc | ~11 min |
+| `just fmt` / `fmt-check` | rustfmt the whole tree (workspace + apidoc + xbench) / the gate-landing + CI check | 2 s |
 | `just upstream-check` / `upstream-instrument` / `upstream-pristine` | oracle pristine? / apply a versioned trace set / revert (both relink) | 1 s / ~30 s / ~30 s |
 | `just gate-encode` | aom-encode + aom-bench integration targets + census (fast pre-check) | ~6 min |
 | `just api-doc-check` | public-API snapshots current (pinned `nightly-2026-09-09`) + crates.io scan | 7 s |

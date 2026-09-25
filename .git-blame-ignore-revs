@@ -1,0 +1,3 @@
+# Whole-tree rustfmt commits; `git blame --ignore-revs-file .git-blame-ignore-revs`
+# (or `git config blame.ignoreRevsFile .git-blame-ignore-revs` once).
+0021212f80c7562632b2e30457a393d625734771

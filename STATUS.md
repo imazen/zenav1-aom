@@ -1,5 +1,16 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Merged to main; branches pruned; the tree is rustfmt-clean and gated (2026-09-25)
+
+`perf/gate3-txfm-i16-batch` fast-forwarded `origin/main` `1434bc3` -> `75b5abc` (171
+commits) after the full landing gate; the push started the first CI run this code has
+had. Every merged branch is deleted locally and on origin (the five `integrate/*`,
+`maint/*`, `perf/*` and `handoff/*` refs plus `fix/issue-8-highbd-inter-envelope`,
+superseded by `74e45c5`); only `main` and the archival `preserve/*` remain. Then one
+whole-tree `cargo fmt --all` commit (333 files; `.git-blame-ignore-revs` lists it),
+with `just fmt` / `fmt-check`, `fmt-check` as the second step of `gate-landing`, and a
+`rustfmt --check` CI job that fails in seconds ahead of the 20-minute legs.
+
 ## KB-69: the branch's 4x peak-memory growth is CLOSED (222 -> 66.7 MB at 1024² s0 vs main's 54.5) and the estimate is speed-, chroma- and thread-aware (2026-09-24)
 
 The bisected estimate-contract break (`e1a97fe`) is closed by re-fitting the model, not
