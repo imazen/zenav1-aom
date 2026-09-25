@@ -10,24 +10,24 @@
 ## summary
 #
 #   pub modules                                80
-#   pub types (struct/enum/trait/alias)       285
+#   pub types (struct/enum/trait/alias)       287
 #   pub consts/statics                        639
 #   free functions                            625
-#   inherent methods                          962
-#   struct fields                            1945
+#   inherent methods                          975
+#   struct fields                            1957
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1120
-#   auto-trait-complete types                 263
+#   trait roster entries (type × trait)      1130
+#   auto-trait-complete types                 265
 #   auto-trait exceptions                      10
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4681
+#   aom_encode                     4708
 #   u16                               4
 #   u8                                4
 
-## items (4675 lines)
+## items (4702 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -226,7 +226,7 @@ pub aom_encode::encode_sb::LeafWinner::palette_y: core::option::Option<aom_encod
 pub aom_encode::encode_sb::LeafWinner::raw_rdstats: aom_encode::partition::PartRdStats
 pub aom_encode::encode_sb::LeafWinner::ref_frame0: i8
 pub aom_encode::encode_sb::LeafWinner::ref_frame1: i8
-pub aom_encode::encode_sb::LeafWinner::replay: core::option::Option<aom_encode::encode_sb::LeafEncodeOut>
+pub aom_encode::encode_sb::LeafWinner::replay: core::option::Option<alloc::boxed::Box<aom_encode::encode_sb::RetainedLeaf>>
 pub aom_encode::encode_sb::LeafWinner::skip_txfm: bool
 pub aom_encode::encode_sb::LeafWinner::tx_size: usize
 pub aom_encode::encode_sb::LeafWinner::tx_type_map: alloc::vec::Vec<u8>
@@ -234,6 +234,18 @@ pub aom_encode::encode_sb::LeafWinner::use_filter_intra: bool
 pub aom_encode::encode_sb::LeafWinner::use_intrabc: bool
 pub aom_encode::encode_sb::LeafWinner::uv_edge_filter_type: i32
 pub aom_encode::encode_sb::LeafWinner::uv_mode: usize
+pub aom_encode::encode_sb::RetainedLeaf::bsize: u8
+pub aom_encode::encode_sb::RetainedLeaf::is_chroma_ref: bool
+pub aom_encode::encode_sb::RetainedLeaf::mi_col: i32
+pub aom_encode::encode_sb::RetainedLeaf::mi_row: i32
+pub aom_encode::encode_sb::RetainedLeaf::store_y: bool
+pub aom_encode::encode_sb::RetainedTxb::dc_sign_ctx: u8
+pub aom_encode::encode_sb::RetainedTxb::eob: u16
+pub aom_encode::encode_sb::RetainedTxb::n: u16
+pub aom_encode::encode_sb::RetainedTxb::q_off: u32
+pub aom_encode::encode_sb::RetainedTxb::tx_type: u8
+pub aom_encode::encode_sb::RetainedTxb::txb_entropy_ctx: u8
+pub aom_encode::encode_sb::RetainedTxb::txb_skip_ctx: u8
 pub aom_encode::encode_sb::SbEncodeEnv::base_uv: usize
 pub aom_encode::encode_sb::SbEncodeEnv::base_y: usize
 pub aom_encode::encode_sb::SbEncodeEnv::bd: u8
@@ -2902,6 +2914,19 @@ pub fn aom_encode::encode_sb::LeafWinner::clone(&self) -> aom_encode::encode_sb:
 pub fn aom_encode::encode_sb::LeafWinner::dv_cell(&self) -> aom_encode::intrabc_search::DvCell
 pub fn aom_encode::encode_sb::LeafWinner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::encode_sb::LeafWinner::off_frame_placeholder(usize) -> Self
+pub fn aom_encode::encode_sb::RetainedLeaf::assert_fields_are_eq(&self)
+pub fn aom_encode::encode_sb::RetainedLeaf::clone(&self) -> aom_encode::encode_sb::RetainedLeaf
+pub fn aom_encode::encode_sb::RetainedLeaf::compact(&aom_encode::encode_sb::LeafEncodeOut) -> alloc::boxed::Box<Self>
+pub fn aom_encode::encode_sb::RetainedLeaf::eq(&self, &aom_encode::encode_sb::RetainedLeaf) -> bool
+pub fn aom_encode::encode_sb::RetainedLeaf::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::encode_sb::RetainedLeaf::heap_bytes(&self) -> usize
+pub fn aom_encode::encode_sb::RetainedLeaf::inflate(&self) -> aom_encode::encode_sb::LeafEncodeOut
+pub fn aom_encode::encode_sb::RetainedLeaf::inflate_into(&self, &mut aom_encode::encode_sb::LeafEncodeOut)
+pub fn aom_encode::encode_sb::RetainedLeaf::is_narrow(&self) -> bool
+pub fn aom_encode::encode_sb::RetainedTxb::assert_fields_are_eq(&self)
+pub fn aom_encode::encode_sb::RetainedTxb::clone(&self) -> aom_encode::encode_sb::RetainedTxb
+pub fn aom_encode::encode_sb::RetainedTxb::eq(&self, &aom_encode::encode_sb::RetainedTxb) -> bool
+pub fn aom_encode::encode_sb::RetainedTxb::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::assert_crop_dims_match_mi(&self, &str)
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::frame_min_dim(&self) -> i32
 pub fn aom_encode::encode_sb::SbEncodeEnv<'_>::frame_num_pixels(&self) -> i64
@@ -4493,6 +4518,8 @@ pub struct aom_encode::encode_intra::UvWinner<'a>
 pub struct aom_encode::encode_sb::DeltaQFrameCtx<'a>
 pub struct aom_encode::encode_sb::LeafEncodeOut
 pub struct aom_encode::encode_sb::LeafWinner
+pub struct aom_encode::encode_sb::RetainedLeaf
+pub struct aom_encode::encode_sb::RetainedTxb
 pub struct aom_encode::encode_sb::SbEncodeEnv<'a>
 pub struct aom_encode::encode_sb::SbVarCache
 pub struct aom_encode::encode_sb::SsimRdmult<'a>
@@ -4705,7 +4732,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (245 types)
+## trait impls (247 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4746,6 +4773,8 @@ aom_encode::encode_intra::UvWinner<'a>: Clone, Copy, Debug, TrivialClone
 aom_encode::encode_sb::DeltaQFrameCtx<'a>: Clone, Copy, TrivialClone
 aom_encode::encode_sb::LeafEncodeOut: Clone, Debug, Eq, PartialEq
 aom_encode::encode_sb::LeafWinner: Clone, Debug
+aom_encode::encode_sb::RetainedLeaf: Clone, Debug, Eq, PartialEq
+aom_encode::encode_sb::RetainedTxb: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
 aom_encode::encode_sb::SbTree: Clone, Debug
 aom_encode::encode_sb::SbVarCache: Clone, Debug, Default, Eq, PartialEq
 aom_encode::encode_sb::SsimRdmult<'a>: Clone, Copy, TrivialClone
@@ -4955,7 +4984,7 @@ u8: aom_encode::lf_search::LfTrialPixel, aom_encode::temporal_filter::TfPixel, a
 
 ## auto traits
 
-263 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+265 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::encode_sb::TileCtxState: !Freeze !RefUnwindSafe !Sync
 aom_encode::inter_pred_enc::PixelsMut<'a>: !UnwindSafe
 aom_encode::intra_uv_rd::CflPredict<'a>: !UnwindSafe

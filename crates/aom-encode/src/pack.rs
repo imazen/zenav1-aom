@@ -921,8 +921,12 @@ pub fn pack_leaf(
     // SEARCH left it — both this walk and the search's SB-root walk model
     // C's single OUTPUT_ENABLED pass, whose eob-0 resets go to the frame map,
     // never back into ctx (see encode_b_intra_dry's doc).
-    let out = match winner.replay.take() {
-        Some(mut retained) => {
+    // The retained form stays on the winner (it is read again by the
+    // phase-2 pack pass); only a fallback-produced payload is stored below.
+    let replayed = winner.replay.is_some();
+    let out = match winner.replay.as_deref() {
+        Some(compact) => {
+            let mut retained = compact.inflate();
             // A retained payload that does not name THIS leaf means the tree
             // was rebuilt after the encode walk — silently emitting it would
             // write another block's coefficients at this position.
@@ -1225,8 +1229,8 @@ pub fn pack_leaf(
     // re-encoded ordinary-intra leaf (replay was `None` this pass) becomes
     // replayable there. The coeff writes above only read `out`; the ctx
     // fields `stamp_leaf_ctx` rewrote are recomputed-identical per pass.
-    if !winner.is_inter && !winner.use_intrabc {
-        winner.replay = Some(out);
+    if !replayed && !winner.is_inter && !winner.use_intrabc {
+        winner.replay = Some(crate::encode_sb::RetainedLeaf::compact(&out));
     }
 
     // ---- 5. neighbour-grid stamp for the next block's Y-mode/skip ctx. ----

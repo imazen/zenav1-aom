@@ -1340,7 +1340,7 @@ const ESTIMATE_FIXED_BYTES: u64 = 1 << 20;
 /// and everything else keyed on [`KeyFrameConfig::padded_plane_geometry`].
 /// MEASURED 2026-09-24 from the aspect-extreme pair (8320x64 vs 64x8320:
 /// identical pixel count, 2.10M more padded samples on the tall cell,
-/// 53.9 MB more peak) at **25.7 B/padded sample**; 32 is the bound.
+/// 30.2 MB more peak) at **14.4 B/padded sample**; 16 is the bound.
 ///
 /// **History, so nobody re-derives it:** the 2026-09-08 fit was a single
 /// padded-sample term at 64 B (observed 21.5..37.2). Between 2026-09-15 and
@@ -1353,33 +1353,45 @@ const ESTIMATE_FIXED_BYTES: u64 = 1 << 20;
 /// (225 MB process peak): retained plane outcomes 72 MB, the y/u/v walk
 /// outputs 65 MB, the partition tree 25 MB. The estimate under-stated
 /// 256x256 by 1.8x for nine days; `encode_limits_and_estimate` caught it the
-/// first time the workspace gate ran on the branch.
-const ESTIMATE_BYTES_PER_PADDED_SAMPLE: u64 = 32;
+/// first time the workspace gate ran on the branch. The retention was then
+/// COMPACTED (`encode_sb::RetainedLeaf`: 12-byte txb headers + one `i16`
+/// slab of the eob > 0 levels, nothing else) — 1024x1024 `--cpu-used 0` on
+/// noise went 222 MB -> 66.7 MB against `origin/main`'s 54.5 MB on the
+/// identical cell, and 256x256 `--cpu-used 6` 11.3 MB -> 3.1 MB against
+/// main's 3.0 MB. What remains above main is the quantized coefficients
+/// themselves, which is the price of replaying the pack instead of
+/// re-encoding it.
+const ESTIMATE_BYTES_PER_PADDED_SAMPLE: u64 = 16;
 
-/// Bytes per coded PIXEL retained for the frame, by speed band. MEASURED
-/// 2026-09-24 (`(peak - fixed) / pixels`, 4:2:0, bd8): `--cpu-used` 0/3 =
-/// 197..211 at 256²..1024², 6 = 156..179, 9 = 104..144. The full-RD band
-/// (<= 5) keeps winner/tx-type maps the fast bands drop. Bounds with ~1.4x
-/// margin: 240 + chroma term below for <= 5, 180 + chroma for >= 6.
+/// Bytes per coded PIXEL retained for the frame, by speed band, after the
+/// padded term is taken out. MEASURED 2026-09-24 with the compact retention
+/// (`(peak - fixed - padded*16) / pixels`, bd8, noise content = the most
+/// leaves and the fullest eobs): `--cpu-used` 0/3 = 33..46 (256²..1024²
+/// 4:2:0), 6 = 11..27 (4:2:0), 33 (4:4:4 at 1024²), 9 = 5..11. The full-RD
+/// band (<= 5) keeps winner/tx-type maps the fast bands drop. Bounds with a
+/// >= 1.28x per-cell margin: 56 + chroma term below for <= 5, 32 + chroma
+/// for >= 6.
 #[allow(non_snake_case)]
 const fn ESTIMATE_LEAF_BYTES_PER_PIXEL(cpu_used: i32) -> u64 {
     if cpu_used <= 5 {
-        240
+        56
     } else {
-        180
+        32
     }
 }
 
 /// The chroma share of the per-pixel term, per coded sample-per-pixel
 /// (doubled: 4:2:0 = 3, 4:4:4 = 6). MEASURED at 1024² `--cpu-used 6`: 4:2:0
-/// 160 B/px against 4:4:4 207 B/px, i.e. ~31 B per extra sample-per-pixel.
-/// 40 x (spp*2)/2: 4:2:0 adds 60, 4:4:4 adds 120, mono adds 40.
-const ESTIMATE_LEAF_BYTES_PER_SAMPLE_X2: u64 = 40;
+/// 23.7 B/px against 4:4:4 32.9 B/px, i.e. ~6 B per extra sample-per-pixel.
+/// 8 x (spp*2)/2: 4:2:0 adds 12, 4:4:4 adds 24, mono adds 8.
+const ESTIMATE_LEAF_BYTES_PER_SAMPLE_X2: u64 = 8;
 
-/// Per additional worker (`threads > 1`): the per-band tile contexts and
-/// scratch each worker owns. MEASURED 2026-09-24 at 1024² (see the
-/// `encode_limits_and_estimate` grid, cells `1024 s3 t4` / `512 s6 t8`).
-const ESTIMATE_BYTES_PER_EXTRA_WORKER: u64 = 4 << 20;
+/// Per additional worker (`threads > 1`). MEASURED 2026-09-24 at 1024² s3
+/// x4 and 512² s6 x8 (`encode_limits_and_estimate` grid): the threaded peak
+/// is byte-identical to the serial one — the bands hand out slices of the
+/// same buffers and the peak sits in a serial phase — so this term is
+/// headroom for a future per-worker context, not a fit.
+const ESTIMATE_BYTES_PER_EXTRA_WORKER: u64 = 1 << 20;
 
 /// The most the estimate may exceed a MEASURED peak by, as a multiple, before
 /// `encode_limits_and_estimate` fails it. Without a ceiling an "upper bound"

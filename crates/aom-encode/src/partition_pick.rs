@@ -5765,7 +5765,7 @@ fn nonrd_leaf_pick_and_encode(
         // intrabc winners carry no replay contract (different pack side
         // effects); they fall back to the re-encode.
         if !w.is_inter && !w.use_intrabc {
-            w.replay = Some(out);
+            w.replay = Some(crate::encode_sb::RetainedLeaf::compact(&out));
         }
         grid.stamp(
             mi_row,
@@ -6174,7 +6174,7 @@ fn nonrd_leaf_pick_and_encode(
     // Retain the OUTPUT_ENABLED payload for `pack_leaf`'s replay arm —
     // see the full-RD arm above.
     if !w.is_inter && !w.use_intrabc {
-        w.replay = Some(out);
+        w.replay = Some(crate::encode_sb::RetainedLeaf::compact(&out));
     }
     grid.stamp(
         mi_row,

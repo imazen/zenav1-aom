@@ -376,7 +376,17 @@ pub struct LeafWinner {
     /// leaves it `None` and the pack falls back to the re-encode. See
     /// pack.rs's module docs for the both-walks-identical invariant this
     /// replay rests on.
-    pub replay: Option<LeafEncodeOut>,
+    ///
+    /// Stored COMPACT ([`RetainedLeaf`]): the pack reads only `tx_type`,
+    /// `eob`, the three ctx bytes and `qcoeff` of each txb, so the retained
+    /// form keeps exactly that — no `dqcoeff`, no `ta`/`tl`, no 256-byte
+    /// inline pair on a 4x4, nothing at all for an eob-0 txb, and one heap
+    /// slab per leaf instead of one `Vec` per plane. MEASURED 2026-09-24 at
+    /// 1024x1024 `--cpu-used 0` on noise content (85k leaves, mostly 4x4):
+    /// the `LeafEncodeOut` form held ~140 MB at peak (KB-69); see the KB for
+    /// the compact number. `Box`ed so `LeafWinner` — cloned per partition
+    /// candidate — carries a pointer, not a ~300-byte inline `Option`.
+    pub replay: Option<Box<RetainedLeaf>>,
 }
 
 impl LeafWinner {
@@ -852,6 +862,231 @@ pub struct LeafEncodeOut {
     pub y: EncodeIntraPlaneOutcome,
     pub u: Option<EncodeIntraPlaneOutcome>,
     pub v: Option<EncodeIntraPlaneOutcome>,
+}
+
+/// One retained txb: what `pack_leaf` and `stamp_leaf_ctx` read of a
+/// [`crate::encode_intra::TxbEncode`], and nothing else. 12 bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetainedTxb {
+    pub tx_type: u8,
+    pub txb_entropy_ctx: u8,
+    pub txb_skip_ctx: u8,
+    pub dc_sign_ctx: u8,
+    pub eob: u16,
+    /// Coefficient area (`txb_wide * txb_high`); `0` on the skip arm.
+    pub n: u16,
+    /// Offset of this txb's raster `qcoeff[..n]` in [`RetainedLeaf::q`];
+    /// meaningful only when `eob > 0` (an eob-0 txb keeps no coefficients:
+    /// `write_coeffs_txb_full` and `txb_entropy_context` both return before
+    /// reading any).
+    pub q_off: u32,
+}
+
+/// The compact form of a [`LeafEncodeOut`] kept on [`LeafWinner::replay`]
+/// for the frame (KB-69). Round-trips through [`RetainedLeaf::inflate_into`]
+/// to everything the pack consumes; `dqcoeff` and the `ta`/`tl` context
+/// tails come back zeroed because no pack-side reader touches them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedLeaf {
+    pub mi_row: i32,
+    pub mi_col: i32,
+    pub bsize: u8,
+    pub is_chroma_ref: bool,
+    pub store_y: bool,
+    has_uv: bool,
+    ny: u16,
+    nu: u16,
+    nv: u16,
+    /// `y ‖ u ‖ v` txb headers.
+    txbs: Box<[RetainedTxb]>,
+    /// Concatenated raster `qcoeff` of every eob > 0 txb — `i16` whenever
+    /// every level fits (always at bd8; usually at bd10), `i32` otherwise.
+    q: RetainedSlab,
+}
+
+/// The coefficient slab of a [`RetainedLeaf`], narrowed when it can be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RetainedSlab {
+    I16(Box<[i16]>),
+    I32(Box<[i32]>),
+}
+
+impl RetainedSlab {
+    fn len(&self) -> usize {
+        match self {
+            RetainedSlab::I16(v) => v.len(),
+            RetainedSlab::I32(v) => v.len(),
+        }
+    }
+    fn bytes(&self) -> usize {
+        match self {
+            RetainedSlab::I16(v) => v.len() * 2,
+            RetainedSlab::I32(v) => v.len() * 4,
+        }
+    }
+    /// Widen `[off..off + n]` into `dst`.
+    fn read_into(&self, off: usize, n: usize, dst: &mut [i32]) {
+        match self {
+            RetainedSlab::I16(v) => {
+                for (d, &x) in dst[..n].iter_mut().zip(&v[off..off + n]) {
+                    *d = x as i32;
+                }
+            }
+            RetainedSlab::I32(v) => dst[..n].copy_from_slice(&v[off..off + n]),
+        }
+    }
+}
+
+impl RetainedLeaf {
+    /// Compact `out`. Two heap allocations (headers + coefficient slab).
+    pub fn compact(out: &LeafEncodeOut) -> Box<Self> {
+        let planes = [Some(&out.y), out.u.as_ref(), out.v.as_ref()];
+        let n_txbs: usize = planes.iter().flatten().map(|p| p.txbs.len()).sum();
+        let n_q: usize = planes
+            .iter()
+            .flatten()
+            .flat_map(|p| p.txbs.iter())
+            .filter(|t| t.eob > 0)
+            .map(|t| t.qcoeff().len())
+            .sum();
+        let narrow = planes
+            .iter()
+            .flatten()
+            .flat_map(|p| p.txbs.iter())
+            .filter(|t| t.eob > 0)
+            .flat_map(|t| t.qcoeff().iter())
+            .all(|&v| i16::try_from(v).is_ok());
+        let mut txbs = Vec::with_capacity(n_txbs);
+        let mut q16: Vec<i16> = Vec::with_capacity(if narrow { n_q } else { 0 });
+        let mut q32: Vec<i32> = Vec::with_capacity(if narrow { 0 } else { n_q });
+        let mut counts = [0u16; 3];
+        for (pi, plane) in planes.iter().enumerate() {
+            let Some(plane) = plane else { continue };
+            counts[pi] = plane.txbs.len() as u16;
+            for t in plane.txbs.iter() {
+                let qc = t.qcoeff();
+                let q_off = (if narrow { q16.len() } else { q32.len() }) as u32;
+                if t.eob > 0 {
+                    if narrow {
+                        q16.extend(qc.iter().map(|&v| v as i16));
+                    } else {
+                        q32.extend_from_slice(qc);
+                    }
+                }
+                txbs.push(RetainedTxb {
+                    tx_type: t.tx_type as u8,
+                    txb_entropy_ctx: t.txb_entropy_ctx,
+                    txb_skip_ctx: t.txb_skip_ctx as u8,
+                    dc_sign_ctx: t.dc_sign_ctx as u8,
+                    eob: t.eob,
+                    n: qc.len() as u16,
+                    q_off,
+                });
+            }
+        }
+        Box::new(RetainedLeaf {
+            mi_row: out.mi_row,
+            mi_col: out.mi_col,
+            bsize: out.bsize as u8,
+            is_chroma_ref: out.is_chroma_ref,
+            store_y: out.store_y,
+            has_uv: out.u.is_some(),
+            ny: counts[0],
+            nu: counts[1],
+            nv: counts[2],
+            txbs: txbs.into_boxed_slice(),
+            q: if narrow {
+                RetainedSlab::I16(q16.into_boxed_slice())
+            } else {
+                RetainedSlab::I32(q32.into_boxed_slice())
+            },
+        })
+    }
+
+    /// Rebuild the pack's working form into `out`, reusing its `TxbsVec`
+    /// allocations (they return to the pool on clear/drop anyway).
+    pub fn inflate_into(&self, out: &mut LeafEncodeOut) {
+        use crate::encode_intra::{EncodeIntraPlaneOutcome, TxbEncode, TxbsVec, coeff_pair};
+        static ZEROS: [i32; 1024] = [0; 1024];
+        out.mi_row = self.mi_row;
+        out.mi_col = self.mi_col;
+        out.bsize = self.bsize as usize;
+        out.is_chroma_ref = self.is_chroma_ref;
+        out.store_y = self.store_y;
+        let mut wide = [0i32; 1024];
+        let mut fill = |plane: &mut EncodeIntraPlaneOutcome, hdrs: &[RetainedTxb], q: &RetainedSlab| {
+            plane.txbs.clear();
+            plane.txbs.reserve(hdrs.len());
+            for h in hdrs {
+                let n = h.n as usize;
+                let coeffs = if h.eob > 0 {
+                    q.read_into(h.q_off as usize, n, &mut wide);
+                    coeff_pair(&wide[..n], &ZEROS[..n])
+                } else {
+                    Default::default()
+                };
+                plane.txbs.push(TxbEncode {
+                    tx_type: h.tx_type as usize,
+                    eob: h.eob,
+                    txb_entropy_ctx: h.txb_entropy_ctx,
+                    coeffs,
+                    txb_skip_ctx: h.txb_skip_ctx as usize,
+                    dc_sign_ctx: h.dc_sign_ctx as usize,
+                });
+            }
+            plane.ta = [0; 32];
+            plane.tl = [0; 32];
+        };
+        let (ny, nu, nv) = (self.ny as usize, self.nu as usize, self.nv as usize);
+        fill(&mut out.y, &self.txbs[..ny], &self.q);
+        if self.has_uv {
+            let u = out.u.get_or_insert_with(|| EncodeIntraPlaneOutcome {
+                txbs: TxbsVec::new(),
+                ta: [0; 32],
+                tl: [0; 32],
+            });
+            fill(u, &self.txbs[ny..ny + nu], &self.q);
+            let v = out.v.get_or_insert_with(|| EncodeIntraPlaneOutcome {
+                txbs: TxbsVec::new(),
+                ta: [0; 32],
+                tl: [0; 32],
+            });
+            fill(v, &self.txbs[ny + nu..ny + nu + nv], &self.q);
+        } else {
+            out.u = None;
+            out.v = None;
+        }
+    }
+
+    /// A fresh working form (three pooled `TxbsVec`s).
+    pub fn inflate(&self) -> LeafEncodeOut {
+        let mut out = LeafEncodeOut {
+            mi_row: 0,
+            mi_col: 0,
+            bsize: 0,
+            is_chroma_ref: false,
+            store_y: false,
+            y: crate::encode_intra::EncodeIntraPlaneOutcome {
+                txbs: crate::encode_intra::TxbsVec::new(),
+                ta: [0; 32],
+                tl: [0; 32],
+            },
+            u: None,
+            v: None,
+        };
+        self.inflate_into(&mut out);
+        out
+    }
+
+    /// Heap bytes this retained leaf owns (for the memory census).
+    pub fn heap_bytes(&self) -> usize {
+        self.txbs.len() * core::mem::size_of::<RetainedTxb>() + self.q.bytes()
+    }
+
+    /// `true` when the coefficient slab is stored narrow (`i16`).
+    pub fn is_narrow(&self) -> bool {
+        matches!(self.q, RetainedSlab::I16(_))
+    }
 }
 
 /// A picked partition tree (`pc_tree` slice): NONE leaves + SPLIT nodes +
@@ -1866,7 +2101,7 @@ fn finish_leaf_out(
     retain: bool,
 ) {
     if retain && !w.is_inter && !w.use_intrabc {
-        w.replay = Some(out);
+        w.replay = Some(RetainedLeaf::compact(&out));
     } else {
         leaves.push(out);
     }
@@ -3017,5 +3252,83 @@ fn encode_b_intrabc_coeff(
         },
         u: u_out,
         v: v_out,
+    }
+}
+
+#[cfg(test)]
+mod retained_leaf_tests {
+    use super::*;
+    use crate::encode_intra::{EncodeIntraPlaneOutcome, TxbEncode, TxbsVec, coeff_pair};
+
+    fn txb(tx_type: usize, eob: u16, n: usize, seed: i32) -> TxbEncode {
+        let q: Vec<i32> = (0..n as i32).map(|i| (i * 7 + seed) % 23 - 11).collect();
+        let dq: Vec<i32> = q.iter().map(|v| v * 5).collect();
+        TxbEncode {
+            tx_type,
+            eob,
+            txb_entropy_ctx: (seed & 7) as u8,
+            coeffs: if eob > 0 { coeff_pair(&q, &dq) } else { Default::default() },
+            txb_skip_ctx: (seed & 3) as usize,
+            dc_sign_ctx: (seed & 1) as usize,
+        }
+    }
+
+    fn plane(txbs: Vec<TxbEncode>) -> EncodeIntraPlaneOutcome {
+        let mut v = TxbsVec::new();
+        v.extend(txbs);
+        EncodeIntraPlaneOutcome { txbs: v, ta: [3; 32], tl: [4; 32] }
+    }
+
+    /// Everything the pack reads survives compaction; what it never reads
+    /// (`dqcoeff`, `ta`/`tl`) comes back zeroed; eob-0 txbs keep no slab.
+    #[test]
+    fn compact_inflate_round_trips_the_pack_visible_fields() {
+        let out = LeafEncodeOut {
+            mi_row: 12,
+            mi_col: 34,
+            bsize: 9,
+            is_chroma_ref: true,
+            store_y: true,
+            y: plane(vec![txb(3, 5, 16, 1), txb(0, 0, 16, 2), txb(9, 1024, 1024, 3)]),
+            u: Some(plane(vec![txb(1, 2, 16, 4)])),
+            v: Some(plane(vec![txb(1, 0, 16, 5)])),
+        };
+        let c = RetainedLeaf::compact(&out);
+        assert!(c.is_narrow(), "levels within i16 must be stored narrow");
+        assert_eq!(c.heap_bytes(), 5 * 12 + (16 + 1024 + 16) * 2);
+        assert_eq!(c.q.len(), 16 + 1024 + 16);
+        let back = c.inflate();
+        assert_eq!((back.mi_row, back.mi_col, back.bsize), (12, 34, 9));
+        assert!(back.is_chroma_ref && back.store_y);
+        let planes = [(&out.y, &back.y), (out.u.as_ref().unwrap(), back.u.as_ref().unwrap()), (out.v.as_ref().unwrap(), back.v.as_ref().unwrap())];
+        for (a, b) in planes {
+            assert_eq!(a.txbs.len(), b.txbs.len());
+            for (x, y) in a.txbs.iter().zip(b.txbs.iter()) {
+                assert_eq!((x.tx_type, x.eob, x.txb_entropy_ctx, x.txb_skip_ctx, x.dc_sign_ctx),
+                           (y.tx_type, y.eob, y.txb_entropy_ctx, y.txb_skip_ctx, y.dc_sign_ctx));
+                if x.eob > 0 {
+                    assert_eq!(x.qcoeff(), y.qcoeff());
+                    assert!(y.dqcoeff().iter().all(|&v| v == 0));
+                } else {
+                    assert!(y.qcoeff().is_empty());
+                }
+            }
+            assert_eq!(b.ta, [0; 32]);
+        }
+        // Mono: no chroma planes come back.
+        let mono = LeafEncodeOut { u: None, v: None, ..out.clone() };
+        let m = RetainedLeaf::compact(&mono).inflate();
+        assert!(m.u.is_none() && m.v.is_none());
+        // inflate_into reuses a previously populated working form.
+        let mut work = m;
+        c.inflate_into(&mut work);
+        assert_eq!(work, back);
+        // A level outside i16 forces the wide slab, and still round-trips.
+        let mut wide_out = out.clone();
+        let big = coeff_pair(&[40_000, -70_000, 3, 0], &[0, 0, 0, 0]);
+        wide_out.y.txbs[0] = TxbEncode { eob: 2, coeffs: big, ..txb(3, 2, 4, 1) };
+        let cw = RetainedLeaf::compact(&wide_out);
+        assert!(!cw.is_narrow());
+        assert_eq!(cw.inflate().y.txbs[0].qcoeff(), &[40_000, -70_000, 3, 0]);
     }
 }
