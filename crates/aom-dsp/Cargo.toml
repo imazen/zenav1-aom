@@ -66,6 +66,11 @@ avx512 = ["archmage/avx512", "magetypes/avx512"]
 # DEFAULT OFF and it must stay that way — a census build is NOT a timing build,
 # and `.github/workflows/winperf.yml` compiles its timing arms without it.
 census = []
+# Seed `aom_dsp::trace` from the documented `AOM_*` environment names lazily on
+# first query, so `AOM_TX_DBG=.. cargo test` keeps working for the in-tree
+# harness. DEFAULT OFF: a published crate never reads the environment on a
+# trace path; a host installs traces through `aom_dsp::trace::install`.
+trace-env = []
 rayon = ["dep:rayon"]
 
 [dev-dependencies]

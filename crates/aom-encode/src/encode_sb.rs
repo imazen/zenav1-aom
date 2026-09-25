@@ -633,9 +633,8 @@ impl SbEncodeEnv<'_> {
         // `x->rdmult = (x->rdmult * x->intra_sb_rdmult_modifier) >> 7`,
         // floored at 1 (:652-657).
         let rdm = crate::partition_pick::fold_intra_sb_rdmult(folded, sc.intra_modifier);
-        static SSM_DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *SSM_DBG.get_or_init(|| std::env::var_os("AOM_SSM_DBG").is_some()) {
-            eprintln!("[ssm-port] node({mi_row},{mi_col}) bsize={bsize} rdm={rdm}");
+        if aom_dsp::trace_on!(aom_dsp::trace::Trace::Ssm) {
+            aom_dsp::trace_out!("[ssm-port] node({mi_row},{mi_col}) bsize={bsize} rdm={rdm}");
         }
         rdm
     }
@@ -1326,7 +1325,7 @@ pub fn encode_b_intra_dry(
     crate::tx_search::copy_ctx(&mut left_y, &state.left_ectx[0][l0..l0 + mi_h], mi_h);
     if let Some(dbg) = crate::tx_search::tx_dbg_target() {
         if (mi_row, mi_col) == dbg {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[pseed] mi({},{}) bs{} a0={} l0={} above={:?} left={:?} oe={}",
                 mi_row, mi_col, bsize, a0, l0, above_y, left_y, output_enabled as u8,
             );
@@ -1396,7 +1395,7 @@ pub fn encode_b_intra_dry(
         tune: env.tune,
     };
     if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
-        eprintln!("[pcommit-pre] mi({},{}) bs{} ttm_pre={:?}", mi_row, mi_col, bsize,
+        aom_dsp::trace_out!("[pcommit-pre] mi({},{}) bs{} ttm_pre={:?}", mi_row, mi_col, bsize,
             winner.tx_type_map);
     }
     let y_out = if output_enabled {
@@ -1431,7 +1430,7 @@ pub fn encode_b_intra_dry(
             rh = rh.wrapping_mul(31).wrapping_add(v as u64);
             col.push_str(&format!(" {}", v));
         }
-        eprintln!(
+        aom_dsp::trace_out!(
             "[pcommit] mi({},{}) bs{} mode={} tx={} out={} rh={:x} rcol:{} ay={:?} ly={:?} ttm={:?} rdm={} ad={} fi={} ef={}",
             mi_row, mi_col, bsize, winner.mode, winner.tx_size, output_enabled as u8, rh, col,
             above_y, left_y, winner.tx_type_map, env.rdmult, winner.angle_delta_y,
@@ -1712,7 +1711,7 @@ pub(crate) fn stamp_leaf_ctx(
                 }
                 if let Some(dbg) = crate::tx_search::tx_dbg_target() {
                     if (mi_row, mi_col) == dbg {
-                        eprintln!(
+                        aom_dsp::trace_out!(
                             "[pectxw] mi({},{}) blk({},{}) cul={} -> a[{}..{}] l[{}..{}] vish={} visw={} oe={}",
                             mi_row, mi_col, blk_row, blk_col, cul,
                             a0 + blk_col, a0 + blk_col + txw_u,

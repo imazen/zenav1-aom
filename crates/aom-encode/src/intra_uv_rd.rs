@@ -160,15 +160,7 @@ pub fn plane_px_dims(bsize: usize, ss_x: usize, ss_y: usize) -> (i32, i32) {
 /// dumps its per-mode rdcost line for (same convention as `AOM_PART_DBG`).
 /// Diagnostic only; inert when unset.
 fn uv_dbg_target() -> Option<(i32, i32)> {
-    // Cached: this is read per txb per candidate mode, and an uncached
-    // `env::var` here measured 1.4% of the shipping-preset profile in getenv.
-    static T: std::sync::OnceLock<Option<(i32, i32)>> = std::sync::OnceLock::new();
-    *T.get_or_init(|| {
-        std::env::var("AOM_UV_DBG").ok().and_then(|v| {
-            v.split_once(',')
-                .and_then(|(r, c)| r.parse::<i32>().ok().zip(c.parse::<i32>().ok()))
-        })
-    })
+    aom_dsp::trace_focus!(aom_dsp::trace::Focus::Uv)
 }
 
 fn uv_scale_chroma_bsize(bsize: usize, ss_x: usize, ss_y: usize) -> usize {
@@ -735,7 +727,7 @@ pub fn txfm_rd_in_plane_uv_p(
                         );
                     }
                 }
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[ppred] mi({},{}) pl{} uv={} adelta={} blk({},{}) pred={:x} src={:x} ab={:x} lf={:x}",
                     env.mi_row, env.mi_col, plane, uv_mode, angle_delta_uv,
                     blk_row, blk_col, ph, sh, ah, lh
@@ -752,7 +744,7 @@ pub fn txfm_rd_in_plane_uv_p(
                         env.ss_x as i32, env.ss_y as i32, blk_row as i32, blk_col as i32,
                         wpx2, hpx2, env.mi_cols, env.mi_rows, mode2, angle_delta_uv * 3, false,
                     );
-                    eprintln!(
+                    aom_dsp::trace_out!(
                         "[pav] mi({},{}) pl{} uv={} adelta={} blk({},{}) nt={} ntr={} nl={} nbl={} ft={} def={}",
                         env.mi_row, env.mi_col, plane, uv_mode, angle_delta_uv,
                         blk_row, blk_col, nt, ntr, nl, nbl, env.filter_type,
@@ -767,7 +759,7 @@ pub fn txfm_rd_in_plane_uv_p(
                             recon[(txb_off as isize - env.ref_stride as isize + c) as usize]
                         );
                     }
-                    eprintln!();
+                    aom_dsp::trace_out!("");
                 }
             }
             // av1_subtract_txb — the prediction stays in the recon plane and
@@ -808,7 +800,7 @@ pub fn txfm_rd_in_plane_uv_p(
                             .wrapping_add(src[src_txb_off + r * env.src_stride + c] as u64);
                     }
                 }
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[pres] mi({},{}) pl{} uv={} adelta={} blk({},{}) res={:x} src={:x}",
                     env.mi_row, env.mi_col, plane, uv_mode, angle_delta_uv,
                     blk_row, blk_col, rh, sh
@@ -881,7 +873,7 @@ pub fn txfm_rd_in_plane_uv_p(
                     0u64,
                     |acc, &c| acc.wrapping_mul(31).wrapping_add(c as u64),
                 );
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[ptxb] mi({},{}) pl{} bs{} uv={} adelta={} blk({},{}) txs={} eob={} rate={} dist={} ch={:x}",
                     env.mi_row, env.mi_col, plane, plane_bsize, uv_mode,
                     angle_delta_uv, blk_row, blk_col, tx_size, win.best_eob,
@@ -1727,7 +1719,7 @@ fn pick_intra_angle_routine_sbuv(
         );
     let this_rd = rdcost(env.rdmult, this_rate, tokenonly.dist);
     if uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col) {
-        eprintln!(
+        aom_dsp::trace_out!(
             "[pad] mi({},{}) bs{} uvmode={} adelta={} rd={} rate={} dist={} tok_rate={}",
             env.mi_row, env.mi_col, env.bsize, uv_mode, angle_delta_uv, this_rd,
             this_rate, tokenonly.dist, tokenonly.rate
@@ -2022,7 +2014,7 @@ pub fn rd_pick_intra_sbuv_mode(
         let this_rd = rdcost(env.rdmult, this_rate, tokenonly.1);
         visit.this_rd = Some(this_rd);
         if uv_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col) {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[puv] mi({},{}) bs{} uvmode={} rd={} rate={} dist={} cfl_idx={} cfl_sig={}",
                 env.mi_row, env.mi_col, env.bsize, uv_mode, this_rd, this_rate,
                 tokenonly.1, cfl_fields.0, cfl_fields.1

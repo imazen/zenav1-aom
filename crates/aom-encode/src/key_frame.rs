@@ -2514,8 +2514,8 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
         palette_pixel_num as f64 / (inp.h as f64 * inp.enc_w as f64);
     let win = psnr_diff > 0.9
         || (palette_ratio >= 0.0001 && psnr_diff / palette_ratio > 4.0);
-    if std::env::var_os("AOM_SCT_TRIAL_DBG").is_some() {
-        eprintln!(
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::SctTrial) {
+        aom_dsp::trace_out!(
             "[sct-trial] q={} psnr0={:.4} psnr1={:.4} diff={:.4} pal_px={} ratio={:.5} win={}",
             q_trial, psnr[0], psnr[1], psnr_diff, palette_pixel_num, palette_ratio, win
         );
@@ -2969,8 +2969,8 @@ pub fn encode_key_frame_with(
         sct.allow_intrabc = false;
     }
 
-    if std::env::var_os("AOM_SCT_DBG").is_some() {
-        eprintln!(
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::Sct) {
+        aom_dsp::trace_out!(
             "[sct-port] allow={} ibc={} sctype={} palette={} intrabc={} photo={}",
             sct.allow_screen_content_tools, sct.allow_intrabc,
             sct.is_screen_content_type, sct.count_palette, sct.count_intrabc,
@@ -3271,9 +3271,8 @@ pub fn encode_key_frame_with(
                     ),
                     DeltaQMode::Off => unreachable!("deltaq_live"),
                 };
-                static DQ_DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                if *DQ_DBG.get_or_init(|| std::env::var_os("AOM_DQ_DBG").is_some()) {
-                    eprintln!(
+                if aom_dsp::trace_on!(aom_dsp::trace::Trace::Dq) {
+                    aom_dsp::trace_out!(
                         "[dq-port] sb({},{}) mode={:?} adj={} base={} run={} res={}",
                         mi_row / sb_mi, mi_col / sb_mi, quality.deltaq_mode,
                         adj, qindex, running, res
@@ -3559,14 +3558,14 @@ pub fn encode_key_frame_with(
     };
 
     // Optional phase timing (AOM_TIME_PHASES=1): names the serial-vs-parallel
-    // split the threading work is measured against. eprintln! only.
-    let phase_timing = std::env::var_os("AOM_TIME_PHASES").is_some();
+    // split the threading work is measured against. aom_dsp::trace_out! only.
+    let phase_timing = aom_dsp::trace_on!(aom_dsp::trace::Trace::TimePhases);
     #[allow(unused_assignments)]
     let mut phase_t = std::time::Instant::now();
     macro_rules! phase_mark {
         ($name:literal) => {
             if phase_timing {
-                eprintln!("[phase] {:<18} {:>8.1} ms", $name, phase_t.elapsed().as_secs_f64() * 1e3);
+                aom_dsp::trace_out!("[phase] {:<18} {:>8.1} ms", $name, phase_t.elapsed().as_secs_f64() * 1e3);
                 phase_t = std::time::Instant::now();
             }
         };
@@ -3925,8 +3924,8 @@ pub fn encode_key_frame_with(
         p.loopfilter.filter_level_v = derived_lf.filter_level_v;
     }
     p.loopfilter.sharpness_level = derived_lf.sharpness;
-    if std::env::var_os("AOM_SCT_DBG").is_some() {
-        eprintln!(
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::Sct) {
+        aom_dsp::trace_out!(
             "[lf-port] derived={:?} lf_sharpness={} qindex={} quality.sharpness={}",
             derived_lf, lf_sharpness, qindex, quality.sharpness
         );
@@ -4446,7 +4445,7 @@ pub fn encode_key_frame_with(
 
     phase_mark!("assemble");
     // ---- temporal unit ----------------------------------------------------
-    if let Ok(path) = std::env::var("AOM_HDR_DUMP") {
+    if let Some(path) = aom_dsp::trace::hdr_dump_path() {
         std::fs::write(path, format!("{p:#?}")).ok();
     }
     let frame_obu = if tile_payloads.len() == 1 {

@@ -24,6 +24,7 @@ pub mod crc32c;
 pub mod dispatch;
 pub mod dist;
 pub mod entropy;
+pub mod trace;
 pub mod inter;
 pub mod intra;
 pub mod kmeans;

@@ -1168,7 +1168,7 @@ pub fn av1_cdef_search_adaptive(
         }
     }
 
-    if std::env::var_os("AOM_CDEF_DBG").is_some() {
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::Cdef) {
         let h = |rows: &Vec<[u64; TOTAL_STRENGTHS]>| -> u64 {
             let mut acc = 0x9e3779b97f4a7c15u64;
             for row in rows {
@@ -1178,7 +1178,7 @@ pub fn av1_cdef_search_adaptive(
             }
             acc
         };
-        eprintln!(
+        aom_dsp::trace_out!(
             "[cdefs] nsb={sb_count} bits={nb_strength_bits} y={:?} uv={:?} unit={unit_strength:?} msey={:x}mseuv={:x}",
             &cdef_strengths[..nb_cdef_strengths],
             &cdef_uv_strengths[..nb_cdef_strengths],

@@ -1197,8 +1197,7 @@ impl std::fmt::Debug for FrameContexts {
 /// mode facts, arithmetic-decoder `tell_frac`) for differential debugging
 /// against the instrumented libaom accounting dump. One env lookup total.
 pub(crate) fn dbg_blocks() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("AOM_DBG_BLOCKS").is_some())
+    aom_dsp::trace_on!(aom_dsp::trace::Trace::DbgBlocks)
 }
 
 /// One 8x8 cell of a stored frame's motion grid (C `MV_REF`): the reference
@@ -3083,7 +3082,7 @@ impl<'c> TileKf<'c> {
         let left_available = mi_col > self.tile.mi_col_start;
 
         if dbg_blocks() {
-            eprintln!("ENTER mi({mi_row},{mi_col}) bs={bsize} tellq={}", dec.tell_frac() as i32);
+            aom_dsp::trace_out!("ENTER mi({mi_row},{mi_col}) bs={bsize} tellq={}", dec.tell_frac() as i32);
         }
 
         // Envelope invariants (STEP-0 census): these pre-mode reads are inert.
@@ -3251,7 +3250,7 @@ impl<'c> TileKf<'c> {
             icdfs.y_mode[grp] = y_cdf;
             self.inter_cdfs = icdfs;
             if dbg_blocks() {
-                eprintln!(
+                aom_dsp::trace_out!(
                     "BLK mi({mi_row},{mi_col}) bs={bsize} intra skip={skip} y_mode={} fi={}",
                     info.y_mode, info.use_filter_intra
                 );
@@ -4562,7 +4561,7 @@ impl<'c> TileKf<'c> {
         // av1_get_pred_context_switchable_interp neighbour reads see them.
         self.stamp_interp(mi_row, mi_col, bsize, (filter_y as u8, filter_x as u8));
         if dbg_blocks() {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "BLK mi({mi_row},{mi_col}) bs={bsize} inter ref={ref0} mode={mode} skip={skip} mv=({mv_row},{mv_col}) f=({filter_y},{filter_x})"
             );
         }
@@ -4776,8 +4775,8 @@ impl<'c> TileKf<'c> {
             // the frame (AOM_CODEC_CORRUPT_FRAME). Mark corrupt and unwind the
             // walk instead of panicking on untrusted input. Byte-inert on
             // conformant streams (a valid DV always validates).
-            if std::env::var_os("AOM_DV_TRACE").is_some() {
-                eprintln!(
+            if aom_dsp::trace_on!(aom_dsp::trace::Trace::Dv) {
+                aom_dsp::trace_out!(
                     "[dv] mi({mi_col},{mi_row}) bsize={bsize} part={partition:?} \
                      diff=({},{}) ref=({nearest_r},{nearest_c})/({near_r},{near_c})",
                     info.dv_row, info.dv_col
@@ -4800,7 +4799,7 @@ impl<'c> TileKf<'c> {
                 ss_x as i32,
                 ss_y as i32,
             ) else {
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[dvbad] mi({mi_col},{mi_row}) bsize={bsize} part={partition:?} \
                      dv=({},{}) ref=({nearest_r},{nearest_c})/({near_r},{near_c}) \
                      tile_row_start={}",
@@ -6432,8 +6431,8 @@ impl<'c> TileKf<'c> {
                 has_cols,
                 bsize,
             ) as usize;
-            if std::env::var_os("AOM_PART_TRACE").is_some() {
-                eprintln!(
+            if aom_dsp::trace_on!(aom_dsp::trace::Trace::Part) {
+                aom_dsp::trace_out!(
                     "[dp] mi({mi_row},{mi_col}) bs={bsize} ctx={ctx} part={pr} tell={}",
                     dec.tell_frac() as i32
                 );

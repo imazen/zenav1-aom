@@ -797,7 +797,7 @@ pub fn dump_trellis_calls() {
         let mut v: Vec<_> = m.iter().collect();
         v.sort_by(|a, b| b.1.cmp(a.1));
         for (k, n) in v {
-            eprintln!("TRELLIS_CALLS {n:>10} {k}");
+            aom_dsp::trace_out!("TRELLIS_CALLS {n:>10} {k}");
         }
     }
 }
@@ -831,8 +831,7 @@ pub fn xform_quant_optimize_split_into(
     let txb_skip_ctx = txb_skip_ctx as usize;
     let dc_sign_ctx = dc_sign_ctx as usize;
 
-    static TRELLIS_CALLS_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *TRELLIS_CALLS_ON.get_or_init(|| std::env::var_os("AOM_TRELLIS_CALLS").is_some()) {
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::TrellisCalls) {
         let loc = std::panic::Location::caller();
         let mut g = TRELLIS_CALLS.lock().unwrap();
         let m = g.get_or_insert_with(std::collections::HashMap::new);

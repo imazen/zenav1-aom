@@ -10,13 +10,13 @@
 ## summary
 #
 #   free functions                              1
-#   inherent methods                           23
-#   trait roster entries (type × trait)        44
+#   inherent methods                           25
+#   trait roster entries (type × trait)        46
 #
 # per-module pub lines:
-#   aom_dsp                          24
+#   aom_dsp                          26
 
-## items (24 lines)
+## items (26 lines)
 
 pub fn aom_dsp::cdef::cdef_find_dir_took_simd_path(&[u16], usize, i32) -> bool
 pub fn aom_dsp::census::Counts::assert_fields_are_eq(&self)
@@ -40,10 +40,12 @@ pub fn aom_dsp::inter::scale::ScaleFactors::assert_fields_are_eq(&self)
 pub fn aom_dsp::inter::warp::WarpedMotionParams::assert_fields_are_eq(&self)
 pub fn aom_dsp::quant::QuantTuning::assert_fields_are_eq(&self)
 pub fn aom_dsp::quant::QuantizerSettings::assert_fields_are_eq(&self)
+pub fn aom_dsp::trace::Focus::assert_fields_are_eq(&self)
+pub fn aom_dsp::trace::Trace::assert_fields_are_eq(&self)
 pub fn aom_dsp::txb::ExtTxDeriv::assert_fields_are_eq(&self)
 pub fn aom_dsp::txb::TxClass::assert_fields_are_eq(&self)
 
-## trait impls (44 types)
+## trait impls (46 types)
 
 aom_dsp::census::Leaf: TrivialClone
 aom_dsp::convolve::compound::CompoundConvolveParams: TrivialClone
@@ -88,4 +90,6 @@ aom_dsp::quant::PlaneQuantRows<'a>: TrivialClone
 aom_dsp::quant::QuantTuning: TrivialClone
 aom_dsp::quant::QuantizerSettings: TrivialClone
 aom_dsp::restore::pick::LrSearchSf: TrivialClone
+aom_dsp::trace::Focus: TrivialClone
+aom_dsp::trace::Trace: TrivialClone
 aom_dsp::txb::TxClass: TrivialClone

@@ -1711,7 +1711,7 @@ pub fn search_tx_type_intra_into(
         <= (pol.coeff_opt_dist_threshold as u64) * (qstep as u64) * (qstep as u64);
     skip_trellis |= !perform_block_coeff_opt;
     if TX_DBG_VERBOSE.get() {
-        eprintln!(
+        aom_dsp::trace_out!(
             "[gate] pl{} txs={tx_size} mse_q8={block_mse_q8} qstep={qstep} thr={} pco={perform_block_coeff_opt} skip={skip_trellis} mask={allowed_tx_mask:#06x}",
             inp.plane, pol.coeff_opt_dist_threshold
         );
@@ -1728,7 +1728,7 @@ pub fn search_tx_type_intra_into(
         use_transform_domain_distortion = false;
     }
     if TX_DBG_VERBOSE.get() {
-        eprintln!(
+        aom_dsp::trace_out!(
             "[utdd] tx_size={tx_size} mse_q8={block_mse_q8} thresh={} param={} utdd={use_transform_domain_distortion} pxfinal={calc_pixel_domain_distortion_final} mask={allowed_tx_mask:#06x} txk={txk_allowed:?}",
             pol.tx_domain_dist_threshold, pol.use_transform_domain_distortion
         );
@@ -1781,9 +1781,8 @@ pub fn search_tx_type_intra_into(
         sharpness: pol.sharpness,
     };
 
-    static TRELLIS_CALLS_DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let trellis_calls_dbg =
-        *TRELLIS_CALLS_DBG.get_or_init(|| std::env::var_os("AOM_TRELLIS_CALLS").is_some());
+        aom_dsp::trace_on!(aom_dsp::trace::Trace::TrellisCalls);
     if trellis_calls_dbg {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CALLS: AtomicU64 = AtomicU64::new(0);
@@ -1797,7 +1796,7 @@ pub fn search_tx_type_intra_into(
             EVALS_UV.fetch_add(pop, Ordering::Relaxed);
         }
         if c % 100_000 == 1 {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "TXSEARCH calls={c} evals_y={} evals_uv={}",
                 EVALS.load(Ordering::Relaxed),
                 EVALS_UV.load(Ordering::Relaxed)
@@ -1865,7 +1864,7 @@ pub fn search_tx_type_intra_into(
             }
             let t = SKIP.load(Ordering::Relaxed) + RUN.load(Ordering::Relaxed);
             if t % 200_000 == 0 {
-                eprintln!(
+                aom_dsp::trace_out!(
                     "TXSKIP skip={} run={}",
                     SKIP.load(Ordering::Relaxed),
                     RUN.load(Ordering::Relaxed)
@@ -2072,7 +2071,7 @@ pub fn search_tx_type_intra_into(
 
         let rd = rdcost(inp.rdmult, rate_cost, dist);
         if TX_DBG_VERBOSE.get() {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[txt] pl{} tx_type={tx_type} rd={rd} rate={rate_cost} dist={dist} eob={} mask={allowed_tx_mask:#06x} bsse={block_sse} he={dbg_he} txd={dbg_txd} pxd={dbg_pxd}",
                 inp.plane,
                 res.eob
@@ -2346,7 +2345,7 @@ pub fn dist_block_px_domain_into(
                 cnt += 1;
             }
         }
-        eprintln!(
+        aom_dsp::trace_out!(
             "[pxd] tx_type={tx_type} tx_size={tx_size} eob={eob} pred_h={ph:x} recon_h={rh:x} dq0={} sse={sse}",
             dqcoeff[0],
         );
@@ -2753,7 +2752,7 @@ pub fn txfm_rd_in_plane_intra(
                                 .wrapping_add(recon[txb_off - env.ref_stride + c] as u64);
                         }
                     }
-                    eprintln!(
+                    aom_dsp::trace_out!(
                         "[pled] mi({},{}) mode={} ad={} tx={} blk({},{}) nt={} ntr={} nl={} nbl={} ft={} lh={:x} ah={:x}",
                         env.mi_row, env.mi_col, env.mode, env.angle_delta, tx_size,
                         blk_row, blk_col, n_top, n_topright, n_left, n_bottomleft,
@@ -3371,14 +3370,7 @@ pub(crate) fn set_tx_dbg_verbose(on: bool) {
 }
 
 pub(crate) fn tx_dbg_target() -> Option<(i32, i32)> {
-    use std::sync::OnceLock;
-    static T: OnceLock<Option<(i32, i32)>> = OnceLock::new();
-    *T.get_or_init(|| {
-        std::env::var("AOM_TX_DBG").ok().and_then(|v| {
-            let (r, c) = v.split_once(',')?;
-            Some((r.parse().ok()?, c.parse().ok()?))
-        })
-    })
+    aom_dsp::trace_focus!(aom_dsp::trace::Focus::Tx)
 }
 
 /// `choose_tx_size_type_from_rd` (tx_search.c, static) — the uniform-tx-size
@@ -3473,7 +3465,7 @@ pub fn choose_tx_size_type_from_rd_intra(
                 .as_ref()
                 .map(|(s, _)| (s.rate as i64, s.dist as i64))
                 .unwrap_or((-1, -1));
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[tx] mi({},{}) bs{} part{} mode={} fi={} fi_mode={} ad={} pal={} tx={} depth={} rd={} thresh={} ref={} bo={} rate={} dist={}",
                 env.mi_row, env.mi_col, env.bsize, env.partition, env.mode,
                 env.use_filter_intra, env.filter_intra_mode, env.angle_delta,
@@ -3776,7 +3768,7 @@ pub fn intra_model_rd_y(
             if crate::tx_search::tx_dbg_target()
                 .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
             {
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[ptile] mi({},{}) mode={} ad={} tile({},{}) n=({},{},{},{}) satd={}",
                     env.mi_row, env.mi_col, env.mode, env.angle_delta,
                     blk_row, blk_col, n_top, n_topright, n_left, n_bottomleft, tile_satd

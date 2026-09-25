@@ -20,7 +20,7 @@ zenav1-aom-decode = { path = "../aom-decode", features = ["__internals"] }
 # deblock APPLY feeding the LR and CDEF gates (aom_dsp::loopfilter::
 # loop_filter_frame), and the LR mode-cost derivation (aom_dsp::txb::
 # cost_tokens_from_cdf).
-zenav1-aom-dsp = { path = "../aom-dsp", default-features = false }
+zenav1-aom-dsp = { path = "../aom-dsp", default-features = false, features = ["trace-env"] }
 # The REAL C oracle (reference libaom v3.14.1, Release + SIMD). This crate is
 # bench-only (publish = false), so depending on the FFI oracle here mirrors the
 # dev-dependency isolation the shipping crates use: all unsafe stays inside

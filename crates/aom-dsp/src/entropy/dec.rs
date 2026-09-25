@@ -41,8 +41,7 @@ fn od_ilog_nz(x: u32) -> i32 {
 /// decoded value, alphabet size) for decoder-mirror desync hunts against the
 /// instrumented `AOM_SYM_TRACE` build of upstream aomdec. One env lookup total.
 fn sym_trace() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("AOM_SYM_TRACE").is_some())
+    crate::trace_on!(crate::trace::Trace::Sym)
 }
 
 fn sym_seq() -> u64 {
@@ -197,7 +196,7 @@ impl<'a> OdEcDec<'a> {
         }
         let out = self.normalize(dif, r_new, ret);
         if sym_trace() {
-            eprintln!("[bym] {} v={} f={}", sym_seq(), out, f);
+            crate::trace_out!("[bym] {} v={} f={}", sym_seq(), out, f);
         }
         out
     }
@@ -231,7 +230,7 @@ impl<'a> OdEcDec<'a> {
         dif -= (v as u64) << (OD_EC_WINDOW_SIZE - 16);
         let out = self.normalize(dif, r_new, ret);
         if sym_trace() {
-            eprintln!(
+            crate::trace_out!(
                 "[sym] {} v={} n={} c={}",
                 sym_seq(),
                 out,

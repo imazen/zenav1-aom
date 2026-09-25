@@ -727,7 +727,7 @@ mod tests {
                 simd_ran += 1;
             }
         });
-        eprintln!("fwd1d i16 parity: {report}, vector permutations run: {simd_ran}");
+        crate::trace_out!("fwd1d i16 parity: {report}, vector permutations run: {simd_ran}");
         assert!(
             simd_ran >= 1,
             "a vector tier must run at least once (AVX2 on x86-64, NEON on aarch64)"
@@ -908,7 +908,7 @@ mod tests {
                 simd_ran += 1;
             }
         });
-        eprintln!("fwd i16 pass parity: {report}, vector permutations run: {simd_ran}");
+        crate::trace_out!("fwd i16 pass parity: {report}, vector permutations run: {simd_ran}");
         assert!(simd_ran >= 1, "a vector tier must run at least once");
         assert!(report.permutations_run >= 2);
     }
@@ -1015,13 +1015,13 @@ mod gate_bite {
             match first {
                 Some(f) => {
                     *diverged += 1;
-                    eprintln!(
+                    crate::trace_out!(
                         "  {name:<12} M* = {m:>5}   first divergence at |input| ~ {f}  \
                          (slack {:.2}x)",
                         f as f64 / m as f64
                     );
                 }
-                None => eprintln!("  {name:<12} M* = {m:>5}   no divergence up to 8x M*"),
+                None => crate::trace_out!("  {name:<12} M* = {m:>5}   no divergence up to 8x M*"),
             }
         }
         true
@@ -1037,7 +1037,7 @@ mod gate_bite {
                 ran += 1;
             }
         });
-        eprintln!("gate bite: {report}");
+        crate::trace_out!("gate bite: {report}");
         assert!(ran >= 1, "a vector tier must run at least once");
         // Every kernel must break somewhere above its bound; a kernel that
         // never diverged would mean the gate was costing reach for nothing.
@@ -1167,7 +1167,7 @@ mod reach {
                         if fwd_row_i16_applies(k16, &buf, col_n, row_n) {
                             row_live += 1;
                         } else {
-                            eprintln!(
+                            crate::trace_out!(
                                 "  row gate declines: tx_size {ts} ({col_n}x{row_n}) \
                                  tx_type {tt} kernel {k16:?} max|buf| {} > M* {}",
                                 max_abs_i32(&buf),
@@ -1178,7 +1178,7 @@ mod reach {
                 }
             }
         }
-        eprintln!(
+        crate::trace_out!(
             "fwd i16 reach at |residual| = 255: cells {cells}; \
              col shape-eligible {col_shape}, gate fires {col_live}; \
              row shape-eligible {row_shape}, gate fires {row_live}"

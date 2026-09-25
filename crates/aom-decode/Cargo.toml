@@ -55,7 +55,9 @@ whereat = ["dep:whereat"]
 # is NOT gated fails loudly if the harness was skipped, so the suite can never be
 # silently empty -- that is the KB-42 failure mode and it is what makes a
 # `required-features` target safe to use here.
-__internals = []
+# Harness builds also keep the env front door for the divergence traces.
+__internals = ["trace-env"]
+trace-env = ["zenav1-aom-dsp/trace-env"]
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }

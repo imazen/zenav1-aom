@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-decode.txt 257 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
+# files: zenav1-aom-decode.txt 257 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,trace-env,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
 # arch-unique surface: (none — portable on every target)
 
 ## summary

@@ -5166,9 +5166,8 @@ pub fn read_palette_colors_plane(
         left_colors,
         left_n_plane,
     );
-    static PAL_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *PAL_TRACE.get_or_init(|| std::env::var_os("AOM_PAL_TRACE").is_some()) {
-        eprintln!(
+    if crate::trace_on!(crate::trace::Trace::Pal) {
+        crate::trace_out!(
             "[pal] plane={plane} n={n} n_cache={n_cache} an={above_n_plane} ln={left_n_plane} cache={:?}",
             &cache[..n_cache.min(8)]
         );
@@ -5187,8 +5186,8 @@ pub fn read_palette_colors_plane(
         merged.push(d as u16);
     }
     merged.sort_unstable();
-    if *PAL_TRACE.get_or_init(|| std::env::var_os("AOM_PAL_TRACE").is_some()) {
-        eprintln!("[palc] plane={plane} n={n} colors={merged:?}");
+    if crate::trace_on!(crate::trace::Trace::Pal) {
+        crate::trace_out!("[palc] plane={plane} n={n} colors={merged:?}");
     }
     merged
 }
@@ -5529,8 +5528,8 @@ pub fn read_delta_q_params_sb(
         // "Normative: Clamp to [1,MAXQ] to not interfere with lossless mode"
         // (read_delta_q_params, av1/decoder/decodemv.c).
         let current_qindex = (*current_base_qindex + reduced * delta_q_res).clamp(1, MAXQ);
-        if std::env::var_os("AOM_DQ_DEC").is_some() {
-            eprintln!(
+        if crate::trace_on!(crate::trace::Trace::DqDec) {
+            crate::trace_out!(
                 "[dq-dec] bsize={bsize} sb={sb_size} skip={skip} reduced={reduced} -> q={current_qindex}"
             );
         }

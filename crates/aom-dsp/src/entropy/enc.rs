@@ -10,8 +10,7 @@ const CDF_PROB_TOP: u32 = 1 << 15;
 /// Debug-only write-side symbol trace (mirrors `AOM_SYM_TRACE` on the decode
 /// path): sequence number + value + alphabet per emitted symbol.
 fn enc_sym_trace() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("AOM_WSYM_TRACE").is_some())
+    crate::trace_on!(crate::trace::Trace::WSym)
 }
 
 fn enc_sym_seq() -> u64 {
@@ -156,7 +155,7 @@ impl OdEcEnc {
         let r_new = if val != 0 { v } else { r - v };
         self.normalize(l, r_new);
         if enc_sym_trace() {
-            eprintln!("[wby] {} v={} f={}", enc_sym_seq(), val, f);
+            crate::trace_out!("[wby] {} v={} f={}", enc_sym_seq(), val, f);
         }
     }
 
@@ -170,7 +169,7 @@ impl OdEcEnc {
         let fh = icdf[s as usize] as u32;
         self.encode_q15(fl, fh, s, nsyms);
         if enc_sym_trace() {
-            eprintln!(
+            crate::trace_out!(
                 "[wsy] {} v={} n={} c={}",
                 enc_sym_seq(),
                 s,

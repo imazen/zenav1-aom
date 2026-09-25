@@ -409,9 +409,8 @@ pub fn pack_leaf(
     // reference the SEARCH coded the delta against? A mismatch means the
     // decoder reconstructs a different DV than the winner's.
 
-    static PACK_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *PACK_TRACE.get_or_init(|| std::env::var_os("AOM_PACK_TRACE").is_some()) {
-        eprintln!(
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::Pack) {
+        aom_dsp::trace_out!(
             "[pk] mi({mi_row},{mi_col}) bs={bsize} part={partition} ibc={} skip={} \
              dv=({},{}) ref=({},{}) txsize={} mode={} fi={}/{}",
             winner.use_intrabc, winner.skip_txfm, winner.dv_row, winner.dv_col,
@@ -443,10 +442,10 @@ pub fn pack_leaf(
         palette_colors[8..8 + p.size].copy_from_slice(&p.colors_u[..p.size]);
         palette_colors[16..16 + p.size].copy_from_slice(&p.colors_v[..p.size]);
     }
-    if *PACK_TRACE.get_or_init(|| std::env::var_os("AOM_PACK_TRACE").is_some())
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::Pack)
         && (winner.palette_y.is_some() || winner.palette_uv.is_some())
     {
-        eprintln!(
+        aom_dsp::trace_out!(
             "[pkpal] mi({mi_row},{mi_col}) n={} y={:?} wy={:?}",
             palette_size[0],
             &palette_colors[..palette_size[0].max(0) as usize],
@@ -960,9 +959,8 @@ pub fn pack_leaf(
     // ---- 4. write_tokens_b: coefficient bytes, gated on !skip_txfm (always
     //     true in the KEY intra envelope, asserted by encode_b_intra_dry). ----
     if !winner.skip_txfm && winner.use_intrabc {
-        static IBC_COEFF_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *IBC_COEFF_TRACE.get_or_init(|| std::env::var_os("AOM_IBC_COEFF_TRACE").is_some()) {
-            eprintln!(
+        if aom_dsp::trace_on!(aom_dsp::trace::Trace::IbcCoeff) {
+            aom_dsp::trace_out!(
                 "[ibc-coeff] mi({mi_row},{mi_col}) bs={bsize} ytxbs={} utxbs={:?} vtxbs={:?} itx={:?}",
                 out.y.txbs.len(),
                 out.u.as_ref().map(|u| u.txbs.len()),
@@ -3018,9 +3016,8 @@ fn write_one_txb_inter(
     wmi_col: i32,
     wbsize: usize,
 ) {
-    static CTXB_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *CTXB_TRACE.get_or_init(|| std::env::var_os("AOM_CTXB_TRACE").is_some()) {
-        eprintln!(
+    if aom_dsp::trace_on!(aom_dsp::trace::Trace::Ctxb) {
+        aom_dsp::trace_out!(
             "[wtxb] mi({wmi_row},{wmi_col}) bs={wbsize} plane={plane} eob={} tsc={} dsc={} tx={tx_size}",
             txb.eob, txb.txb_skip_ctx, txb.dc_sign_ctx
         );

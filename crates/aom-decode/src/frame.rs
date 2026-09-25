@@ -1610,7 +1610,7 @@ fn decode_inter_tile_payload(
         order_hint: cur_oh,
     };
     if crate::dbg_blocks() {
-        eprintln!(
+        aom_dsp::trace_out!(
             "FRAME oh={} pri={} refresh={:#x} refmap={:?} txsel={} cdef_bits={} lr={:?} rms={} smf={} rtx={}",
             p.prefix.order_hint,
             p.prefix.primary_ref_frame,

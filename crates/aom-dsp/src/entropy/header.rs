@@ -154,8 +154,8 @@ pub fn encode_cdef(wb: &mut WriteBitBuffer, cdef: &CdefHeader, num_planes: usize
     }
     wb.write_literal(cdef.cdef_damping - 3, 2);
     wb.write_literal(cdef.cdef_bits, 2);
-    if std::env::var_os("AOM_CDEF_DBG").is_some() {
-        eprintln!(
+    if crate::trace_on!(crate::trace::Trace::Cdef) {
+        crate::trace_out!(
             "[enc-cdef] damp={} bits={} nb={} y={:?} uv={:?}",
             cdef.cdef_damping,
             cdef.cdef_bits,
@@ -1487,8 +1487,8 @@ pub struct FrameHeaderObu {
 /// adds those).
 macro_rules! hdr_mark {
     ($wb:expr, $name:expr) => {
-        if std::env::var_os("AOM_HDR_TRACE").is_some() {
-            eprintln!("[hdr] {} @{}", $name, $wb.bit_len());
+        if $crate::trace_on!($crate::trace::Trace::Hdr) {
+            $crate::trace_out!("[hdr] {} @{}", $name, $wb.bit_len());
         }
     };
 }

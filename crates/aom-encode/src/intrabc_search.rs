@@ -2462,9 +2462,8 @@ pub fn rd_pick_intrabc_mode_sb(
         // --- av1_txfm_search RD (rdopt.c:3606-3614) ---
         let rate_mv = mv_bit_cost_sub(dv_r, dv_c, ref_r, ref_c, a.dv_costs);
         let rate_mode = a.intrabc_cost[1];
-        static IBC_MV_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *IBC_MV_TRACE.get_or_init(|| std::env::var_os("IBC_TRACE").is_some()) {
-            eprintln!(
+        if aom_dsp::trace_on!(aom_dsp::trace::Trace::Ibc) {
+            aom_dsp::trace_out!(
                 "[r-mv] mi({},{}) dv=({},{}) ref=({},{}) rate_mv={} \
                  intrabc_cost={} mode_rate={} skip_ctx={} skip1={}",
                 a.mi_row, a.mi_col, dv_r, dv_c, ref_r, ref_c, rate_mv, rate_mode,
@@ -2645,8 +2644,8 @@ pub fn rd_pick_intrabc_mode_sb(
             if !r.valid || r.rate == i32::MAX {
                 continue;
             }
-            if *IBC_MV_TRACE.get_or_init(|| std::env::var_os("IBC_TRACE").is_some()) {
-                eprintln!(
+            if aom_dsp::trace_on!(aom_dsp::trace::Trace::Ibc) {
+                aom_dsp::trace_out!(
                     "[r-arms] mi({},{}) dv=({},{}) y_rate={} y_skip={} dist={} sse={} \
                      leaves={:?}",
                     a.mi_row, a.mi_col, dv_r, dv_c, r.rate, r.skip_txfm, r.dist,
@@ -2816,9 +2815,8 @@ pub fn rd_pick_intrabc_mode_sb(
 
         if this_rd < best_rd {
             best_rd = this_rd;
-            static IBC_WIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *IBC_WIN.get_or_init(|| std::env::var_os("AOM_IBC_WIN").is_some()) {
-                eprintln!(
+            if aom_dsp::trace_on!(aom_dsp::trace::Trace::IbcWin) {
+                aom_dsp::trace_out!(
                     "[ibc-win] mi({},{}) bsize={} dv=({dv_r},{dv_c}) ref=({ref_r},{ref_c}) \
                      rd={this_rd} skip={choose_skip} yskip={y_skip} uv_skip={uv_skip}",
                     a.mi_col, a.mi_row, a.bsize

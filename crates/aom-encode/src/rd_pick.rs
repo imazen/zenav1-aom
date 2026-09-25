@@ -309,7 +309,7 @@ pub fn winner_tx_type_map(
     }
     debug_assert_eq!(k, y.winners.len());
     if crate::tx_search::tx_dbg_target().is_some_and(|(r, c)| r == mi_row && c == mi_col) {
-        eprintln!(
+        aom_dsp::trace_out!(
             "[wmap] mi({},{}) bs{} tx={} mbw={} winners={:?} -> map={:?}",
             mi_row, mi_col, bsize, y.tx_size, mbw,
             y.winners.iter().map(|w| w.tx_type).collect::<Vec<_>>(),

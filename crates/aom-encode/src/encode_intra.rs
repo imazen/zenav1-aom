@@ -729,7 +729,7 @@ pub fn encode_intra_block_plane_y(
                     s.iter()
                         .fold(h, |h, &v| h.wrapping_mul(31).wrapping_add(v as i64 as u64))
                 });
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[peob] mi({},{}) blk({},{}) bsize={} tx_size={} tx_type={} skip_txfm={} use_trellis={} eob={} pal={} qm={:?} dq=({},{}) sc={} dc={} ta={:?} tl={:?} rdm={} sh={} iq={:?} kh={kh:x} qh={qh:x} res_h={rh:x} coeff_h={ch:x}",
                     env.mi_row, env.mi_col, blk_row, blk_col, bsize, tx_size, tx_type,
                     env.skip_txfm as u8, use_trellis as u8, eob,
@@ -739,7 +739,7 @@ pub fn encode_intra_block_plane_y(
                     &ta[blk_col..blk_col + txw_unit], &tl[blk_row..blk_row + txh_unit],
                     env.rdmult, env.sharpness, env.tune.iq_tuning,
                 );
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[peobw] mi({},{}) blk({},{}) cul={} eob={}",
                     env.mi_row, env.mi_col, blk_row, blk_col, ent_ctx, eob,
                 );

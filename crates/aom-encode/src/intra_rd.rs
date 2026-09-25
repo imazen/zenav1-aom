@@ -1252,7 +1252,7 @@ pub fn rd_pick_intra_sby_mode_y(
         if crate::tx_search::tx_dbg_target()
             .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
         {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[pmrd] mi({},{}) bs{} part{} mode={} ad={} model_rd={}",
                 env.mi_row, env.mi_col, bsize, env.partition, mode, luma_delta_angle,
                 this_model_rd
@@ -1351,7 +1351,7 @@ pub fn rd_pick_intra_sby_mode_y(
             if crate::tx_search::tx_dbg_target()
                 .is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col)
             {
-                eprintln!(
+                aom_dsp::trace_out!(
                     "[vf] mi({},{}) bs{} part{} mode={} ad={} base_rd={} factor={} rate={} dist={}",
                     env.mi_row, env.mi_col, bsize, env.partition, mode, luma_delta_angle,
                     this_rd, factor, this_rate, this_distortion

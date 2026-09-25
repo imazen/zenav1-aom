@@ -12,9 +12,9 @@
 #   pub modules                                80
 #   pub types (struct/enum/trait/alias)       285
 #   pub consts/statics                        639
-#   free functions                            623
+#   free functions                            625
 #   inherent methods                          962
-#   struct fields                            1943
+#   struct fields                            1945
 #   enum variants                             174
 #   re-exports                                  1
 #   trait roster entries (type × trait)      1120
@@ -23,11 +23,11 @@
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4677
+#   aom_encode                     4681
 #   u16                               4
 #   u8                                4
 
-## items (4671 lines)
+## items (4675 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -579,6 +579,7 @@ pub aom_encode::inter_rd::InterLeafArgs::ref_mv_count: i32
 pub aom_encode::inter_rd::InterLeafArgs::single_ref_ctx: aom_encode::inter_costs::SingleRefCtx
 pub aom_encode::inter_rd::InterLeafArgs::skip_costs: &'a [[i32; 2]; 3]
 pub aom_encode::inter_rd::InterLeafArgs::skip_ctx: usize
+pub aom_encode::inter_rd::InterLeafArgs::skip_txfm_level: u32
 pub aom_encode::inter_rd::InterLeafArgs::src_u: &'a [u16]
 pub aom_encode::inter_rd::InterLeafArgs::src_v: &'a [u16]
 pub aom_encode::inter_rd::InterLeafArgs::src_y: &'a [u16]
@@ -875,6 +876,7 @@ pub aom_encode::intrabc_search::IntrabcVarTxKnobs::prune_2d_txfm_mode: i32
 pub aom_encode::intrabc_search::IntrabcVarTxKnobs::prune_tx_type_est_rd: bool
 pub aom_encode::intrabc_search::IntrabcVarTxKnobs::prune_tx_type_using_stats: u8
 pub aom_encode::intrabc_search::IntrabcVarTxKnobs::skip_tx_search: bool
+pub aom_encode::intrabc_search::IntrabcVarTxKnobs::skip_txfm_level: u32
 pub aom_encode::intrabc_search::IntrabcVarTxKnobs::tx_domain_dist_threshold: u32
 pub aom_encode::intrabc_search::IntrabcVarTxKnobs::txb_split_cap: bool
 pub aom_encode::intrabc_search::IntrabcVarTxKnobs::use_inter_dct_only: bool
@@ -3249,10 +3251,12 @@ pub fn aom_encode::intrabc_search::mv_bit_cost_sub(i32, i32, i32, i32, &aom_enco
 pub fn aom_encode::intrabc_search::mv_cost(i32, i32, &aom_encode::intrabc_search::DvCosts) -> i32
 pub fn aom_encode::intrabc_search::mv_err_cost(i32, i32, &aom_encode::intrabc_search::DvCosts, i32) -> i32
 pub fn aom_encode::intrabc_search::mvsad_err_cost(i32, i32, &aom_encode::intrabc_search::DvCosts, i32) -> i32
-pub fn aom_encode::intrabc_search::predict_skip_txfm(&[i16], usize, usize, usize, i64, i32, i32, bool) -> bool
+pub fn aom_encode::intrabc_search::predict_skip_txfm(&[i16], usize, usize, usize, i64, i32, i32, bool, u32) -> bool
 pub fn aom_encode::intrabc_search::rd_pick_intrabc_mode_sb(&aom_encode::intrabc_search::IntrabcLeafArgs<'_>, &[u16], &[u16], &[u16], i64) -> core::option::Option<aom_encode::intrabc_search::IntrabcBest>
 pub fn aom_encode::intrabc_search::sad_wxh(&[u16], usize, usize, &[u16], usize, usize, usize, usize) -> u32
 pub fn aom_encode::intrabc_search::set_mv_search_range(&mut aom_encode::intrabc_search::FullMvLimits, i32, i32)
+pub fn aom_encode::intrabc_search::skip_txfm_level_default_eval(i32) -> u32
+pub fn aom_encode::intrabc_search::skip_txfm_level_mode_eval(i32) -> u32
 pub fn aom_encode::intrabc_search::variance_wxh(&[u16], usize, usize, &[u16], usize, usize, usize, usize) -> u32
 pub fn aom_encode::key_frame::AllocMode::assert_fields_are_eq(&self)
 pub fn aom_encode::key_frame::CodingTools::assert_fields_are_eq(&self)

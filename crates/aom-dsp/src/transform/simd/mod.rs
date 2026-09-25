@@ -8480,7 +8480,7 @@ mod tests {
                 simd_ran += 1;
             }
         });
-        eprintln!("inv1d simd parity: {report}, vector permutations run: {simd_ran}");
+        crate::trace_out!("inv1d simd parity: {report}, vector permutations run: {simd_ran}");
         assert!(
             simd_ran >= 1,
             "a vector tier must run at least once (AVX2 on x86-64 CI, NEON on aarch64); \

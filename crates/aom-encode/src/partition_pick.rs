@@ -874,7 +874,7 @@ fn leaf_pick_sb_modes(
                 ));
             }
         }
-        eprintln!(
+        aom_dsp::trace_out!(
             "[edge] mi({},{}) bs{} part{} {}{}",
             mi_row, mi_col, bsize, partition, top, left
         );
@@ -1875,8 +1875,8 @@ fn leaf_pick_sb_modes(
                 })
             })
             .collect();
-        eprintln!("[ldt] leaf mi({},{}) bs{} part{} modes: {}", mi_row, mi_col, bsize, partition, tbl.join(" "));
-        eprintln!(
+        aom_dsp::trace_out!("[ldt] leaf mi({},{}) bs{} part{} modes: {}", mi_row, mi_col, bsize, partition, tbl.join(" "));
+        aom_dsp::trace_out!(
             "[ld] leaf mi({},{}) bs{} part{} budget={} minyrd={} best={:?}",
             mi_row,
             mi_col,
@@ -1894,7 +1894,7 @@ fn leaf_pick_sb_modes(
                 .color_map
                 .iter()
                 .fold(0u64, |h, &v| h.wrapping_mul(31).wrapping_add(v as u64));
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[ldp] leaf mi({},{}) pal n={} colors={:?} map_h={map_h:x} map_len={}",
                 mi_row,
                 mi_col,
@@ -2244,7 +2244,7 @@ fn rd_try_subblock(
         // cached RD_STATS flow in as-is and `x->source_variance` (:921) is
         // NOT reached — report None so callers keep the stale value.
         if crate::tx_search::tx_dbg_target().is_some_and(|(r0, c0)| r0 == mi_row && c0 == mi_col) {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[reuse] mi({},{}) subsize={} part{} mode={} tx={} ttm48={}",
                 mi_row, mi_col, subsize, partition_type, reused.mode,
                 reused.tx_size, reused.tx_type_map.get(4 * 32 + 8).copied().unwrap_or(255),
@@ -2335,8 +2335,7 @@ fn rd_pick_4partition(
     // `AOM_P4_NOBUDGET` — diagnostic: run the strip searches under an
     // unlimited budget to expose the candidate's true cost. The win/lose
     // compare still uses the real best_rdc.
-    static NO_BUDGET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let no_budget = *NO_BUDGET.get_or_init(|| std::env::var_os("AOM_P4_NOBUDGET").is_some());
+    let no_budget = aom_dsp::trace_on!(aom_dsp::trace::Trace::P4NoBudget);
     let unlimited = PartRdStats { rate: 0, dist: 0, rdcost: i64::MAX };
     let budget_rdc = if no_budget { &unlimited } else { best_rdc };
     // set_4_part_ctx_and_rdcost (:3898-3916).
@@ -2390,7 +2389,7 @@ fn rd_pick_4partition(
         }
         w[i] = winner;
         if part_dbg {
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[pd] mi({},{}) bs{} P4 strip{} at({},{}) sum={} best={} win={}",
                 mi_row,
                 mi_col,
@@ -2445,7 +2444,7 @@ fn rd_pick_4partition(
     // Calculate the total cost and update the best partition (:3962-3967).
     rd_cost_update(env.rdmult, &mut sum_rdc);
     if part_dbg {
-        eprintln!(
+        aom_dsp::trace_out!(
             "[pd] mi({},{}) bs{} P4 final sum={} best={} ok={}",
             mi_row,
             mi_col,
@@ -2781,7 +2780,7 @@ fn rd_pick_ab_part(
         if part_dbg_target().is_some_and(|(r0, c0)| r0 == mi_row && c0 == mi_col)
         {
             let v = visits.last().unwrap();
-            eprintln!(
+            aom_dsp::trace_out!(
                 "[pab] mi({},{}) bs{} AB[{}] sub{} at({},{}) ok={} rate={} dist={} rd={} sum={}",
                 mi_row, mi_col, bsize, ab_type, i, r, c, ok, v.rate, v.dist,
                 v.rdcost, sum_rdc.rdcost
@@ -2964,14 +2963,7 @@ pub(crate) fn set_partition_cost_for_edge_blk(
 /// `AOM_PART_DBG=<mi_row>,<mi_col>` — the one node `rd_pick_partition_real`
 /// dumps per-stage rdcost for; `None` when the var is unset/unparseable.
 fn part_dbg_target() -> Option<(i32, i32)> {
-    use std::sync::OnceLock;
-    static T: OnceLock<Option<(i32, i32)>> = OnceLock::new();
-    *T.get_or_init(|| {
-        std::env::var("AOM_PART_DBG").ok().and_then(|v| {
-            let (r, c) = v.split_once(',')?;
-            Some((r.parse().ok()?, c.parse().ok()?))
-        })
-    })
+    aom_dsp::trace_focus!(aom_dsp::trace::Focus::Part)
 }
 
 pub fn rd_pick_partition_real(
@@ -3351,7 +3343,7 @@ pub fn rd_pick_partition_real(
     macro_rules! pd {
         ($($arg:tt)*) => {
             if part_dbg {
-                eprintln!("[pd] mi({},{}) bs{} {}", mi_row, mi_col, bsize, format_args!($($arg)*));
+                aom_dsp::trace_out!("[pd] mi({},{}) bs{} {}", mi_row, mi_col, bsize, format_args!($($arg)*));
             }
         };
     }

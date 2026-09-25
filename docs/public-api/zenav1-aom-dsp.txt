@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1866 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon) | zenav1-aom-dsp.internal.txt 68 lines (68 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1920 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 72 lines (72 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 8
 
 ## summary
 #
-#   pub modules                                62
-#   pub types (struct/enum/trait/alias)        94
-#   pub consts/statics                        206
-#   pub macros                                  1
-#   free functions                            642
-#   inherent methods                          101
+#   pub modules                                63
+#   pub types (struct/enum/trait/alias)        98
+#   pub consts/statics                        210
+#   pub macros                                  4
+#   free functions                            649
+#   inherent methods                          108
 #   struct fields                             707
-#   enum variants                              13
-#   trait roster entries (type × trait)       266
-#   auto-trait-complete types                  85
-#   auto-trait exceptions                       3
+#   enum variants                              37
+#   trait roster entries (type × trait)       280
+#   auto-trait-complete types                  87
+#   auto-trait exceptions                       4
 #
 # per-module pub lines:
-#   (root)                            3
-#   aom_dsp                        1823
+#   (root)                            8
+#   aom_dsp                        1868
 
-## items (1790 lines)
+## items (1840 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1657,6 +1657,53 @@ pub fn aom_dsp::restore::wiener::conv_params_wiener(i32) -> (i32, i32)
 pub fn aom_dsp::restore::wiener::wiener_convolve_add_src<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
 pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_into<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32, &mut aom_dsp::restore::wiener::WienerScratch)
 pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_scalar(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
+pub mod aom_dsp::trace
+#[non_exhaustive] #[repr(u8)] pub enum aom_dsp::trace::Focus
+pub aom_dsp::trace::Focus::Part
+pub aom_dsp::trace::Focus::Tx = 0
+pub aom_dsp::trace::Focus::Uv
+pub const aom_dsp::trace::Focus::ALL: [aom_dsp::trace::Focus; 3]
+pub const fn aom_dsp::trace::Focus::env_name(self) -> &'static str
+#[non_exhaustive] #[repr(u8)] pub enum aom_dsp::trace::Trace
+pub aom_dsp::trace::Trace::Cdef
+pub aom_dsp::trace::Trace::Ctxb
+pub aom_dsp::trace::Trace::DbgBlocks
+pub aom_dsp::trace::Trace::Dq
+pub aom_dsp::trace::Trace::DqDec
+pub aom_dsp::trace::Trace::Dv
+pub aom_dsp::trace::Trace::Hdr
+pub aom_dsp::trace::Trace::Ibc
+pub aom_dsp::trace::Trace::IbcCoeff
+pub aom_dsp::trace::Trace::IbcWin
+pub aom_dsp::trace::Trace::P4NoBudget
+pub aom_dsp::trace::Trace::Pack
+pub aom_dsp::trace::Trace::Pal
+pub aom_dsp::trace::Trace::Part
+pub aom_dsp::trace::Trace::Sct
+pub aom_dsp::trace::Trace::SctTrial
+pub aom_dsp::trace::Trace::Ssm
+pub aom_dsp::trace::Trace::Sym = 0
+pub aom_dsp::trace::Trace::TimePhases
+pub aom_dsp::trace::Trace::TrellisCalls
+pub aom_dsp::trace::Trace::WSym
+pub const aom_dsp::trace::Trace::ALL: [aom_dsp::trace::Trace; 21]
+pub const fn aom_dsp::trace::Trace::env_name(self) -> &'static str
+#[non_exhaustive] pub struct aom_dsp::trace::TraceConfig
+pub fn aom_dsp::trace::TraceConfig::from_env() -> Self
+pub fn aom_dsp::trace::TraceConfig::is_empty(&self) -> bool
+pub fn aom_dsp::trace::TraceConfig::new() -> Self
+pub fn aom_dsp::trace::TraceConfig::with(self, aom_dsp::trace::Trace) -> Self
+pub fn aom_dsp::trace::TraceConfig::with_focus(self, aom_dsp::trace::Focus, i32, i32) -> Self
+pub fn aom_dsp::trace::TraceConfig::with_hdr_dump(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn aom_dsp::trace::TraceConfig::with_sink(self, aom_dsp::trace::Sink) -> Self
+pub fn aom_dsp::trace::clear()
+pub fn aom_dsp::trace::emit(core::fmt::Arguments<'_>)
+pub fn aom_dsp::trace::enabled(aom_dsp::trace::Trace) -> bool
+pub fn aom_dsp::trace::focus(aom_dsp::trace::Focus) -> core::option::Option<(i32, i32)>
+pub fn aom_dsp::trace::hdr_dump_path() -> core::option::Option<std::path::PathBuf>
+pub fn aom_dsp::trace::install(aom_dsp::trace::TraceConfig)
+pub fn aom_dsp::trace::install_from_env()
+pub type aom_dsp::trace::Sink = alloc::boxed::Box<(dyn core::ops::function::Fn(&str) + core::marker::Send + core::marker::Sync)>
 pub mod aom_dsp::transform
 pub mod aom_dsp::transform::cospi
 pub const aom_dsp::transform::cospi::COS_BIT_MIN: i32
@@ -1819,8 +1866,11 @@ pub fn aom_dsp::txb::write_coeffs_txb(&mut aom_dsp::entropy::enc::OdEcEnc, &mut 
 pub fn aom_dsp::txb::write_coeffs_txb_full(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], &mut [u16], &[i32], usize, usize, usize, usize, usize, usize, bool, bool, bool, bool, usize, usize, bool)
 pub fn aom_dsp::txb::write_tx_type(&mut aom_dsp::entropy::enc::OdEcEnc, &mut [u16], usize, bool, bool, usize, bool, usize, usize, bool)
 pub macro aom_dsp::assert_geometry_agrees!
+pub macro aom_dsp::trace_focus!
+pub macro aom_dsp::trace_on!
+pub macro aom_dsp::trace_out!
 
-## trait impls (72 types)
+## trait impls (75 types)
 
 F: aom_dsp::entropy::dv_ref::DvNbr> aom_dsp::entropy::dv_ref::DvGrid
 aom_dsp::census::Counts: Clone, Debug, Eq, PartialEq
@@ -1887,6 +1937,9 @@ aom_dsp::recon::ReconScratch: Clone, Debug, Default
 aom_dsp::restore::pick::LrSearchOutcome: Clone, Debug, Default
 aom_dsp::restore::pick::LrSearchSf: Clone, Copy, Debug, Default
 aom_dsp::restore::wiener::WienerScratch: Clone, Default
+aom_dsp::trace::Focus: Clone, Copy, Debug, Eq, Hash, PartialEq
+aom_dsp::trace::Trace: Clone, Copy, Debug, Eq, Hash, PartialEq
+aom_dsp::trace::TraceConfig: Debug, Default
 aom_dsp::transform::inv_txfm2d::InvTxfmScratch: Clone, Debug, Default
 aom_dsp::transform::txfm2d::FwdTxfmScratch: Clone, Debug, Default
 aom_dsp::txb::ExtTxDeriv: Debug, Eq, PartialEq
@@ -1897,10 +1950,11 @@ u8: aom_dsp::cdef::frame::CdefPixel, aom_dsp::restore::pick::LrPixel
 
 ## auto traits
 
-85 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+87 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBuf<'a>: !UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBufU8<'a>: !UnwindSafe
 aom_dsp::restore::frame::LrPlaneInput<'a>: !UnwindSafe
+aom_dsp::trace::TraceConfig: !RefUnwindSafe !UnwindSafe
 ## arch shapes (8 shapes: 2 on every recorded arch, 6 arch-unique)
 
 [x86_64] pub const aom_dsp::restore::pick::LrPixel::LD16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[Self; 16]) -> core::core_arch::<arch>::__m256i
