@@ -1934,19 +1934,36 @@ const MAX_PREDICT_SF_TX_SIZE: [usize; 22] = [
     0, 5, 6, 1, 7, 8, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 13, 14, 1, 1, 2, 2,
 ];
 
-/// `predict_skip_levels[use_skip_flag_prediction][MODE_EVAL]`
-/// (speed_features.c:120-122 into rdopt_utils.h:584-587): the intra mode
-/// search — and therefore `rd_pick_intrabc_mode_sb` — runs under MODE_EVAL
-/// params (`set_mode_eval_params`, rdopt.c:4456). ALLINTRA's cascade sets
-/// `use_skip_flag_prediction = 2` at `speed >= 3` (speed_features.c:459;
-/// `init_tx_sf`'s default is 1 at :2459), so MODE_EVAL's level is 2 from
-/// speed 3 — where C's predicate is the FULL-SSE gate below with NO
-/// DCT-coeff check at all. GOOD's `sharpness == 3 → 0` (:1505) and RT's
-/// :2033 are unreachable in this envelope (usage is pinned ALLINTRA).
+/// `predict_skip_levels[use_skip_flag_prediction]` (speed_features.c:120-122
+/// into `set_mode_eval_params`, rdopt_utils.h:584-587): MODE_EVAL_TYPES is
+/// `{DEFAULT_EVAL, MODE_EVAL, WINNER_MODE_EVAL}` (rd.h:95-99). ALLINTRA's
+/// cascade sets `use_skip_flag_prediction = 2` at `speed >= 3`
+/// (speed_features.c:459; `init_tx_sf`'s default is 1 at :2459). GOOD's
+/// `sharpness == 3 → 0` (:1505) and RT's :2033 are unreachable in this
+/// envelope (usage is pinned ALLINTRA).
+const PREDICT_SKIP_LEVELS: [[u32; 3]; 3] = [[0, 0, 0], [1, 1, 1], [1, 2, 1]];
+
+fn use_skip_flag_prediction(speed: i32) -> usize {
+    if speed >= 3 { 2 } else { 1 }
+}
+
+/// Column MODE_EVAL — the intra mode search's `predict_skip_txfm` level
+/// (intra_mode_search.c:1553 `set_mode_eval_params(MODE_EVAL)`): 2 at
+/// allintra speed >= 3, where C's gate is the full SSE with no DCT check.
 pub fn skip_txfm_level_mode_eval(speed: i32) -> u32 {
-    const PREDICT_SKIP_LEVELS: [[u32; 3]; 3] = [[0, 0, 0], [1, 1, 1], [1, 2, 1]];
-    let use_skip_flag_prediction = if speed >= 3 { 2usize } else { 1 };
-    PREDICT_SKIP_LEVELS[use_skip_flag_prediction][1]
+    PREDICT_SKIP_LEVELS[use_skip_flag_prediction(speed)][1]
+}
+
+/// Column DEFAULT_EVAL — `rd_pick_intrabc_mode_sb`'s level: `pick_sb_modes`
+/// resets `set_mode_eval_params(DEFAULT_EVAL)` at rdopt.c:3666 immediately
+/// before the intrabc call (rdopt.c:3688), and rd.h:94 calls DEFAULT_EVAL
+/// "e.g. intrabc". = 1 at every allintra speed — the mse gate PLUS the
+/// per-subblock DCT-coeff check below. (At level 2 the port under-fired
+/// predict_skip, ran the coeff arm, and lost skip to the block-level
+/// `skip_txfm_rd <= no_skip_txfm_rd` overwrite — the screen_512 mi(23,80)
+/// divergence.)
+pub fn skip_txfm_level_default_eval(speed: i32) -> u32 {
+    PREDICT_SKIP_LEVELS[use_skip_flag_prediction(speed)][0]
 }
 
 /// `predict_skip_txfm` (tx_search.c:183). `residual` is the block's src−pred
@@ -2144,11 +2161,10 @@ pub struct IntrabcVarTxKnobs {
     pub use_transform_domain_distortion: u8,
     /// DEFAULT_EVAL `txfm_params->tx_domain_dist_threshold`.
     pub tx_domain_dist_threshold: u32,
-    /// MODE_EVAL `txfm_params->skip_txfm_level`
-    /// (`predict_skip_levels[use_skip_flag_prediction][MODE_EVAL]` —
-    /// [`skip_txfm_level_mode_eval`]): 1 at allintra speeds 0..=2, 2 at
-    /// speed >= 3, where `predict_skip_txfm`'s gate is the full SSE with no
-    /// DCT-coeff check.
+    /// DEFAULT_EVAL `txfm_params->skip_txfm_level`
+    /// (`predict_skip_levels[use_skip_flag_prediction][DEFAULT_EVAL]` —
+    /// [`skip_txfm_level_default_eval`]): 1 at every allintra speed — the
+    /// intrabc arm runs under DEFAULT_EVAL params (rdopt.c:3666 → 3688).
     pub skip_txfm_level: u32,
     /// DEFAULT_EVAL `txfm_params->predict_dc_level` (1 at allintra speed >= 6).
     pub predict_dc_level: u32,
@@ -2446,6 +2462,15 @@ pub fn rd_pick_intrabc_mode_sb(
         // --- av1_txfm_search RD (rdopt.c:3606-3614) ---
         let rate_mv = mv_bit_cost_sub(dv_r, dv_c, ref_r, ref_c, a.dv_costs);
         let rate_mode = a.intrabc_cost[1];
+        static IBC_MV_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *IBC_MV_TRACE.get_or_init(|| std::env::var_os("IBC_TRACE").is_some()) {
+            eprintln!(
+                "[r-mv] mi({},{}) dv=({},{}) ref=({},{}) rate_mv={} \
+                 intrabc_cost={} mode_rate={} skip_ctx={} skip1={}",
+                a.mi_row, a.mi_col, dv_r, dv_c, ref_r, ref_c, rate_mv, rate_mode,
+                rate_mode + rate_mv, a.skip_ctx, a.skip_costs[a.skip_ctx][1]
+            );
+        }
 
         // Prediction into scratch (luma + chroma from the recon at the DV).
         let mut pred_y = vec![0u16; bw * bh];
@@ -2619,6 +2644,15 @@ pub fn rd_pick_intrabc_mode_sb(
             // `if (rd_stats_y->rate == INT_MAX) return 0` (tx_search.c:3834).
             if !r.valid || r.rate == i32::MAX {
                 continue;
+            }
+            if *IBC_MV_TRACE.get_or_init(|| std::env::var_os("IBC_TRACE").is_some()) {
+                eprintln!(
+                    "[r-arms] mi({},{}) dv=({},{}) y_rate={} y_skip={} dist={} sse={} \
+                     leaves={:?}",
+                    a.mi_row, a.mi_col, dv_r, dv_c, r.rate, r.skip_txfm, r.dist,
+                    r.sse,
+                    r.leaves.iter().map(|l| (l.eob, l.tx_size, l.tx_type, l.skip_txfm)).collect::<Vec<_>>()
+                );
             }
             // xd->tx_type_map: each winning leaf stamps its tx-unit footprint
             // (tx_search.c:2208 writes the type at every unit of the txb).

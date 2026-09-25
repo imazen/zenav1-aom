@@ -15,9 +15,9 @@ fn main() {
     for b in &t.blocks {
         let i = &b.info;
         println!(
-            "[pleaf] mi({},{}) bs={} part={} mode={} ibc={} skip={} tx={} pal={:?} txbs={:?}",
+            "[pleaf] mi({},{}) bs={} part={} mode={} ibc={} dv=({},{}) skip={} tx={} pal={:?} txbs={:?}",
             b.mi_row, b.mi_col, b.bsize, b.partition, i.y_mode, i.use_intrabc,
-            i.skip, b.tx_size, i.palette_size, b.txbs
+            i.dv_row, i.dv_col, i.skip, b.tx_size, i.palette_size, b.txbs
         );
     }
     eprintln!("leaves={} tree={}", t.blocks.len(), t.tree.len());

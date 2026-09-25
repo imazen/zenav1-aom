@@ -1652,12 +1652,13 @@ fn leaf_pick_sb_modes(
                 } else {
                     cfg.pol.inter_tx_size_init_depth_sqr
                 },
-                // MODE_EVAL `skip_txfm_level` — `use_skip_flag_prediction` is
-                // LIVE here, not vestigial: it indexes `predict_skip_levels`
-                // into `skip_txfm_level[MODE_EVAL]` (2 at allintra speed >= 3,
-                // where `predict_skip_txfm`'s gate is the full SSE, no DCT
-                // check — the screen_512 divergence class).
-                skip_txfm_level: crate::intrabc_search::skip_txfm_level_mode_eval(
+                // DEFAULT_EVAL `skip_txfm_level` — `use_skip_flag_prediction`
+                // indexes `predict_skip_levels` column 0 (= 1 at every
+                // allintra speed): `pick_sb_modes` resets to DEFAULT_EVAL at
+                // rdopt.c:3666 immediately before `rd_pick_intrabc_mode_sb`
+                // (rdopt.c:3688). NOT MODE_EVAL — the intra-mode-search
+                // column (2 at speed >= 3) under-fires predict_skip here.
+                skip_txfm_level: crate::intrabc_search::skip_txfm_level_default_eval(
                     cfg.speed,
                 ),
                 // DEFAULT_EVAL columns (`cfg.pol` is the DEFAULT_EVAL policy):
