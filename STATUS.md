@@ -21,7 +21,9 @@ are x86-64-only, KB-ARM-FLOAT root #3's resolution; the lowbd fuzz compared a pi
 scalar port against the NEON oracle — now pin-aware. The five encode-level `_c`-chain
 tests (libaom's NEON quantize is not bit-exact with its own `_c`; the port mirrors NEON)
 assert on the forced-scalar ARM leg only until NEON-chain oracle shims exist — OPEN,
-queued T3. Verification is the next ARM CI run.
+queued T3. **Verified: run 36107492113 on `4e760d4` is green on every job** — both x86-64
+differential legs, both aarch64 legs, the four portability targets, rustfmt and the
+public-API check — the first fully green CI run since the branch began on 2026-08-05.
 
 **First CI verdict on the merged code:** the `portability i686` leg failed at the
 build step — `aom-dsp/src/sse_neon.rs` re-exported `imp::*` from a module that exists
