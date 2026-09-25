@@ -77,6 +77,14 @@ fn lowbd_lpf_v3_matches_real_sse2_kernels() {
     // process-wide between permutations — without this lock `summon()` can
     // observe a transiently-disabled v3 and the assert below flakes.
     let _token_guard = archmage::testing::lock_token_testing();
+    // Under AOM_FORCE_SCALAR the port runs its `_c`-shape body (contract:
+    // `lpf_diff` / `loopfilter_lowbd_diff` vs the real `_c`); the SSE2 mirror,
+    // which genuinely differs from `_c` at the bl=255 saturation corner, is
+    // asserted on the unpinned leg. Read the pin before the summon probe.
+    if aom_dsp::dispatch::scalar_forced() {
+        eprintln!("scalar pin: the SSE2 mirror is asserted on the unpinned leg; skipping");
+        return;
+    }
     assert!(
         archmage::X64V3Token::summon().is_some(),
         "test requires a v3-capable host"

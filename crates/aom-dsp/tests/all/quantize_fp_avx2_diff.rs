@@ -56,6 +56,16 @@ fn perm_pair(rng: &mut Rng, n: usize) -> (Vec<i16>, Vec<i16>) {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn quantize_fp_v3_bit_identical_to_real_avx2_full_domain() {
+    // Under AOM_FORCE_SCALAR the dispatcher runs the port's `_c`-shape body,
+    // whose contract is `quantize_fp_diff` (vs the real `_c`); the AVX2 mirror
+    // is this test's contract and it is asserted on the unpinned leg. Read the
+    // pin FIRST: reading it applies it, and a `summon()` probe before that
+    // sees a live token, dispatches scalar, and compares scalar against AVX2
+    // (MEASURED red on the scalar-pin leg, 2026-09-24).
+    if aom_dsp::dispatch::scalar_forced() {
+        eprintln!("scalar pin: the AVX2 mirror is asserted on the unpinned leg; skipping");
+        return;
+    }
     if archmage::X64V3Token::summon().is_none() {
         eprintln!("no v3 token on this host; skipping");
         return;

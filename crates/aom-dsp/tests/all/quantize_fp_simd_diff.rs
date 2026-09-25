@@ -161,6 +161,15 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
         use archmage::SimdToken;
         assert!(archmage::NeonToken::summon().is_some());
     }
+    // Read (and, on the first call, APPLY) the scalar pin BEFORE enumerating
+    // permutations — the documented order. The pin disables every token on
+    // its first `scalar_forced()` call; if that first call happens INSIDE a
+    // permutation (from the first kernel dispatched), the harness's token
+    // state changes mid-permutation and `[all enabled]` compares a scalar
+    // dispatch against the C-avx2 oracle. MEASURED red on the scalar-pin leg
+    // 2026-09-24 ("[all enabled] prod n=16 ls=0 rep=0: eob (vs C-avx2)");
+    // deterministic with the pin read here first.
+    let _pinned = aom_dsp::dispatch::scalar_forced();
     let sizes = [16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096];
     // Counts permutations in which a VECTOR tier is actually live. Asserting
     // only `permutations_run >= 2` is satisfiable with ZERO of them, which is
@@ -172,6 +181,9 @@ fn quantize_fp_simd_bit_identical_to_scalar_at_every_tier() {
         // Per-architecture: this family's vector path is X64V3 on x86-64 and
         // Neon on aarch64. Testing only X64V3Token counts every aarch64
         // permutation as scalar (that token is a stub off x86).
+        // Token state is what routes this family (the harness re-enables
+        // tokens per permutation; the pin only decides the INITIAL state), so
+        // "vector live" is exactly "token summonable" — under the pin too.
         let v3_live = if cfg!(target_arch = "aarch64") {
             archmage::NeonToken::summon().is_some()
         } else {

@@ -105,6 +105,11 @@ fn highbd_filter_intra_edge_at_byte_identical() {
     // region must match the scalar C oracle byte-for-byte, and the kernel's
     // C-faithful side-effect writes land at buf[off-1] / buf[off+sz..+8].
     let mut rng = Rng(0x_5a1d_1ab1_e000_7777);
+    // The p[-1] / tail-splat side effects are the C-SSE4 sliding-window
+    // kernel's, which the v3 tier mirrors; the scalar body (what the pin
+    // dispatches) writes only the edge, like `_c`. The edge-region identity
+    // below is asserted under both dispatch modes.
+    let pinned = aom_dsp::dispatch::scalar_forced();
     const OFF: usize = 15; // production DIR_PAD - 1
     for &bd in &[8u8, 10, 12] {
         let max = (1u32 << bd) - 1;
@@ -123,7 +128,7 @@ fn highbd_filter_intra_edge_at_byte_identical() {
                         b.as_slice(),
                         "hbd filter_at edge bd={bd} sz={sz} s={strength}"
                     );
-                    if strength != 0 {
+                    if strength != 0 && !pinned {
                         // C-SSE4 side effects: p[-1] = p[0], p[sz..sz+8] splat.
                         assert_eq!(a[OFF - 1], orig[OFF], "p[-1] write");
                         assert!(

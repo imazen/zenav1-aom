@@ -42,6 +42,16 @@ fn block_error_differential() {
 /// where `_c` does not. This pins the port against the dispatched kernel.
 #[test]
 fn block_error_matches_c_avx2_full_domain() {
+    // Under AOM_FORCE_SCALAR the port runs its C-faithful scalar body, whose
+    // C twin (`av1_block_error_c`) is signed-overflow UB on this full-i32
+    // domain (KB-ARM-FLOAT root #3) — there is no valid scalar oracle for
+    // these inputs. The scalar contract is `block_error_matches_c` above at
+    // 14-bit magnitudes; the full-domain AVX2 contract is asserted here on the
+    // unpinned leg.
+    if aom_dsp::dispatch::scalar_forced() {
+        eprintln!("scalar pin: full-i32-domain AVX2 mirror asserted on the unpinned leg; skipping");
+        return;
+    }
     let mut rng = Rng(0x_b10c_e770_a0c2_5ed0);
     for &n in &[16usize, 64, 256, 1024] {
         for i in 0..4000 {
