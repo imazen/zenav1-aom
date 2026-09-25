@@ -373,7 +373,6 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
       - run: cargo fmt --manifest-path apidoc/Cargo.toml --check
-      - run: cargo fmt --all --manifest-path benchmarks/xbench/Cargo.toml --check
 
   public-api:
     name: public API surface + crates.io publishability

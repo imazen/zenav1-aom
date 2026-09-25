@@ -331,20 +331,20 @@ perf-profile SIDE REPS="6":
     perf record -F 499 --call-graph fp -o "$HOME/tmp/perf_{{SIDE}}.data" -- ./target/release/examples/eprof_x86 {{SIDE}} "${W:-1024}" "${H:-1024}" "${CQ:-27}" "${SPEED:-3}" {{REPS}}
     perf report -i "$HOME/tmp/perf_{{SIDE}}.data" --no-children --percent-limit 0.3 --stdio 2>/dev/null | grep -vE '^#|^$' | head -60
 
-# rustfmt, default style, whole tree (workspace + the two nested cargo
-# workspaces). Landed 2026-09-25 as one commit (see .git-blame-ignore-revs);
+# rustfmt, default style, whole tree (workspace + the apidoc nested workspace;
+# benchmarks/xbench is NOT included — its drivers path-depend on sibling repos
+# (zenav1-svt, zenrav1e, ...) so `cargo metadata`, which `cargo fmt` needs,
+# fails on any checkout without them, as CI's first rustfmt run showed). Landed 2026-09-25 as one commit (see .git-blame-ignore-revs);
 # before it the tree carried ~1,700 rustfmt diffs, so `cargo fmt -p` on any
 # crate was unusable as a per-edit tool — it reformatted the whole crate.
 # `fmt-check` is a gate-landing step and its own CI job; it is 2 s.
 fmt:
     cargo fmt --all
     cargo fmt --manifest-path apidoc/Cargo.toml
-    cargo fmt --all --manifest-path benchmarks/xbench/Cargo.toml
 
 fmt-check:
     cargo fmt --all --check
     cargo fmt --manifest-path apidoc/Cargo.toml --check
-    cargo fmt --all --manifest-path benchmarks/xbench/Cargo.toml --check
 
 # ---------------------------------------------------------------------------
 # C-oracle instrumentation (docs/upstream-instrumentation/README.md).
