@@ -5,7 +5,7 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
-### KB-69 — Encoder: the KB-50 peak-memory estimate under-stated the measured peak by up to 3.2x — the perf programme added a per-PIXEL retention term the model had no slot for — FIXED ✅ 2026-09-24 (speed-, chroma- and thread-aware model; 22/22 grid cells bounded, worst slack 4.84x)
+### KB-69 — Encoder: peak memory grew ~4x over main (222 MB vs 54.5 MB at 1024² s0) from the perf programme's per-leaf payload retention, and the KB-50 estimate under-stated it by up to 3.2x — BOTH FIXED ✅ 2026-09-24 (retention compacted 222 -> 66.7 MB, byte-identical, ~1 % faster; model re-fitted, 22/22 cells bounded, slack 1.34x..3.21x)
 
 **Symptom.** `encode_limits_and_estimate::the_estimate_is_an_upper_bound_and_stays_honest`
 failed at HEAD `973f503`: `256x256: the estimate UNDER-states the measured peak
@@ -44,11 +44,47 @@ grid before asserting; every cell bounded, worst slack 4.84x (256 bd12) under th
 honesty ceiling, 1x1 at 3.96x. The companion test's bar is 1.5x with the dilution
 explained in place.
 
-**What this does NOT do:** reduce the memory. 218 MB for a 1 MP still at the shipping
-preset is a product number zenavif will see (`docs/COVERAGE_QUEUE.md` T2 candidate:
-bound the retention — free each leaf's payload once its tile is packed, or retain
-`TxbsVec` only up to `eob`). The estimate is now honest about it; making it small is a
-perf-vs-memory decision that was not taken here.
+**Second half, the memory itself (same day).** The user's call: more memory than main
+is a bug. What the pack replay actually reads of a retained `LeafEncodeOut` is `tx_type`,
+`eob`, three ctx bytes and `qcoeff` per txb (`pack.rs`'s coefficient writer and
+`stamp_leaf_ctx`; both return before touching coefficients when `eob == 0`). What it
+retained was the whole working form: `qcoeff ‖ dqcoeff` in a 256-byte inline
+`SmallVec` even for a 4x4, `ta`/`tl` context arrays, a `Vec` per plane, all inline in
+`LeafWinner` so every partition candidate clone carried ~300 bytes of it. On noise
+content at 1 MP (85k leaves, mostly 4x4) that was ~1.6 KB per leaf.
+`encode_sb::RetainedLeaf` is the compact form: 12-byte `RetainedTxb` headers plus ONE
+coefficient slab per leaf holding only eob > 0 levels, stored `i16` whenever every level
+fits (always at bd8) and `i32` otherwise, `Box`ed on the winner; `pack_leaf` inflates
+it into a working `LeafEncodeOut` for the one leaf being packed and never stores the
+inflated form back. Unit test round-trips every pack-visible field.
+
+**Measured, same 22-cell grid, bytes above the caller's planes:**
+
+| cell | before | after | `origin/main` (`1434bc3`, measured) |
+|---|---|---|---|
+| 1024² s0 | 221,980,364 | 66,631,460 | 54,539,928 |
+| 1024² s3 (ship) | 217,916,364 | 65,870,636 | — |
+| 1024² s6 | 168,342,524 | 42,820,716 | — |
+| 1024² 4:4:4 s6 | 218,572,700 | 52,437,820 | 41,906,184 |
+| 256² s6 | 11,255,676 | 3,084,500 | 3,005,572 |
+| 256² s0 | 13,956,748 | 4,526,588 | 3,803,924 |
+| 256² s9 | 10,481,508 | 2,804,268 | 2,754,604 |
+| 256² mono | 4,982,568 | 2,435,560 | 2,628,692 |
+| 256² bd12 | 4,015,048 | 1,813,112 | 2,447,988 |
+| 64x8320 s9 | 110,248,852 | 46,059,556 | 57,243,100 |
+| 8320x64 s9 | 56,323,545 | 15,880,853 | 16,277,537 |
+| 1x1 | 440,372 | 435,392 | 622,072 |
+
+So the branch is now at or below main everywhere except the full-RD band on dense
+content (+22 % at 1024² s0, +19 % at 256² s0), where the residual is the retained
+quantized levels themselves (~10 MB of `i16` at the 1 MP noise cell), i.e. the price of
+replaying the pack instead of re-encoding it. heaptrack at the compacted 1 MP s0 cell:
+partition tree 14.9 MB (also on main), retention slabs + headers ~32 MB before the `i16`
+narrowing. Encode time on the ship cell, interleaved 3x4 reps: before 2018..2022 ms,
+after 1989..2005 ms (~1 % faster; the inflate is cheaper than the `SmallVec` pairs it
+replaces), bytes identical (40,237). Model re-fitted to the compacted grid: 1 MiB +
+padded x 16 + px x (56 | 32 by speed band + 8 x samples-per-pixel) + 1 MiB per extra
+worker; slack 1.34x (1024 s0) .. 3.21x (1x1).
 
 ### KB-68 — Encoder: real screen content diverges at an IntraBC leaf — CLOSED ✅ 2026-09-24 (byte-identical at `347a8c8`)
 
