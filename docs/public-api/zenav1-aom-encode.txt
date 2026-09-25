@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 288 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-encode.internal.txt 4931 lines (332 hidden + 7713 excluded-feature)
+# files: zenav1-aom-encode.txt 289 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-encode.internal.txt 4931 lines (332 hidden + 7713 excluded-feature)
 # arch-unique surface: aarch64 39
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        28
 #   pub consts/statics                         11
 #   free functions                             24
-#   inherent methods                           27
+#   inherent methods                           28
 #   struct fields                             139
 #   enum variants                              25
 #   re-exports                                  1
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            7
-#   aom_encode                      250
+#   aom_encode                      251
 
-## items (257 lines)
+## items (258 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -162,6 +162,7 @@ pub fn aom_encode::key_frame::KeyFrameConfig::estimate(&self) -> aom_encode::key
 pub fn aom_encode::key_frame::KeyFrameConfig::num_planes(&self) -> usize
 pub fn aom_encode::key_frame::KeyFrameConfig::padded_plane_geometry(&self) -> (usize, usize)
 pub fn aom_encode::key_frame::KeyFrameConfig::profile(&self) -> i32
+pub fn aom_encode::key_frame::KeyFrameConfig::resolved_threads(&self) -> usize
 pub fn aom_encode::key_frame::KeyFrameConfig::validate_configuration(&self) -> core::result::Result<(), aom_encode::key_frame::KeyFrameError>
 #[non_exhaustive] pub struct aom_encode::key_frame::KeyFramePlanes<'a>
 pub aom_encode::key_frame::KeyFramePlanes::u: &'a [u16]

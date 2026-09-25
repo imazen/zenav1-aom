@@ -979,9 +979,36 @@ impl KeyFrameConfig {
     pub fn estimate(&self) -> EncodeEstimate {
         let (stride, buf_h) = self.padded_plane_geometry();
         let padded = (stride as u64).saturating_mul(buf_h as u64);
+        let px = (self.width as u64).saturating_mul(self.height as u64);
+        // Coded samples per pixel, doubled to stay integral: mono 2, 4:2:0 3,
+        // 4:2:2 4, 4:4:4 6.
+        let spp_x2: u64 = if self.monochrome {
+            2
+        } else {
+            2 + 4 / (1u64 << (self.ss_x + self.ss_y).min(2))
+        };
+        let per_px = ESTIMATE_LEAF_BYTES_PER_PIXEL(self.cpu_used)
+            .saturating_add(ESTIMATE_LEAF_BYTES_PER_SAMPLE_X2.saturating_mul(spp_x2) / 2);
+        let workers = self.resolved_threads() as u64;
         EncodeEstimate {
             peak_memory_bytes: ESTIMATE_FIXED_BYTES
-                .saturating_add(padded.saturating_mul(ESTIMATE_BYTES_PER_PADDED_SAMPLE)),
+                .saturating_add(padded.saturating_mul(ESTIMATE_BYTES_PER_PADDED_SAMPLE))
+                .saturating_add(px.saturating_mul(per_px))
+                .saturating_add(
+                    workers
+                        .saturating_sub(1)
+                        .saturating_mul(ESTIMATE_BYTES_PER_EXTRA_WORKER),
+                ),
+        }
+    }
+
+    /// The worker count an encode of this configuration will actually use:
+    /// `threads`, or the host's available parallelism for `threads == 0`.
+    pub fn resolved_threads(&self) -> usize {
+        if self.threads == 0 {
+            std::thread::available_parallelism().map_or(1, |n| n.get())
+        } else {
+            self.threads
         }
     }
 
@@ -1305,20 +1332,54 @@ fn num_bits_for_dim(dim: i32) -> u32 {
 }
 
 /// Fixed overhead of any encode, in bytes — the tables, contexts and scratch
-/// that do not scale with the frame. MEASURED at **610,974 B** for a 1x1 frame;
-/// rounded up to 1 MiB.
+/// that do not scale with the frame. MEASURED at **440,372 B** for a 1x1 frame
+/// (2026-09-24; 610,974 B when first fitted); rounded up to 1 MiB.
 const ESTIMATE_FIXED_BYTES: u64 = 1 << 20;
 
-/// Bytes per PADDED luma sample (see
-/// [`KeyFrameConfig::padded_plane_geometry`]). MEASURED across a 24-cell grid
-/// spanning 1x1..2048x2048, both aspect extremes (8320x64 and 64x8320), all
-/// four chroma formats, bd 8/10/12, SB64 and SB128, and `--cpu-used` {0, 6, 9}:
-/// the observed range is **21.5 .. 37.2** bytes per padded sample, worst at
-/// 1024x1024 `--cpu-used 0`. 64 is an upper bound with margin, not a fit — the
-/// number this feeds is documented as a bound, and the gate asserts BOTH that
-/// it is never under and that it never exceeds the measured peak by more than
-/// `ESTIMATE_MAX_SLACK`, so it cannot decay into "return a huge number".
-const ESTIMATE_BYTES_PER_PADDED_SAMPLE: u64 = 64;
+/// Bytes per PADDED luma sample — the plane buffers, recon, CDEF/LR staging
+/// and everything else keyed on [`KeyFrameConfig::padded_plane_geometry`].
+/// MEASURED 2026-09-24 from the aspect-extreme pair (8320x64 vs 64x8320:
+/// identical pixel count, 2.10M more padded samples on the tall cell,
+/// 53.9 MB more peak) at **25.7 B/padded sample**; 32 is the bound.
+///
+/// **History, so nobody re-derives it:** the 2026-09-08 fit was a single
+/// padded-sample term at 64 B (observed 21.5..37.2). Between 2026-09-15 and
+/// 2026-09-17 the perf programme made the encoder retain state per coded LEAF
+/// for the whole frame — `e1a97fe` keeps every intra leaf's coefficient
+/// payload (`EncodeIntraPlaneOutcome`, `encode_intra.rs`) so the pack pass
+/// replays instead of re-encoding, and the partition tree keeps each leaf's
+/// outcome (`SbTree`, `partition_pick.rs`) — which is a per-PIXEL term the
+/// old model had no slot for. heaptrack at 1024x1024 `--cpu-used 0`
+/// (225 MB process peak): retained plane outcomes 72 MB, the y/u/v walk
+/// outputs 65 MB, the partition tree 25 MB. The estimate under-stated
+/// 256x256 by 1.8x for nine days; `encode_limits_and_estimate` caught it the
+/// first time the workspace gate ran on the branch.
+const ESTIMATE_BYTES_PER_PADDED_SAMPLE: u64 = 32;
+
+/// Bytes per coded PIXEL retained for the frame, by speed band. MEASURED
+/// 2026-09-24 (`(peak - fixed) / pixels`, 4:2:0, bd8): `--cpu-used` 0/3 =
+/// 197..211 at 256²..1024², 6 = 156..179, 9 = 104..144. The full-RD band
+/// (<= 5) keeps winner/tx-type maps the fast bands drop. Bounds with ~1.4x
+/// margin: 240 + chroma term below for <= 5, 180 + chroma for >= 6.
+#[allow(non_snake_case)]
+const fn ESTIMATE_LEAF_BYTES_PER_PIXEL(cpu_used: i32) -> u64 {
+    if cpu_used <= 5 {
+        240
+    } else {
+        180
+    }
+}
+
+/// The chroma share of the per-pixel term, per coded sample-per-pixel
+/// (doubled: 4:2:0 = 3, 4:4:4 = 6). MEASURED at 1024² `--cpu-used 6`: 4:2:0
+/// 160 B/px against 4:4:4 207 B/px, i.e. ~31 B per extra sample-per-pixel.
+/// 40 x (spp*2)/2: 4:2:0 adds 60, 4:4:4 adds 120, mono adds 40.
+const ESTIMATE_LEAF_BYTES_PER_SAMPLE_X2: u64 = 40;
+
+/// Per additional worker (`threads > 1`): the per-band tile contexts and
+/// scratch each worker owns. MEASURED 2026-09-24 at 1024² (see the
+/// `encode_limits_and_estimate` grid, cells `1024 s3 t4` / `512 s6 t8`).
+const ESTIMATE_BYTES_PER_EXTRA_WORKER: u64 = 4 << 20;
 
 /// The most the estimate may exceed a MEASURED peak by, as a multiple, before
 /// `encode_limits_and_estimate` fails it. Without a ceiling an "upper bound"

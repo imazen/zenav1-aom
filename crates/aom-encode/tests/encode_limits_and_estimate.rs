@@ -124,6 +124,11 @@ fn cell(w: usize, h: usize, bd: u8, mono: bool, sx: usize, sy: usize, sb128: boo
     c
 }
 
+fn threaded(mut c: KeyFrameConfig, threads: usize) -> KeyFrameConfig {
+    c.threads = threads;
+    c
+}
+
 /// THE gate: the estimate bounds the measured peak, and is not absurdly loose.
 #[test]
 fn the_estimate_is_an_upper_bound_and_stays_honest() {
@@ -140,37 +145,56 @@ fn the_estimate_is_an_upper_bound_and_stays_honest() {
         ("256 bd12", cell(256, 256, 12, false, 1, 1, false, 6)),
         ("256 sb128", cell(256, 256, 8, false, 1, 1, true, 6)),
         ("256 s0", cell(256, 256, 8, false, 1, 1, false, 0)),
+        ("256 s3", cell(256, 256, 8, false, 1, 1, false, 3)),
         ("256 s9", cell(256, 256, 8, false, 1, 1, false, 9)),
+        ("512 s6", cell(512, 512, 8, false, 1, 1, false, 6)),
         ("1024 s0", cell(1024, 1024, 8, false, 1, 1, false, 0)),
+        ("1024 s3", cell(1024, 1024, 8, false, 1, 1, false, 3)),
+        ("1024 s6", cell(1024, 1024, 8, false, 1, 1, false, 6)),
         ("1024 444", cell(1024, 1024, 8, false, 0, 0, false, 6)),
         // The aspect extremes: `w * h` is identical, the padded geometry is
         // not, and a per-pixel model is wrong by 3x on the second.
         ("8320x64", cell(8320, 64, 8, false, 1, 1, false, 9)),
         ("64x8320", cell(64, 8320, 8, false, 1, 1, false, 9)),
+        // Threaded: each worker owns band contexts + scratch.
+        ("1024 s3 t4", threaded(cell(1024, 1024, 8, false, 1, 1, false, 3), 4)),
+        ("512 s6 t8", threaded(cell(512, 512, 8, false, 1, 1, false, 6), 8)),
     ];
 
+    // Measure EVERY cell before asserting any, so a failure prints the whole
+    // grid (the numbers a re-fit needs) instead of stopping at the first
+    // under-estimate.
     let mut worst_slack = 0.0f64;
     let mut worst_label = "";
     let mut report = String::new();
+    let mut under: Vec<String> = Vec::new();
     for (label, cfg) in &cells {
         let (peak, _len) = measure_peak(cfg);
         let est = cfg.estimate().peak_memory_bytes;
-        assert!(
-            est >= peak,
-            "{label}: the estimate UNDER-states the measured peak ({est} < {peak}). \
-             An under-estimate is worse than none — a caller sizing a budget \
-             from it will OOM."
-        );
+        let (stride, buf_h) = cfg.padded_plane_geometry();
+        let per_padded = peak as f64 / (stride * buf_h) as f64;
         let slack = est as f64 / peak.max(1) as f64;
+        if est < peak {
+            under.push(format!("{label}: est {est} < peak {peak}"));
+        }
         if slack > worst_slack {
             worst_slack = slack;
             worst_label = label;
         }
         report.push_str(&format!(
-            "  {label:<10} peak {peak:>10} est {est:>10}  slack {slack:.2}x\n"
+            "  {label:<10} peak {peak:>10} est {est:>10}  slack {slack:.2}x  \
+             {per_padded:6.1} B/padded-sample\n"
         ));
     }
     println!("estimate vs measured peak:\n{report}");
+    assert!(
+        under.is_empty(),
+        "the estimate UNDER-states the measured peak on {} cell(s): {:?}. \
+         An under-estimate is worse than none — a caller sizing a budget \
+         from it will OOM.\n{report}",
+        under.len(),
+        under
+    );
     assert!(
         worst_slack <= ESTIMATE_MAX_SLACK,
         "the estimate is too loose at {worst_label} ({worst_slack:.2}x > \
@@ -195,12 +219,17 @@ fn the_padded_geometry_is_why_a_per_pixel_model_fails() {
         measure_peak(&wide).0 as f64 / (wide.width * wide.height) as f64,
         measure_peak(&tall).0 as f64 / (tall.width * tall.height) as f64,
     );
+    // Was `> 2.0x` (measured 3x) until 2026-09-15: the retained per-leaf
+    // payloads added a per-PIXEL term (identical on both cells) that dilutes
+    // the padded-geometry gap — measured 207.0 vs 105.9 B/px (1.95x) at HEAD
+    // 2026-09-24. The estimate now carries BOTH terms (padded + per-pixel);
+    // this pins that the padded term is still real and still large.
     assert!(
-        tp > wp * 2.0,
+        tp > wp * 1.5,
         "the tall cell must cost far more per PIXEL than the wide one \
          ({tp:.1} vs {wp:.1} B/px) — that gap is the 320-sample stride floor \
-         and the superblock alignment, and it is why the estimate is keyed on \
-         `padded_plane_geometry` rather than `width * height`"
+         and the superblock alignment, and it is why the estimate carries a \
+         `padded_plane_geometry` term alongside the per-pixel one"
     );
     // ...and the estimate must track the padded geometry, not the pixels.
     assert!(
