@@ -1,5 +1,41 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## Integration review of `perf/gate3-txfm-i16-batch` + the first real workspace gate on it (2026-09-24)
+
+`docs/INTEGRATION_REVIEW.md` is the full record. The branch (160 commits, 0 behind main)
+had never had `just gate-landing` run on it by any record, and CI never ran on it (the
+workflow triggered only on main/PRs). The first run stopped in 20 s: three aarch64-only
+scratch examples in `aom-dsp` (`89e90f6`) imported NEON-only shims and broke every
+x86-64 `--workspace` build — invisible to `gate-encode`, which does not build examples.
+Then, in order:
+
+- **C instrumentation is versioned** (`docs/upstream-instrumentation/`, two patch sets +
+  a gate inventory; `just upstream-instrument` / `upstream-pristine` / `upstream-check`,
+  the last now the first step of `gate-landing`). The submodule had carried 965 lines of
+  env-gated traces for two weeks behind `.gitmodules`' `ignore = dirty`, and
+  `build.rs`'s SHA-only cache stamp let the instrumented `libaom.a` survive a revert —
+  the stamp now digests the submodule's working-tree diff.
+- **Traces are a runtime API**: `aom_dsp::trace` (`Trace`/`Focus` enums, `install` /
+  `clear`, sink, `trace_on!`/`trace_focus!`/`trace_out!`). The published crates never
+  read the environment on a trace path; `trace-env` (default OFF, on for the harness via
+  `__internals`) keeps `AOM_*` working in-tree. 77 library `eprintln!` sites now go
+  through the sink. Proven: `cargo tree --no-dev-dependencies` has no `trace-env`.
+- **Duplicate test binary** `aom-bench/tests/highbd_inter_decode_envelope.rs` removed.
+- **CI**: nextest on the three differential legs (the same suite measured 57 min ->
+  341 s locally), and pushes to `perf/**`, `fix/**`, `feat/**`, `integrate/**`,
+  `maint/**` now trigger it.
+- **Scalar-pin leg**: five `aom-dsp` mirror differentials compared a scalar dispatch
+  against the C AVX2/SSE2 kernel because they probed the token before the pin was
+  applied — fixed by reading the pin first; no assertion weakened.
+- **OPEN, bisected, not fixed: `e1a97fe` (retained leaf payloads replayed in pack)
+  breaks the KB-50 estimate contract** — 256x256 s6 peaks at 11,255,676 B against an
+  estimate of 6,373,376 B. Blocks the merge until the payloads are bounded or the model
+  is made speed-aware.
+
+Gate at the end: `upstream-check` pristine; `test-next` 1545/1547; `test-next-scalar`
+1545/1547 (the 2 are the estimate pair); `census-gate` 4/4; `test-whereat` 4/4;
+`api-doc-check` green. Public-API snapshots regenerated.
+
 ## KB-68 closed: `screen_512.yuv` byte-identical — IntraBC `predict_skip_txfm` runs DEFAULT_EVAL, not MODE_EVAL (2026-09-24)
 
 The last open real-witness divergence closed in two stacked fixes:
@@ -827,7 +863,7 @@ port's tools-ON config — now `ref_encode_av1_kf_screen_content` with the port'
 resolved knobs, and the palette path is bit-exact under the matched oracle.
 Env-gated hunt tooling kept in-tree (`AOM_TX_DBG`, `AOM_PART_DBG`,
 `AOM_SCT_DBG`, `AOM_HDR_TRACE`/`AOM_HDR_DUMP`); the matching C-side prints are
-`docs/upstream-divergence-debug-2026-09-12.patch` with the submodule reverted
+`docs/upstream-instrumentation/2026-09-12-kb55-58-traces.patch` with the submodule reverted
 to pristine. The `PIN_256x256_speed7` nonrd arm closed the same day as KB-55.
 
 ## The publish window is still OPEN — none of the four names are taken, and the facade has no consumer (2026-09-10)
