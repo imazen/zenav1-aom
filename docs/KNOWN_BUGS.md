@@ -5,6 +5,67 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-70 — aarch64 CI: ten differentials red on the first ARM run of the merged branch — three x86-only contracts and three UB-domain harness draws FIXED ✅ 2026-09-25; the five encode-level `_c`-chain unit tests are asserted on the forced-scalar ARM leg only — OPEN for a NEON-chain oracle (needs ARM hardware)
+
+**Where it came from.** `perf/gate3-txfm-i16-batch` merged into `main` at `75b5abc` with zero
+CI runs in its history (the workflow triggered only on `main`). The first run
+(`36099856469`) went red on the `aarch64 differential` legs: 10 failures under default
+dispatch (1533/1543), 3 under the forced-scalar pin (1540/1543); the x86-64 legs, every
+portability leg but i686 (its own one-line fix, `9c94e50`) and the public-API job were
+green. **Every whole-frame byte gate against the ARM-built `aomenc` passed on both ARM
+legs** (`self_contained_key_frame` 10/10, `encoder_gate_e2e_*`, the bench QM/toggle
+streams), so the port on ARM matches libaom on ARM; what failed is unit-level contracts.
+No ARM hardware was available to this session — everything below is read off the CI
+logs and the code, and the next ARM run is the verification.
+
+**Class 1 — x86-only contracts, gated to x86-64 (3):**
+- `block_error_diff::block_error_matches_c_avx2_full_domain` — the port's vector body
+  mirrors `av1_block_error_avx2`'s `packs_epi32` saturation on every backend, and the
+  test pins it against the *dispatched* C kernel, which on ARM is `_neon` (no such
+  saturation). `#[cfg(target_arch = "x86_64")]`; the in-domain contract is
+  `block_error_matches_c` on every target.
+- `edge_diff::highbd_filter_intra_edge_at_byte_identical` — the `p[-1]` / tail-splat
+  side-effect writes are the C-SSE4 sliding-window shape; NEON writes only the edge.
+  Side-effect asserts now `cfg!(target_arch = "x86_64")`; the edge-region identity is
+  asserted on both.
+- `dir_simd::tests::the_tap_bound_is_load_bearing` — its divergence half proves the
+  i16 tap bound guards a real v3 failure mode; the NEON body widens differently and does
+  not diverge one over the bound. Divergence half x86-64 only; the rejection half runs
+  everywhere.
+
+**Class 2 — harness draws in `_c`'s undefined-behaviour domain (3):**
+- `quantize_b_diff::quantize_b_differential_fuzz` — on aarch64 the test compared against
+  `ref_quantize_b_neon` by `cfg`, i.e. even under `AOM_FORCE_SCALAR`, when the port runs
+  its `_c`-shape scalar body: the NEON oracle's truncating narrow differs from the clamp
+  beyond 16 bits and this fuzz draws 19 (port `±10250` clamped vs NEON-oracle
+  truncated). Oracle is now pin-aware: `_c` helper when pinned, NEON when live — the
+  same fix as the x86 mirror differentials got on 2026-09-24.
+- `highbd_quant_diff::highbd_quantize_b_differential`,
+  `highbd_quant_b_simd_diff::…_at_every_tier` — every ~64th draw injects `i32::MIN`,
+  `i32::MAX`, `±2^27` (the "adv" arm draws full-range `i32`); there
+  `aom_highbd_quantize_b_helper_c`'s `abs_coeff * wt` and its wrapped abs are
+  signed-overflow UB, which the port mirrors AS X86 CLANG EMITS IT (`e0a1b95`), and
+  aarch64 clang emits differently (C gives 0 where x86 gives 1064067850). Real
+  coefficients stay below 2^26. Those lanes are x86-64-only now — KB-ARM-FLOAT root #3
+  is the precedent (same UB class, same resolution).
+
+**Class 3 — the five encode-level `_c`-chain tests, OPEN (5):**
+`encode_block_coeffs_diff`, `encode_block_full_diff`, `xform_quant_diff`,
+`xform_quant_optimize_diff`, `qm_forward_block_diff::forward_qm_block_realistic_matches_c`
+each chain the port's dispatched transform + quantize (+ trellis / QM) against oracles
+that call the `_c` kernels explicitly. On ARM with NEON live the port mirrors libaom's
+NEON quantize, which is NOT bit-exact with libaom's own `_c` in-domain (measured: `±1`
+after trellis at bd8, one coefficient zeroed in an fp block, a QM dqcoeff row). All five
+PASS on the forced-scalar ARM leg. They now early-return on aarch64 unless pinned, with
+a message naming this entry: the `_c`-chain contract is asserted on the scalar leg, the
+dispatched contract by the whole-frame gates. **What closes it:** NEON oracle shims for
+the B/FP/highbd/QM chains (`ref_quantize_b_neon` / `_fp_neon` exist; the rest do not)
+and a tier-aware `fp_oracle`/`b_oracle` like the x86 AVX2 branch those tests already
+have — and the QM dqcoeff row is unexplained (the port's QM path is scalar and passes
+pinned), so it needs a box. Queued in `docs/COVERAGE_QUEUE.md` T3.
+
+**Also fixed from that run:** `portability i686` (`9c94e50`).
+
 ### KB-69 — Encoder: peak memory grew ~4x over main (222 MB vs 54.5 MB at 1024² s0) from the perf programme's per-leaf payload retention, and the KB-50 estimate under-stated it by up to 3.2x — BOTH FIXED ✅ 2026-09-24 (retention compacted 222 -> 66.7 MB, byte-identical, ~1 % faster; model re-fitted, 22/22 cells bounded, slack 1.34x..3.21x)
 
 **Symptom.** `encode_limits_and_estimate::the_estimate_is_an_upper_bound_and_stays_honest`

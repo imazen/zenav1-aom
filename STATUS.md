@@ -11,6 +11,18 @@ whole-tree `cargo fmt --all` commit (333 files; `.git-blame-ignore-revs` lists i
 with `just fmt` / `fmt-check`, `fmt-check` as the second step of `gate-landing`, and a
 `rustfmt --check` CI job that fails in seconds ahead of the 20-minute legs.
 
+**First CI verdict on the merged code, part 2 — the aarch64 legs (KB-70):** 10 red
+differentials under default dispatch, 3 under the pin, every whole-frame byte gate
+against ARM `aomenc` green on both. Read off the logs (no ARM box here): three tests
+pinned x86-only kernel properties (AVX2 saturation, SSE4 side-effect writes, the i16 tap
+bound) and are now x86-64-only; three drew into `_c`'s signed-overflow UB (`i32::MIN`,
+`±2^27`) where aarch64 clang differs from the x86 shape the port mirrors — those lanes
+are x86-64-only, KB-ARM-FLOAT root #3's resolution; the lowbd fuzz compared a pinned
+scalar port against the NEON oracle — now pin-aware. The five encode-level `_c`-chain
+tests (libaom's NEON quantize is not bit-exact with its own `_c`; the port mirrors NEON)
+assert on the forced-scalar ARM leg only until NEON-chain oracle shims exist — OPEN,
+queued T3. Verification is the next ARM CI run.
+
 **First CI verdict on the merged code:** the `portability i686` leg failed at the
 build step — `aom-dsp/src/sse_neon.rs` re-exported `imp::*` from a module that exists
 only on x86-64 (real intrinsics) and aarch64 (NEON twins); on 32-bit x86 there was
