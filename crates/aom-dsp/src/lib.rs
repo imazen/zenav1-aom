@@ -33,6 +33,13 @@ pub mod par;
 pub mod quant;
 pub mod recon;
 pub mod restore;
+// The SSE2/AVX2 intrinsic vocabulary the fused transform kernels are written
+// in: the real `core::arch` module on x86-64, NEON twins on aarch64. Every
+// consumer is gated the same way, so on any other target (i686, wasm32, ...)
+// the module must not exist at all — its `pub(crate) use imp::*` has nothing
+// to re-export there. MEASURED 2026-09-25: CI's `portability i686` leg failed
+// with E0432 on that line the first time it ran on this code.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod sse_neon;
 pub mod trace;
 pub mod transform;

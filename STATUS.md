@@ -11,6 +11,15 @@ whole-tree `cargo fmt --all` commit (333 files; `.git-blame-ignore-revs` lists i
 with `just fmt` / `fmt-check`, `fmt-check` as the second step of `gate-landing`, and a
 `rustfmt --check` CI job that fails in seconds ahead of the 20-minute legs.
 
+**First CI verdict on the merged code:** the `portability i686` leg failed at the
+build step — `aom-dsp/src/sse_neon.rs` re-exported `imp::*` from a module that exists
+only on x86-64 (real intrinsics) and aarch64 (NEON twins); on 32-bit x86 there was
+nothing to re-export (E0432). Every consumer was already arch-gated, so the fix is
+gating the module declaration the same way. Reproduced and verified locally with
+`cargo check --target i686-unknown-linux-gnu` on the four published crates and the
+decode-only stack (`rustup target add` is all it needs; no `cross`). The remaining legs
+of that run were green or still running when this was written.
+
 ## KB-69: the branch's 4x peak-memory growth is CLOSED (222 -> 66.7 MB at 1024² s0 vs main's 54.5) and the estimate is speed-, chroma- and thread-aware (2026-09-24)
 
 The bisected estimate-contract break (`e1a97fe`) is closed by re-fitting the model, not
