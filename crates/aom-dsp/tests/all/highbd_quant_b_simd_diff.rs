@@ -218,8 +218,13 @@ fn highbd_quantize_b_simd_bit_identical_to_c_at_every_tier() {
         }
     });
     eprintln!("highbd quantize_b SIMD parity: {report}");
+    // x86-64 only: `aom_highbd_quantize_b_no_qmatrix` dispatches `[v3, scalar]`
+    // — there is no NEON tier, so on aarch64 every permutation IS the scalar
+    // body against `_c` by construction and nothing vector exists to be
+    // non-vacuous about (CI aarch64 default leg, 2026-09-25: 1541/1542 with
+    // only this guard red).
     assert!(
-        simd_perms >= 1,
+        !cfg!(target_arch = "x86_64") || simd_perms >= 1,
         "the v3/AVX2 permutation must run at least once — a passing run with \
          zero vector permutations compares the scalar path against itself"
     );
