@@ -27,6 +27,13 @@ Verified: `screen_512` 13,423 B = C byte-for-byte; `photo_1024`,
 match_real_aomenc` + `rdopt_skip_diff` + `self_contained_tools`
 (7/7 incl. quality_knobs) green; 129/129 aom-encode lib tests.
 
+**2026-09-24 corpus sweep** (`eprof_yuv` port-vs-C, cq27 s3,
+tools-on, `ref_encode_av1_kf_screen_content` oracle): **164/164
+byte-identical** across gb82-sc 10/10 screen captures (IntraBC-heavy),
+CID22-512 validation 41/41, CLIC2025 training 32/32, kadid10k 81/81 at
+512x384 — zero divergences, including the class KB-68's two fixes
+touched.
+
 ## PGO harvest: source-level capture of the layout win (−6% ship, −2.2% plain) (2026-09-18)
 
 Diverse-corpus PGO (10 cells) bound measured at **−7.4% wall**; harvested
