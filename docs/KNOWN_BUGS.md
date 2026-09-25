@@ -5,7 +5,7 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
-### KB-68 — Encoder: real screen content diverges at an IntraBC leaf — DV-derived txb differs where headers/tools agree — OPEN, measured/attributed/bounded 2026-09-16
+### KB-68 — Encoder: real screen content diverges at an IntraBC leaf — CLOSED ✅ 2026-09-24 (byte-identical at `347a8c8`)
 
 - **Symptom.** Real screen witness `screen_512.yuv` (crop of
   `imazen-26/screen/1440x900/climate__news__1440x900__dpr1.png`), ALLINTRA
@@ -65,6 +65,25 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   propagate to the search-stamped `DvCell.skip_txfm` grid, so a
   downstream intrabc leaf's `skip_ctx` can still read the search-time
   value — a parity (not conformance) gap inside the same KB-68 class.
+- **CLOSED 2026-09-24 — the residual was two stacked mechanisms, both
+  fixed.** (a) `2931675`: the phase-2 repack re-encoded IntraBC leaves
+  into a src-initialized buffer where replayed intra leaves never write
+  reconstruction — a leaf's DV source read src pixels, collapsing its
+  residual to 0 and flipping eob (mi(16,86)); phase 2 now seeds from
+  phase-1's encoder recon, the state C's `write_modes` pass sees.
+  (b) `347a8c8`: the same commit plumbed `predict_skip_levels[..][MODE_EVAL]`
+  (level 2 at speed ≥ 3) into the IntraBC arm — but
+  `rd_pick_intrabc_mode_sb` runs under DEFAULT_EVAL (`pick_sb_modes`
+  resets at rdopt.c:3666 immediately before the call at :3688; rd.h:94
+  names it "e.g. intrabc"). C's intrabc predict is the level-1
+  mse-gate + DCT-check at every allintra speed. The level-2 SSE gate
+  under-fired on a 4x4 leaf at mi(23,80) (dist 123 > thresh 21 vs
+  C's mse 7 passing), letting the coeff arm's block-level
+  `skip_txfm_rd <= no_skip_txfm_rd` overwrite downgrade an all-zero
+  txb — pricing the leaf at rate 22723 vs C's 26418 and winning a
+  SPLIT the C budget rejects at the mi(22,80) parent. With the
+  DEFAULT_EVAL column plumbed the witness is byte-identical
+  (13,423 B = C), photo_1024/photo_512/photo2_512 unchanged.
 
 ### KB-67 — Encoder/mode split: `KeyFrameMode::{LibaomExact, Zenaom}` — the SCM trial lands as the first opt-in zenaom deviation, margin-gated — LANDED 2026-09-13
 

@@ -1,5 +1,32 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## KB-68 closed: `screen_512.yuv` byte-identical — IntraBC `predict_skip_txfm` runs DEFAULT_EVAL, not MODE_EVAL (2026-09-24)
+
+The last open real-witness divergence closed in two stacked fixes:
+- `2931675` — the phase-2 repack re-encoded IntraBC leaves into a
+  src-initialized buffer; replayed intra leaves never write their
+  reconstruction, so a leaf's DV source read src pixels instead of the
+  coded recon (residual → 0 → false eob/skip at mi(16,86)). Phase 2 now
+  seeds from phase-1's encoder recon — the state C's `write_modes`
+  pass sees.
+- `347a8c8` — `2931675`'s `predict_skip_txfm` plumbing indexed the
+  MODE_EVAL column of `predict_skip_levels` (level 2 at allintra
+  speed ≥ 3) into `rd_pick_intrabc_mode_sb` — but `pick_sb_modes`
+  resets `set_mode_eval_params(DEFAULT_EVAL)` at rdopt.c:3666
+  immediately before the intrabc call (rdopt.c:3688); rd.h:94 names
+  DEFAULT_EVAL "e.g. intrabc". C's intrabc predict is the level-1
+  mse-gate + per-subblock DCT check at every allintra speed. The
+  level-2 SSE gate under-fired on a 4x4 leaf at mi(23,80), letting the
+  coeff arm's block-level `skip_txfm_rd <= no_skip_txfm_rd` overwrite
+  downgrade an all-zero txb — pricing the leaf at rate 22723 vs C's
+  26418 and winning a SPLIT at mi(22,80) that C's budget rejects.
+  `skip_txfm_level_default_eval` plumbs column 0.
+
+Verified: `screen_512` 13,423 B = C byte-for-byte; `photo_1024`,
+`photo_512`, `photo2_512` still identical; `screen_content_tools_byte_
+match_real_aomenc` + `rdopt_skip_diff` + `self_contained_tools`
+(7/7 incl. quality_knobs) green; 129/129 aom-encode lib tests.
+
 ## PGO harvest: source-level capture of the layout win (−6% ship, −2.2% plain) (2026-09-18)
 
 Diverse-corpus PGO (10 cells) bound measured at **−7.4% wall**; harvested
