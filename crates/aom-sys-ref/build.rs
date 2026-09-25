@@ -357,10 +357,20 @@ fn build_libaom(upstream: &Path) -> PathBuf {
     };
     let lib = build_dir.join("libaom.a");
     let stamp = build_dir.join(".aom-oracle-sha");
-    // The stamp keys on the submodule SHA *and* the pinned FP flags, so a build
-    // dir produced before ORACLE_FP_CFLAGS existed (or with different flags)
-    // rebuilds instead of being silently reused.
-    let sha = format!("{} {}", current_sha(upstream), ORACLE_FP_CFLAGS);
+    // The stamp keys on the submodule SHA, the pinned FP flags AND a digest of
+    // the submodule's working-tree diff, so a build dir produced before
+    // ORACLE_FP_CFLAGS existed, with different flags, OR from an instrumented
+    // tree (`just upstream-instrument`, docs/upstream-instrumentation/) rebuilds
+    // instead of being silently reused. Found 2026-09-24: the SHA-only stamp
+    // let a libaom.a compiled from 965 lines of env-gated `fprintf` traces
+    // survive `git -C upstream checkout -- .`, so "pristine" linked the
+    // instrumented oracle.
+    let sha = format!(
+        "{} {} {}",
+        current_sha(upstream),
+        ORACLE_FP_CFLAGS,
+        worktree_digest(upstream)
+    );
 
     // Cache (invariant C, the dominant cost): skip the minutes-long cmake build
     // when libaom.a already exists for the current submodule SHA.
@@ -484,6 +494,31 @@ fn current_sha(upstream: &Path) -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| PINNED_SHA.to_string())
+}
+
+/// Stable digest of `git diff HEAD` in the submodule: `"clean"` for a pristine
+/// tree, otherwise a hash of the tracked-file changes (an applied instrumentation
+/// patch). Untracked files are not part of the oracle build and are ignored.
+/// Falls back to `"unknown"` when git is unavailable, which only ever forces a
+/// rebuild, never a stale reuse.
+fn worktree_digest(upstream: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(upstream)
+        .args(["diff", "HEAD", "--", "."])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    match out {
+        Some(o) if o.stdout.is_empty() => "clean".to_string(),
+        Some(o) => {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            o.stdout.hash(&mut h);
+            format!("dirty-{:016x}", h.finish())
+        }
+        None => "unknown".to_string(),
+    }
 }
 
 /// Absolute path to the submodule's `HEAD` file (for rerun tracking), if resolvable.

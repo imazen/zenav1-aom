@@ -157,8 +157,12 @@ delta over a byte-identical tile payload is a header-length bug, not RD.
 
 1. Decode both streams, first divergent block: the `decode_diff_*` / `kb*_localize` tests
    print it.
-2. Dump C's per-block decisions with the instrumented sibling libaom
-   (`docs/HANDOFF-TOGGLES.md`, the ar-swap; for decoder desyncs `/root/aom-inspect`).
+2. Dump C's per-block decisions with the instrumented oracle: `just upstream-instrument`
+   applies a VERSIONED trace set from `docs/upstream-instrumentation/` (README there is
+   the env-gate inventory, C site <-> port `env_flag!` site); `just upstream-pristine`
+   before landing — `gate-landing` refuses a dirty oracle. New prints: add the C side
+   to the tree, the port side via `aom_dsp::env_flag!("AOM_X")`, then save
+   `git -C upstream diff` as a new dated patch. (For decoder desyncs `/root/aom-inspect`.)
 3. Compare RD to the unit at that node; the first field that differs names the root.
 4. Pin self-promoting (`assert_ne!` that fires when the cell closes), fix, bite-prove.
 5. Under the ship cap, a divergence that is measured, attributed, bounded and written down
@@ -182,7 +186,8 @@ non-idle box — take speed from `encbench`, quality/rate from the sweep.
 
 | command | what | wall |
 |---|---|---|
-| `just gate-landing` | ci-yaml + nextest both dispatch modes + census + whereat + api-doc | ~11 min |
+| `just gate-landing` | upstream-check + ci-yaml + nextest both dispatch modes + census + whereat + api-doc | ~11 min |
+| `just upstream-check` / `upstream-instrument` / `upstream-pristine` | oracle pristine? / apply a versioned trace set / revert (both relink) | 1 s / ~30 s / ~30 s |
 | `just gate-encode` | aom-encode + aom-bench integration targets + census (fast pre-check) | ~6 min |
 | `just api-doc-check` | public-API snapshots current (pinned `nightly-2026-09-09`) + crates.io scan | 7 s |
 | `just census-gate` | tool-family reach census on the four harness contents | 6 s |

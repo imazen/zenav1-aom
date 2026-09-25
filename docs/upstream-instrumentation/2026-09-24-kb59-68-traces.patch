@@ -1,0 +1,1583 @@
+diff --git a/aom_dsp/entdec.c b/aom_dsp/entdec.c
+index 5a29cfac6f..c366798693 100644
+--- a/aom_dsp/entdec.c
++++ b/aom_dsp/entdec.c
+@@ -13,6 +13,8 @@
+ #include "aom_dsp/entdec.h"
+ #include "aom_dsp/prob.h"
+ 
++unsigned long aom_sym_seq;
++
+ /*A range decoder.
+   This is an entropy decoder based upon \cite{Mar79}, which is itself a
+    rediscovery of the FIFO arithmetic code introduced by \cite{Pas76}.
+@@ -178,7 +180,14 @@ int od_ec_decode_bool_q15(od_ec_dec *dec, unsigned f) {
+     dif -= vw;
+     ret = 0;
+   }
+-  return od_ec_dec_normalize(dec, dif, r_new, ret);
++  {
++    int out = od_ec_dec_normalize(dec, dif, r_new, ret);
++    if (getenv("AOM_SYM_TRACE")) {
++      extern unsigned long aom_sym_seq;
++      fprintf(stderr, "[bym] %lu v=%d f=%u\n", aom_sym_seq++, out, f);
++    }
++    return out;
++  }
+ }
+ 
+ /*Decodes a symbol given an inverse cumulative distribution function (CDF)
+@@ -219,7 +228,19 @@ int od_ec_decode_cdf_q15(od_ec_dec *dec, const uint16_t *icdf, int nsyms) {
+   assert(u <= r);
+   r = u - v;
+   dif -= (od_ec_window)v << (OD_EC_WINDOW_SIZE - 16);
+-  return od_ec_dec_normalize(dec, dif, r, ret);
++  {
++    int out = od_ec_dec_normalize(dec, dif, r, ret);
++    if (getenv("AOM_SYM_TRACE")) {
++      extern unsigned long aom_sym_seq;
++      {
++        unsigned fp = 0;
++        for (int i = 0; i < nsyms; ++i) fp += (unsigned)(i + 1) * icdf[i];
++        fprintf(stderr, "[sym] %lu v=%d n=%d c=%u\n", aom_sym_seq++, out, nsyms,
++                fp);
++      }
++    }
++    return out;
++  }
+ }
+ 
+ /*Returns the number of bits "used" by the decoded symbols so far.
+diff --git a/av1/common/reconintra.c b/av1/common/reconintra.c
+index 33016a2c24..a5fb9724da 100644
+--- a/av1/common/reconintra.c
++++ b/av1/common/reconintra.c
+@@ -1752,6 +1752,45 @@ void av1_predict_intra_block(const MACROBLOCKD *xd, BLOCK_SIZE sb_size,
+ 
+   const int n_top_px = have_top ? AOMMIN(txwpx, xr + txwpx) : 0;
+   const int n_left_px = have_left ? AOMMIN(txhpx, yd + txhpx) : 0;
++  {
++    // aom-rs divergence debug: edge dump, gated on AOM_TX_DBG + plane 0.
++    static int edbg_r = -2, edbg_c = -2;
++    if (edbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &edbg_r, &edbg_c) != 2) {
++        edbg_r = -1;
++        edbg_c = -1;
++      }
++    }
++    const int mi_r = -xd->mb_to_top_edge >> (3 + MI_SIZE_LOG2);
++    const int mi_c = -xd->mb_to_left_edge >> (3 + MI_SIZE_LOG2);
++    if (plane == 0 && mi_r == edbg_r && mi_c == edbg_c) {
++      uint64_t lh = 0, ah = 0;
++      int nl = txhpx < 16 ? txhpx : 16;
++      int na = txwpx < 16 ? txwpx : 16;
++      if (nl > n_left_px) nl = n_left_px;
++      if (na > n_top_px) na = n_top_px;
++      if (is_cur_buf_hbd(xd)) {
++        const uint16_t *left_ref = CONVERT_TO_SHORTPTR(ref) - 1;
++        const uint16_t *above_ref = CONVERT_TO_SHORTPTR(ref) - ref_stride;
++        if (n_left_px > 0)
++          for (int r = 0; r < nl; ++r) lh = lh * 31 + left_ref[r * ref_stride];
++        if (n_top_px > 0)
++          for (int c = 0; c < na; ++c) ah = ah * 31 + above_ref[c];
++      } else {
++        if (n_left_px > 0)
++          for (int r = 0; r < nl; ++r) lh = lh * 31 + ref[r * ref_stride - 1];
++        if (n_top_px > 0)
++          for (int c = 0; c < na; ++c) ah = ah * 31 + ref[c - ref_stride];
++      }
++      fprintf(stderr,
++              "[cled] mi(%d,%d) mode=%d ad=%d tx=%d blk(%d,%d) nt=%d nl=%d "
++              "lh=%llx ah=%llx\n",
++              mi_r, mi_c, (int)mode, (int)angle_delta, (int)tx_size,
++              (int)row_off, (int)col_off, n_top_px, n_left_px,
++              (unsigned long long)lh, (unsigned long long)ah);
++    }
++  }
+   if (!use_filter_intra && !is_dr_mode) {
+ #if CONFIG_AV1_HIGHBITDEPTH
+     if (is_hbd) {
+@@ -1818,6 +1857,26 @@ void av1_predict_intra_block(const MACROBLOCKD *xd, BLOCK_SIZE sb_size,
+       have_top_right > 0 ? AOMMIN(txwpx, xr) : have_top_right;
+   const int n_bottomleft_px =
+       have_bottom_left > 0 ? AOMMIN(txhpx, yd) : have_bottom_left;
++  {
++    static int avr = -2, avc = -2;
++    if (avr == -2) {
++      const char *e = getenv("AOM_UV_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &avr, &avc) != 2) {
++        avr = -1;
++        avc = -1;
++      }
++    }
++    if (mi_row == avr && mi_col == avc && plane > 0) {
++      fprintf(stderr,
++              "[cav] mi(%d,%d) pl%d uv=%d adelta=%d blk(%d,%d) nt=%d ntr=%d "
++              "nl=%d nbl=%d ft=%d def=%d pang=%d\n",
++              avr, avc, plane, (int)mbmi->uv_mode,
++              (int)mbmi->angle_delta[PLANE_TYPE_UV], (int)row_off,
++              (int)col_off, n_top_px, n_topright_px, n_left_px,
++              n_bottomleft_px, intra_edge_filter_type, disable_edge_filter,
++              p_angle);
++    }
++  }
+ #if CONFIG_AV1_HIGHBITDEPTH
+   if (is_hbd) {
+     highbd_build_directional_and_filter_intra_predictors(
+diff --git a/av1/decoder/decodeframe.c b/av1/decoder/decodeframe.c
+index b6ee3ace02..6084e6fe08 100644
+--- a/av1/decoder/decodeframe.c
++++ b/av1/decoder/decodeframe.c
+@@ -1169,6 +1169,10 @@ static inline void parse_decode_block(AV1Decoder *const pbi,
+ #endif
+   DecoderCodingBlock *const dcb = &td->dcb;
+   MACROBLOCKD *const xd = &dcb->xd;
++  if (getenv("AOM_LEAF_TRACE")) {
++    fprintf(stderr, "[leaf] mi(%d,%d) bs=%d part=%d tell=%u\n", mi_row, mi_col,
++            bsize, partition, aom_reader_tell(r));
++  }
+   decode_mbmi_block(pbi, dcb, mi_row, mi_col, r, partition, bsize);
+ 
+   av1_visit_palette(pbi, xd, r, av1_decode_palette_tokens);
+@@ -1259,6 +1263,10 @@ static inline void decode_block(AV1Decoder *const pbi, ThreadData *const td,
+                                 int mi_row, int mi_col, aom_reader *r,
+                                 PARTITION_TYPE partition, BLOCK_SIZE bsize) {
+   (void)partition;
++  if (getenv("AOM_LEAF_TRACE")) {
++    fprintf(stderr, "[leaf] mi(%d,%d) bs=%d part=%d tell=%u\n", mi_row, mi_col,
++            bsize, partition, aom_reader_tell(r));
++  }
+   set_offsets_for_pred_and_recon(pbi, td, mi_row, mi_col, bsize);
+   decode_token_recon_block(pbi, td, r, bsize);
+ }
+@@ -1274,8 +1282,12 @@ static PARTITION_TYPE read_partition(MACROBLOCKD *xd, int mi_row, int mi_col,
+   assert(ctx >= 0);
+   aom_cdf_prob *partition_cdf = ec_ctx->partition_cdf[ctx];
+   if (has_rows && has_cols) {
+-    return (PARTITION_TYPE)aom_read_symbol(
++    PARTITION_TYPE pp = (PARTITION_TYPE)aom_read_symbol(
+         r, partition_cdf, partition_cdf_length(bsize), ACCT_STR);
++    if (getenv("AOM_PART_TRACE"))
++      fprintf(stderr, "[dp] mi(%d,%d) bs=%d ctx=%d part=%d tell=%u\n", mi_row,
++              mi_col, bsize, ctx, pp, aom_reader_tell(r));
++    return pp;
+   } else if (!has_rows && has_cols) {
+     assert(bsize > BLOCK_8X8);
+     aom_cdf_prob cdf[2];
+@@ -1343,6 +1355,10 @@ static inline void decode_partition(AV1Decoder *const pbi, ThreadData *const td,
+     partition = (bsize < BLOCK_8X8) ? PARTITION_NONE
+                                     : read_partition(xd, mi_row, mi_col, reader,
+                                                      has_rows, has_cols, bsize);
++    if (getenv("AOM_CDP_TRACE")) {
++      fprintf(stderr, "[cdp] mi(%d,%d) bs=%d part=%d\n", mi_row, mi_col, bsize,
++              (int)partition);
++    }
+   } else {
+     partition = get_partition(cm, mi_row, mi_col, bsize);
+   }
+@@ -2726,6 +2742,13 @@ static int check_trailing_bits_after_symbol_coder(aom_reader *r) {
+   uint32_t nb_bits = aom_reader_tell(r);
+   uint32_t nb_bytes = (nb_bits + 7) >> 3;
+   const uint8_t *p = aom_reader_find_begin(r) + nb_bytes;
++  if (getenv("AOM_LEAF_TRACE")) {
++    fprintf(stderr,
++            "[trail] nb_bits=%u nb_bytes=%u tile_bytes=%ld last=0x%02x\n",
++            nb_bits, nb_bytes,
++            (long)(aom_reader_find_end(r) - aom_reader_find_begin(r)),
++            nb_bytes ? p[-1] : 0);
++  }
+ 
+   // aom_reader_tell() returns 1 for a newly initialized decoder, and the
+   // return value only increases as values are decoded. So nb_bits > 0, and
+diff --git a/av1/decoder/decodemv.c b/av1/decoder/decodemv.c
+index d3a22814b4..b4be289920 100644
+--- a/av1/decoder/decodemv.c
++++ b/av1/decoder/decodemv.c
+@@ -481,6 +481,13 @@ static void read_palette_colors_y(MACROBLOCKD *const xd, int bit_depth,
+   uint16_t cached_colors[PALETTE_MAX_SIZE];
+   const int n_cache = av1_get_palette_cache(xd, 0, color_cache);
+   const int n = pmi->palette_size[0];
++  if (getenv("AOM_PAL_TRACE"))
++    fprintf(stderr, "[pal] mi(%d,%d) n=%d n_cache=%d cache=[%d,%d,%d,%d,%d]\n",
++            xd->mi_row, xd->mi_col, n, n_cache,
++            n_cache > 0 ? color_cache[0] : -1, n_cache > 1 ? color_cache[1] : -1,
++            n_cache > 2 ? color_cache[2] : -1,
++            n_cache > 3 ? color_cache[3] : -1,
++            n_cache > 4 ? color_cache[4] : -1);
+   int idx = 0;
+   for (int i = 0; i < n_cache && idx < n; ++i)
+     if (aom_read_bit(r, ACCT_STR)) cached_colors[idx++] = color_cache[i];
+@@ -504,6 +511,12 @@ static void read_palette_colors_y(MACROBLOCKD *const xd, int bit_depth,
+   } else {
+     memcpy(pmi->palette_colors, cached_colors, n * sizeof(cached_colors[0]));
+   }
++  if (getenv("AOM_PAL_TRACE"))
++    fprintf(stderr, "[palc] mi(%d,%d) n=%d colors=[%d,%d,%d,%d,%d,%d]\n",
++            xd->mi_row, xd->mi_col, n, pmi->palette_colors[0],
++            pmi->palette_colors[1], pmi->palette_colors[2],
++            pmi->palette_colors[3], pmi->palette_colors[4],
++            pmi->palette_colors[5]);
+ }
+ 
+ static void read_palette_colors_uv(MACROBLOCKD *const xd, int bit_depth,
+@@ -618,6 +631,12 @@ static void read_filter_intra_mode_info(const AV1_COMMON *const cm,
+       filter_intra_mode_info->filter_intra_mode = aom_read_symbol(
+           r, xd->tile_ctx->filter_intra_mode_cdf, FILTER_INTRA_MODES, ACCT_STR);
+     }
++    if (getenv("AOM_CMODE_TRACE")) {
++      fprintf(stderr, "[cfi] mi(%d,%d) bs=%d fi=%d fimode=%d\n", xd->mi_row,
++              xd->mi_col, mbmi->bsize,
++              (int)filter_intra_mode_info->use_filter_intra,
++              (int)filter_intra_mode_info->filter_intra_mode);
++    }
+   } else {
+     filter_intra_mode_info->use_filter_intra = 0;
+   }
+@@ -709,6 +728,9 @@ static void read_intrabc_info(AV1_COMMON *const cm, DecoderCodingBlock *dcb,
+     av1_find_mv_refs(cm, xd, mbmi, INTRA_FRAME, dcb->ref_mv_count,
+                      xd->ref_mv_stack, xd->weight, ref_mvs, /*global_mvs=*/NULL,
+                      inter_mode_ctx);
++    if (getenv("AOM_CDV_TRACE")) {
++      fprintf(stderr, "[cdv] mi(%d,%d) bs=%d\n", xd->mi_row, xd->mi_col, bsize);
++    }
+ 
+     int_mv nearestmv, nearmv;
+ 
+@@ -723,6 +745,13 @@ static void read_intrabc_info(AV1_COMMON *const cm, DecoderCodingBlock *dcb,
+     valid_dv = valid_dv && assign_dv(cm, xd, &mbmi->mv[0], &dv_ref, xd->mi_row,
+                                      xd->mi_col, bsize, r);
+     if (!valid_dv) {
++      if (getenv("AOM_CDV_TRACE")) {
++        fprintf(stderr,
++                "[cdvbad] mi(%d,%d) bsize=%d dv=(%d,%d) ref=(%d,%d)/(%d,%d)\n",
++                xd->mi_row, xd->mi_col, bsize, mbmi->mv[0].as_mv.row,
++                mbmi->mv[0].as_mv.col, nearestmv.as_mv.row, nearestmv.as_mv.col,
++                nearmv.as_mv.row, nearmv.as_mv.col);
++      }
+       // Intra bc motion vectors are not valid - signal corrupt frame
+       aom_internal_error(xd->error_info, AOM_CODEC_CORRUPT_FRAME,
+                          "Invalid intrabc dv");
+@@ -813,6 +842,10 @@ static void read_intra_frame_mode_info(AV1_COMMON *const cm,
+   }
+ 
+   mbmi->mode = read_intra_mode(r, get_y_mode_cdf(ec_ctx, above_mi, left_mi));
++  if (getenv("AOM_CMODE_TRACE")) {
++    fprintf(stderr, "[cmode] mi(%d,%d) bs=%d mode=%d\n", mi_row, mi_col, bsize,
++            (int)mbmi->mode);
++  }
+ 
+   const int use_angle_delta = av1_use_angle_delta(bsize);
+   mbmi->angle_delta[PLANE_TYPE_Y] =
+diff --git a/av1/decoder/decodetxb.c b/av1/decoder/decodetxb.c
+index e37f2395a2..1145d07a24 100644
+--- a/av1/decoder/decodetxb.c
++++ b/av1/decoder/decodetxb.c
+@@ -342,6 +342,14 @@ void av1_read_coeffs_txb(const AV1_COMMON *const cm, DecoderCodingBlock *dcb,
+               pd->left_entropy_context + row, &txb_ctx);
+ 
+   assert(dcb->xd.error_info->setjmp);
++  static int txb_trace = -1;
++  if (txb_trace < 0) txb_trace = getenv("AOM_CTXB_TRACE") != NULL;
++  if (txb_trace) {
++    fprintf(stderr,
++            "[ctxb] mi(%d,%d) bs=%d plane=%d t(%d,%d) tx=%d tsc=%d dsc=%d\n",
++            xd->mi_row, xd->mi_col, bsize, plane, row, col, tx_size,
++            txb_ctx.txb_skip_ctx, txb_ctx.dc_sign_ctx);
++  }
+   const uint8_t cul_level =
+       read_coeffs_txb(cm, dcb, r, row, col, plane, &txb_ctx, tx_size);
+   av1_set_entropy_contexts(xd, pd, plane, plane_bsize, tx_size, cul_level, col,
+diff --git a/av1/encoder/bitstream.c b/av1/encoder/bitstream.c
+index 178a84a7c7..7b6e777cc5 100644
+--- a/av1/encoder/bitstream.c
++++ b/av1/encoder/bitstream.c
+@@ -2088,6 +2088,17 @@ static inline void encode_cdef(const AV1_COMMON *cm,
+   int i;
+   aom_wb_write_literal(wb, cm->cdef_info.cdef_damping - 3, 2);
+   aom_wb_write_literal(wb, cm->cdef_info.cdef_bits, 2);
++  if (getenv("AOM_CDEF_DBG")) {
++    fprintf(stderr, "[enc-cdef] damp=%d bits=%d nb=%d y=[",
++            cm->cdef_info.cdef_damping, cm->cdef_info.cdef_bits,
++            cm->cdef_info.nb_cdef_strengths);
++    for (int k = 0; k < cm->cdef_info.nb_cdef_strengths; k++)
++      fprintf(stderr, "%d,", cm->cdef_info.cdef_strengths[k]);
++    fprintf(stderr, "] uv=[");
++    for (int k = 0; k < cm->cdef_info.nb_cdef_strengths; k++)
++      fprintf(stderr, "%d,", cm->cdef_info.cdef_uv_strengths[k]);
++    fprintf(stderr, "]\n");
++  }
+   for (i = 0; i < cm->cdef_info.nb_cdef_strengths; i++) {
+     aom_wb_write_literal(wb, cm->cdef_info.cdef_strengths[i],
+                          CDEF_STRENGTH_BITS);
+diff --git a/av1/encoder/encodeframe.c b/av1/encoder/encodeframe.c
+index f1d9f88a92..4ef2f4d0d2 100644
+--- a/av1/encoder/encodeframe.c
++++ b/av1/encoder/encodeframe.c
+@@ -257,9 +257,16 @@ static inline void setup_delta_q_nonrd(AV1_COMP *const cpi, ThreadData *td,
+   const int delta_q_res = delta_q_info->delta_q_res;
+   int current_qindex = cm->quant_params.base_qindex;
+ 
++  const int sb_row = mi_row >> cm->seq_params->mib_size_log2;
++  const int sb_col = mi_col >> cm->seq_params->mib_size_log2;
+   if (cpi->oxcf.q_cfg.deltaq_mode == DELTA_Q_VARIANCE_BOOST) {
+     current_qindex = av1_get_sbq_variance_boost(cpi, x);
+   }
++  if (getenv("AOM_DQ_DBG"))
++    fprintf(stderr, "[dqn-c] sb(%d,%d) mode=%d raw_q=%d base=%d run=%d res=%d\n",
++            sb_row, sb_col, cpi->oxcf.q_cfg.deltaq_mode, current_qindex,
++            cm->quant_params.base_qindex, x->e_mbd.current_base_qindex,
++            delta_q_res);
+ 
+   x->rdmult_cur_qindex = current_qindex;
+   MACROBLOCKD *const xd = &x->e_mbd;
+@@ -355,6 +362,12 @@ static inline void setup_delta_q(AV1_COMP *const cpi, ThreadData *td,
+     current_qindex = av1_get_sbq_variance_boost(cpi, x);
+   }
+ 
++  if (getenv("AOM_DQ_DBG"))
++    fprintf(stderr,
++            "[dq-c] sb(%d,%d) mode=%d level=%d raw_q=%d base=%d run=%d res=%d\n",
++            sb_row, sb_col, cpi->oxcf.q_cfg.deltaq_mode, x->sb_energy_level,
++            current_qindex, cm->quant_params.base_qindex,
++            x->e_mbd.current_base_qindex, delta_q_res);
+   x->rdmult_cur_qindex = current_qindex;
+   MACROBLOCKD *const xd = &x->e_mbd;
+   const int adjusted_qindex = av1_adjust_q_from_delta_q_res(
+diff --git a/av1/encoder/encodemb.c b/av1/encoder/encodemb.c
+index bf5c697bde..001a4dab55 100644
+--- a/av1/encoder/encodemb.c
++++ b/av1/encoder/encodemb.c
+@@ -756,11 +756,77 @@ static void encode_block_intra(int plane, int block, int blk_row, int blk_col,
+     }
+   }
+ 
++  {
++    // aom-rs divergence debug: AOM_TX_DBG=<mi_row>,<mi_col> final-encode eob.
++    static int edbg_r = -2, edbg_c = -2;
++    if (edbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &edbg_r, &edbg_c) != 2) {
++        edbg_r = -1;
++        edbg_c = -1;
++      }
++    }
++    if (plane == 0 && xd->mi_row == edbg_r && xd->mi_col == edbg_c) {
++      unsigned long long qh = 0;
++      const tran_low_t *qc = p->qcoeff + BLOCK_OFFSET(block);
++      const int qc_n = tx_size_2d[tx_size];
++      for (int i = 0; i < qc_n; ++i) qh = qh * 31 + (unsigned)(qc[i] + 32768);
++      unsigned long long dqh = 0;
++      for (int i = 0; i < qc_n; ++i)
++        dqh = dqh * 31 + (unsigned)(dqcoeff[i] + 32768);
++      unsigned long long th = 0;
++      const tran_low_t *tc = p->coeff + BLOCK_OFFSET(block);
++      for (int i = 0; i < qc_n; ++i) th = th * 31 + (unsigned)(tc[i] + 32768);
++      fprintf(stderr,
++              "[ceob] mi(%d,%d) blk(%d,%d) plane_bsize=%d tx_size=%d tx_type=%d "
++              "skip_txfm=%d use_trellis=%d eob=%d pal=%d qh=%llx dqh=%llx th=%llx rdm=%d qidx=%d dq=%d,%d\n",
++              xd->mi_row, xd->mi_col, blk_row, blk_col, (int)plane_bsize,
++              (int)tx_size, (int)tx_type, (int)xd->mi[0]->skip_txfm,
++              (int)is_trellis_used(args->enable_optimize_b, args->dry_run),
++              (int)*eob,
++              (int)xd->mi[0]->palette_mode_info.palette_size[0], qh, dqh, th,
++              x->rdmult, x->qindex, (int)p->dequant_QTX[0],
++              (int)p->dequant_QTX[1]);
++      {
++        const ENTROPY_CONTEXT *a = &args->ta[blk_col];
++        const ENTROPY_CONTEXT *l = &args->tl[blk_row];
++        TXB_CTX tc;
++        get_txb_ctx(plane_bsize, tx_size, plane, a, l, &tc);
++        fprintf(stderr, "[cctx] mi(%d,%d) blk(%d,%d) txb_skip=%d dc_sign=%d a=%d l=%d dry=%d cul=%d\n",
++                xd->mi_row, xd->mi_col, blk_row, blk_col, tc.txb_skip_ctx,
++                tc.dc_sign_ctx, (int)*a, (int)*l, (int)args->dry_run,
++                (int)x->plane[plane].txb_entropy_ctx[block]);
++      }
++    }
++  }
++
+   if (*eob) {
+     av1_inverse_transform_block(xd, dqcoeff, plane, tx_type, tx_size, dst,
+                                 dst_stride, *eob,
+                                 cm->features.reduced_tx_set_used);
+   }
++  {
++    static int rdbg_r = -2, rdbg_c = -2;
++    if (rdbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &rdbg_r, &rdbg_c) != 2) {
++        rdbg_r = -1;
++        rdbg_c = -1;
++      }
++    }
++    if (plane == 0 && xd->mi_row == rdbg_r && xd->mi_col == rdbg_c) {
++      const int tw = tx_size_wide[tx_size];
++      const int th = tx_size_high[tx_size];
++      uint64_t rh2 = 0;
++      for (int r = 0; r < th; ++r)
++        for (int c = 0; c < tw; ++c)
++          rh2 = rh2 * 31 + (uint8_t)dst[r * dst_stride + c];
++      fprintf(stderr,
++              "[ctxbrecon] mi(%d,%d) blk(%d,%d) tx=%d txt=%d eob=%d rh=%llx\n",
++              xd->mi_row, xd->mi_col, blk_row, blk_col, (int)tx_size,
++              (int)tx_type, (int)*eob, (unsigned long long)rh2);
++    }
++  }
+ 
+   // TODO(jingning): Temporarily disable txk_type check for eob=0 case.
+   // It is possible that certain collision in hash index would cause
+@@ -819,4 +885,30 @@ void av1_encode_intra_block_plane(const struct AV1_COMP *cpi, MACROBLOCK *x,
+   }
+   av1_foreach_transformed_block_in_plane(
+       xd, plane_bsize, plane, encode_block_intra_and_set_context, &arg);
++  {
++    // aom-rs divergence debug: committed right-column hash, AOM_TX_DBG + luma.
++    static int cdbg_r = -2, cdbg_c = -2;
++    if (cdbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &cdbg_r, &cdbg_c) != 2) {
++        cdbg_r = -1;
++        cdbg_c = -1;
++      }
++    }
++    if (plane == 0 && xd->mi_row == cdbg_r && xd->mi_col == cdbg_c) {
++      const int bw = block_size_wide[bsize];
++      const int bh = block_size_high[bsize];
++      uint64_t rh = 0;
++      const int nr = bh < 16 ? bh : 16;
++      if (is_cur_buf_hbd(xd)) {
++        const uint16_t *d16 = CONVERT_TO_SHORTPTR(pd->dst.buf);
++        for (int r = 0; r < nr; ++r) rh = rh * 31 + d16[r * pd->dst.stride + bw - 1];
++      } else {
++        for (int r = 0; r < nr; ++r)
++          rh = rh * 31 + pd->dst.buf[r * pd->dst.stride + bw - 1];
++      }
++      fprintf(stderr, "[ccommit] mi(%d,%d) bs%d rh=%llx\n", xd->mi_row,
++              xd->mi_col, (int)bsize, (unsigned long long)rh);
++    }
++  }
+ }
+diff --git a/av1/encoder/encoder.c b/av1/encoder/encoder.c
+index 2d492dd74d..849b8e46af 100644
+--- a/av1/encoder/encoder.c
++++ b/av1/encoder/encoder.c
+@@ -2420,6 +2420,20 @@ static void estimate_screen_content_antialiasing_aware(AV1_COMP *cpi,
+   cpi->is_screen_content_type =
+       features->allow_intrabc || (count_palette * kBlockArea * 15 > area * 4 &&
+                                   count_intrabc * kBlockArea * 30 > area);
++  // aom-rs divergence debug: AOM_SCT_DBG=1 gates the screen-content counts.
++  {
++    static int sct_dbg = -1;
++    if (sct_dbg < 0) sct_dbg = getenv("AOM_SCT_DBG") != NULL;
++    if (sct_dbg) {
++      fprintf(stderr,
++              "[sct] mode2 palette=%lld intrabc=%lld photo=%lld area=%lld "
++              "allow=%d ibc=%d\n",
++              (long long)count_palette, (long long)count_intrabc,
++              (long long)count_photo, (long long)area,
++              (int)features->allow_screen_content_tools,
++              (int)features->allow_intrabc);
++    }
++  }
+ 
+ #ifdef OUTPUT_SCR_DET_MODE2_STATS
+   fprintf(stats_file,
+@@ -3716,6 +3730,10 @@ static int encode_with_recode_loop_and_filter(AV1_COMP *cpi, size_t *size,
+ #if CONFIG_REALTIME_ONLY
+   err = encode_without_recode(cpi);
+ #else
++  if (getenv("AOM_SCT_TRIAL_DBG"))
++    fprintf(stderr, "[c-recode] recode_loop=%d no_stats=%d pass=%d lap=%d\n",
++            cpi->sf.hl_sf.recode_loop, has_no_stats_stage(cpi),
++            cpi->oxcf.pass, cpi->ppi->lap_enabled);
+   if (cpi->sf.hl_sf.recode_loop == DISALLOW_RECODE)
+     err = encode_without_recode(cpi);
+   else
+diff --git a/av1/encoder/encoder_utils.c b/av1/encoder/encoder_utils.c
+index fecb939da9..3291b25970 100644
+--- a/av1/encoder/encoder_utils.c
++++ b/av1/encoder/encoder_utils.c
+@@ -1166,6 +1166,12 @@ static void screen_content_tools_determination(
+   const int ratio_is_large =
+       ((palette_ratio >= 0.0001) && ((psnr_diff / palette_ratio) > 4));
+   const int is_sc_encoding_much_better = (psnr_diff_is_large || ratio_is_large);
++  if (getenv("AOM_SCT_TRIAL_DBG"))
++    fprintf(stderr,
++            "[c-sct-trial] qpass psnr0=%.4f psnr1=%.4f diff=%.4f pal_px=%d "
++            "ratio=%.5f win=%d\n",
++            psnr[0].psnr[0], psnr[1].psnr[0], psnr_diff, cpi->palette_pixel_num,
++            palette_ratio, is_sc_encoding_much_better);
+   if (is_sc_encoding_much_better) {
+     // Use screen content tools, if we get coding gain.
+     features->allow_screen_content_tools = 1;
+@@ -1229,6 +1235,13 @@ void av1_determine_sc_tools_with_encoding(AV1_COMP *cpi, const int q_orig) {
+   if (cpi->sf.rt_sf.use_nonrd_pick_mode || oxcf->kf_cfg.fwd_kf_enabled ||
+       cpi->superres_mode != AOM_SUPERRES_NONE || oxcf->mode == REALTIME ||
+       use_screen_content_tools_orig_decision || !is_key_frame) {
++    if (getenv("AOM_SCT_TRIAL_DBG"))
++      fprintf(stderr,
++              "[c-sct-trial] SKIP nonrd=%d fwdkf=%d superres=%d rt=%d "
++              "use_sct=%d kf=%d\n",
++              cpi->sf.rt_sf.use_nonrd_pick_mode, oxcf->kf_cfg.fwd_kf_enabled,
++              cpi->superres_mode, oxcf->mode == REALTIME,
++              use_screen_content_tools_orig_decision, is_key_frame);
+     return;
+   }
+ 
+diff --git a/av1/encoder/intra_mode_search.c b/av1/encoder/intra_mode_search.c
+index 4cefbab651..1a7169d5e9 100644
+--- a/av1/encoder/intra_mode_search.c
++++ b/av1/encoder/intra_mode_search.c
+@@ -508,6 +508,25 @@ static int64_t pick_intra_angle_routine_sbuv(
+   this_rate = tokenonly_rd_stats.rate +
+               intra_mode_info_cost_uv(cpi, x, mbmi, bsize, rate_overhead);
+   this_rd = RDCOST(x->rdmult, this_rate, tokenonly_rd_stats.dist);
++  {
++    static int adr = -2, adc = -2;
++    if (adr == -2) {
++      const char *e = getenv("AOM_UV_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &adr, &adc) != 2) {
++        adr = -1;
++        adc = -1;
++      }
++    }
++    if (x->e_mbd.mi_row == adr && x->e_mbd.mi_col == adc) {
++      fprintf(stderr,
++              "[cad] mi(%d,%d) bs%d uvmode=%d adelta=%d rd=%lld rate=%d "
++              "dist=%lld tok_rate=%d\n",
++              adr, adc, (int)bsize, (int)mbmi->uv_mode,
++              (int)mbmi->angle_delta[PLANE_TYPE_UV], (long long)this_rd,
++              this_rate, (long long)tokenonly_rd_stats.dist,
++              tokenonly_rd_stats.rate);
++    }
++  }
+   if (this_rd < *best_rd) {
+     *best_rd = this_rd;
+     *best_angle_delta = mbmi->angle_delta[PLANE_TYPE_UV];
+@@ -998,6 +1017,25 @@ int64_t av1_rd_pick_intra_sbuv_mode(const AV1_COMP *const cpi, MACROBLOCK *x,
+                 intra_mode_info_cost_uv(cpi, x, mbmi, bsize, mode_cost);
+     this_rd = RDCOST(x->rdmult, this_rate, tokenonly_rd_stats.dist);
+ 
++    {
++      static int uvr = -2, uvc = -2;
++      if (uvr == -2) {
++        const char *e = getenv("AOM_UV_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &uvr, &uvc) != 2) {
++          uvr = -1;
++          uvc = -1;
++        }
++      }
++      if (xd->mi_row == uvr && xd->mi_col == uvc) {
++        fprintf(stderr,
++                "[cuv] mi(%d,%d) bs%d uvmode=%d rd=%lld rate=%d dist=%lld "
++                "cfl_idx=%d cfl_sig=%d\n",
++                uvr, uvc, (int)bsize, (int)uv_mode, (long long)this_rd,
++                this_rate, (long long)tokenonly_rd_stats.dist,
++                (int)mbmi->cfl_alpha_idx, (int)mbmi->cfl_alpha_signs);
++      }
++    }
++
+     if (this_rd < best_rd) {
+       best_mbmi = *mbmi;
+       best_rd = this_rd;
+@@ -1601,6 +1639,17 @@ int64_t av1_rd_pick_intra_sby_mode(const AV1_COMP *const cpi, MACROBLOCK *x,
+     const TX_SIZE tx_size = AOMMIN(TX_32X32, max_txsize_lookup[bsize]);
+     const int64_t this_model_rd =
+         intra_model_rd(&cpi->common, x, 0, bsize, tx_size, /*use_hadamard=*/1);
++    {
++      const char *dbg = getenv("AOM_TX_DBG");
++      int tr = -1, tc = -1;
++      if (dbg && sscanf(dbg, "%d,%d", &tr, &tc) == 2 &&
++          tr == x->e_mbd.mi_row && tc == x->e_mbd.mi_col)
++        fprintf(stderr,
++                "[mrd] mi(%d,%d) bs%d part%d mode=%d ad=%d model_rd=%lld\n",
++                x->e_mbd.mi_row, x->e_mbd.mi_col, (int)bsize,
++                (int)mbmi->partition, (int)mbmi->mode, luma_delta_angle,
++                (long long)this_model_rd);
++    }
+ 
+     const int model_rd_index_for_pruning =
+         get_model_rd_index_for_pruning(x, intra_sf);
+@@ -1635,7 +1684,20 @@ int64_t av1_rd_pick_intra_sby_mode(const AV1_COMP *const cpi, MACROBLOCK *x,
+ 
+     // Visual quality adjustment based on recon vs source variance.
+     if ((cpi->oxcf.mode == ALLINTRA) && (this_rd != INT64_MAX)) {
+-      this_rd = (int64_t)(this_rd * intra_rd_variance_factor(cpi, x, bsize));
++      const double vf = intra_rd_variance_factor(cpi, x, bsize);
++      {
++        const char *dbg = getenv("AOM_TX_DBG");
++        int tr = -1, tc = -1;
++        if (dbg && sscanf(dbg, "%d,%d", &tr, &tc) == 2 && tr == x->e_mbd.mi_row &&
++            tc == x->e_mbd.mi_col)
++          fprintf(stderr,
++                  "[vf] mi(%d,%d) bs%d part%d mode=%d ad=%d base_rd=%lld factor=%f rate=%d dist=%lld\n",
++                  x->e_mbd.mi_row, x->e_mbd.mi_col, (int)bsize,
++                  (int)mbmi->partition, (int)mbmi->mode, luma_delta_angle,
++                  (long long)this_rd, vf, this_rate,
++                  (long long)this_distortion);
++      }
++      this_rd = (int64_t)(this_rd * vf);
+     }
+ 
+     intra_modes_rd_cost[mbmi->mode][luma_delta_angle + MAX_ANGLE_DELTA + 1] =
+diff --git a/av1/encoder/intra_mode_search_utils.h b/av1/encoder/intra_mode_search_utils.h
+index 720aec2a14..2486724e54 100644
+--- a/av1/encoder/intra_mode_search_utils.h
++++ b/av1/encoder/intra_mode_search_utils.h
+@@ -649,7 +649,18 @@ static int64_t intra_model_rd(const AV1_COMMON *cm, MACROBLOCK *const x,
+           pd->dst.buf + (((row * pd->dst.stride) + col) << 2), pd->dst.stride);
+       av1_quick_txfm(use_hadamard, tx_size, bd_info, p->src_diff,
+                      block_size_wide[plane_bsize], p->coeff);
+-      satd_cost += aom_satd(p->coeff, tx_size_2d[tx_size]);
++      const int ts_ = aom_satd(p->coeff, tx_size_2d[tx_size]);
++      {
++        const char *dbg = getenv("AOM_TX_DBG");
++        int tr = -1, tc = -1;
++        if (dbg && sscanf(dbg, "%d,%d", &tr, &tc) == 2 &&
++            tr == xd->mi_row && tc == xd->mi_col)
++          fprintf(stderr,
++                  "[ptile] mi(%d,%d) mode=%d ad=%d tile(%d,%d) satd=%d\n",
++                  xd->mi_row, xd->mi_col, (int)xd->mi[0]->mode,
++                  xd->mi[0]->angle_delta[PLANE_TYPE_Y], row, col, ts_);
++      }
++      satd_cost += ts_;
+     }
+   }
+   return satd_cost;
+diff --git a/av1/encoder/palette.c b/av1/encoder/palette.c
+index cab15e86a4..3641a7b9cd 100644
+--- a/av1/encoder/palette.c
++++ b/av1/encoder/palette.c
+@@ -590,6 +590,17 @@ void av1_rd_pick_palette_intra_sby(
+     }
+     if (norm_color_dist < 8000) color_thresh_palette += 20;
+   }
++  {
++    const char *dbg = getenv("AOM_TX_DBG");
++    int tr = -1, tc = -1;
++    if (dbg && sscanf(dbg, "%d,%d", &tr, &tc) == 2 && tr == x->e_mbd.mi_row &&
++        tc == x->e_mbd.mi_col)
++      fprintf(stderr,
++              "[pal] mi(%d,%d) bs%d colors=%d thresh=%d gate=%d\n",
++              x->e_mbd.mi_row, x->e_mbd.mi_col, (int)bsize, colors_threshold,
++              color_thresh_palette,
++              colors_threshold > 1 && colors_threshold <= color_thresh_palette);
++  }
+   if (colors_threshold > 1 && colors_threshold <= color_thresh_palette) {
+     int16_t *const data = x->palette_buffer->kmeans_data_buf;
+     int16_t centroids[PALETTE_MAX_SIZE];
+@@ -758,6 +769,29 @@ void av1_rd_pick_palette_intra_sby(
+            block_width * block_height * sizeof(best_palette_color_map[0]));
+   }
+   *mbmi = *best_mbmi;
++  {
++    // aom-rs divergence debug: AOM_TX_DBG=<mi_row>,<mi_col> palette winner.
++    static int pdbg_r = -2, pdbg_c = -2;
++    if (pdbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &pdbg_r, &pdbg_c) != 2) {
++        pdbg_r = -1;
++        pdbg_c = -1;
++      }
++    }
++    if (x->e_mbd.mi_row == pdbg_r && x->e_mbd.mi_col == pdbg_c &&
++        mbmi->palette_mode_info.palette_size[0] > 0) {
++      const int n = mbmi->palette_mode_info.palette_size[0];
++      unsigned long long mh = 0;
++      for (int i = 0; i < block_width * block_height; ++i)
++        mh = mh * 31 + best_palette_color_map[i];
++      fprintf(stderr, "[cpal] mi(%d,%d) n=%d colors=", x->e_mbd.mi_row,
++              x->e_mbd.mi_col, n);
++      for (int i = 0; i < n; ++i)
++        fprintf(stderr, "%d ", (int)mbmi->palette_mode_info.palette_colors[i]);
++      fprintf(stderr, "map_h=%llx\n", mh);
++    }
++  }
+ }
+ 
+ void av1_rd_pick_palette_intra_sbuv(const AV1_COMP *cpi, MACROBLOCK *x,
+diff --git a/av1/encoder/partition_search.c b/av1/encoder/partition_search.c
+index 9455b4bc51..919233d650 100644
+--- a/av1/encoder/partition_search.c
++++ b/av1/encoder/partition_search.c
+@@ -11,6 +11,8 @@
+ 
+ #include <float.h>
+ #include <inttypes.h>
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ #include "config/aom_config.h"
+ 
+@@ -656,6 +658,11 @@ static void setup_block_rdmult(const AV1_COMP *const cpi, MACROBLOCK *const x,
+   // Check to make sure that the adjustments above have not caused the
+   // rd multiplier to be truncated to 0.
+   x->rdmult = (x->rdmult > 0) ? x->rdmult : 1;
++
++  if (getenv("AOM_SSM_DBG")) {
++    fprintf(stderr, "[ssm-c] node(%d,%d) bsize=%d rdm=%d\n", mi_row, mi_col,
++            (int)bsize, x->rdmult);
++  }
+ }
+ 
+ void av1_set_offsets_without_segment_id(const AV1_COMP *const cpi,
+@@ -850,6 +857,30 @@ static void pick_sb_modes(AV1_COMP *const cpi, TileDataEnc *tile_data,
+   }
+ 
+   av1_set_offsets(cpi, &tile_data->tile_info, x, mi_row, mi_col, bsize);
++  {
++    const char *dbg = getenv("AOM_TX_DBG");
++    int tr = -1, tc = -1;
++    if (dbg && sscanf(dbg, "%d,%d", &tr, &tc) == 2 && tr == mi_row &&
++        tc == mi_col) {
++      const MACROBLOCKD *const xd0 = &x->e_mbd;
++      const int st = xd0->plane[0].dst.stride;
++      const int hbd = is_cur_buf_hbd(xd0);
++      fprintf(stderr, "[edge] mi(%d,%d) bs%d part%d top:", mi_row, mi_col,
++              (int)bsize, (int)partition);
++      if (mi_row > 0)
++        for (int j = -1; j < 9; ++j)
++          fprintf(stderr, " %u",
++                  hbd ? (unsigned)((const uint16_t *)xd0->plane[0].dst.buf)[-st + j]
++                      : (unsigned)xd0->plane[0].dst.buf[-st + j]);
++      fprintf(stderr, " left:");
++      if (mi_col > 0)
++        for (int i = 0; i < 8; ++i)
++          fprintf(stderr, " %u",
++                  hbd ? (unsigned)((const uint16_t *)xd0->plane[0].dst.buf)[i * st - 1]
++                      : (unsigned)xd0->plane[0].dst.buf[i * st - 1]);
++      fprintf(stderr, "\n");
++    }
++  }
+ 
+   if (cpi->sf.part_sf.reuse_prev_rd_results_for_part_ab &&
+       ctx->rd_mode_is_ready) {
+@@ -969,6 +1000,28 @@ static void pick_sb_modes(AV1_COMP *const cpi, TileDataEnc *tile_data,
+   // refactored to provide proper exit/return handle.
+   if (rd_cost->rate == INT_MAX) rd_cost->rdcost = INT64_MAX;
+ 
++  {
++    // aom-rs divergence debug: AOM_PART_DBG=<mi_row>,<mi_col>.
++    static int ldg_r = -2, ldg_c = -2;
++    if (ldg_r == -2) {
++      const char *e = getenv("AOM_PART_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &ldg_r, &ldg_c) != 2) {
++        ldg_r = -1;
++        ldg_c = -1;
++      }
++    }
++    if (mi_row == ldg_r && mi_col == ldg_c) {
++      const MB_MODE_INFO *const mbmi2 = xd->mi[0];
++      fprintf(stderr,
++              "[cl] leaf mi(%d,%d) bs%d part%d budget=%lld rd=%lld rate=%d "
++              "dist=%lld mode=%d tx=%d uv=%d\n",
++              mi_row, mi_col, (int)bsize, (int)mbmi2->partition,
++              (long long)best_rd.rdcost, (long long)rd_cost->rdcost,
++              rd_cost->rate, (long long)rd_cost->dist, (int)mbmi2->mode,
++              (int)mbmi2->tx_size, (int)mbmi2->uv_mode);
++    }
++  }
++
+   ctx->rd_stats.rate = rd_cost->rate;
+   ctx->rd_stats.dist = rd_cost->dist;
+   ctx->rd_stats.rdcost = rd_cost->rdcost;
+@@ -3159,9 +3212,39 @@ static int rd_try_subblock(AV1_COMP *const cpi, ThreadData *td,
+   }
+ 
+   if (sum_rdc->rdcost >= best_rdcost.rdcost) {
++    static int rdbg_r5 = -2, rdbg_c5 = -2;
++    if (rdbg_r5 == -2) {
++      const char *e = getenv("AOM_PART_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &rdbg_r5, &rdbg_c5) != 2) {
++        rdbg_r5 = -1;
++        rdbg_c5 = -1;
++      }
++    }
++    if (rdbg_r5 != -1)
++      fprintf(stderr,
++              "[ctry] leaf mi(%d,%d) bs%d part%d last=%d FAIL sum=%lld "
++              "best=%lld this_rate=%d this_dist=%lld rem_rate=%d\n",
++              mi_row, mi_col, (int)subsize, (int)partition, is_last,
++              (long long)sum_rdc->rdcost, (long long)best_rdcost.rdcost,
++              this_rdc.rate, (long long)this_rdc.dist,
++              rdcost_remaining.rate);
+     x->rdmult = orig_mult;
+     return 0;
+   }
++  {
++    static int rdbg_r6 = -2;
++    if (rdbg_r6 == -2) {
++      const char *e = getenv("AOM_PART_DBG");
++      rdbg_r6 = (e != NULL) ? 1 : -1;
++    }
++    if (rdbg_r6 == 1)
++      fprintf(stderr,
++              "[ctry] leaf mi(%d,%d) bs%d part%d last=%d ok sum=%lld "
++              "this_rate=%d this_dist=%lld\n",
++              mi_row, mi_col, (int)subsize, (int)partition, is_last,
++              (long long)sum_rdc->rdcost, this_rdc.rate,
++              (long long)this_rdc.dist);
++  }
+ 
+   if (!is_last) {
+     av1_update_state(cpi, td, this_ctx, mi_row, mi_col, subsize, 1);
+@@ -3592,11 +3675,42 @@ static void rectangular_partition_search(
+     }
+ #endif
+ 
++    {
++      static int rdbg_r = -2, rdbg_c = -2;
++      if (rdbg_r == -2) {
++        const char *e = getenv("AOM_PART_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &rdbg_r, &rdbg_c) != 2) {
++          rdbg_r = -1;
++          rdbg_c = -1;
++        }
++      }
++      if (blk_params.mi_row == rdbg_r && blk_params.mi_col == rdbg_c)
++        fprintf(stderr,
++                "[cr] mi(%d,%d) bs%d RECT[%d] enter sum_rd=%lld\n",
++                blk_params.mi_row, blk_params.mi_col, (int)blk_params.bsize,
++                (int)i, (long long)sum_rdc->rdcost);
++    }
+     // First sub-partition evaluation in HORZ / VERT partition type.
+     rd_pick_rect_partition(
+         cpi, tile_data, x, cur_ctx[i][sub_part_idx][0], part_search_state,
+         best_rdc, 0, mi_pos_rect[i][sub_part_idx][0],
+         mi_pos_rect[i][sub_part_idx][1], blk_params.subsize, partition_type);
++    {
++      static int rdbg_r2 = -2, rdbg_c2 = -2;
++      if (rdbg_r2 == -2) {
++        const char *e = getenv("AOM_PART_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &rdbg_r2, &rdbg_c2) != 2) {
++          rdbg_r2 = -1;
++          rdbg_c2 = -1;
++        }
++      }
++      if (blk_params.mi_row == rdbg_r2 && blk_params.mi_col == rdbg_c2)
++        fprintf(stderr,
++                "[cr] mi(%d,%d) bs%d RECT[%d] sub0 this_rd=%lld sum=%lld\n",
++                blk_params.mi_row, blk_params.mi_col, (int)blk_params.bsize,
++                (int)i, (long long)part_search_state->this_rdc.rdcost,
++                (long long)sum_rdc->rdcost);
++    }
+ 
+     // Start of second sub-partition evaluation.
+     // Evaluate second sub-partition if the first sub-partition cost
+@@ -3621,6 +3735,22 @@ static void rectangular_partition_search(
+           cpi, tile_data, x, cur_ctx[i][sub_part_idx][0], part_search_state,
+           best_rdc, 1, mi_pos_rect[i][sub_part_idx][0],
+           mi_pos_rect[i][sub_part_idx][1], blk_params.subsize, partition_type);
++      {
++        static int rdbg_r3 = -2, rdbg_c3 = -2;
++        if (rdbg_r3 == -2) {
++          const char *e = getenv("AOM_PART_DBG");
++          if (e == NULL || sscanf(e, "%d,%d", &rdbg_r3, &rdbg_c3) != 2) {
++            rdbg_r3 = -1;
++            rdbg_c3 = -1;
++          }
++        }
++        if (blk_params.mi_row == rdbg_r3 && blk_params.mi_col == rdbg_c3)
++          fprintf(stderr,
++                  "[cr] mi(%d,%d) bs%d RECT[%d] sub1 this_rd=%lld sum=%lld\n",
++                  blk_params.mi_row, blk_params.mi_col, (int)blk_params.bsize,
++                  (int)i, (long long)part_search_state->this_rdc.rdcost,
++                  (long long)sum_rdc->rdcost);
++      }
+     }
+     // Update HORZ / VERT best partition.
+     if (sum_rdc->rdcost < best_rdc->rdcost) {
+@@ -3681,6 +3811,20 @@ static void rd_pick_ab_part(
+       cpi, td, tile_data, tp, pc_tree, best_rdc, &this_rdcost, dst_ctxs, mi_row,
+       mi_col, bsize, part_type, ab_subsize, ab_mi_pos, mode_cache);
+   part_search_state->found_best_partition |= find_best_ab_part;
++  {
++    static int rdbg_r4 = -2, rdbg_c4 = -2;
++    if (rdbg_r4 == -2) {
++      const char *e = getenv("AOM_PART_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &rdbg_r4, &rdbg_c4) != 2) {
++        rdbg_r4 = -1;
++        rdbg_c4 = -1;
++      }
++    }
++    if (mi_row == rdbg_r4 && mi_col == rdbg_c4)
++      fprintf(stderr, "[cab] mi(%d,%d) bs%d AB[%d] rd=%lld won=%d\n", mi_row,
++              mi_col, (int)bsize, (int)part_type - PARTITION_HORZ_A,
++              (long long)this_rdcost, (int)find_best_ab_part);
++  }
+ 
+ #if CONFIG_COLLECT_PARTITION_STATS
+   if (part_timing_stats->timer_is_on) {
+@@ -3924,6 +4068,17 @@ static void rd_pick_4partition(
+     const int inc_step[NUM_PART4_TYPES], PARTITION_TYPE partition_type) {
+   const AV1_COMMON *const cm = &cpi->common;
+   PartitionBlkParams blk_params = part_search_state->part_blk_params;
++  // aom-rs divergence debug (same AOM_PART_DBG gate as av1_rd_pick_partition).
++  static int dbg_r4 = -2, dbg_c4 = -2;
++  if (dbg_r4 == -2) {
++    const char *e = getenv("AOM_PART_DBG");
++    if (e == NULL || sscanf(e, "%d,%d", &dbg_r4, &dbg_c4) != 2) {
++      dbg_r4 = -1;
++      dbg_c4 = -1;
++    }
++  }
++  const int pdbg4 =
++      (blk_params.mi_row == dbg_r4 && blk_params.mi_col == dbg_c4);
+   // mi positions needed for HORZ4 and VERT4 partition types.
+   int mi_pos_check[NUM_PART4_TYPES] = { cm->mi_params.mi_rows,
+                                         cm->mi_params.mi_cols };
+@@ -3949,10 +4104,19 @@ static void rd_pick_4partition(
+ 
+     // Sub-block evaluation of Horz4 / Vert4 partition type.
+     cur_part_ctx[i]->rd_mode_is_ready = 0;
+-    if (!rd_try_subblock(
+-            cpi, td, tile_data, tp, (i == SUB_PARTITIONS_PART4 - 1),
+-            mi_pos[i][0], mi_pos[i][1], blk_params.subsize, *best_rdc,
+-            &part_search_state->sum_rdc, partition_type, cur_part_ctx[i])) {
++    const int ok = rd_try_subblock(
++        cpi, td, tile_data, tp, (i == SUB_PARTITIONS_PART4 - 1), mi_pos[i][0],
++        mi_pos[i][1], blk_params.subsize, *best_rdc,
++        &part_search_state->sum_rdc, partition_type, cur_part_ctx[i]);
++    if (pdbg4)
++      fprintf(stderr,
++              "[c] mi(%d,%d) bs%d P4 strip%d at(%d,%d) sum=%lld best=%lld "
++              "ok=%d\n",
++              blk_params.mi_row, blk_params.mi_col, (int)blk_params.subsize,
++              (int)i, mi_pos[i][0], mi_pos[i][1],
++              (long long)part_search_state->sum_rdc.rdcost,
++              (long long)best_rdc->rdcost, ok);
++    if (!ok) {
+       av1_invalid_rd_stats(&part_search_state->sum_rdc);
+       break;
+     }
+@@ -4435,6 +4599,26 @@ static void none_partition_search(
+                 bsize, pc_tree->none, best_remain_rdcost);
+ 
+   av1_rd_cost_update(x->rdmult, this_rdc);
++  {
++    static int dbg_nr = -2, dbg_nc = -2;
++    if (dbg_nr == -2) {
++      const char *e = getenv("AOM_PART_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &dbg_nr, &dbg_nc) != 2) {
++        dbg_nr = -1;
++        dbg_nc = -1;
++      }
++    }
++    if (mi_row == dbg_nr && mi_col == dbg_nc) {
++      const MB_MODE_INFO *const w = &pc_tree->none->mic;
++      fprintf(stderr,
++              "[c] mi(%d,%d) bs%d NONE leaf mode=%d ibc=%d skip=%d "
++              "dv=(%d,%d) rate=%d dist=%lld rd=%lld\n",
++              mi_row, mi_col, (int)bsize, (int)w->mode, (int)w->use_intrabc,
++              (int)w->skip_txfm, (int)w->mv[0].as_mv.row,
++              (int)w->mv[0].as_mv.col, this_rdc->rate,
++              (long long)this_rdc->dist, (long long)this_rdc->rdcost);
++    }
++  }
+ 
+ #if CONFIG_COLLECT_PARTITION_STATS
+   // Timer end for partition None.
+@@ -5666,6 +5850,27 @@ bool av1_rd_pick_partition(AV1_COMP *const cpi, ThreadData *td,
+   const TokenExtra *const tp_orig = *tp;
+   PartitionSearchState part_search_state;
+ 
++  // aom-rs divergence debug: AOM_PART_DBG=<mi_row>,<mi_col> dumps per-stage
++  // rdcost for one node. Inert when unset.
++  static int dbg_r = -2, dbg_c = -2;
++  if (dbg_r == -2) {
++    const char *e = getenv("AOM_PART_DBG");
++    if (e == NULL || sscanf(e, "%d,%d", &dbg_r, &dbg_c) != 2) {
++      dbg_r = -1;
++      dbg_c = -1;
++    }
++  }
++  const int pdbg = (mi_row == dbg_r && mi_col == dbg_c);
++#define PDC(...)                                              \
++  do {                                                        \
++    if (pdbg) {                                               \
++      fprintf(stderr, "[c] mi(%d,%d) bs%d ", mi_row, mi_col,  \
++              (int)bsize);                                    \
++      fprintf(stderr, __VA_ARGS__);                           \
++      fprintf(stderr, "\n");                                  \
++    }                                                         \
++  } while (0)
++
+   // Initialization of state variables used in partition search.
+   init_partition_search_state_params(x, cpi, &part_search_state, mi_row, mi_col,
+                                      bsize);
+@@ -5826,11 +6031,19 @@ BEGIN_PARTITION_SEARCH:
+     }
+   }
+ 
++  PDC("enter best=%lld gates none=%d sq=%d rect=%d rectok=[%d %d] hasrc=(%d,%d)",
++      (long long)best_rdc.rdcost, part_search_state.partition_none_allowed,
++      part_search_state.do_square_split, part_search_state.do_rectangular_split,
++      part_search_state.partition_rect_allowed[0],
++      part_search_state.partition_rect_allowed[1], blk_params.has_rows,
++      blk_params.has_cols);
+   // PARTITION_NONE search stage.
+   int64_t part_none_rd = INT64_MAX;
+   none_partition_search(cpi, td, tile_data, x, pc_tree, sms_tree, &x_ctx,
+                         &part_search_state, &best_rdc, &pb_source_variance,
+                         none_rd, &part_none_rd);
++  PDC("NONE post-pt rd=%lld best=%lld", (long long)part_none_rd,
++      (long long)best_rdc.rdcost);
+ 
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   end_timing(cpi, none_partition_search_time);
+@@ -5843,6 +6056,8 @@ BEGIN_PARTITION_SEARCH:
+   split_partition_search(cpi, td, tile_data, tp, x, pc_tree, sms_tree, &x_ctx,
+                          &part_search_state, &best_rdc, multi_pass_mode,
+                          &part_split_rd);
++  PDC("SPLIT rd=%lld best=%lld", (long long)part_split_rd,
++      (long long)best_rdc.rdcost);
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   end_timing(cpi, split_partition_search_time);
+ #endif
+@@ -5875,6 +6090,8 @@ BEGIN_PARTITION_SEARCH:
+   rectangular_partition_search(cpi, td, tile_data, tp, x, pc_tree, &x_ctx,
+                                &part_search_state, &best_rdc,
+                                rect_part_win_info, HORZ, VERT);
++  PDC("post-RECT best=%lld part=%d", (long long)best_rdc.rdcost,
++      (int)pc_tree->partitioning);
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   end_timing(cpi, rectangular_partition_search_time);
+ #endif
+@@ -5895,6 +6112,8 @@ BEGIN_PARTITION_SEARCH:
+   const int ab_partition_allowed = allow_ab_partition_search(
+       &part_search_state, &cpi->sf.part_sf, pc_tree->partitioning,
+       x->must_find_valid_partition, prune_ext_part_state, best_rdc.rdcost);
++  PDC("AB ext_ok=%d best=%lld", ab_partition_allowed,
++      (long long)best_rdc.rdcost);
+ 
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   start_timing(cpi, ab_partitions_search_time);
+@@ -5904,6 +6123,8 @@ BEGIN_PARTITION_SEARCH:
+                        &part_search_state, &best_rdc, rect_part_win_info,
+                        pb_source_variance, ab_partition_allowed, HORZ_A,
+                        VERT_B);
++  PDC("post-AB best=%lld part=%d", (long long)best_rdc.rdcost,
++      (int)pc_tree->partitioning);
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   end_timing(cpi, ab_partitions_search_time);
+ #endif
+@@ -5915,6 +6136,8 @@ BEGIN_PARTITION_SEARCH:
+                                &best_rdc, pb_source_variance,
+                                prune_ext_part_state, mi_row, mi_col,
+                                part4_search_allowed);
++  PDC("P4 allowed=[%d %d] best=%lld", part4_search_allowed[0],
++      part4_search_allowed[1], (long long)best_rdc.rdcost);
+ 
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   start_timing(cpi, rd_pick_4partition_time);
+@@ -5930,6 +6153,8 @@ BEGIN_PARTITION_SEARCH:
+     rd_pick_4partition(cpi, td, tile_data, tp, x, &x_ctx, pc_tree,
+                        pc_tree->horizontal4, &part_search_state, &best_rdc,
+                        inc_step, PARTITION_HORZ_4);
++    PDC("P4[0] post best=%lld part=%d", (long long)best_rdc.rdcost,
++        (int)pc_tree->partitioning);
+   }
+ 
+   // PARTITION_VERT_4
+@@ -5943,6 +6168,8 @@ BEGIN_PARTITION_SEARCH:
+     rd_pick_4partition(cpi, td, tile_data, tp, x, &x_ctx, pc_tree,
+                        pc_tree->vertical4, &part_search_state, &best_rdc,
+                        inc_step, PARTITION_VERT_4);
++    PDC("P4[1] post best=%lld part=%d", (long long)best_rdc.rdcost,
++        (int)pc_tree->partitioning);
+   }
+ #if CONFIG_COLLECT_COMPONENT_TIMING
+   end_timing(cpi, rd_pick_4partition_time);
+@@ -5959,6 +6186,8 @@ BEGIN_PARTITION_SEARCH:
+     goto BEGIN_PARTITION_SEARCH;
+   }
+ 
++  PDC("final part=%d best=%lld found=%d", (int)pc_tree->partitioning,
++      (long long)best_rdc.rdcost, (int)part_search_state.found_best_partition);
+   // Store the final rd cost
+   *rd_cost = best_rdc;
+ 
+@@ -6044,6 +6273,7 @@ BEGIN_PARTITION_SEARCH:
+   // Restore the rd multiplier.
+   x->rdmult = orig_rdmult;
+   return part_search_state.found_best_partition;
++#undef PDC
+ }
+ #endif  // !CONFIG_REALTIME_ONLY
+ 
+diff --git a/av1/encoder/pickcdef.c b/av1/encoder/pickcdef.c
+index 8ece93312b..3b845b13d3 100644
+--- a/av1/encoder/pickcdef.c
++++ b/av1/encoder/pickcdef.c
+@@ -841,6 +841,10 @@ void av1_cdef_search(AV1_COMP *cpi) {
+   const bool apply_adaptive_cdef =
+       cdef_control == CDEF_ADAPTIVE &&
+       (cpi->oxcf.rc_cfg.mode == AOM_Q || cpi->oxcf.rc_cfg.mode == AOM_CQ);
++  if (getenv("AOM_CDEF_DBG"))
++    fprintf(stderr, "[gate] cdef_control=%d mode=%d cq=%d pick=%d adaptive=%d\n",
++            cdef_control, cpi->oxcf.rc_cfg.mode, cpi->oxcf.rc_cfg.cq_level,
++            cpi->sf.lpf_sf.cdef_pick_method, (int)apply_adaptive_cdef);
+ 
+   assert(cdef_control != CDEF_NONE);
+   // For CDEF_ADAPTIVE, turning off CDEF around qindex 32 was best for still
+@@ -1030,6 +1034,23 @@ void av1_cdef_search(AV1_COMP *cpi) {
+     }
+   }
+ 
++  if (getenv("AOM_CDEF_DBG")) {
++    uint64_t hy = 0x9e3779b97f4a7c15ull, huv = 0x9e3779b97f4a7c15ull;
++    for (int s = 0; s < sb_count; s++)
++      for (int g = 0; g < TOTAL_STRENGTHS; g++) {
++        hy = (hy ^ mse[0][s][g]) * 0x100000001b3ull;
++        huv = (huv ^ mse[1][s][g]) * 0x100000001b3ull;
++      }
++    fprintf(stderr, "[cdefs] nsb=%d bits=%d y=[", sb_count, nb_strength_bits);
++    for (int j = 0; j < cdef_info->nb_cdef_strengths; j++)
++      fprintf(stderr, "%d,", cdef_info->cdef_strengths[j]);
++    fprintf(stderr, "] uv=[");
++    for (int j = 0; j < cdef_info->nb_cdef_strengths; j++)
++      fprintf(stderr, "%d,", cdef_info->cdef_uv_strengths[j]);
++    fprintf(stderr, "] msey=%llx mseuv=%llx\n",
++            (unsigned long long)hy, (unsigned long long)huv);
++  }
++
+   // Perform CDEF strength reduction.
+   // Note 1: for odd strengths, the 0.5 discarded by ">> 1" is a significant
+   // part of the strength when the strength is small, and because there are
+diff --git a/av1/encoder/rdopt.c b/av1/encoder/rdopt.c
+index 3ebbd10701..ae054c8d5b 100644
+--- a/av1/encoder/rdopt.c
++++ b/av1/encoder/rdopt.c
+@@ -3606,6 +3606,13 @@ static int64_t rd_pick_intrabc_mode_sb(const AV1_COMP *cpi, MACROBLOCK *x,
+     const int rate_mv = av1_mv_bit_cost(&dv, &dv_ref.as_mv, dv_costs->joint_mv,
+                                         dv_costs->dv_costs, MV_COST_WEIGHT_SUB);
+     const int rate_mode = x->mode_costs.intrabc_cost[1];
++    if (getenv("IBC_TRACE")) {
++      fprintf(stderr,
++              "[c-mv] mi(%d,%d) dv=(%d,%d) ref=(%d,%d) rate_mv=%d "
++              "intrabc_cost=%d mode_rate=%d\n",
++              xd->mi_row, xd->mi_col, dv.row, dv.col, dv_ref.as_mv.row,
++              dv_ref.as_mv.col, rate_mv, rate_mode, rate_mode + rate_mv);
++    }
+     RD_STATS rd_stats_yuv, rd_stats_y, rd_stats_uv;
+     if (!av1_txfm_search(cpi, x, bsize, &rd_stats_yuv, &rd_stats_y,
+                          &rd_stats_uv, rate_mode + rate_mv, INT64_MAX))
+diff --git a/av1/encoder/tx_search.c b/av1/encoder/tx_search.c
+index b23ed42073..5f7c742453 100644
+--- a/av1/encoder/tx_search.c
++++ b/av1/encoder/tx_search.c
+@@ -200,6 +200,15 @@ static int predict_skip_txfm(MACROBLOCK *x, BLOCK_SIZE bsize, int64_t *dist,
+   // since the fwd_txfm coeff checks will take care of quality
+   // TODO(any): Use dist to return 0 when skip_txfm_level is 1
+   int64_t pred_err = (txfm_params->skip_txfm_level >= 2) ? *dist : mse;
++  if (getenv("IBC_TRACE") && xd->mi[0]->use_intrabc) {
++    fprintf(stderr,
++            "[c-predict] mi(%d,%d) bs%d lvl=%d dist=%lld mse=%lld dc_q=%d "
++            "thresh=%lld pred_err=%lld qindex=%d\n",
++            xd->mi_row, xd->mi_col, (int)bsize,
++            (int)txfm_params->skip_txfm_level, (long long)*dist,
++            (long long)mse, (int)dc_q, (long long)mse_thresh,
++            (long long)pred_err, x->qindex);
++  }
+   // Predict not to skip when error is larger than threshold.
+   if (pred_err > mse_thresh) return 0;
+   // Return as skip otherwise for aggressive early skip
+@@ -1059,10 +1068,63 @@ static inline int64_t dist_block_px_domain(const AV1_COMP *cpi, MACROBLOCK *x,
+   const PLANE_TYPE plane_type = get_plane_type(plane);
+   TX_TYPE tx_type = av1_get_tx_type(xd, plane_type, blk_row, blk_col, tx_size,
+                                     cpi->common.features.reduced_tx_set_used);
++
++  // aom-rs divergence debug: pred hash before the inverse add.
++  static int pdbg_r = -2, pdbg_c = -2;
++  int pdbg = 0;
++  if (pdbg_r == -2) {
++    const char *e = getenv("AOM_TX_DBG");
++    if (e == NULL || sscanf(e, "%d,%d", &pdbg_r, &pdbg_c) != 2) {
++      pdbg_r = -1;
++      pdbg_c = -1;
++    }
++  }
++  if (plane == 0 && xd->mi_row == pdbg_r && xd->mi_col == pdbg_c) {
++    const MB_MODE_INFO *m = xd->mi[0];
++    if (m->filter_intra_mode_info.use_filter_intra &&
++        m->filter_intra_mode_info.filter_intra_mode == 3) {
++      pdbg = 1;
++      uint64_t h = 0;
++      const int n = bsw * bsh < 64 ? bsw * bsh : 64;
++      int cnt = 0;
++      if (is_cur_buf_hbd(xd)) {
++        const uint16_t *d16 = CONVERT_TO_SHORTPTR(dst);
++        for (int rr = 0; rr < bsh && cnt < n; ++rr)
++          for (int cc = 0; cc < bsw && cnt < n; ++cc, ++cnt)
++            h = h * 31 + d16[rr * dst_stride + cc];
++      } else {
++        for (int rr = 0; rr < bsh && cnt < n; ++rr)
++          for (int cc = 0; cc < bsw && cnt < n; ++cc, ++cnt)
++            h = h * 31 + dst[rr * dst_stride + cc];
++      }
++      fprintf(stderr, "[cpxd-pre] tx_type=%d tx_size=%d eob=%d pred_h=%llx\n",
++              (int)tx_type, (int)tx_size, (int)eob, (unsigned long long)h);
++    }
++  }
++
+   av1_inverse_transform_block(xd, dqcoeff, plane, tx_type, tx_size, recon,
+                               MAX_TX_SIZE, eob,
+                               cpi->common.features.reduced_tx_set_used);
+ 
++  if (pdbg) {
++    uint64_t h = 0;
++    const int n = bsw * bsh < 64 ? bsw * bsh : 64;
++    int cnt = 0;
++    if (is_cur_buf_hbd(xd)) {
++      const uint16_t *r16 = CONVERT_TO_SHORTPTR(recon);
++      for (int rr = 0; rr < bsh && cnt < n; ++rr)
++        for (int cc = 0; cc < bsw && cnt < n; ++cc, ++cnt)
++          h = h * 31 + r16[rr * MAX_TX_SIZE + cc];
++    } else {
++      for (int rr = 0; rr < bsh && cnt < n; ++rr)
++        for (int cc = 0; cc < bsw && cnt < n; ++cc, ++cnt)
++          h = h * 31 + recon[rr * MAX_TX_SIZE + cc];
++    }
++    fprintf(stderr, "[cpxd] tx_type=%d tx_size=%d eob=%d recon_h=%llx dq0=%d\n",
++            (int)tx_type, (int)tx_size, (int)eob, (unsigned long long)h,
++            (int)dqcoeff[0]);
++  }
++
+   return 16 * pixel_dist(cpi, x, plane, src, src_stride, recon, MAX_TX_SIZE,
+                          blk_row, blk_col, plane_bsize, tx_bsize);
+ }
+@@ -2183,6 +2245,26 @@ static void search_tx_type(const AV1_COMP *cpi, MACROBLOCK *x, int plane,
+       (txk_allowed < TX_TYPES || allowed_tx_mask == 0x0001))
+     calc_pixel_domain_distortion_final = use_transform_domain_distortion = 0;
+ 
++  {
++    static int udbg_r = -2, udbg_c = -2;
++    if (udbg_r == -2) {
++      const char *e = getenv("AOM_TX_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &udbg_r, &udbg_c) != 2) {
++        udbg_r = -1;
++        udbg_c = -1;
++      }
++    }
++    if (xd->mi_row == udbg_r && xd->mi_col == udbg_c)
++      fprintf(stderr,
++              "[cutdd] tx_size=%d mse_q8=%u thresh=%lld param=%d dc=%d utdd=%d pxfinal=%d mask=%04x txk=%d rd_model=%d\n",
++              (int)tx_size, block_mse_q8,
++              (long long)txfm_params->tx_domain_dist_threshold,
++              (int)txfm_params->use_transform_domain_distortion, dc_only_blk,
++              use_transform_domain_distortion,
++              calc_pixel_domain_distortion_final, (unsigned)allowed_tx_mask,
++              (int)txk_allowed, (int)x->rd_model);
++  }
++
+   const uint16_t *eobs_ptr = x->plane[plane].eobs;
+ 
+   TxfmParam txfm_param;
+@@ -2235,6 +2317,8 @@ static void search_tx_type(const AV1_COMP *cpi, MACROBLOCK *x, int plane,
+     // terminate early.
+     if (RDCOST(x->rdmult, rate_cost, 0) > best_rd) continue;
+ 
++    int dbg_he = 0;
++    int64_t dbg_txd = -1, dbg_pxd = -1;
+     // Calculate distortion.
+     if (eobs_ptr[block] == 0) {
+       // When eob is 0, pixel domain distortion is more efficient and accurate.
+@@ -2257,6 +2341,7 @@ static void search_tx_type(const AV1_COMP *cpi, MACROBLOCK *x, int plane,
+       const int64_t high_energy_thresh =
+           ((int64_t)128 * 128 * tx_size_2d[tx_size]);
+       const int is_high_energy = (block_sse >= high_energy_thresh);
++      dbg_he = is_high_energy;
+       if (tx_size == TX_64X64 || is_high_energy) {
+         // Because 3 out 4 quadrants of transform coefficients are forced to
+         // zero, the inverse transform has a tendency to overflow. sse_diff
+@@ -2270,12 +2355,14 @@ static void search_tx_type(const AV1_COMP *cpi, MACROBLOCK *x, int plane,
+                              scan_order->scan, &this_rd_stats.dist,
+                              &this_rd_stats.sse);
+         sse_diff = block_sse - this_rd_stats.sse;
++        dbg_txd = this_rd_stats.dist;
+       }
+       if (tx_size != TX_64X64 || !is_high_energy ||
+           (sse_diff * 2) < this_rd_stats.sse) {
+         const int64_t tx_domain_dist = this_rd_stats.dist;
+         this_rd_stats.dist = dist_block_px_domain(
+             cpi, x, plane, plane_bsize, block, blk_row, blk_col, tx_size);
++        dbg_pxd = this_rd_stats.dist;
+         // For high energy blocks, occasionally, the pixel domain distortion
+         // can be artificially low due to clamping at reconstruction stage
+         // even when inverse transform output is hugely different from the
+@@ -2294,6 +2381,26 @@ static void search_tx_type(const AV1_COMP *cpi, MACROBLOCK *x, int plane,
+     const int64_t rd =
+         RDCOST(x->rdmult, this_rd_stats.rate, this_rd_stats.dist);
+ 
++    {
++      // aom-rs divergence debug: reuse AOM_TX_DBG leaf targeting.
++      static int tdbg_r = -2, tdbg_c = -2;
++      if (tdbg_r == -2) {
++        const char *e = getenv("AOM_TX_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &tdbg_r, &tdbg_c) != 2) {
++          tdbg_r = -1;
++          tdbg_c = -1;
++        }
++      }
++      if (xd->mi_row == tdbg_r && xd->mi_col == tdbg_c)
++        fprintf(stderr,
++                "[ctxt] pl%d tx_type=%d rd=%lld rate=%d dist=%lld eob=%d "
++                "bsse=%lld he=%d txd=%lld pxd=%lld\n",
++                plane, (int)tx_type, (long long)rd, (int)this_rd_stats.rate,
++                (long long)this_rd_stats.dist,
++                (int)x->plane[plane].eobs[block], (long long)block_sse, dbg_he,
++                (long long)dbg_txd, (long long)dbg_pxd);
++    }
++
+     if (rd < best_rd) {
+       best_rd = rd;
+       *best_rd_stats = this_rd_stats;
+@@ -3032,6 +3139,27 @@ static inline void choose_tx_size_type_from_rd(const AV1_COMP *const cpi,
+             : ref_best_rd;
+     rd[depth] = uniform_txfm_yrd(cpi, x, &this_rd_stats, rd_thresh, bs, tx_size,
+                                  FTXS_NONE);
++    {
++      // aom-rs divergence debug: AOM_TX_DBG=<mi_row>,<mi_col>.
++      static int tdbg_r = -2, tdbg_c = -2;
++      if (tdbg_r == -2) {
++        const char *e = getenv("AOM_TX_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &tdbg_r, &tdbg_c) != 2) {
++          tdbg_r = -1;
++          tdbg_c = -1;
++        }
++      }
++      if (xd->mi_row == tdbg_r && xd->mi_col == tdbg_c)
++        fprintf(stderr,
++                "[ctx] mi(%d,%d) bs%d part%d mode=%d fi=%d tx=%d depth=%d rd=%lld "
++                "thresh=%lld rate=%d dist=%lld\n",
++                xd->mi_row, xd->mi_col, (int)bs, (int)mbmi->partition,
++                (int)mbmi->mode,
++                (int)mbmi->filter_intra_mode_info.filter_intra_mode,
++                (int)tx_size, (int)depth, (long long)rd[depth],
++                (long long)rd_thresh, (int)this_rd_stats.rate,
++                (long long)this_rd_stats.dist);
++    }
+     if (rd[depth] < best_rd) {
+       av1_copy_array(best_txk_type_map, xd->tx_type_map, num_blks);
+       best_tx_size = tx_size;
+@@ -3083,7 +3211,91 @@ static inline void block_rd_txfm(int plane, int block, int blk_row, int blk_col,
+ 
+   if (!is_inter) {
+     av1_predict_intra_block_facade(cm, xd, plane, blk_col, blk_row, tx_size);
++    {
++      static int pdr = -2, pdc = -2;
++      if (pdr == -2) {
++        const char *e = getenv("AOM_UV_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &pdr, &pdc) != 2) {
++          pdr = -1;
++          pdc = -1;
++        }
++      }
++      if (xd->mi_row == pdr && xd->mi_col == pdc && plane > 0 &&
++          plane > 0) {
++        const struct macroblockd_plane *pd2 = &xd->plane[plane];
++        const int pw = tx_size_wide[tx_size], ph = tx_size_high[tx_size];
++        uint64_t ph2 = 0;
++        for (int r = 0; r < ph; ++r)
++          for (int c = 0; c < pw; ++c)
++            ph2 = ph2 * 31 + pd2->dst.buf[r * pd2->dst.stride + c];
++        uint64_t sh = 0;
++        const struct macroblock_plane *p = &x->plane[plane];
++        const int bw2 = block_size_wide[plane_bsize] >>
++                        pd2->subsampling_x;
++        const int bh2 = block_size_high[plane_bsize] >>
++                        pd2->subsampling_y;
++        for (int r = 0; r < bh2; ++r)
++          for (int c = 0; c < bw2; ++c)
++            sh = sh * 31 + p->src.buf[r * p->src.stride + c];
++        // Edge pixels around the txb in the dst buffer: the above row
++        // (with top-right extension), the corner, and the left column
++        // (with bottom-left extension).
++        const int doff = (blk_row * pd2->dst.stride + blk_col)
++                         << MI_SIZE_LOG2;
++        uint64_t ah = 0, lh = 0;
++        for (int c = -1; c < pw * 2; ++c)
++          ah = ah * 31 + pd2->dst.buf[doff - pd2->dst.stride + c];
++        for (int r = -1; r < ph * 2; ++r)
++          lh = lh * 31 + pd2->dst.buf[doff + r * pd2->dst.stride - 1];
++        fprintf(stderr,
++                "[cpred] mi(%d,%d) pl%d uv=%d adelta=%d blk(%d,%d) pred=%llx "
++                "src=%llx ab=%llx lf=%llx\n",
++                pdr, pdc, plane, (int)xd->mi[0]->uv_mode,
++                (int)xd->mi[0]->angle_delta[PLANE_TYPE_UV], blk_row, blk_col,
++                (unsigned long long)ph2, (unsigned long long)sh,
++                (unsigned long long)ah, (unsigned long long)lh);
++        fprintf(stderr, "[cab] mi(%d,%d) pl%d:", pdr, pdc, plane);
++        for (int c = -1; c < pw * 2; ++c)
++          fprintf(stderr, " %d", (int)pd2->dst.buf[doff - pd2->dst.stride + c]);
++        fprintf(stderr, "\n");
++      }
++    }
+     av1_subtract_txb(x, plane, plane_bsize, blk_col, blk_row, tx_size);
++    {
++      static int rdr = -2, rdc = -2;
++      if (rdr == -2) {
++        const char *e = getenv("AOM_UV_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &rdr, &rdc) != 2) {
++          rdr = -1;
++          rdc = -1;
++        }
++      }
++      if (xd->mi_row == rdr && xd->mi_col == rdc && plane > 0 &&
++          plane > 0) {
++        const struct macroblockd_plane *pd2 = &xd->plane[plane];
++        const struct macroblock_plane *p = &x->plane[plane];
++        const int pw = tx_size_wide[tx_size], ph = tx_size_high[tx_size];
++        const int diff_stride = block_size_wide[plane_bsize];
++        const int16_t *diff =
++            &p->src_diff[(blk_row * diff_stride + blk_col) << MI_SIZE_LOG2];
++        uint64_t rh = 0, sh = 0;
++        for (int r = 0; r < ph; ++r)
++          for (int c = 0; c < pw; ++c) {
++            rh = rh * 31 + (uint16_t)diff[r * diff_stride + c];
++            sh = sh * 31 +
++                 p->src.buf[((blk_row * p->src.stride + blk_col)
++                             << MI_SIZE_LOG2) +
++                            r * p->src.stride + c];
++          }
++        (void)pd2;
++        fprintf(stderr,
++                "[cres] mi(%d,%d) pl%d uv=%d adelta=%d blk(%d,%d) res=%llx "
++                "src=%llx\n",
++                rdr, rdc, plane, (int)xd->mi[0]->uv_mode,
++                (int)xd->mi[0]->angle_delta[PLANE_TYPE_UV], blk_row, blk_col,
++                (unsigned long long)rh, (unsigned long long)sh);
++      }
++    }
+ #if !CONFIG_REALTIME_ONLY
+     const TxfmSearchParams *const txfm_params = &x->txfm_search_params;
+     if (txfm_params->enable_nn_prune_intra_tx_depths) {
+@@ -3133,6 +3345,31 @@ static inline void block_rd_txfm(int plane, int block, int blk_row, int blk_col,
+ 
+   args->current_rd += rd;
+   if (args->current_rd > args->best_rd) args->exit_early = 1;
++
++  {
++    static int tdr = -2, tdc = -2;
++    if (tdr == -2) {
++      const char *e = getenv("AOM_UV_DBG");
++      if (e == NULL || sscanf(e, "%d,%d", &tdr, &tdc) != 2) {
++        tdr = -1;
++        tdc = -1;
++      }
++    }
++    if (xd->mi_row == tdr && xd->mi_col == tdc && plane > 0) {
++      const tran_low_t *qc = x->plane[plane].qcoeff + (block * 64 * 64);
++      uint64_t h = 0;
++      for (int i = 0; i < x->plane[plane].eobs[block]; ++i)
++        h = h * 31 + qc[i];
++      fprintf(stderr,
++              "[ctxb] mi(%d,%d) pl%d bs%d uv=%d adelta=%d blk(%d,%d) txs=%d "
++              "eob=%d rate=%d dist=%lld ch=%llx\n",
++              tdr, tdc, plane, (int)plane_bsize, (int)xd->mi[0]->uv_mode,
++              (int)xd->mi[0]->angle_delta[PLANE_TYPE_UV], blk_row, blk_col,
++              (int)tx_size, (int)x->plane[plane].eobs[block],
++              this_rd_stats.rate, (long long)this_rd_stats.dist,
++              (unsigned long long)h);
++    }
++  }
+ }
+ 
+ int64_t av1_estimate_txfm_yrd(const AV1_COMP *const cpi, MACROBLOCK *x,
+@@ -3728,6 +3965,20 @@ int av1_txfm_uvrd(const AV1_COMP *const cpi, MACROBLOCK *x, RD_STATS *rd_stats,
+     av1_txfm_rd_in_plane(x, cpi, &this_rd_stats, chroma_ref_best_rd, 0, plane,
+                          plane_bsize, uv_tx_size, FTXS_NONE);
+     if (this_rd_stats.rate == INT_MAX) {
++      static int ubr = -2, ubc = -2;
++      if (ubr == -2) {
++        const char *e = getenv("AOM_UV_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &ubr, &ubc) != 2) {
++          ubr = -1;
++          ubc = -1;
++        }
++      }
++      if (xd->mi_row == ubr && xd->mi_col == ubc) {
++        fprintf(stderr,
++                "[cbail] mi(%d,%d) bs%d uv=%d pl%d INVALID ref=%lld rdmult=%d\n",
++                ubr, ubc, (int)bsize, (int)mbmi->uv_mode, plane,
++                (long long)ref_best_rd, x->rdmult);
++      }
+       is_cost_valid = 0;
+       break;
+     }
+@@ -3735,6 +3986,24 @@ int av1_txfm_uvrd(const AV1_COMP *const cpi, MACROBLOCK *x, RD_STATS *rd_stats,
+     this_rd = RDCOST(x->rdmult, rd_stats->rate, rd_stats->dist);
+     skip_txfm_rd = RDCOST(x->rdmult, 0, rd_stats->sse);
+     if (AOMMIN(this_rd, skip_txfm_rd) > ref_best_rd) {
++      static int ubr = -2, ubc = -2;
++      if (ubr == -2) {
++        const char *e = getenv("AOM_UV_DBG");
++        if (e == NULL || sscanf(e, "%d,%d", &ubr, &ubc) != 2) {
++          ubr = -1;
++          ubc = -1;
++        }
++      }
++      if (xd->mi_row == ubr && xd->mi_col == ubc) {
++        fprintf(stderr,
++                "[cbail] mi(%d,%d) bs%d uv=%d pl%d this_rd=%lld skip_rd=%lld "
++                "ref=%lld rate=%d dist=%lld sse=%lld rdmult=%d\n",
++                ubr, ubc, (int)bsize, (int)mbmi->uv_mode, plane,
++                (long long)this_rd, (long long)skip_txfm_rd,
++                (long long)ref_best_rd, this_rd_stats.rate,
++                (long long)this_rd_stats.dist, (long long)this_rd_stats.sse,
++                x->rdmult);
++      }
+       is_cost_valid = 0;
+       break;
+     }
+@@ -3800,6 +4069,16 @@ int av1_txfm_search(const AV1_COMP *cpi, MACROBLOCK *x, BLOCK_SIZE bsize,
+   const int skip_ctx = av1_get_skip_txfm_context(xd);
+   const int skip_txfm_cost[2] = { x->mode_costs.skip_txfm_cost[skip_ctx][0],
+                                   x->mode_costs.skip_txfm_cost[skip_ctx][1] };
++  if (getenv("IBC_TRACE") && xd->mi[0]->use_intrabc) {
++    const MB_MODE_INFO *const am = xd->above_mbmi;
++    const MB_MODE_INFO *const lm = xd->left_mbmi;
++    fprintf(stderr,
++            "[c-skipctx] mi(%d,%d) bs%d skip_ctx=%d skip0=%d skip1=%d "
++            "above_skip=%d left_skip=%d\n",
++            xd->mi_row, xd->mi_col, (int)bsize, skip_ctx, skip_txfm_cost[0],
++            skip_txfm_cost[1], am ? am->skip_txfm : -1,
++            lm ? lm->skip_txfm : -1);
++  }
+   const int64_t min_header_rate =
+       mode_rate + AOMMIN(skip_txfm_cost[0], skip_txfm_cost[1]);
+   // Account for minimum skip and non_skip rd.
+@@ -3860,12 +4139,33 @@ int av1_txfm_search(const AV1_COMP *cpi, MACROBLOCK *x, BLOCK_SIZE bsize,
+   }
+ 
+   int choose_skip_txfm = rd_stats->skip_txfm;
++  if (getenv("IBC_TRACE") && mbmi->use_intrabc) {
++    fprintf(stderr,
++            "[c-arms] mi(%d,%d) dv=(%d,%d) rd_skip=%d y_rate=%d uv_rate=%d "
++            "yskip=%d uvskip=%d dist=%lld sse=%lld\n",
++            xd->mi_row, xd->mi_col, mbmi->mv[0].as_mv.row,
++            mbmi->mv[0].as_mv.col, rd_stats->skip_txfm, rd_stats_y->rate,
++            rd_stats_uv->rate, rd_stats_y->skip_txfm, rd_stats_uv->skip_txfm,
++            (long long)rd_stats->dist, (long long)rd_stats->sse);
++  }
+   if (!choose_skip_txfm && !xd->lossless[mbmi->segment_id]) {
+     const int64_t rdcost_no_skip_txfm = RDCOST(
+         x->rdmult, rd_stats_y->rate + rd_stats_uv->rate + skip_txfm_cost[0],
+         rd_stats->dist);
+     const int64_t rdcost_skip_txfm =
+         RDCOST(x->rdmult, skip_txfm_cost[1], rd_stats->sse);
++    if (getenv("IBC_TRACE") && mbmi->use_intrabc) {
++      fprintf(stderr,
++              "[c-skiprd] mi(%d,%d) dv=(%d,%d) rdmult=%d mode_rate=%d "
++              "y_rate=%d uv_rate=%d skip0=%d skip1=%d dist=%lld sse=%lld "
++              "rd_noskip=%lld rd_skip=%lld yskip=%d uvskip=%d\n",
++              xd->mi_row, xd->mi_col, mbmi->mv[0].as_mv.row,
++              mbmi->mv[0].as_mv.col, x->rdmult, mode_rate, rd_stats_y->rate,
++              rd_stats_uv->rate, skip_txfm_cost[0], skip_txfm_cost[1],
++              (long long)rd_stats->dist, (long long)rd_stats->sse,
++              (long long)rdcost_no_skip_txfm, (long long)rdcost_skip_txfm,
++              rd_stats_y->skip_txfm, rd_stats_uv->skip_txfm);
++    }
+     if (rdcost_no_skip_txfm >= rdcost_skip_txfm) choose_skip_txfm = 1;
+   }
+   if (choose_skip_txfm) {

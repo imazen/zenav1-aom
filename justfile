@@ -111,6 +111,7 @@ gate-encode:
 # `gate-encode` is KEPT as the fast pre-check while iterating on encoder work.
 # It is just no longer worth running alongside the workspace gate.
 gate-landing:
+    just upstream-check
     just ci-yaml-check
     just test-next
     just test-next-scalar
@@ -328,3 +329,34 @@ perf-profile SIDE REPS="6":
     RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release -p zenav1-aom-bench --example eprof_x86
     perf record -F 499 --call-graph fp -o "$HOME/tmp/perf_{{SIDE}}.data" -- ./target/release/examples/eprof_x86 {{SIDE}} "${W:-1024}" "${H:-1024}" "${CQ:-27}" "${SPEED:-3}" {{REPS}}
     perf report -i "$HOME/tmp/perf_{{SIDE}}.data" --no-children --percent-limit 0.3 --stdio 2>/dev/null | grep -vE '^#|^$' | head -60
+
+# ---------------------------------------------------------------------------
+# C-oracle instrumentation (docs/upstream-instrumentation/README.md).
+#
+# The env-gated `fprintf` traces that pair with the port's `env_flag!` sites are
+# VERSIONED as patches against the pinned libaom commit, never committed to the
+# submodule. `upstream-check` fails the landing gate when the oracle tree is
+# dirty — with `ignore = dirty` in .gitmodules a root `git status` cannot see it,
+# which is how 965 lines of traces sat in the linked oracle for two weeks
+# (docs/INTEGRATION_REVIEW.md, 2026-09-24). `upstream/build/` is the oracle build
+# output and is expected.
+upstream-check:
+    @git -C upstream diff --quiet && git -C upstream diff --cached --quiet \
+      || { echo "upstream/ is DIRTY — the C oracle is not the pinned tree." >&2; \
+           echo "  save:   git -C upstream diff > docs/upstream-instrumentation/<date>-<what>.patch" >&2; \
+           echo "  revert: just upstream-pristine" >&2; git -C upstream status --short >&2; exit 1; }
+    @echo "upstream-check: pristine at $(git -C upstream rev-parse --short HEAD)"
+
+# Apply one versioned trace set to the oracle and force its relink. Default is
+# the newest set. Byte-inert until the matching AOM_* var is exported.
+upstream-instrument PATCH="docs/upstream-instrumentation/2026-09-24-kb59-68-traces.patch":
+    git -C upstream apply --check "$PWD/{{PATCH}}"
+    git -C upstream apply "$PWD/{{PATCH}}"
+    cargo clean -p zenav1-aom-sys-ref
+    @echo "instrumented with {{PATCH}}; run 'just upstream-pristine' before landing"
+
+# Revert the oracle to the pinned tree and force its relink.
+upstream-pristine:
+    git -C upstream checkout -- .
+    cargo clean -p zenav1-aom-sys-ref
+    just upstream-check

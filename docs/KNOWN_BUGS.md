@@ -756,7 +756,7 @@ an entry by relaxing/excluding a test — only by a landed fix verified on `orig
   (partition_pick.rs stage/strip dumps), `AOM_SCT_DBG`/`AOM_HDR_DUMP`/`AOM_HDR_TRACE`
   (key_frame.rs, entropy/header.rs field boundaries + `WriteBitBuffer::bit_len`). The
   matching C-side prints are preserved as
-  `docs/upstream-divergence-debug-2026-09-12.patch` — the `upstream/` submodule itself was
+  `docs/upstream-instrumentation/2026-09-12-kb55-58-traces.patch` — the `upstream/` submodule itself was
   reverted to pristine so the oracle stays the pinned tree.
 
 ### KB-53 — Encoder: the RD/tune/tool knobs were HARNESS-ONLY — WIRED into `encode_key_frame` 2026-09-11, byte-gated with a matched oracle; parity status per knob recorded, one corrupt-stream knob refused by name

@@ -223,8 +223,9 @@ tests, and 23 byte/RD gates plus the coverage census stayed broken across six re
 Before pushing any encoder change, run:
 
 ```
-just gate-landing       # = test-next + test-next-scalar + census-gate
-                        #   + test-whereat + api-doc-check
+just gate-landing       # = upstream-check + ci-yaml-check + test-next
+                        #   + test-next-scalar + census-gate + test-whereat
+                        #   + api-doc-check
 ```
 
 **This REPLACED the old `gate-encode` + `test-fast` + `test-fast-scalar` trio on
