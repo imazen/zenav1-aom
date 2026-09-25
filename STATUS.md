@@ -1,5 +1,23 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom.
 
+## KB-69: the peak-memory estimate is speed-, chroma- and thread-aware again — and the branch's 5x memory growth is now a measured number (2026-09-24)
+
+The bisected estimate-contract break (`e1a97fe`) is closed by re-fitting the model, not
+by bounding the retention. heaptrack on the gate's own binary at 1024² s0 attributes
+~160 MB of a 190 MB encoder peak to per-LEAF state kept for the whole frame: the
+retained coefficient outcomes (`encode_intra.rs:322`, 72 MB), the y/u/v walk outputs
+(`encode_sb.rs:1407/1543/1546`, 65 MB) and the partition tree (`partition_pick.rs:3524`,
+25 MB). Per pixel: s0/s3 197..211 B, s6 156..179, s9 104..144; threads add 0 at peak.
+`estimate()` = 1 MiB + padded x 32 + px x (240 | 180 by speed band + 40 x
+samples-per-pixel) + 4 MiB per extra worker; grid widened to 22 cells (incl. t4/t8),
+all bounded, worst slack 4.84x. **Product consequence, stated so it is not lost: the
+shipping cell 1024² `--cpu-used 3` peaks at 218 MB where the 2026-09-08 model measured
+39 MB.** Bounding the retention (free per tile after pack, or `eob`-sized txbs) is the
+lever; it was not taken here. Body: `docs/KNOWN_BUGS.md` KB-69.
+
+Gates: `encode_limits_and_estimate` 4/4 (was 2/4); `just gate-landing` at HEAD (see the
+commit); api-doc regenerated (`resolved_threads` is new and public).
+
 ## Integration review of `perf/gate3-txfm-i16-batch` + the first real workspace gate on it (2026-09-24)
 
 `docs/INTEGRATION_REVIEW.md` is the full record. The branch (160 commits, 0 behind main)

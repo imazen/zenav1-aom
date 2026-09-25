@@ -5,6 +5,51 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-69 — Encoder: the KB-50 peak-memory estimate under-stated the measured peak by up to 3.2x — the perf programme added a per-PIXEL retention term the model had no slot for — FIXED ✅ 2026-09-24 (speed-, chroma- and thread-aware model; 22/22 grid cells bounded, worst slack 4.84x)
+
+**Symptom.** `encode_limits_and_estimate::the_estimate_is_an_upper_bound_and_stays_honest`
+failed at HEAD `973f503`: `256x256: the estimate UNDER-states the measured peak
+(6373376 < 11255676)`, and the companion `the_padded_geometry_is_why_a_per_pixel_model_fails`
+fell to 1.95x against its 2x bar. Found by the first `just gate-landing` ever run on
+`perf/gate3-txfm-i16-batch` (2026-09-24); `gate-encode` runs this target too, so it had
+been red for nine days for anyone who ran it — no STATUS entry in that window claims it.
+
+**Bisect.** `git bisect run` over `origin/main..HEAD` names `e1a97fe` "encode: replay
+retained leaf payloads in pack instead of re-encoding" (2026-09-15) as the first bad
+commit. It keeps every ordinary intra leaf's `EncodeIntraPlaneOutcome` (the coded txbs)
+on `LeafWinner::replay` for the whole frame so `pack_leaf` replays instead of re-running
+`encode_b_intra_dry` (-27 % Ir at the s9 cell). Byte-identical; the memory was never
+measured.
+
+**Attribution (heaptrack on the test binary, 1024x1024 `--cpu-used 0`, 225 MB process
+peak):** `encode_intra.rs:322` (`EncodeIntraPlaneOutcome` / `TxbsVec`) **72 MB**; the
+y/u/v walk outputs at `encode_sb.rs:1407/1543/1546` **65 MB**; the partition tree's
+per-leaf outcomes at `partition_pick.rs:3524` **25 MB**; the source planes 33 MB (the
+test excludes them); everything else < 3 MB each. So ~160 MB of the 190 MB encoder peak
+is per-LEAF state retained for the frame — a per-pixel term. The whole grid, measured
+(`(peak - fixed) / pixels`, bd8 4:2:0): `--cpu-used` 0/3 = 197..211 B/px, 6 =
+156..179, 9 = 104..144; 4:4:4 at s6 207; mono 60; bd12 47; threads 4 and 8 add
+**0 B** at peak (identical to the byte at 1024 s3 and 512 s6). Against the 2026-09-08
+fit (21.5..37.2 B per padded sample, single term) the shipping cell 1024 s3 went
+39 MB -> 218 MB.
+
+**Fix (`key_frame.rs`, `estimate()`):** `FIXED (1 MiB) + padded * 32 + px *
+(B(speed) + 40 * samples_per_pixel) + (workers - 1) * 4 MiB`, with `B` = 240 for
+`cpu_used <= 5` and 180 for `>= 6`. The padded coefficient was re-fitted from the
+aspect-extreme pair (8320x64 vs 64x8320: same pixels, +2.10M padded samples, +53.9 MB ->
+25.7 B/sample). `resolved_threads()` is new and public so the estimate and the encoder
+agree on what `threads == 0` means. Gate grid widened from 16 to 22 cells (256 s3,
+512 s6, 1024 s3, 1024 s6, 1024 s3 t4, 512 s6 t8) and restructured to print the whole
+grid before asserting; every cell bounded, worst slack 4.84x (256 bd12) under the 6x
+honesty ceiling, 1x1 at 3.96x. The companion test's bar is 1.5x with the dilution
+explained in place.
+
+**What this does NOT do:** reduce the memory. 218 MB for a 1 MP still at the shipping
+preset is a product number zenavif will see (`docs/COVERAGE_QUEUE.md` T2 candidate:
+bound the retention — free each leaf's payload once its tile is packed, or retain
+`TxbsVec` only up to `eob`). The estimate is now honest about it; making it small is a
+perf-vs-memory decision that was not taken here.
+
 ### KB-68 — Encoder: real screen content diverges at an IntraBC leaf — CLOSED ✅ 2026-09-24 (byte-identical at `347a8c8`)
 
 - **Symptom.** Real screen witness `screen_512.yuv` (crop of

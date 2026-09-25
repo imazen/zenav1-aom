@@ -389,7 +389,7 @@ the env mapping (`0`/empty = off, node parsing), bit/name uniqueness and the foc
 packing. `AOM_FORCE_SCALAR` stays a set-once pin outside this module, as discussed.
 Public-API snapshots regenerated (`aom-dsp` +1 module, +4 types, +3 macros).
 
-### 8. Estimate-contract regression, bisected (NOT fixed here)
+### 8. Estimate-contract regression, bisected — RESOLVED later the same day as KB-69 (model re-fitted; the memory growth itself stays open as a product cost, see `docs/KNOWN_BUGS.md`)
 
 The two `encode_limits_and_estimate` failures from the first full gate run reproduce at
 bare `973f503` with this session's edits stashed, so they are the branch's. `git bisect
