@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # main plus the branch families landings are staged on. MEASURED
+    # 2026-09-24: `perf/gate3-txfm-i16-batch` reached 160 commits ahead of main
+    # with ZERO CI runs because only main and PRs triggered — every arch leg
+    # was unverified until the fast-forward. Branch pushes cost runner minutes;
+    # an unverified 160-commit fast-forward costs more.
+    branches: [main, 'perf/**', 'fix/**', 'feat/**', 'integrate/**', 'maint/**']
   pull_request:
     branches: [main]
   # Manual trigger. GitHub's pull_request event delivery stalls occasionally —
@@ -48,6 +53,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
 
       # Every crate links the C libaom oracle via aom-sys-ref, so the whole
       # workspace needs it built. aom-sys-ref/build.rs builds it from the
@@ -84,8 +90,12 @@ jobs:
       # its TODO (Gate-3 SIMD work needs ONE archmage instance workspace-wide
       # so the AOM_FORCE_SCALAR token pin reaches every kernel crate).
 
+      # nextest, not `cargo test`: the workspace is ~300 test binaries that
+      # `cargo test` drains ONE AT A TIME (measured 3.94 load on 24 cores);
+      # nextest puts every test in one pool — 57.4 min -> 341 s locally, and
+      # it is what `just gate-landing` has run since 2026-09-09.
       - name: Test workspace (differential vs C oracle)
-        run: cargo test --profile test-fast --workspace --no-fail-fast
+        run: cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast
 
       # The default-off `whereat` feature adds two located-error decode entries.
       # Nothing in `cargo test --workspace` enables it, so without this step the
@@ -138,6 +148,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends nasm cmake ninja-build
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - name: Cache libaom oracle build
         uses: actions/cache@v6
         with:
@@ -153,7 +164,7 @@ jobs:
       - name: Provision conformance corpus (intra scope)
         run: python3 xtask/conformance.py --fetch --scope intra
       - name: Test workspace under the scalar pin
-        run: cargo test --profile test-fast --workspace --no-fail-fast
+        run: cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast
 
       # The cancellation gate runs HERE as well as on the x86-64 leg, and this
       # is the leg where it has the most to say: MEASURED on run 34236344662,
@@ -256,6 +267,7 @@ jobs:
         run: brew list nasm >/dev/null 2>&1 || brew install nasm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - name: Cache libaom oracle build
         uses: actions/cache@v6
         with:
@@ -277,7 +289,7 @@ jobs:
       - name: Provision conformance corpus (intra scope)
         run: python3 xtask/conformance.py --fetch --scope intra
       - name: Test workspace (C oracle + scalar + every SIMD tier)
-        run: cargo test --profile test-fast --workspace --no-fail-fast
+        run: cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast
 
   # ORG-BAR PLATFORM MATRIX — pure-Rust portability (no C oracle).
   #
