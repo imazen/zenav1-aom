@@ -1605,8 +1605,13 @@ mod tests {
         edge[3] = I16_TAP_MAX;
         assert!(span_fits_i16(&edge, 0, 16), "1023 must be accepted");
 
-        if crate::dispatch::scalar_forced() {
-            return; // no vector tier to diverge; the half above still ran
+        if crate::dispatch::scalar_forced() || !cfg!(target_arch = "x86_64") {
+            // No vector tier to diverge (pin), or a vector tier whose taps
+            // are not i16-bound at all: the NEON body widens differently and
+            // MEASURED on CI's aarch64 default-dispatch leg (2026-09-25) does
+            // not diverge one over the bound — the bound is an x86 v3
+            // property. The gate's rejection half above ran regardless.
+            return;
         }
         // One over the bound, and the vector path is wrong for at least one
         // dx — else the gate guards nothing.

@@ -130,7 +130,9 @@ fn highbd_filter_intra_edge_at_byte_identical() {
                         b.as_slice(),
                         "hbd filter_at edge bd={bd} sz={sz} s={strength}"
                     );
-                    if strength != 0 && !pinned {
+                    // ...and the SSE4 shape is x86's: the NEON kernel writes
+                    // only the edge, like `_c` (CI aarch64 leg, 2026-09-25).
+                    if strength != 0 && !pinned && cfg!(target_arch = "x86_64") {
                         // C-SSE4 side effects: p[-1] = p[0], p[sz..sz+8] splat.
                         assert_eq!(a[OFF - 1], orig[OFF], "p[-1] write");
                         assert!(

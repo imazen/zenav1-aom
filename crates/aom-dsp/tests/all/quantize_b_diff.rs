@@ -74,18 +74,36 @@ fn check(rng: &mut Rng, log_scale: i32, n: usize, scan: &[i16]) {
     // tier mirrors C NEON — a DIFFERENT algorithm (vqdmulh accumulation,
     // truncating vmovn loads) that does not agree with the C scalar helper
     // lane-for-lane, so compare against the real exported NEON kernel.
+    // ...but ONLY while the NEON tier is live: under AOM_FORCE_SCALAR the
+    // port runs its `_c`-shape scalar body, and the NEON oracle's truncating
+    // narrow differs from it beyond 16 bits (this fuzz draws 19). MEASURED red
+    // on CI's aarch64 forced-scalar leg 2026-09-25 (port ±10250 clamped, NEON
+    // oracle truncated); the pin is read first, which also applies it.
     #[cfg(target_arch = "aarch64")]
-    let (q_want, dq_want, eob_want) = c::ref_quantize_b_neon(
-        log_scale,
-        &coeff,
-        &zbin,
-        &round,
-        &quant,
-        &quant_shift,
-        &dequant,
-        scan,
-        &iscan,
-    );
+    let (q_want, dq_want, eob_want) = if aom_dsp::dispatch::scalar_forced() {
+        c::ref_quantize_b(
+            log_scale,
+            &coeff,
+            &zbin,
+            &round,
+            &quant,
+            &quant_shift,
+            &dequant,
+            scan,
+        )
+    } else {
+        c::ref_quantize_b_neon(
+            log_scale,
+            &coeff,
+            &zbin,
+            &round,
+            &quant,
+            &quant_shift,
+            &dequant,
+            scan,
+            &iscan,
+        )
+    };
     #[cfg(not(target_arch = "aarch64"))]
     let (q_want, dq_want, eob_want) = c::ref_quantize_b(
         log_scale,

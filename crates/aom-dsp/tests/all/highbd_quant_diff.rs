@@ -74,7 +74,13 @@ fn highbd_quantize_b_differential() {
                 // Every ~64th iter pins the v3 kernel's overflow-guard lanes:
                 // |coeff| past GUARD (2^26) forces the scalar chunk path, and
                 // i32::MIN exercises the wrapped-abs lane.
-                if rng.next() % 64 == 0 {
+                // x86-64 only: `abs_coeff * wt` and the wrapped abs of
+                // i32::MIN are signed-overflow UB in `_c` that the port
+                // mirrors as x86 clang emits it (e0a1b95); aarch64 clang
+                // emits something else (CI aarch64 legs 2026-09-25: C gives
+                // 0 where x86 gives 1064067850). Real coefficients stay
+                // below 2^26 (KB-ARM-FLOAT root #3).
+                if rng.next() % 64 == 0 && cfg!(target_arch = "x86_64") {
                     coeff[0] = i32::MIN;
                     coeff[n / 3] = i32::MAX;
                     coeff[2 * n / 3] = -(1 << 27);

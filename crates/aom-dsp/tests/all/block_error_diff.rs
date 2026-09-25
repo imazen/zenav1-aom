@@ -40,6 +40,12 @@ fn block_error_differential() {
 /// The port's v3 kernel mirrors `av1_block_error_avx2` itself — including its
 /// `packs_epi32` i32->i16 saturation — so the two agree on the FULL i32 domain
 /// where `_c` does not. This pins the port against the dispatched kernel.
+// x86-64 only: on aarch64 the dispatched C kernel is `av1_block_error_neon`,
+// which does not share `_avx2`'s `packs_epi32` saturation, while the port's
+// vector body mirrors `_avx2` on every backend — MEASURED red on CI's aarch64
+// default-dispatch leg 2026-09-25 (n=16 i=0). The in-domain contract is
+// `block_error_matches_c` on every target.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn block_error_matches_c_avx2_full_domain() {
     // Under AOM_FORCE_SCALAR the port runs its C-faithful scalar body, whose
