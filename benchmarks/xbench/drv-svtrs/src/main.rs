@@ -20,7 +20,9 @@ use svtav1_encoder::rate_control::{RcConfig, RcMode};
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() != 9 {
-        eprintln!("usage: drv-svtrs <w> <h> <qp 0..63> <preset 0..13> <in.yuv> <out.obu> <warmup> <reps>");
+        eprintln!(
+            "usage: drv-svtrs <w> <h> <qp 0..63> <preset 0..13> <in.yuv> <out.obu> <warmup> <reps>"
+        );
         std::process::exit(2);
     }
     let w: usize = a[1].parse().unwrap();

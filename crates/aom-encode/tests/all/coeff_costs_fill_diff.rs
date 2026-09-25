@@ -10,8 +10,8 @@
 //! `cost_coeffs_diff` / `trellis_cost_diff` deliberately fed random tables to
 //! isolate.
 
-use aom_encode::real_costs::derive_real_costs;
 use aom_dsp::entropy::partition::KfFrameContext;
+use aom_encode::real_costs::derive_real_costs;
 use aom_sys_ref as c;
 
 fn assert_slice(label: &str, ctx: &str, got: &[i32], want: &[i32]) {

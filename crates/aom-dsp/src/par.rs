@@ -71,9 +71,7 @@ where
     std::thread::scope(|s| {
         let hb = s.spawn(b);
         let ra = a();
-        let rb = hb
-            .join()
-            .unwrap_or_else(|p| std::panic::resume_unwind(p));
+        let rb = hb.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
         (ra, rb)
     })
 }

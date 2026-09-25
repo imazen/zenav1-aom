@@ -135,9 +135,24 @@ fn run(base: &EncodeCell, w: usize, h: usize, cq: i32, speed: i32) -> (i64, bool
 /// MEASURED 2026-08-01 (aarch64-apple-darwin, `--profile test-fast`, cq30,
 /// mirror-tiled `av1-1-b8-00-quantizer-00`, bd8 4:2:0).
 const SPEED9_GRID: &[(usize, usize, &str, i64)] = &[
-    (768, 1152, "884,736 px < RESOLUTION_720P; short side 768 >= 720", 0),
-    (768, 1216, "933,888 px >= RESOLUTION_720P; short side 768 >= 720", 498),
-    (704, 1280, "901,120 px < RESOLUTION_720P; short side 704 < 720", 0),
+    (
+        768,
+        1152,
+        "884,736 px < RESOLUTION_720P; short side 768 >= 720",
+        0,
+    ),
+    (
+        768,
+        1216,
+        "933,888 px >= RESOLUTION_720P; short side 768 >= 720",
+        498,
+    ),
+    (
+        704,
+        1280,
+        "901,120 px < RESOLUTION_720P; short side 704 < 720",
+        0,
+    ),
     (
         1024,
         1024,
@@ -404,14 +419,13 @@ fn localize_leaf_mode(w: usize, h: usize, cq: i32, speed: i32) -> Option<(i32, i
             "{w}x{h} s{speed}: PARTITION DIVERGENCE at mi({},{}) bsize={} \
              (real PARTITION_{}, port PARTITION_{}) — a partition-side root is \
              back; the variance partitioner's thresholds are the first suspect",
-            r.0,
-            r.1,
-            r.2,
-            PARTITION_NAMES[r.3 as usize],
-            PARTITION_NAMES[o.3 as usize]
+            r.0, r.1, r.2, PARTITION_NAMES[r.3 as usize], PARTITION_NAMES[o.3 as usize]
         );
     }
-    println!("   partition trees AGREE ({} nodes); scanning leaves", rs.len());
+    println!(
+        "   partition trees AGREE ({} nodes); scanning leaves",
+        rs.len()
+    );
     for rb in &t_real.blocks {
         if let Some(ob) = t_ours
             .blocks
@@ -533,4 +547,3 @@ fn estimate_arm_residual_is_a_leaf_mode_near_tie() {
          caught in seconds"
     );
 }
-

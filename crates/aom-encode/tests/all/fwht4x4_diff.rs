@@ -14,8 +14,8 @@
 //!     BOTH inverse branches: the DC-only (`eob <= 1`) special case and the full
 //!     16-point transform (`eob > 1`).
 
-use aom_sys_ref as c;
 use aom_dsp::transform::inv_txfm2d::{av1_fwht4x4, av1_highbd_iwht4x4_add};
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {

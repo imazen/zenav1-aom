@@ -184,7 +184,9 @@ fn the_modes_are_inert_at_nonrd_speeds_and_that_is_the_prediction() {
         "the cq-63 nonrd cells must show the knob is NOT universally inert, else \
          the inertness above proves nothing"
     );
-    println!("gated: {inert}/{checked} inert, {flag_off}/{checked} flag-off; cq63: {moved}/4 moved");
+    println!(
+        "gated: {inert}/{checked} inert, {flag_off}/{checked} flag-off; cq63: {moved}/4 moved"
+    );
 }
 
 /// The cq-63 nonrd divergence — CLOSED by KB-58 (`c6cef5d`, 2026-09-12) and

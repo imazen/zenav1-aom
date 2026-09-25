@@ -66,7 +66,14 @@ const fn mi_aligned(px: i32) -> i32 {
 const RESOLUTION_720P: i64 = 1280 * 720;
 
 /// Mirror-tile (same recipe as `s4cov_hd_speed_axis::mirror_tile`).
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -162,9 +169,7 @@ fn refusal_window_is_characterised() {
     for mw in (8..=4096).step_by(8) {
         for mh in (8..=4096).step_by(8) {
             let mi_px = i64::from(mw) * i64::from(mh);
-            if mi_px >= RESOLUTION_720P
-                && i64::from(mw - 3) * i64::from(mh - 3) < RESOLUTION_720P
-            {
+            if mi_px >= RESOLUTION_720P && i64::from(mw - 3) * i64::from(mh - 3) < RESOLUTION_720P {
                 fires += 1;
                 min_mi_w = min_mi_w.min(mw);
                 max_mi_w = max_mi_w.max(mw);
@@ -256,7 +261,10 @@ fn refusal_window_is_characterised() {
     assert!(hd.old_guard_fires && hd.crop_area_720p == hd.mi_area_720p);
     // 1272x724: guard fires AND the AREA arm was wrong.
     let v = find(1272, 724);
-    assert!(v.old_guard_fires, "1272x724 must be inside the refusal window");
+    assert!(
+        v.old_guard_fires,
+        "1272x724 must be inside the refusal window"
+    );
     assert!(
         !v.crop_area_720p && v.mi_area_720p,
         "1272x724 must straddle RESOLUTION_720P (crop below, mi at/above)"
@@ -280,7 +288,10 @@ fn refusal_window_is_characterised() {
     // The pre-fix guard still refused it, because the guard's `mi - 3` window
     // is about the area alone.
     let v = find(1288, 716);
-    assert!(v.old_guard_fires, "1288x716 must be inside the refusal window");
+    assert!(
+        v.old_guard_fires,
+        "1288x716 must be inside the refusal window"
+    );
     assert_eq!(
         v.crop_area_720p, v.mi_area_720p,
         "1288x716 must NOT straddle the area threshold — it is the min-dim isolator"
@@ -322,13 +333,33 @@ fn refusal_window_is_characterised() {
 
 /// The cells the byte gates encode. `(w, h, note)`.
 const CELLS: &[(i32, i32, &str)] = &[
-    (1280, 720, "the reported KB-28 shape: guard fired, arm was correct"),
-    (1272, 724, "guard fired, arm WAS wrong (crop area below 720p)"),
-    (1288, 716, "guard fired; isolates the min-dim arm (area agrees)"),
+    (
+        1280,
+        720,
+        "the reported KB-28 shape: guard fired, arm was correct",
+    ),
+    (
+        1272,
+        724,
+        "guard fired, arm WAS wrong (crop area below 720p)",
+    ),
+    (
+        1288,
+        716,
+        "guard fired; isolates the min-dim arm (area agrees)",
+    ),
     (1274, 722, "guard's HOLE: wrong arm, no refusal (silent)"),
     (954, 962, "guard's HOLE at a different aspect ratio"),
-    (1280, 712, "control: below the area threshold on both readings"),
-    (1280, 728, "control: above the area threshold on both readings"),
+    (
+        1280,
+        712,
+        "control: below the area threshold on both readings",
+    ),
+    (
+        1280,
+        728,
+        "control: above the area threshold on both readings",
+    ),
     (1280, 704, "SB-EXACT control below the area threshold"),
     (1216, 768, "SB-EXACT control above the area threshold"),
     (474, 480, "RD band: straddles AOMMIN(w,h) >= 480"),
@@ -367,11 +398,7 @@ fn measure(cell: &EncodeCell) -> (Verdict, i64, String) {
             p.len() as i64 - real.len() as i64,
             String::new(),
         ),
-        Err(_) => (
-            Verdict::Panic,
-            0,
-            format!("PANIC: {}", msg.lock().unwrap()),
-        ),
+        Err(_) => (Verdict::Panic, 0, format!("PANIC: {}", msg.lock().unwrap())),
     }
 }
 
@@ -434,7 +461,11 @@ fn vbp_band_crop_dims_byte_match() {
         for speed in 7..=9 {
             // cq24 everywhere; the headline shape also at cq40, the other side
             // of the KB-22 qindex arm, because that is how KB-28 was pinned.
-            let cqs: &[i32] = if (w, h) == (1280, 720) { &[24, 40] } else { &[24] };
+            let cqs: &[i32] = if (w, h) == (1280, 720) {
+                &[24, 40]
+            } else {
+                &[24]
+            };
             for &cq in cqs {
                 let cell = mirror_tile(
                     &base,
@@ -475,7 +506,10 @@ fn vbp_band_crop_dims_byte_match() {
             }
         }
     }
-    println!("  KB-28 VBP band: {}/{rows} byte-exact", rows - observed.len());
+    println!(
+        "  KB-28 VBP band: {}/{rows} byte-exact",
+        rows - observed.len()
+    );
 
     // --- KB-28's own result: speed 7 is CLEAN on every shape in the window. ---
     let s7_bad: Vec<String> = observed

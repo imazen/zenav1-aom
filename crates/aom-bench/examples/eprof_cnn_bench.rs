@@ -86,7 +86,10 @@ fn main() {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     let nz = port.iter().filter(|v| **v != 0.0).count();
-    assert!(nz > 100, "window produced a near-dead activation map (n={nz})");
+    assert!(
+        nz > 100,
+        "window produced a near-dead activation map (n={nz})"
+    );
     println!(
         "# port == c-scalar bit-exactly ({nz}/{} nonzero). \
          c-simd(neon) vs c-scalar: {ndiff}/{} elements differ, max |delta| = {maxabs:.3e}",

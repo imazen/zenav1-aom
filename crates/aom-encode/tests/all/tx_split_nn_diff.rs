@@ -14,8 +14,12 @@ use aom_encode::tx_split_nn_weights::TX_SPLIT_NN;
 use aom_encode::var_tx::ml_predict_tx_split;
 use aom_sys_ref as c;
 
-const TXS_W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const TXS_H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const TXS_W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const TXS_H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 struct Rng(u64);
 impl Rng {
@@ -64,7 +68,12 @@ fn ml_predict_tx_split_matches_c_nn_eval() {
         // Flat layout for ref_nn_predict: weights = layer0 ++ layer1, bias =
         // layer0_bias ++ layer1_bias.
         let weights_flat: Vec<f32> = nn.w0.iter().chain(nn.w1.iter()).copied().collect();
-        let bias_flat: Vec<f32> = nn.b0.iter().copied().chain(std::iter::once(nn.b1)).collect();
+        let bias_flat: Vec<f32> = nn
+            .b0
+            .iter()
+            .copied()
+            .chain(std::iter::once(nn.b1))
+            .collect();
 
         for iter in 0..48 {
             // Amplitude spans small (in-range scores) to large (clamp) residuals.
@@ -104,5 +113,8 @@ fn ml_predict_tx_split_matches_c_nn_eval() {
 
     // Non-vacuity: both clamp boundaries + the in-range regime are exercised.
     assert!(in_range > 50, "in-range scores: {in_range}");
-    assert!(clamp_lo + clamp_hi > 5, "clamp hits: lo={clamp_lo} hi={clamp_hi}");
+    assert!(
+        clamp_lo + clamp_hi > 5,
+        "clamp hits: lo={clamp_lo} hi={clamp_hi}"
+    );
 }

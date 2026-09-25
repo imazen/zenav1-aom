@@ -13,9 +13,9 @@
 //! Files kept OUT of here, each for a stated reason, are listed in the crate's
 //! tests/ directory alongside this one.
 
-mod common;
 mod animated_avif;
 mod chroma_facades_cdiff;
+mod common;
 mod config_permutations_decode;
 mod conformance_corpus;
 mod disable_cdf_update_diff;

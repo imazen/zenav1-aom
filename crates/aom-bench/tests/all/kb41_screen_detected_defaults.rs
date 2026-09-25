@@ -17,14 +17,17 @@
 //! train set), so this runs on demand; the pinned in-repo gate follows once the
 //! mechanism is known.
 use aom_bench::rd_close::{port_decode_tu, splice_frame_obu};
-use aom_decode::frame::decode_frame_obus_prefilter;
 use aom_bench::{EncodeCell, ToggleKnobs, stream_allows_screen_content_tools};
+use aom_decode::frame::decode_frame_obus_prefilter;
 use aom_sys_ref as c;
 use std::path::Path;
 
 /// First differing byte between two payloads, or None when equal.
 fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {
-    a.iter().zip(b).position(|(x, y)| x != y).or_else(|| (a.len() != b.len()).then_some(a.len().min(b.len())))
+    a.iter()
+        .zip(b)
+        .position(|(x, y)| x != y)
+        .or_else(|| (a.len() != b.len()).then_some(a.len().min(b.len())))
 }
 
 /// Syntax-level diff (playbook §10, "drive to the first divergent block"): the
@@ -39,16 +42,38 @@ fn first_syntax_diff(oracle_tu: &[u8], port_tu: &[u8]) -> String {
         let i = &blk.info;
         format!(
             "mi({},{}) bsize={} part={} tx={} skip={} y_mode={} ad_y={} uv_mode={} ad_uv={} cfl=({},{}) fi=({},{}) pal=({},{}) ibc={} dv=({},{}) seg={} q={}",
-            blk.mi_row, blk.mi_col, blk.bsize, blk.partition, blk.tx_size, i.skip, i.y_mode, i.angle_delta_y,
-            i.uv_mode, i.angle_delta_uv, i.cfl_alpha_idx, i.cfl_joint_sign, i.use_filter_intra, i.filter_intra_mode,
-            i.palette_size[0], i.palette_size[1], i.use_intrabc, i.dv_row, i.dv_col, i.segment_id, i.current_qindex
+            blk.mi_row,
+            blk.mi_col,
+            blk.bsize,
+            blk.partition,
+            blk.tx_size,
+            i.skip,
+            i.y_mode,
+            i.angle_delta_y,
+            i.uv_mode,
+            i.angle_delta_uv,
+            i.cfl_alpha_idx,
+            i.cfl_joint_sign,
+            i.use_filter_intra,
+            i.filter_intra_mode,
+            i.palette_size[0],
+            i.palette_size[1],
+            i.use_intrabc,
+            i.dv_row,
+            i.dv_col,
+            i.segment_id,
+            i.current_qindex
         )
     };
     let key = |blk: &aom_decode::DecodedBlockKf| describe(blk);
     for (n, (x, y)) in a.blocks.iter().zip(&b.blocks).enumerate() {
         let (kx, ky) = (key(x), key(y));
         if kx != ky || x.info.palette_colors != y.info.palette_colors || x.txbs != y.txbs {
-            let pal = if x.info.palette_colors != y.info.palette_colors { " palette_colors DIFFER" } else { "" };
+            let pal = if x.info.palette_colors != y.info.palette_colors {
+                " palette_colors DIFFER"
+            } else {
+                ""
+            };
             let txb = if x.txbs != y.txbs { " txbs DIFFER" } else { "" };
             return format!(
                 "first syntax diff at block #{n} of {}/{}:{pal}{txb}\n      oracle: {kx}\n      port:   {ky}",
@@ -57,7 +82,11 @@ fn first_syntax_diff(oracle_tu: &[u8], port_tu: &[u8]) -> String {
             );
         }
     }
-    format!("syntax IDENTICAL over {} blocks (port {} blocks)", a.blocks.len(), b.blocks.len())
+    format!(
+        "syntax IDENTICAL over {} blocks (port {} blocks)",
+        a.blocks.len(),
+        b.blocks.len()
+    )
 }
 
 /// Decode both temporal units with the port's decoder and report the first
@@ -65,9 +94,13 @@ fn first_syntax_diff(oracle_tu: &[u8], port_tu: &[u8]) -> String {
 fn first_recon_diff(oracle_tu: &[u8], port_tu: &[u8]) -> Option<String> {
     let a = port_decode_tu("oracle", oracle_tu);
     let b = port_decode_tu("port", port_tu);
-    for (plane, (pa, pb, w)) in [(&a.y, &b.y, a.width), (&a.u, &b.u, a.width_uv), (&a.v, &b.v, a.width_uv)]
-        .into_iter()
-        .enumerate()
+    for (plane, (pa, pb, w)) in [
+        (&a.y, &b.y, a.width),
+        (&a.u, &b.u, a.width_uv),
+        (&a.v, &b.v, a.width_uv),
+    ]
+    .into_iter()
+    .enumerate()
     {
         if let Some(i) = pa.iter().zip(pb).position(|(x, y)| x != y) {
             let (x, y) = (i % w, i / w);
@@ -87,7 +120,12 @@ fn load(dir: &Path, stem: &str) -> EncodeCell {
     let num = |k: &str| -> usize {
         let pat = format!("\"{k}\":");
         let i = json.find(&pat).unwrap() + pat.len();
-        json[i..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap()
+        json[i..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap()
     };
     let (w, h, cq, speed) = (num("w"), num("h"), num("cq_level"), num("speed"));
     let rd = |ext: &str| -> Vec<u16> {
@@ -131,7 +169,11 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
         stems.retain(|s| s.contains(&f));
     }
     c::ref_init();
-    let screen = ToggleKnobs { enable_palette: true, enable_intrabc: true, ..ToggleKnobs::default() };
+    let screen = ToggleKnobs {
+        enable_palette: true,
+        enable_intrabc: true,
+        ..ToggleKnobs::default()
+    };
     let mut rows = Vec::new();
     let mut unexplained = Vec::new();
     for stem in &stems {
@@ -163,8 +205,11 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
         // the wrong config, so its byte/recon/syntax diff describes nothing.
         // The datagen arm drives sct=0 cells with the default knobs, so that is
         // the encode whose first divergence localizes a photo-class root.
-        let (arm, port_arm, arm_ok) =
-            if sct { ("screen", &port_screen, s_ok) } else { ("default", &port_default, d_ok) };
+        let (arm, port_arm, arm_ok) = if sct {
+            ("screen", &port_screen, s_ok)
+        } else {
+            ("default", &port_default, d_ok)
+        };
         // Where does the predicted arm first differ — in the bytes and in the
         // reconstruction (decode-both, playbook §10)?
         let detail = if arm_ok {
@@ -173,7 +218,8 @@ fn kb41_screen_detected_cells_match_with_screen_tools_on() {
             let fd = first_diff(port_arm, &real).unwrap();
             let recon = if std::env::var_os("ZENAV1_DECODE_BOTH").is_some() {
                 let port_tu = splice_frame_obu(&oracle, port_arm);
-                let r = first_recon_diff(&oracle, &port_tu).unwrap_or_else(|| "recon IDENTICAL".into());
+                let r =
+                    first_recon_diff(&oracle, &port_tu).unwrap_or_else(|| "recon IDENTICAL".into());
                 if std::env::var_os("ZENAV1_SYNTAX_DIFF").is_some() {
                     format!("{r}\n    {}", first_syntax_diff(&oracle, &port_tu))
                 } else {

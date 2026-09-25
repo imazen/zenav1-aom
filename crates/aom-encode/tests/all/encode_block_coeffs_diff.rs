@@ -5,11 +5,11 @@
 //! reference steps chained. This is "residual -> real encoder output" end to end.
 //! `av1_write_tx_type` (plane-0 tx_type) is out of scope on both sides.
 
-use aom_encode::{BlockContext, OptimizeInputs, QuantKind, QuantParams, encode_block_coeffs};
 use aom_dsp::entropy::enc::OdEcEnc;
-use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
 use aom_dsp::txb::{CDF_ARENA_LEN, CoeffCostTables, scan, txb_high, txb_wide};
+use aom_encode::{BlockContext, OptimizeInputs, QuantKind, QuantParams, encode_block_coeffs};
+use aom_sys_ref as c;
 #[cfg(target_arch = "x86_64")]
 use archmage::SimdToken;
 

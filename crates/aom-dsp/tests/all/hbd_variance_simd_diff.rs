@@ -10,8 +10,8 @@
 use aom_dsp::dist::{highbd_variance, highbd_variance64_scalar};
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -90,10 +90,12 @@ fn hbd_variance_simd_bit_identical_to_scalar_at_every_tier() {
                 for case in 0..4 {
                     let a_stride = w + (rng.next() % 9) as usize; // strided rows
                     let b_stride = w + (rng.next() % 9) as usize;
-                    let mut a: Vec<u16> =
-                        (0..a_stride * h).map(|_| (rng.next() & mask) as u16).collect();
-                    let mut b: Vec<u16> =
-                        (0..b_stride * h).map(|_| (rng.next() & mask) as u16).collect();
+                    let mut a: Vec<u16> = (0..a_stride * h)
+                        .map(|_| (rng.next() & mask) as u16)
+                        .collect();
+                    let mut b: Vec<u16> = (0..b_stride * h)
+                        .map(|_| (rng.next() & mask) as u16)
+                        .collect();
                     if case == 1 {
                         // Max-diff boundary: a all-max, b all-zero.
                         a.fill(mask as u16);
@@ -131,7 +133,11 @@ fn hbd_variance_simd_bit_identical_to_scalar_at_every_tier() {
                         )
                     } else {
                         let v = i64::from(sse) - (i64::from(sum) * i64::from(sum)) / (w * h) as i64;
-                        if v >= 0 { v as u32 } else { 0 }
+                        if v >= 0 {
+                            v as u32
+                        } else {
+                            0
+                        }
                     };
                     assert_eq!(
                         got64,
@@ -149,7 +155,11 @@ fn hbd_variance_simd_bit_identical_to_scalar_at_every_tier() {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(report.permutations_run >= 2);
 }

@@ -15,10 +15,21 @@ use aom_sys_ref as c;
 
 /// Verbatim copy of `self_contained_tools::planes` — the byte gate depends on
 /// feeding both arms the identical synthetic image.
-fn planes(w: usize, h: usize, bd: u8, mono: bool, ss_x: usize, ss_y: usize, seed: u32) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+fn planes(
+    w: usize,
+    h: usize,
+    bd: u8,
+    mono: bool,
+    ss_x: usize,
+    ss_y: usize,
+    seed: u32,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let maxv = (1u32 << bd) - 1;
     let sample = |r: usize, col: usize, phase: u32| -> u16 {
-        let mut x = (r as u32).wrapping_mul(0x9E37_79B9) ^ (col as u32).wrapping_mul(0x85EB_CA6B) ^ seed ^ phase;
+        let mut x = (r as u32).wrapping_mul(0x9E37_79B9)
+            ^ (col as u32).wrapping_mul(0x85EB_CA6B)
+            ^ seed
+            ^ phase;
         x ^= x >> 15;
         x = x.wrapping_mul(0x2C1B_3C6D);
         x ^= x >> 12;
@@ -53,7 +64,14 @@ fn planes(w: usize, h: usize, bd: u8, mono: bool, ss_x: usize, ss_y: usize, seed
 /// Verbatim copy of `self_contained_key_frame`'s `Content::Texture` +
 /// `cell_planes` — the recipe the `PIN_bd*` HBD cells use (gradient + bars +
 /// ripple luma, flat mid chroma).
-fn tex_planes(w: usize, h: usize, bd: u8, mono: bool, ss_x: usize, ss_y: usize) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+fn tex_planes(
+    w: usize,
+    h: usize,
+    bd: u8,
+    mono: bool,
+    ss_x: usize,
+    ss_y: usize,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let maxv = (1u32 << bd) - 1;
     let mut y = vec![0u16; w * h];
     for r in 0..h {

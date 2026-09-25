@@ -7,10 +7,10 @@
 //! libaom's tables and verified exhaustively vs C. The symbol emission reuses
 //! the bit-exact `aom_write_symbol` (aom-entropy).
 
-use crate::txb::cost_tokens_from_cdf;
 use crate::entropy::cdf::{read_symbol, write_symbol};
 use crate::entropy::dec::OdEcDec;
 use crate::entropy::enc::OdEcEnc;
+use crate::txb::cost_tokens_from_cdf;
 
 /// `TxSetType` (0..5). `av1_num_ext_tx_set = {1,2,5,7,12,16}`.
 const NUM_EXT_TX_SET: [i32; 6] = [1, 2, 5, 7, 12, 16];

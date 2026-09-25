@@ -12,8 +12,8 @@
 //! independently of their own correctness.
 
 use aom_dsp::entropy::dv_ref::{
-    DvNbr, DvTileBounds, WarpSamples, assign_and_validate_dv, find_dv_ref_mvs, find_inter_mv_refs,
-    find_ref_dv, find_samples, is_dv_valid, select_samples,
+    assign_and_validate_dv, find_dv_ref_mvs, find_inter_mv_refs, find_ref_dv, find_samples,
+    is_dv_valid, select_samples, DvNbr, DvTileBounds, WarpSamples,
 };
 use aom_sys_ref::{self as c, RefDvNbr};
 

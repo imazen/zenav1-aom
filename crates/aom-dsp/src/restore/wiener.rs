@@ -367,8 +367,7 @@ fn wiener_impl_v3<P: crate::restore::pick::LrPixel>(
         // Same hoist as the horizontal pass: one checked view per row over
         // the eight temp rows and the dst row, so every per-tile window
         // inside is statically provable (`x0 <= w-16`).
-        let tview: &[u16] =
-            &temp[y * MAX_SB_SIZE..y * MAX_SB_SIZE + 7 * MAX_SB_SIZE + w];
+        let tview: &[u16] = &temp[y * MAX_SB_SIZE..y * MAX_SB_SIZE + 7 * MAX_SB_SIZE + w];
         let dview: &mut [u16] = &mut dst[dst_off + y * dst_stride..dst_off + y * dst_stride + w];
         let mut xs = 0usize;
         loop {
@@ -378,8 +377,9 @@ fn wiener_impl_v3<P: crate::restore::pick::LrPixel>(
             let tstrip: &[u16; 7 * MAX_SB_SIZE + 16] =
                 tview[x0..x0 + 7 * MAX_SB_SIZE + 16].try_into().unwrap();
             let d = |k: usize| -> __m256i {
-                let a: &[u16; 16] =
-                    tstrip[k * MAX_SB_SIZE..k * MAX_SB_SIZE + 16].try_into().unwrap();
+                let a: &[u16; 16] = tstrip[k * MAX_SB_SIZE..k * MAX_SB_SIZE + 16]
+                    .try_into()
+                    .unwrap();
                 _mm256_loadu_si256(a)
             };
             let (d0, d1) = (d(0), d(1));
@@ -406,18 +406,9 @@ fn wiener_impl_v3<P: crate::restore::pick::LrPixel>(
                     _mm256_madd_epi16(_mm256_unpackhi_epi16(d6, d7), cv[3]),
                 ),
             );
-            let lo = _mm256_sra_epi32(
-                _mm256_add_epi32(_mm256_unpacklo_epi32(e, o), rc_v),
-                sh_v,
-            );
-            let hi = _mm256_sra_epi32(
-                _mm256_add_epi32(_mm256_unpackhi_epi32(e, o), rc_v),
-                sh_v,
-            );
-            let r = _mm256_min_epi16(
-                _mm256_max_epi16(_mm256_packs_epi32(lo, hi), zero),
-                hi_v,
-            );
+            let lo = _mm256_sra_epi32(_mm256_add_epi32(_mm256_unpacklo_epi32(e, o), rc_v), sh_v);
+            let hi = _mm256_sra_epi32(_mm256_add_epi32(_mm256_unpackhi_epi32(e, o), rc_v), sh_v);
+            let r = _mm256_min_epi16(_mm256_max_epi16(_mm256_packs_epi32(lo, hi), zero), hi_v);
             let out: &mut [u16; 16] = (&mut dview[x0..x0 + 16]).try_into().unwrap();
             _mm256_storeu_si256(out, r);
             if x0 + 16 >= w {
@@ -687,8 +678,16 @@ fn wiener_impl_neon<P: crate::restore::pick::LrPixel>(
     let h_shift = 3 + extra; // WIENER_ROUND0_BITS(+2)
     let v_shift = 11 - extra; // 2*FILTER_BITS - WIENER_ROUND0_BITS(-2)
 
-    let x_taps = if hfilter[0] == 0 && hfilter[6] == 0 { 5usize } else { 7 };
-    let y_taps = if vfilter[0] == 0 && vfilter[6] == 0 { 5usize } else { 7 };
+    let x_taps = if hfilter[0] == 0 && hfilter[6] == 0 {
+        5usize
+    } else {
+        7
+    };
+    let y_taps = if vfilter[0] == 0 && vfilter[6] == 0 {
+        5usize
+    } else {
+        7
+    };
     // First four taps + (1<<FILTER_BITS) folded into tap 3 — C's
     // `vld1_s16` + `vcreate_s16(128 << 48)`.
     let xf = vld1_s16(<&[i16; 4]>::try_from(&hfilter[..4]).unwrap());

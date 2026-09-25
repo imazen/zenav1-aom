@@ -56,6 +56,15 @@
 //! in `aom-bench`'s `lr_default_parity.rs`). The AVIF plumbing this harness
 //! validates is independent of that choice.
 
+use aom_dsp::entropy::enc::OdEcEnc;
+use aom_dsp::entropy::header::{
+    CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
+    RestorationHeader, TileInfoHeader, read_sequence_header_obu, read_uncompressed_header,
+};
+use aom_dsp::entropy::obu::read_obu_header;
+use aom_dsp::entropy::partition::KfFrameContext;
+use aom_dsp::entropy::rb::ReadBitBuffer;
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::SbEncodeEnv;
 use aom_encode::intra_uv_rd::UvLoopPolicy;
@@ -67,15 +76,6 @@ use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_b
 use aom_encode::real_costs::derive_real_costs;
 use aom_encode::speed_features::SpeedFeatures;
 use aom_encode::tx_search::TxTypeSearchPolicy;
-use aom_dsp::entropy::enc::OdEcEnc;
-use aom_dsp::entropy::header::{
-    CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
-    RestorationHeader, TileInfoHeader, read_sequence_header_obu, read_uncompressed_header,
-};
-use aom_dsp::entropy::obu::read_obu_header;
-use aom_dsp::entropy::partition::KfFrameContext;
-use aom_dsp::entropy::rb::ReadBitBuffer;
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
 use zenavif_serialize::{Aviffy, ChromaSubsampling};
 
@@ -95,8 +95,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
     while pos < bytes.len() {
         let hdr = read_obu_header(&bytes[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));
@@ -110,8 +110,8 @@ fn raw_obu_span(bytes: &[u8], want_type: u32) -> &[u8] {
     while pos < bytes.len() {
         let hdr = read_obu_header(&bytes[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_end = after_header + size_bytes + size as usize;
         if hdr.obu_type == want_type {
             return &bytes[pos..payload_end];
@@ -232,10 +232,27 @@ fn produce(
     let v = vec![128u16; cw * ch];
 
     let bytes = c::ref_encode_av1_kf(
-        &y, &u, &v, w, h, 8, mono, ss_x as i32, ss_y as i32, cq_level, 0, false, false, usage, 0,
+        &y,
+        &u,
+        &v,
+        w,
+        h,
+        8,
+        mono,
+        ss_x as i32,
+        ss_y as i32,
+        cq_level,
+        0,
+        false,
+        false,
+        usage,
+        0,
         false,
     );
-    assert!(!bytes.is_empty(), "shim_encode_av1_kf must produce a stream");
+    assert!(
+        !bytes.is_empty(),
+        "shim_encode_av1_kf must produce a stream"
+    );
 
     let obus = walk_obus(&bytes);
     let seq_payload = obus
@@ -373,7 +390,7 @@ fn produce(
 
     let sf = SpeedFeatures::set_allintra(0, p.allow_screen_content_tools, false);
     let env = SbEncodeEnv {
-            ref_frame: None,
+        ref_frame: None,
         sb_size: SB,
         mi_rows,
         mi_cols,
@@ -421,10 +438,10 @@ fn produce(
     };
     let pick_cfg = PickFrameCfg {
         fixed_partition_size: None,
-            fs_sf: Default::default(),
-            inter: None,
+        fs_sf: Default::default(),
+        inter: None,
         intrabc: None,
-            search_allow_intrabc: false,
+        search_allow_intrabc: false,
         intra_tools: Default::default(),
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,
@@ -610,9 +627,42 @@ fn extract_mdat_payload(avif: &[u8]) -> Vec<u8> {
 fn avif_parity_roundtrip_and_decode() {
     // (name, w, h, mono, ss_x, ss_y, usage, cq, lossless_flat, content)
     #[allow(clippy::type_complexity)]
-    let cells: &[(&str, usize, usize, bool, usize, usize, u32, i32, bool, fn(usize, usize) -> u8)] = &[
-        ("flat128 mono 64x64 allintra cq32", 64, 64, true, 1, 1, 2, 32, true, |_, _| 128),
-        ("flat128 420 64x64 allintra cq32", 64, 64, false, 1, 1, 2, 32, true, |_, _| 128),
+    let cells: &[(
+        &str,
+        usize,
+        usize,
+        bool,
+        usize,
+        usize,
+        u32,
+        i32,
+        bool,
+        fn(usize, usize) -> u8,
+    )] = &[
+        (
+            "flat128 mono 64x64 allintra cq32",
+            64,
+            64,
+            true,
+            1,
+            1,
+            2,
+            32,
+            true,
+            |_, _| 128,
+        ),
+        (
+            "flat128 420 64x64 allintra cq32",
+            64,
+            64,
+            false,
+            1,
+            1,
+            2,
+            32,
+            true,
+            |_, _| 128,
+        ),
         (
             "diag+vbars16+ripple 256x256 420 allintra cq63",
             256,
@@ -687,8 +737,14 @@ fn avif_parity_roundtrip_and_decode() {
                 "{name}: lossless-flat decode(muxed).y must equal the source luma"
             );
             if !prod.mono {
-                assert_eq!(dec.u, prod.src_u, "{name}: lossless-flat decode(muxed).u == source");
-                assert_eq!(dec.v, prod.src_v, "{name}: lossless-flat decode(muxed).v == source");
+                assert_eq!(
+                    dec.u, prod.src_u,
+                    "{name}: lossless-flat decode(muxed).u == source"
+                );
+                assert_eq!(
+                    dec.v, prod.src_v,
+                    "{name}: lossless-flat decode(muxed).v == source"
+                );
             }
         }
 
@@ -697,10 +753,17 @@ fn avif_parity_roundtrip_and_decode() {
              decode(muxed)==decode(real){}",
             prod.av1_stream.len(),
             avif.len(),
-            if prod.lossless_flat { " and ==source" } else { "" },
+            if prod.lossless_flat {
+                " and ==source"
+            } else {
+                ""
+            },
         );
         passed += 1;
     }
     assert_eq!(passed, cells.len(), "every AVIF-parity cell must pass");
-    eprintln!("avif_parity_roundtrip_and_decode: {passed}/{} cells OK", cells.len());
+    eprintln!(
+        "avif_parity_roundtrip_and_decode: {passed}/{} cells OK",
+        cells.len()
+    );
 }

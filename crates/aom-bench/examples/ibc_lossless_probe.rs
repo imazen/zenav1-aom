@@ -2,8 +2,8 @@
 //! ENGAGES at coded-lossless — `palette=0 intrabc=1` must differ from
 //! `palette=0 intrabc=0` — and check port-vs-C byte parity there.
 
-use aom_bench::winperf::{synth_i420, Content};
-use aom_encode::key_frame::{encode_key_frame, KeyFrameConfig, KeyFramePlanes};
+use aom_bench::winperf::{Content, synth_i420};
+use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
 use aom_sys_ref as c;
 
 fn planes(w: usize, h: usize, ct: Content) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
@@ -21,13 +21,33 @@ fn planes(w: usize, h: usize, ct: Content) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     (y, u, v)
 }
 
-fn csc(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, cq: i32, sp: i32, pal: bool, ibc: bool) -> Vec<u8> {
+fn csc(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    cq: i32,
+    sp: i32,
+    pal: bool,
+    ibc: bool,
+) -> Vec<u8> {
     c::ref_encode_av1_kf_screen_content(
         y, u, v, w, h, 8, false, 1, 1, cq, sp, false, true, 2, 0, false, pal, ibc,
     )
 }
 
-fn port(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, cq: i32, sp: i32, pal: bool, ibc: bool) -> Vec<u8> {
+fn port(
+    y: &[u16],
+    u: &[u16],
+    v: &[u16],
+    w: usize,
+    h: usize,
+    cq: i32,
+    sp: i32,
+    pal: bool,
+    ibc: bool,
+) -> Vec<u8> {
     let mut cfg = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, cq);
     cfg.cpu_used = sp;
     cfg.enable_restoration = true;
@@ -56,15 +76,17 @@ fn main() {
             std::fs::write(format!("{prefix}.{tag}.c"), &cs).unwrap();
             std::fs::write(format!("{prefix}.{tag}.port"), &ps).unwrap();
             let fd = cs.iter().zip(&ps).position(|(a, b)| a != b);
-            let cdec_port = std::panic::catch_unwind(|| {
-                c::ref_decode_av1_kf(&ps, w, h).y.len()
-            });
+            let cdec_port = std::panic::catch_unwind(|| c::ref_decode_av1_kf(&ps, w, h).y.len());
             let pdec_port = aom_decode::frame::decode_frame_obus(&ps)
                 .map(|f| f.y.len())
                 .map_err(|e| format!("{e:?}"));
             eprintln!(
                 "{tag}: c={} port={} first_diff={:?} c_dec(port)={:?} port_dec(port)={:?}",
-                cs.len(), ps.len(), fd, cdec_port, pdec_port
+                cs.len(),
+                ps.len(),
+                fd,
+                cdec_port,
+                pdec_port
             );
         }
         return;

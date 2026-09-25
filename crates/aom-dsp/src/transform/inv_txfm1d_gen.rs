@@ -2,7 +2,7 @@
 //! Bit-exact ports of libaom v3.14.1 ping-pong 1D inverse transforms.
 #![allow(clippy::needless_range_loop)]
 use crate::transform::cospi::cospi_arr;
-use crate::transform::fdct::{half_btf, clamp_value};
+use crate::transform::fdct::{clamp_value, half_btf};
 
 /// Bit-exact port of libaom `av1_idct4` (transpiled, harness-verified).
 #[allow(unused_variables)]
@@ -117,11 +117,17 @@ pub fn av1_idct16(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[7] = half_btf(cospi[8], step[4], cospi[56], step[7], cos_bit);
     out[8] = clamp_value(step[8].wrapping_add(step[9]), stage_range[3]);
     out[9] = clamp_value(step[8].wrapping_sub(step[9]), stage_range[3]);
-    out[10] = clamp_value(step[10].wrapping_neg().wrapping_add(step[11]), stage_range[3]);
+    out[10] = clamp_value(
+        step[10].wrapping_neg().wrapping_add(step[11]),
+        stage_range[3],
+    );
     out[11] = clamp_value(step[10].wrapping_add(step[11]), stage_range[3]);
     out[12] = clamp_value(step[12].wrapping_add(step[13]), stage_range[3]);
     out[13] = clamp_value(step[12].wrapping_sub(step[13]), stage_range[3]);
-    out[14] = clamp_value(step[14].wrapping_neg().wrapping_add(step[15]), stage_range[3]);
+    out[14] = clamp_value(
+        step[14].wrapping_neg().wrapping_add(step[15]),
+        stage_range[3],
+    );
     out[15] = clamp_value(step[14].wrapping_add(step[15]), stage_range[3]);
     step[0] = half_btf(cospi[32], out[0], cospi[32], out[1], cos_bit);
     step[1] = half_btf(cospi[32], out[0], -cospi[32], out[1], cos_bit);
@@ -151,8 +157,14 @@ pub fn av1_idct16(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[9] = clamp_value(step[9].wrapping_add(step[10]), stage_range[5]);
     out[10] = clamp_value(step[9].wrapping_sub(step[10]), stage_range[5]);
     out[11] = clamp_value(step[8].wrapping_sub(step[11]), stage_range[5]);
-    out[12] = clamp_value(step[12].wrapping_neg().wrapping_add(step[15]), stage_range[5]);
-    out[13] = clamp_value(step[13].wrapping_neg().wrapping_add(step[14]), stage_range[5]);
+    out[12] = clamp_value(
+        step[12].wrapping_neg().wrapping_add(step[15]),
+        stage_range[5],
+    );
+    out[13] = clamp_value(
+        step[13].wrapping_neg().wrapping_add(step[14]),
+        stage_range[5],
+    );
     out[14] = clamp_value(step[13].wrapping_add(step[14]), stage_range[5]);
     out[15] = clamp_value(step[12].wrapping_add(step[15]), stage_range[5]);
     step[0] = clamp_value(out[0].wrapping_add(out[7]), stage_range[6]);
@@ -276,19 +288,31 @@ pub fn av1_idct32(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[15] = half_btf(cospi[4], step[8], cospi[60], step[15], cos_bit);
     out[16] = clamp_value(step[16].wrapping_add(step[17]), stage_range[3]);
     out[17] = clamp_value(step[16].wrapping_sub(step[17]), stage_range[3]);
-    out[18] = clamp_value(step[18].wrapping_neg().wrapping_add(step[19]), stage_range[3]);
+    out[18] = clamp_value(
+        step[18].wrapping_neg().wrapping_add(step[19]),
+        stage_range[3],
+    );
     out[19] = clamp_value(step[18].wrapping_add(step[19]), stage_range[3]);
     out[20] = clamp_value(step[20].wrapping_add(step[21]), stage_range[3]);
     out[21] = clamp_value(step[20].wrapping_sub(step[21]), stage_range[3]);
-    out[22] = clamp_value(step[22].wrapping_neg().wrapping_add(step[23]), stage_range[3]);
+    out[22] = clamp_value(
+        step[22].wrapping_neg().wrapping_add(step[23]),
+        stage_range[3],
+    );
     out[23] = clamp_value(step[22].wrapping_add(step[23]), stage_range[3]);
     out[24] = clamp_value(step[24].wrapping_add(step[25]), stage_range[3]);
     out[25] = clamp_value(step[24].wrapping_sub(step[25]), stage_range[3]);
-    out[26] = clamp_value(step[26].wrapping_neg().wrapping_add(step[27]), stage_range[3]);
+    out[26] = clamp_value(
+        step[26].wrapping_neg().wrapping_add(step[27]),
+        stage_range[3],
+    );
     out[27] = clamp_value(step[26].wrapping_add(step[27]), stage_range[3]);
     out[28] = clamp_value(step[28].wrapping_add(step[29]), stage_range[3]);
     out[29] = clamp_value(step[28].wrapping_sub(step[29]), stage_range[3]);
-    out[30] = clamp_value(step[30].wrapping_neg().wrapping_add(step[31]), stage_range[3]);
+    out[30] = clamp_value(
+        step[30].wrapping_neg().wrapping_add(step[31]),
+        stage_range[3],
+    );
     out[31] = clamp_value(step[30].wrapping_add(step[31]), stage_range[3]);
     step[0] = out[0];
     step[1] = out[1];
@@ -342,16 +366,28 @@ pub fn av1_idct32(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[17] = clamp_value(step[17].wrapping_add(step[18]), stage_range[5]);
     out[18] = clamp_value(step[17].wrapping_sub(step[18]), stage_range[5]);
     out[19] = clamp_value(step[16].wrapping_sub(step[19]), stage_range[5]);
-    out[20] = clamp_value(step[20].wrapping_neg().wrapping_add(step[23]), stage_range[5]);
-    out[21] = clamp_value(step[21].wrapping_neg().wrapping_add(step[22]), stage_range[5]);
+    out[20] = clamp_value(
+        step[20].wrapping_neg().wrapping_add(step[23]),
+        stage_range[5],
+    );
+    out[21] = clamp_value(
+        step[21].wrapping_neg().wrapping_add(step[22]),
+        stage_range[5],
+    );
     out[22] = clamp_value(step[21].wrapping_add(step[22]), stage_range[5]);
     out[23] = clamp_value(step[20].wrapping_add(step[23]), stage_range[5]);
     out[24] = clamp_value(step[24].wrapping_add(step[27]), stage_range[5]);
     out[25] = clamp_value(step[25].wrapping_add(step[26]), stage_range[5]);
     out[26] = clamp_value(step[25].wrapping_sub(step[26]), stage_range[5]);
     out[27] = clamp_value(step[24].wrapping_sub(step[27]), stage_range[5]);
-    out[28] = clamp_value(step[28].wrapping_neg().wrapping_add(step[31]), stage_range[5]);
-    out[29] = clamp_value(step[29].wrapping_neg().wrapping_add(step[30]), stage_range[5]);
+    out[28] = clamp_value(
+        step[28].wrapping_neg().wrapping_add(step[31]),
+        stage_range[5],
+    );
+    out[29] = clamp_value(
+        step[29].wrapping_neg().wrapping_add(step[30]),
+        stage_range[5],
+    );
     out[30] = clamp_value(step[29].wrapping_add(step[30]), stage_range[5]);
     out[31] = clamp_value(step[28].wrapping_add(step[31]), stage_range[5]);
     step[0] = clamp_value(out[0].wrapping_add(out[3]), stage_range[6]);
@@ -410,10 +446,22 @@ pub fn av1_idct32(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[21] = clamp_value(step[18].wrapping_sub(step[21]), stage_range[7]);
     out[22] = clamp_value(step[17].wrapping_sub(step[22]), stage_range[7]);
     out[23] = clamp_value(step[16].wrapping_sub(step[23]), stage_range[7]);
-    out[24] = clamp_value(step[24].wrapping_neg().wrapping_add(step[31]), stage_range[7]);
-    out[25] = clamp_value(step[25].wrapping_neg().wrapping_add(step[30]), stage_range[7]);
-    out[26] = clamp_value(step[26].wrapping_neg().wrapping_add(step[29]), stage_range[7]);
-    out[27] = clamp_value(step[27].wrapping_neg().wrapping_add(step[28]), stage_range[7]);
+    out[24] = clamp_value(
+        step[24].wrapping_neg().wrapping_add(step[31]),
+        stage_range[7],
+    );
+    out[25] = clamp_value(
+        step[25].wrapping_neg().wrapping_add(step[30]),
+        stage_range[7],
+    );
+    out[26] = clamp_value(
+        step[26].wrapping_neg().wrapping_add(step[29]),
+        stage_range[7],
+    );
+    out[27] = clamp_value(
+        step[27].wrapping_neg().wrapping_add(step[28]),
+        stage_range[7],
+    );
     out[28] = clamp_value(step[27].wrapping_add(step[28]), stage_range[7]);
     out[29] = clamp_value(step[26].wrapping_add(step[29]), stage_range[7]);
     out[30] = clamp_value(step[25].wrapping_add(step[30]), stage_range[7]);
@@ -651,35 +699,59 @@ pub fn av1_idct64(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[31] = half_btf(cospi[2], step[16], cospi[62], step[31], cos_bit);
     out[32] = clamp_value(step[32].wrapping_add(step[33]), stage_range[3]);
     out[33] = clamp_value(step[32].wrapping_sub(step[33]), stage_range[3]);
-    out[34] = clamp_value(step[34].wrapping_neg().wrapping_add(step[35]), stage_range[3]);
+    out[34] = clamp_value(
+        step[34].wrapping_neg().wrapping_add(step[35]),
+        stage_range[3],
+    );
     out[35] = clamp_value(step[34].wrapping_add(step[35]), stage_range[3]);
     out[36] = clamp_value(step[36].wrapping_add(step[37]), stage_range[3]);
     out[37] = clamp_value(step[36].wrapping_sub(step[37]), stage_range[3]);
-    out[38] = clamp_value(step[38].wrapping_neg().wrapping_add(step[39]), stage_range[3]);
+    out[38] = clamp_value(
+        step[38].wrapping_neg().wrapping_add(step[39]),
+        stage_range[3],
+    );
     out[39] = clamp_value(step[38].wrapping_add(step[39]), stage_range[3]);
     out[40] = clamp_value(step[40].wrapping_add(step[41]), stage_range[3]);
     out[41] = clamp_value(step[40].wrapping_sub(step[41]), stage_range[3]);
-    out[42] = clamp_value(step[42].wrapping_neg().wrapping_add(step[43]), stage_range[3]);
+    out[42] = clamp_value(
+        step[42].wrapping_neg().wrapping_add(step[43]),
+        stage_range[3],
+    );
     out[43] = clamp_value(step[42].wrapping_add(step[43]), stage_range[3]);
     out[44] = clamp_value(step[44].wrapping_add(step[45]), stage_range[3]);
     out[45] = clamp_value(step[44].wrapping_sub(step[45]), stage_range[3]);
-    out[46] = clamp_value(step[46].wrapping_neg().wrapping_add(step[47]), stage_range[3]);
+    out[46] = clamp_value(
+        step[46].wrapping_neg().wrapping_add(step[47]),
+        stage_range[3],
+    );
     out[47] = clamp_value(step[46].wrapping_add(step[47]), stage_range[3]);
     out[48] = clamp_value(step[48].wrapping_add(step[49]), stage_range[3]);
     out[49] = clamp_value(step[48].wrapping_sub(step[49]), stage_range[3]);
-    out[50] = clamp_value(step[50].wrapping_neg().wrapping_add(step[51]), stage_range[3]);
+    out[50] = clamp_value(
+        step[50].wrapping_neg().wrapping_add(step[51]),
+        stage_range[3],
+    );
     out[51] = clamp_value(step[50].wrapping_add(step[51]), stage_range[3]);
     out[52] = clamp_value(step[52].wrapping_add(step[53]), stage_range[3]);
     out[53] = clamp_value(step[52].wrapping_sub(step[53]), stage_range[3]);
-    out[54] = clamp_value(step[54].wrapping_neg().wrapping_add(step[55]), stage_range[3]);
+    out[54] = clamp_value(
+        step[54].wrapping_neg().wrapping_add(step[55]),
+        stage_range[3],
+    );
     out[55] = clamp_value(step[54].wrapping_add(step[55]), stage_range[3]);
     out[56] = clamp_value(step[56].wrapping_add(step[57]), stage_range[3]);
     out[57] = clamp_value(step[56].wrapping_sub(step[57]), stage_range[3]);
-    out[58] = clamp_value(step[58].wrapping_neg().wrapping_add(step[59]), stage_range[3]);
+    out[58] = clamp_value(
+        step[58].wrapping_neg().wrapping_add(step[59]),
+        stage_range[3],
+    );
     out[59] = clamp_value(step[58].wrapping_add(step[59]), stage_range[3]);
     out[60] = clamp_value(step[60].wrapping_add(step[61]), stage_range[3]);
     out[61] = clamp_value(step[60].wrapping_sub(step[61]), stage_range[3]);
-    out[62] = clamp_value(step[62].wrapping_neg().wrapping_add(step[63]), stage_range[3]);
+    out[62] = clamp_value(
+        step[62].wrapping_neg().wrapping_add(step[63]),
+        stage_range[3],
+    );
     out[63] = clamp_value(step[62].wrapping_add(step[63]), stage_range[3]);
     step[0] = out[0];
     step[1] = out[1];
@@ -755,11 +827,17 @@ pub fn av1_idct64(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[7] = half_btf(cospi[8], step[4], cospi[56], step[7], cos_bit);
     out[8] = clamp_value(step[8].wrapping_add(step[9]), stage_range[5]);
     out[9] = clamp_value(step[8].wrapping_sub(step[9]), stage_range[5]);
-    out[10] = clamp_value(step[10].wrapping_neg().wrapping_add(step[11]), stage_range[5]);
+    out[10] = clamp_value(
+        step[10].wrapping_neg().wrapping_add(step[11]),
+        stage_range[5],
+    );
     out[11] = clamp_value(step[10].wrapping_add(step[11]), stage_range[5]);
     out[12] = clamp_value(step[12].wrapping_add(step[13]), stage_range[5]);
     out[13] = clamp_value(step[12].wrapping_sub(step[13]), stage_range[5]);
-    out[14] = clamp_value(step[14].wrapping_neg().wrapping_add(step[15]), stage_range[5]);
+    out[14] = clamp_value(
+        step[14].wrapping_neg().wrapping_add(step[15]),
+        stage_range[5],
+    );
     out[15] = clamp_value(step[14].wrapping_add(step[15]), stage_range[5]);
     out[16] = step[16];
     out[17] = half_btf(-cospi[8], step[17], cospi[56], step[30], cos_bit);
@@ -781,32 +859,56 @@ pub fn av1_idct64(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[33] = clamp_value(step[33].wrapping_add(step[34]), stage_range[5]);
     out[34] = clamp_value(step[33].wrapping_sub(step[34]), stage_range[5]);
     out[35] = clamp_value(step[32].wrapping_sub(step[35]), stage_range[5]);
-    out[36] = clamp_value(step[36].wrapping_neg().wrapping_add(step[39]), stage_range[5]);
-    out[37] = clamp_value(step[37].wrapping_neg().wrapping_add(step[38]), stage_range[5]);
+    out[36] = clamp_value(
+        step[36].wrapping_neg().wrapping_add(step[39]),
+        stage_range[5],
+    );
+    out[37] = clamp_value(
+        step[37].wrapping_neg().wrapping_add(step[38]),
+        stage_range[5],
+    );
     out[38] = clamp_value(step[37].wrapping_add(step[38]), stage_range[5]);
     out[39] = clamp_value(step[36].wrapping_add(step[39]), stage_range[5]);
     out[40] = clamp_value(step[40].wrapping_add(step[43]), stage_range[5]);
     out[41] = clamp_value(step[41].wrapping_add(step[42]), stage_range[5]);
     out[42] = clamp_value(step[41].wrapping_sub(step[42]), stage_range[5]);
     out[43] = clamp_value(step[40].wrapping_sub(step[43]), stage_range[5]);
-    out[44] = clamp_value(step[44].wrapping_neg().wrapping_add(step[47]), stage_range[5]);
-    out[45] = clamp_value(step[45].wrapping_neg().wrapping_add(step[46]), stage_range[5]);
+    out[44] = clamp_value(
+        step[44].wrapping_neg().wrapping_add(step[47]),
+        stage_range[5],
+    );
+    out[45] = clamp_value(
+        step[45].wrapping_neg().wrapping_add(step[46]),
+        stage_range[5],
+    );
     out[46] = clamp_value(step[45].wrapping_add(step[46]), stage_range[5]);
     out[47] = clamp_value(step[44].wrapping_add(step[47]), stage_range[5]);
     out[48] = clamp_value(step[48].wrapping_add(step[51]), stage_range[5]);
     out[49] = clamp_value(step[49].wrapping_add(step[50]), stage_range[5]);
     out[50] = clamp_value(step[49].wrapping_sub(step[50]), stage_range[5]);
     out[51] = clamp_value(step[48].wrapping_sub(step[51]), stage_range[5]);
-    out[52] = clamp_value(step[52].wrapping_neg().wrapping_add(step[55]), stage_range[5]);
-    out[53] = clamp_value(step[53].wrapping_neg().wrapping_add(step[54]), stage_range[5]);
+    out[52] = clamp_value(
+        step[52].wrapping_neg().wrapping_add(step[55]),
+        stage_range[5],
+    );
+    out[53] = clamp_value(
+        step[53].wrapping_neg().wrapping_add(step[54]),
+        stage_range[5],
+    );
     out[54] = clamp_value(step[53].wrapping_add(step[54]), stage_range[5]);
     out[55] = clamp_value(step[52].wrapping_add(step[55]), stage_range[5]);
     out[56] = clamp_value(step[56].wrapping_add(step[59]), stage_range[5]);
     out[57] = clamp_value(step[57].wrapping_add(step[58]), stage_range[5]);
     out[58] = clamp_value(step[57].wrapping_sub(step[58]), stage_range[5]);
     out[59] = clamp_value(step[56].wrapping_sub(step[59]), stage_range[5]);
-    out[60] = clamp_value(step[60].wrapping_neg().wrapping_add(step[63]), stage_range[5]);
-    out[61] = clamp_value(step[61].wrapping_neg().wrapping_add(step[62]), stage_range[5]);
+    out[60] = clamp_value(
+        step[60].wrapping_neg().wrapping_add(step[63]),
+        stage_range[5],
+    );
+    out[61] = clamp_value(
+        step[61].wrapping_neg().wrapping_add(step[62]),
+        stage_range[5],
+    );
     out[62] = clamp_value(step[61].wrapping_add(step[62]), stage_range[5]);
     out[63] = clamp_value(step[60].wrapping_add(step[63]), stage_range[5]);
     step[0] = half_btf(cospi[32], out[0], cospi[32], out[1], cos_bit);
@@ -885,8 +987,14 @@ pub fn av1_idct64(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[9] = clamp_value(step[9].wrapping_add(step[10]), stage_range[7]);
     out[10] = clamp_value(step[9].wrapping_sub(step[10]), stage_range[7]);
     out[11] = clamp_value(step[8].wrapping_sub(step[11]), stage_range[7]);
-    out[12] = clamp_value(step[12].wrapping_neg().wrapping_add(step[15]), stage_range[7]);
-    out[13] = clamp_value(step[13].wrapping_neg().wrapping_add(step[14]), stage_range[7]);
+    out[12] = clamp_value(
+        step[12].wrapping_neg().wrapping_add(step[15]),
+        stage_range[7],
+    );
+    out[13] = clamp_value(
+        step[13].wrapping_neg().wrapping_add(step[14]),
+        stage_range[7],
+    );
     out[14] = clamp_value(step[13].wrapping_add(step[14]), stage_range[7]);
     out[15] = clamp_value(step[12].wrapping_add(step[15]), stage_range[7]);
     out[16] = step[16];
@@ -913,10 +1021,22 @@ pub fn av1_idct64(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[37] = clamp_value(step[34].wrapping_sub(step[37]), stage_range[7]);
     out[38] = clamp_value(step[33].wrapping_sub(step[38]), stage_range[7]);
     out[39] = clamp_value(step[32].wrapping_sub(step[39]), stage_range[7]);
-    out[40] = clamp_value(step[40].wrapping_neg().wrapping_add(step[47]), stage_range[7]);
-    out[41] = clamp_value(step[41].wrapping_neg().wrapping_add(step[46]), stage_range[7]);
-    out[42] = clamp_value(step[42].wrapping_neg().wrapping_add(step[45]), stage_range[7]);
-    out[43] = clamp_value(step[43].wrapping_neg().wrapping_add(step[44]), stage_range[7]);
+    out[40] = clamp_value(
+        step[40].wrapping_neg().wrapping_add(step[47]),
+        stage_range[7],
+    );
+    out[41] = clamp_value(
+        step[41].wrapping_neg().wrapping_add(step[46]),
+        stage_range[7],
+    );
+    out[42] = clamp_value(
+        step[42].wrapping_neg().wrapping_add(step[45]),
+        stage_range[7],
+    );
+    out[43] = clamp_value(
+        step[43].wrapping_neg().wrapping_add(step[44]),
+        stage_range[7],
+    );
     out[44] = clamp_value(step[43].wrapping_add(step[44]), stage_range[7]);
     out[45] = clamp_value(step[42].wrapping_add(step[45]), stage_range[7]);
     out[46] = clamp_value(step[41].wrapping_add(step[46]), stage_range[7]);
@@ -929,10 +1049,22 @@ pub fn av1_idct64(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[53] = clamp_value(step[50].wrapping_sub(step[53]), stage_range[7]);
     out[54] = clamp_value(step[49].wrapping_sub(step[54]), stage_range[7]);
     out[55] = clamp_value(step[48].wrapping_sub(step[55]), stage_range[7]);
-    out[56] = clamp_value(step[56].wrapping_neg().wrapping_add(step[63]), stage_range[7]);
-    out[57] = clamp_value(step[57].wrapping_neg().wrapping_add(step[62]), stage_range[7]);
-    out[58] = clamp_value(step[58].wrapping_neg().wrapping_add(step[61]), stage_range[7]);
-    out[59] = clamp_value(step[59].wrapping_neg().wrapping_add(step[60]), stage_range[7]);
+    out[56] = clamp_value(
+        step[56].wrapping_neg().wrapping_add(step[63]),
+        stage_range[7],
+    );
+    out[57] = clamp_value(
+        step[57].wrapping_neg().wrapping_add(step[62]),
+        stage_range[7],
+    );
+    out[58] = clamp_value(
+        step[58].wrapping_neg().wrapping_add(step[61]),
+        stage_range[7],
+    );
+    out[59] = clamp_value(
+        step[59].wrapping_neg().wrapping_add(step[60]),
+        stage_range[7],
+    );
     out[60] = clamp_value(step[59].wrapping_add(step[60]), stage_range[7]);
     out[61] = clamp_value(step[58].wrapping_add(step[61]), stage_range[7]);
     out[62] = clamp_value(step[57].wrapping_add(step[62]), stage_range[7]);
@@ -1049,14 +1181,38 @@ pub fn av1_idct64(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[i
     out[45] = clamp_value(step[34].wrapping_sub(step[45]), stage_range[9]);
     out[46] = clamp_value(step[33].wrapping_sub(step[46]), stage_range[9]);
     out[47] = clamp_value(step[32].wrapping_sub(step[47]), stage_range[9]);
-    out[48] = clamp_value(step[48].wrapping_neg().wrapping_add(step[63]), stage_range[9]);
-    out[49] = clamp_value(step[49].wrapping_neg().wrapping_add(step[62]), stage_range[9]);
-    out[50] = clamp_value(step[50].wrapping_neg().wrapping_add(step[61]), stage_range[9]);
-    out[51] = clamp_value(step[51].wrapping_neg().wrapping_add(step[60]), stage_range[9]);
-    out[52] = clamp_value(step[52].wrapping_neg().wrapping_add(step[59]), stage_range[9]);
-    out[53] = clamp_value(step[53].wrapping_neg().wrapping_add(step[58]), stage_range[9]);
-    out[54] = clamp_value(step[54].wrapping_neg().wrapping_add(step[57]), stage_range[9]);
-    out[55] = clamp_value(step[55].wrapping_neg().wrapping_add(step[56]), stage_range[9]);
+    out[48] = clamp_value(
+        step[48].wrapping_neg().wrapping_add(step[63]),
+        stage_range[9],
+    );
+    out[49] = clamp_value(
+        step[49].wrapping_neg().wrapping_add(step[62]),
+        stage_range[9],
+    );
+    out[50] = clamp_value(
+        step[50].wrapping_neg().wrapping_add(step[61]),
+        stage_range[9],
+    );
+    out[51] = clamp_value(
+        step[51].wrapping_neg().wrapping_add(step[60]),
+        stage_range[9],
+    );
+    out[52] = clamp_value(
+        step[52].wrapping_neg().wrapping_add(step[59]),
+        stage_range[9],
+    );
+    out[53] = clamp_value(
+        step[53].wrapping_neg().wrapping_add(step[58]),
+        stage_range[9],
+    );
+    out[54] = clamp_value(
+        step[54].wrapping_neg().wrapping_add(step[57]),
+        stage_range[9],
+    );
+    out[55] = clamp_value(
+        step[55].wrapping_neg().wrapping_add(step[56]),
+        stage_range[9],
+    );
     out[56] = clamp_value(step[55].wrapping_add(step[56]), stage_range[9]);
     out[57] = clamp_value(step[54].wrapping_add(step[57]), stage_range[9]);
     out[58] = clamp_value(step[53].wrapping_add(step[58]), stage_range[9]);
@@ -1408,4 +1564,3 @@ pub fn av1_iadst16(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[
     out[14] = step[9];
     out[15] = step[1].wrapping_neg();
 }
-

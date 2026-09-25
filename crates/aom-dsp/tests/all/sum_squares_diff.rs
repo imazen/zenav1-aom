@@ -38,7 +38,11 @@ fn sum_squares_i16_differential() {
     for &n in &[1usize, 16, 64, 256, 1024, 4096] {
         for _ in 0..2000 {
             let src: Vec<i16> = (0..n).map(|_| rng.v16()).collect();
-            assert_eq!(sum_squares_i16(&src), c::ref_sum_squares_i16(&src), "1d n={n}");
+            assert_eq!(
+                sum_squares_i16(&src),
+                c::ref_sum_squares_i16(&src),
+                "1d n={n}"
+            );
         }
     }
 }
@@ -49,8 +53,7 @@ fn sum_squares_i16_differential() {
 /// `for_each_token_permutation` cannot flip availability mid-test.
 #[cfg(target_arch = "x86_64")]
 fn v3_live() -> bool {
-    archmage::X64V3Token::summon().is_some()
-        && std::env::var_os("AOM_FORCE_SCALAR").is_none()
+    archmage::X64V3Token::summon().is_some() && std::env::var_os("AOM_FORCE_SCALAR").is_none()
 }
 
 /// Buffer with a guaranteed 16-byte-aligned base — C's w=8 arm
@@ -77,13 +80,25 @@ fn sum_squares_2d_i16_differential() {
     #[cfg(target_arch = "x86_64")]
     let avx2 = v3_live();
     let mut rng = Rng(0x0055_c057_0000_b111);
-    const DIMS: [(usize, usize); 8] =
-        [(4, 4), (8, 8), (16, 16), (32, 32), (64, 64), (4, 16), (16, 4), (8, 32)];
+    const DIMS: [(usize, usize); 8] = [
+        (4, 4),
+        (8, 8),
+        (16, 16),
+        (32, 32),
+        (64, 64),
+        (4, 16),
+        (16, 4),
+        (8, 32),
+    ];
     for &(w, h) in &DIMS {
         for _ in 0..2000 {
             // The C-avx2 dispatcher's w=8 arm needs stride % 8 == 0 (its row
             // loads are aligned 16-byte ops); other arms take any stride.
-            let stride = if w == 8 { w + 8 * rng.range(2) as usize } else { w + rng.range(5) as usize };
+            let stride = if w == 8 {
+                w + 8 * rng.range(2) as usize
+            } else {
+                w + rng.range(5) as usize
+            };
             let src = aligned_src::<8192>(|i| if i < h * stride { rng.v16() } else { 0 });
             #[cfg(target_arch = "x86_64")]
             let want = if avx2 {
@@ -130,13 +145,17 @@ fn sum_squares_2d_i16_v3_matches_real_avx2_dispatcher() {
         (32, 32),
         (64, 64),
         (128, 4),
-        (16, 5),  // h % 4 != 0 -> C-c arm
-        (12, 8),  // w % 16 != 0 -> C-c arm
-        (6, 10),  // fully odd -> C-c arm
+        (16, 5), // h % 4 != 0 -> C-c arm
+        (12, 8), // w % 16 != 0 -> C-c arm
+        (6, 10), // fully odd -> C-c arm
     ];
     for &(w, h) in &DIMS {
         for rep in 0..500 {
-            let stride = if w == 8 { w + 8 * rng.range(2) as usize } else { w + rng.range(5) as usize };
+            let stride = if w == 8 {
+                w + 8 * rng.range(2) as usize
+            } else {
+                w + rng.range(5) as usize
+            };
             let mut src = aligned_src::<8192>(|i| if i < h * stride { rng.v16() } else { 0 });
             match rep % 4 {
                 // Salt the block with i16::MIN so adjacent-pair wraps fire.

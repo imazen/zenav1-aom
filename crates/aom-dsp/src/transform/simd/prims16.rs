@@ -258,14 +258,20 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn padd32(t: X64V3Token, a: P32, b: P32) -> P32 {
         let _ = t;
-        P32 { lo: a.lo + b.lo, hi: a.hi + b.hi }
+        P32 {
+            lo: a.lo + b.lo,
+            hi: a.hi + b.hi,
+        }
     }
 
     /// i32-pair subtract (exact, same bound argument as [`padd32`]).
     #[rite(v3)]
     pub(crate) fn psub32(t: X64V3Token, a: P32, b: P32) -> P32 {
         let _ = t;
-        P32 { lo: a.lo - b.lo, hi: a.hi - b.hi }
+        P32 {
+            lo: a.lo - b.lo,
+            hi: a.hi - b.hi,
+        }
     }
 
     /// `round_shift(v, bit)` on i16 lanes as `mulhrs(v, 2^(15-bit))` — see the
@@ -311,7 +317,10 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn widen_hi(t: X64V3Token, v: V16) -> V32 {
         use core::arch::x86_64::*;
-        i32x8::from_m256i(t, _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(v.raw())))
+        i32x8::from_m256i(
+            t,
+            _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(v.raw())),
+        )
     }
 
     /// `dst[j] = (dst[j] + res[j]).clamp(0, 255)` over 16 pixels. Exact: `res`
@@ -323,8 +332,10 @@ mod x86 {
         use core::arch::x86_64::*;
         let d16 = _mm256_cvtepu8_epi16(u8x16::load(t, dst).raw());
         let sum = _mm256_add_epi16(res.raw(), d16);
-        let packed =
-            _mm_packus_epi16(_mm256_castsi256_si128(sum), _mm256_extracti128_si256::<1>(sum));
+        let packed = _mm_packus_epi16(
+            _mm256_castsi256_si128(sum),
+            _mm256_extracti128_si256::<1>(sum),
+        );
         u8x16::from_m128i(t, packed).store(dst);
     }
 }
@@ -373,7 +384,10 @@ mod neon {
     #[rite(neon)]
     pub(crate) fn unpk16(t: NeonToken, x: V16, y: V16) -> Upk {
         let _ = t;
-        Upk { x: x.into_repr(), y: y.into_repr() }
+        Upk {
+            x: x.into_repr(),
+            y: y.into_repr(),
+        }
     }
 
     /// `half_btf(w0, x, w1, y, 12)` on 16 lanes, x/y in the i16 domain —
@@ -512,7 +526,10 @@ mod neon {
         let (x, y) = (a.into_repr(), b.into_repr());
         i16x16::from_repr(
             t,
-            [vqmovn_high_s32(vqmovn_s32(x[0]), x[1]), vqmovn_high_s32(vqmovn_s32(y[0]), y[1])],
+            [
+                vqmovn_high_s32(vqmovn_s32(x[0]), x[1]),
+                vqmovn_high_s32(vqmovn_s32(y[0]), y[1]),
+            ],
         )
     }
 
@@ -566,13 +583,13 @@ mod neon {
 // The two tiers export the SAME names; exactly one module is compiled, so every
 // caller in `super::lowbd16` and in the generated i16 kernels writes
 // `btf16(t, ..)` with no cfg and no suffix at the call site.
-#[cfg(target_arch = "x86_64")]
-pub(crate) use x86::{
+#[cfg(target_arch = "aarch64")]
+pub(crate) use neon::{
     add_store_u8, btf16, ext16, fbtf16, mulhrs16, pack16, pack_clamp16, padd32, psub32, rev16,
     sadd16, ssub16, unpk16, widen_hi, widen_lo,
 };
-#[cfg(target_arch = "aarch64")]
-pub(crate) use neon::{
+#[cfg(target_arch = "x86_64")]
+pub(crate) use x86::{
     add_store_u8, btf16, ext16, fbtf16, mulhrs16, pack16, pack_clamp16, padd32, psub32, rev16,
     sadd16, ssub16, unpk16, widen_hi, widen_lo,
 };

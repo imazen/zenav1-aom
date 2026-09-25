@@ -13,9 +13,9 @@
 
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::lr::{
-    self, LrRefState, LrUnitInfo, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE,
-    RESTORE_WIENER, SGR_PARAMS_R, SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0,
-    SGRPROJ_PRJ_MIN1, SgrprojInfoLr, WIENER_WIN, WIENER_WIN_CHROMA, WienerInfoLr,
+    self, LrRefState, LrUnitInfo, SgrprojInfoLr, WienerInfoLr, RESTORE_NONE, RESTORE_SGRPROJ,
+    RESTORE_SWITCHABLE, RESTORE_WIENER, SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0,
+    SGRPROJ_PRJ_MIN1, SGR_PARAMS_R, WIENER_WIN, WIENER_WIN_CHROMA,
 };
 use aom_dsp::entropy::partition::KfFrameContext;
 use aom_sys_ref as c;
@@ -159,7 +159,14 @@ fn lr_unit_params_write_matches_c_bytes() {
             let u = &units[i * c::LRU_WORDS..(i + 1) * c::LRU_WORDS];
             let info = unit_info_from_intent(u);
             lr::write_lr_unit(
-                &mut enc, &info, u[1] as u8, u[0] as usize, &mut refs, &mut sw, &mut wn, &mut sg,
+                &mut enc,
+                &info,
+                u[1] as u8,
+                u[0] as usize,
+                &mut refs,
+                &mut sw,
+                &mut wn,
+                &mut sg,
                 /* allow_update_cdf= */ true,
             );
         }
@@ -187,7 +194,13 @@ fn lr_unit_params_write_matches_c_bytes() {
             let u = &units[i * c::LRU_WORDS..(i + 1) * c::LRU_WORDS];
             let want = unit_info_from_intent(u);
             let got = lr::read_lr_unit(
-                &mut dec, u[1] as u8, u[0] as usize, &mut drefs, &mut dsw, &mut dwn, &mut dsg,
+                &mut dec,
+                u[1] as u8,
+                u[0] as usize,
+                &mut drefs,
+                &mut dsw,
+                &mut dwn,
+                &mut dsg,
             );
             assert_eq!(
                 got.restoration_type, want.restoration_type,

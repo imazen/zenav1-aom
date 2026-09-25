@@ -49,15 +49,6 @@
 //! VERT_4 stops winning here), this test fails loudly instead of silently
 //! reverting to "diagnostic, not asserted."
 
-use aom_encode::encode_intra::TrellisOptType;
-use aom_encode::encode_sb::SbEncodeEnv;
-use aom_encode::intra_uv_rd::UvLoopPolicy;
-use aom_encode::obu_assemble::assemble_obu_frame_single_tile;
-use aom_encode::pack::pack_tile;
-use aom_encode::partition_pick::PickFrameCfg;
-use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
-use aom_encode::real_costs::derive_real_costs;
-use aom_encode::tx_search::TxTypeSearchPolicy;
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
@@ -67,6 +58,15 @@ use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::partition::{KfFrameContext, get_partition_subsize};
 use aom_dsp::entropy::rb::ReadBitBuffer;
 use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_encode::encode_intra::TrellisOptType;
+use aom_encode::encode_sb::SbEncodeEnv;
+use aom_encode::intra_uv_rd::UvLoopPolicy;
+use aom_encode::obu_assemble::assemble_obu_frame_single_tile;
+use aom_encode::pack::pack_tile;
+use aom_encode::partition_pick::PickFrameCfg;
+use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
+use aom_encode::real_costs::derive_real_costs;
+use aom_encode::tx_search::TxTypeSearchPolicy;
 use aom_sys_ref as c;
 
 const OBU_SEQUENCE_HEADER: u32 = 1;
@@ -97,8 +97,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
             hdr.obu_has_size_field,
             "shim_encode_av1_kf always sets has_size_field"
         );
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));
@@ -115,8 +115,8 @@ fn raw_obu_span(bytes: &[u8], want_type: u32) -> &[u8] {
     while pos < bytes.len() {
         let hdr = read_obu_header(&bytes[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_end = after_header + size_bytes + size as usize;
         if hdr.obu_type == want_type {
             return &bytes[pos..payload_end];
@@ -407,7 +407,7 @@ fn decode_diff_pseudo_random_noise_case() {
     let src_v_strided = vec![0u16; STRIDE * (h + 4)];
 
     let env = SbEncodeEnv {
-            ref_frame: None,
+        ref_frame: None,
         sb_size: SB,
         mi_rows,
         mi_cols,
@@ -455,10 +455,10 @@ fn decode_diff_pseudo_random_noise_case() {
     };
     let pick_cfg = PickFrameCfg {
         fixed_partition_size: None,
-            fs_sf: Default::default(),
-            inter: None,
+        fs_sf: Default::default(),
+        inter: None,
         intrabc: None,
-            search_allow_intrabc: false,
+        search_allow_intrabc: false,
         intra_tools: Default::default(),
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,

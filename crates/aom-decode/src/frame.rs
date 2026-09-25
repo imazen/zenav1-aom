@@ -93,7 +93,6 @@ use crate::{
     MI_SIZE_WIDE, MvRefCell, ReconPlane, TileBoundsKf, TileBytesKf, decode_frame_tiles_kf,
     decode_frame_tiles_kf_ctx,
 };
-use std::rc::Rc;
 use aom_dsp::entropy::header::{
     CdefHeader, FilmGrainParams, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader,
     LoopfilterHeader, RestorationHeader, SequenceHeaderObu, TileInfoHeader, WarpedMotionParams,
@@ -104,6 +103,7 @@ use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::partition::TxMode;
 use aom_dsp::entropy::rb::ReadBitBuffer;
 use aom_dsp::quant::av1_get_qindex;
+use std::rc::Rc;
 
 /// aom-txb's `CDF_ARENA_LEN` (the coefficient region length
 /// `KfFrameContext::default_for_qindex` fills).
@@ -1038,23 +1038,38 @@ pub fn decode_frames_with(
                     out.push(show_existing_output(&slots, &probe.header)?);
                 } else {
                     let ic = build_inter_parse_ctx(sh, &probe.header, &slots)?;
-                    let pf =
-                        parse_frame_header_ext(sh, payload, false, true, false, ic.as_ref(), config)?;
+                    let pf = parse_frame_header_ext(
+                        sh,
+                        payload,
+                        false,
+                        true,
+                        false,
+                        ic.as_ref(),
+                        config,
+                    )?;
                     pending_header = Some(pf.header);
                 }
             }
             4 | 6 => {
                 let sh = seq.as_ref().ok_or("frame before sequence header")?;
                 let (header, tile_data) = if h.obu_type == 6 {
-                    let probe = parse_frame_header_ext(sh, payload, true, true, true, None, config)?;
+                    let probe =
+                        parse_frame_header_ext(sh, payload, true, true, true, None, config)?;
                     if probe.header.prefix.show_existing_frame {
                         return Err(
                             "show_existing_frame inside an OBU_FRAME (non-conformant)".into()
                         );
                     }
                     let ic = build_inter_parse_ctx(sh, &probe.header, &slots)?;
-                    let pf =
-                        parse_frame_header_ext(sh, payload, true, true, false, ic.as_ref(), config)?;
+                    let pf = parse_frame_header_ext(
+                        sh,
+                        payload,
+                        true,
+                        true,
+                        false,
+                        ic.as_ref(),
+                        config,
+                    )?;
                     let off = pf
                         .tile_data_off
                         .ok_or("frame OBU missing tile data offset")?;
@@ -1411,10 +1426,7 @@ fn build_inter_parse_ctx(
 
 /// Resolve the frame's `ref_frame_idx` mapping against the DPB: the seven
 /// bound reference slots, `LAST..ALTREF` order.
-fn bind_refs(
-    hdr: &FrameHeaderObu,
-    slots: &[Option<Rc<RefSlot>>; 8],
-) -> [Option<Rc<RefSlot>>; 7] {
+fn bind_refs(hdr: &FrameHeaderObu, slots: &[Option<Rc<RefSlot>>; 8]) -> [Option<Rc<RefSlot>>; 7] {
     std::array::from_fn(|i| {
         let m = hdr.inter_ref.ref_map_idx[i];
         slots.get(m.clamp(0, 7) as usize).and_then(|s| s.clone())
@@ -1457,7 +1469,14 @@ fn decode_frame_and_install(
         None
     };
     let (mut t, cfg, hdr) = if is_inter {
-        decode_inter_tile_payload(sh, header, tile_data, &bound, base_ctx.as_ref(), config.stop)?
+        decode_inter_tile_payload(
+            sh,
+            header,
+            tile_data,
+            &bound,
+            base_ctx.as_ref(),
+            config.stop,
+        )?
     } else {
         decode_tile_payload(sh, header, tile_data, config.stop)?
     };
@@ -1578,8 +1597,7 @@ fn decode_inter_tile_payload(
         for (i, b) in bound.iter().enumerate() {
             let rf = i + 1;
             if let Some(slot) = b {
-                sign_bias[rf] =
-                    (get_relative_dist(seq, slot.frame.order_hint, cur_oh) > 0) as i8;
+                sign_bias[rf] = (get_relative_dist(seq, slot.frame.order_hint, cur_oh) > 0) as i8;
             }
             let oh = b.as_deref().map_or(0, |slot| slot.frame.order_hint);
             if get_relative_dist(seq, oh, cur_oh) > 0 {

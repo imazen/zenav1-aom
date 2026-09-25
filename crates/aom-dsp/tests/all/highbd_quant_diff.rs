@@ -46,8 +46,11 @@ fn highbd_quantize_fp_differential() {
                 let dequant = [rng.i16r(1, 8000), rng.i16r(1, 8000)];
                 let mut q = vec![0i32; n];
                 let mut dq = vec![0i32; n];
-                let eob = av1_highbd_quantize_fp_no_qmatrix(&quant, &dequant, &round, log_scale, &scan, &coeff, &mut q, &mut dq);
-                let (qw, dqw, ew) = c::ref_highbd_quantize_fp(log_scale, &coeff, &round, &quant, &dequant, &scan);
+                let eob = av1_highbd_quantize_fp_no_qmatrix(
+                    &quant, &dequant, &round, log_scale, &scan, &coeff, &mut q, &mut dq,
+                );
+                let (qw, dqw, ew) =
+                    c::ref_highbd_quantize_fp(log_scale, &coeff, &round, &quant, &dequant, &scan);
                 assert_eq!(eob, ew, "hbd fp eob n={n} ls={log_scale}");
                 assert_eq!(q, qw, "hbd fp qcoeff n={n} ls={log_scale}");
                 assert_eq!(dq, dqw, "hbd fp dqcoeff n={n} ls={log_scale}");
@@ -84,8 +87,29 @@ fn highbd_quantize_b_differential() {
                 let dequant = [rng.i16r(1, 8000), rng.i16r(1, 8000)];
                 let mut q = vec![0i32; n];
                 let mut dq = vec![0i32; n];
-                let eob = aom_highbd_quantize_b_no_qmatrix(&zbin, &round, &quant, &quant_shift, &dequant, log_scale, &scan, &iscan, &coeff, &mut q, &mut dq);
-                let (qw, dqw, ew) = c::ref_highbd_quantize_b(log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, &scan);
+                let eob = aom_highbd_quantize_b_no_qmatrix(
+                    &zbin,
+                    &round,
+                    &quant,
+                    &quant_shift,
+                    &dequant,
+                    log_scale,
+                    &scan,
+                    &iscan,
+                    &coeff,
+                    &mut q,
+                    &mut dq,
+                );
+                let (qw, dqw, ew) = c::ref_highbd_quantize_b(
+                    log_scale,
+                    &coeff,
+                    &zbin,
+                    &round,
+                    &quant,
+                    &quant_shift,
+                    &dequant,
+                    &scan,
+                );
                 assert_eq!(eob, ew, "hbd b eob n={n} ls={log_scale}");
                 assert_eq!(q, qw, "hbd b qcoeff n={n} ls={log_scale}");
                 assert_eq!(dq, dqw, "hbd b dqcoeff n={n} ls={log_scale}");

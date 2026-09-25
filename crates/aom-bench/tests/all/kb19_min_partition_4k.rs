@@ -74,7 +74,6 @@ fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32) -> E
     }
 }
 
-
 /// 2160x2160 bd8 4:2:0 real content, speed-0 ALLINTRA KEY, stock knobs —
 /// a HARD byte-identity gate vs real aomenc.
 ///
@@ -116,11 +115,17 @@ fn min_partition_4k_arm_e2e_byte_match() {
     let base = EncodeCell::real_content("kb19base", "av1-1-b8-00-quantizer-00", None, 32, 0);
     let cell = mirror_tile(&base, "kb19_2160sq", 2160, 2160, 32);
     assert_eq!((cell.w, cell.h), (2160, 2160));
-    assert!(cell.w.min(cell.h) >= 2160, "the cell must reach the is_4k_or_larger arm");
+    assert!(
+        cell.w.min(cell.h) >= 2160,
+        "the cell must reach the is_4k_or_larger arm"
+    );
     // KB-22 reach: that arm additionally needs `base_qindex <= 128`.
     // `av1_quantizer_to_qindex` (av1_quantize.c:1033) maps --cq-level 32 -> 128,
     // i.e. this cell sits exactly ON the boundary.
-    assert_eq!(cell.cq_level, 32, "the cell must reach the KB-22 base_qindex <= 128 arm");
+    assert_eq!(
+        cell.cq_level, 32,
+        "the cell must reach the KB-22 base_qindex <= 128 arm"
+    );
 
     let t0 = std::time::Instant::now();
     let tu = cell.c_encode();
@@ -185,8 +190,26 @@ fn localize(cell: &EncodeCell, tu: &[u8], real_payload: &[u8], port_payload: &[u
 
     let mut real_seq = Vec::new();
     let mut ours_seq = Vec::new();
-    replay_tree(&t_real.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut real_seq);
-    replay_tree(&t_ours.tree, &mut 0, 0, 0, SB, mi_rows, mi_cols, &mut ours_seq);
+    replay_tree(
+        &t_real.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut real_seq,
+    );
+    replay_tree(
+        &t_ours.tree,
+        &mut 0,
+        0,
+        0,
+        SB,
+        mi_rows,
+        mi_cols,
+        &mut ours_seq,
+    );
 
     let mut first_div = None;
     for (i, (r, o)) in real_seq.iter().zip(ours_seq.iter()).enumerate() {
@@ -239,12 +262,28 @@ fn localize(cell: &EncodeCell, tu: &[u8], real_payload: &[u8], port_payload: &[u
                          [modes_differ={modes_differ} txbs_differ={txbs_differ}]\n     \
                          real bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} txbs={:?} txbs_uv={:?}\n     \
                          port bsize={} part={} y_mode={} adly={} use_fi={} tx_size={} uv_mode={} txbs={:?} txbs_uv={:?}",
-                        rb.mi_row, rb.mi_col,
-                        (rb.mi_row / SB_MI) * SB_MI, (rb.mi_col / SB_MI) * SB_MI,
-                        rb.bsize, rb.partition, rb.info.y_mode, rb.info.angle_delta_y,
-                        rb.info.use_filter_intra, rb.tx_size, rb.info.uv_mode, rb.txbs, rb.txbs_uv,
-                        ob.bsize, ob.partition, ob.info.y_mode, ob.info.angle_delta_y,
-                        ob.info.use_filter_intra, ob.tx_size, ob.info.uv_mode, ob.txbs, ob.txbs_uv,
+                        rb.mi_row,
+                        rb.mi_col,
+                        (rb.mi_row / SB_MI) * SB_MI,
+                        (rb.mi_col / SB_MI) * SB_MI,
+                        rb.bsize,
+                        rb.partition,
+                        rb.info.y_mode,
+                        rb.info.angle_delta_y,
+                        rb.info.use_filter_intra,
+                        rb.tx_size,
+                        rb.info.uv_mode,
+                        rb.txbs,
+                        rb.txbs_uv,
+                        ob.bsize,
+                        ob.partition,
+                        ob.info.y_mode,
+                        ob.info.angle_delta_y,
+                        ob.info.use_filter_intra,
+                        ob.tx_size,
+                        ob.info.uv_mode,
+                        ob.txbs,
+                        ob.txbs_uv,
                     );
                     found = true;
                     break;

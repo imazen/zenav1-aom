@@ -164,12 +164,7 @@ fn published_crates_pin_a_version_on_every_intra_workspace_dependency() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|p| {
-            (
-                p["name"].as_str().unwrap(),
-                p["version"].as_str().unwrap(),
-            )
-        })
+        .map(|p| (p["name"].as_str().unwrap(), p["version"].as_str().unwrap()))
         .collect();
 
     let mut problems = Vec::new();

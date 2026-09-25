@@ -65,8 +65,23 @@ fn check(
     // back row by row — the sequence the encoder call sites used to spell out.
     let mut pred = vec![0u16; txw * txh];
     predict_intra_high(
-        recon, ref_off, STRIDE, &mut pred, txw, mode, delta, use_fi, fi_mode, disable, filt,
-        tx_size, nt as usize, ntr, nl as usize, nbl, bd,
+        recon,
+        ref_off,
+        STRIDE,
+        &mut pred,
+        txw,
+        mode,
+        delta,
+        use_fi,
+        fi_mode,
+        disable,
+        filt,
+        tx_size,
+        nt as usize,
+        ntr,
+        nl as usize,
+        nbl,
+        bd,
     );
     let mut want_plane = recon.to_vec();
     for r in 0..txh {

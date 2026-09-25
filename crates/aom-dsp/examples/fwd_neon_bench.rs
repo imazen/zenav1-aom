@@ -22,7 +22,13 @@ mod bench {
     // TX_SIZE indices: 0=4x4 1=8x8 2=16x16 3=32x32 4=64x64 5=4x8 6=8x4 7=8x16 8=16x8
     pub fn main() {
         aom_sys_ref::ref_init();
-        let shapes: &[(&str, usize, usize, usize, unsafe extern "C" fn(*const i16,*mut i32,i32,i32,i32))] = &[
+        let shapes: &[(
+            &str,
+            usize,
+            usize,
+            usize,
+            unsafe extern "C" fn(*const i16, *mut i32, i32, i32, i32),
+        )] = &[
             ("4x4", 0, 4, 4, av1_fwd_txfm2d_4x4_neon),
             ("8x8", 1, 8, 8, av1_fwd_txfm2d_8x8_neon),
             ("16x16", 2, 16, 16, av1_fwd_txfm2d_16x16_neon),
@@ -43,22 +49,41 @@ mod bench {
                 let reps = 200_000usize;
                 let t = Instant::now();
                 for _ in 0..reps {
-                    std::hint::black_box(av1_fwd_txfm2d(black(input.as_slice()), black(out_p.as_mut_slice()), w, tx, idx));
+                    std::hint::black_box(av1_fwd_txfm2d(
+                        black(input.as_slice()),
+                        black(out_p.as_mut_slice()),
+                        w,
+                        tx,
+                        idx,
+                    ));
                 }
                 let port = t.elapsed();
                 let t = Instant::now();
                 for _ in 0..reps {
-                    unsafe { cf(black(input.as_ptr()), black(out_c.as_mut_ptr()), w as i32, tx as i32, 8) };
+                    unsafe {
+                        cf(
+                            black(input.as_ptr()),
+                            black(out_c.as_mut_ptr()),
+                            w as i32,
+                            tx as i32,
+                            8,
+                        )
+                    };
                 }
                 let c = t.elapsed();
                 let ok = out_p[..n] == out_c[..n];
-                println!("{name} tx{tx}: port {:7.0}ns  C {:7.0}ns  ratio {:.2}  bytes_match={ok}",
-                         port.as_nanos() as f64/reps as f64, c.as_nanos() as f64/reps as f64,
-                         port.as_nanos() as f64/c.as_nanos() as f64);
+                println!(
+                    "{name} tx{tx}: port {:7.0}ns  C {:7.0}ns  ratio {:.2}  bytes_match={ok}",
+                    port.as_nanos() as f64 / reps as f64,
+                    c.as_nanos() as f64 / reps as f64,
+                    port.as_nanos() as f64 / c.as_nanos() as f64
+                );
             }
         }
     }
-    fn black<T>(x: T) -> T { std::hint::black_box(x) }
+    fn black<T>(x: T) -> T {
+        std::hint::black_box(x)
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

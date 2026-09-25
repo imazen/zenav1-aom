@@ -340,7 +340,15 @@ mod tests {
         let mut a = vec![0u16; up_w as usize * rows];
         let mut b = vec![0u16; up_w as usize * rows];
         upscale_plane(
-            &src, src_w as usize, &mut a, up_w as usize, 125, up_w, src_w, rows, 8,
+            &src,
+            src_w as usize,
+            &mut a,
+            up_w as usize,
+            125,
+            up_w,
+            src_w,
+            rows,
+            8,
         );
         upscale_plane_tiles(
             &src,
@@ -417,8 +425,7 @@ mod tests {
                         8,
                     );
                     assert_eq!(
-                        one,
-                        many,
+                        one, many,
                         "denom {denom} src_w {src_w} crop {crop_w} splits {splits:?}: \
                          the tile walk diverged from the continuous walk"
                     );

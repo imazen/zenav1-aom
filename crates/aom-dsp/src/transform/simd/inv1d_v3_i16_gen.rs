@@ -10,10 +10,10 @@
 //! audited i16-safe kernels are emitted (idct4/8/16/32/64); iadst/identity
 //! stay on the i32 path.
 #![allow(clippy::needless_range_loop)]
+use super::prims16::{btf16, ext16, pack16, padd32, psub32, sadd16, ssub16, unpk16};
+use crate::transform::cospi::cospi_arr;
 use archmage::prelude::*;
 use magetypes::simd::generic::i16x16 as I16x16;
-use crate::transform::cospi::cospi_arr;
-use super::prims16::{btf16, ext16, pack16, padd32, psub32, sadd16, ssub16, unpk16};
 
 /// 16-column i16-lane bd8 twin of [`crate::transform::av1_idct4`] (transpiled).
 /// Contract: every input lane is `clamp_value(_, 16)`-bounded (the u8 column
@@ -1363,4 +1363,3 @@ pub(crate) fn av1_idct64_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [
     out[62] = ssub16(t, step[1], step[62]);
     out[63] = ssub16(t, step[0], step[63]);
 }
-

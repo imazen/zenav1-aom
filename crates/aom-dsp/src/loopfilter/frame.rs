@@ -71,9 +71,13 @@ const BLOCK_INVALID: u8 = 255;
 // ---- conversion tables (av1/common/common_data.h @ v3.14.1) --------------------
 
 /// `tx_size_wide[TX_SIZES_ALL]` (common_data.h:234).
-const TX_SIZE_WIDE: [u32; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
+const TX_SIZE_WIDE: [u32; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
 /// `tx_size_high[TX_SIZES_ALL]` (common_data.h:241).
-const TX_SIZE_HIGH: [u32; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const TX_SIZE_HIGH: [u32; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 /// `tx_size_wide_unit[TX_SIZES_ALL]` (common_data.h:246).
 const TX_SIZE_WIDE_UNIT: [usize; 19] = [1, 2, 4, 8, 16, 1, 2, 2, 4, 4, 8, 8, 16, 1, 4, 2, 8, 4, 16];
 /// `tx_size_high_unit[TX_SIZES_ALL]` (common_data.h:251).
@@ -83,12 +87,16 @@ const TX_SIZE_WIDE_UNIT_LOG2: [u32; 19] = [0, 1, 2, 3, 4, 0, 1, 1, 2, 2, 3, 3, 4
 /// `tx_size_high_unit_log2[TX_SIZES_ALL]` (common_data.h:271).
 const TX_SIZE_HIGH_UNIT_LOG2: [u32; 19] = [0, 1, 2, 3, 4, 1, 0, 2, 1, 3, 2, 4, 3, 2, 0, 3, 1, 4, 2];
 /// `block_size_wide[BLOCK_SIZES_ALL]` (common_data.h:46).
-const BLOCK_SIZE_WIDE: [u32; 22] = [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
+const BLOCK_SIZE_WIDE: [u32; 22] = [
+    4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+];
 /// `block_size_high[BLOCK_SIZES_ALL]` (common_data.h:52).
-const BLOCK_SIZE_HIGH: [u32; 22] = [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+const BLOCK_SIZE_HIGH: [u32; 22] = [
+    4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+];
 /// `max_txsize_rect_lookup[BLOCK_SIZES_ALL]` (common_data.h:126).
 const MAX_TXSIZE_RECT_LOOKUP: [u8; 22] = [
-    0,  // 4x4    -> TX_4X4
+    0, // 4x4    -> TX_4X4
     5, 6, 1, // 4x8 8x4 8x8
     7, 8, 2, // 8x16 16x8 16x16
     9, 10, 3, // 16x32 32x16 32x32
@@ -100,28 +108,28 @@ const MAX_TXSIZE_RECT_LOOKUP: [u8; 22] = [
 ];
 /// `av1_ss_size_lookup[BLOCK_SIZES_ALL][ss_x][ss_y]` (common_data.c:17).
 const SS_SIZE_LOOKUP: [[[u8; 2]; 2]; 22] = [
-    [[0, 0], [0, 0]],                            // 4x4
-    [[1, 0], [BLOCK_INVALID, 0]],                // 4x8
-    [[2, BLOCK_INVALID], [0, 0]],                // 8x4
-    [[3, 2], [1, 0]],                            // 8x8
-    [[4, 3], [BLOCK_INVALID, 1]],                // 8x16
-    [[5, BLOCK_INVALID], [3, 2]],                // 16x8
-    [[6, 5], [4, 3]],                            // 16x16
-    [[7, 6], [BLOCK_INVALID, 4]],                // 16x32
-    [[8, BLOCK_INVALID], [6, 5]],                // 32x16
-    [[9, 8], [7, 6]],                            // 32x32
-    [[10, 9], [BLOCK_INVALID, 7]],               // 32x64
-    [[11, BLOCK_INVALID], [9, 8]],               // 64x32
-    [[12, 11], [10, 9]],                         // 64x64
-    [[13, 12], [BLOCK_INVALID, 10]],             // 64x128
-    [[14, BLOCK_INVALID], [12, 11]],             // 128x64
-    [[15, 14], [13, 12]],                        // 128x128
-    [[16, 1], [BLOCK_INVALID, 1]],               // 4x16
-    [[17, BLOCK_INVALID], [2, 2]],               // 16x4
-    [[18, 4], [BLOCK_INVALID, 16]],              // 8x32
-    [[19, BLOCK_INVALID], [5, 17]],              // 32x8
-    [[20, 7], [BLOCK_INVALID, 18]],              // 16x64
-    [[21, BLOCK_INVALID], [8, 19]],              // 64x16
+    [[0, 0], [0, 0]],                // 4x4
+    [[1, 0], [BLOCK_INVALID, 0]],    // 4x8
+    [[2, BLOCK_INVALID], [0, 0]],    // 8x4
+    [[3, 2], [1, 0]],                // 8x8
+    [[4, 3], [BLOCK_INVALID, 1]],    // 8x16
+    [[5, BLOCK_INVALID], [3, 2]],    // 16x8
+    [[6, 5], [4, 3]],                // 16x16
+    [[7, 6], [BLOCK_INVALID, 4]],    // 16x32
+    [[8, BLOCK_INVALID], [6, 5]],    // 32x16
+    [[9, 8], [7, 6]],                // 32x32
+    [[10, 9], [BLOCK_INVALID, 7]],   // 32x64
+    [[11, BLOCK_INVALID], [9, 8]],   // 64x32
+    [[12, 11], [10, 9]],             // 64x64
+    [[13, 12], [BLOCK_INVALID, 10]], // 64x128
+    [[14, BLOCK_INVALID], [12, 11]], // 128x64
+    [[15, 14], [13, 12]],            // 128x128
+    [[16, 1], [BLOCK_INVALID, 1]],   // 4x16
+    [[17, BLOCK_INVALID], [2, 2]],   // 16x4
+    [[18, 4], [BLOCK_INVALID, 16]],  // 8x32
+    [[19, BLOCK_INVALID], [5, 17]],  // 32x8
+    [[20, 7], [BLOCK_INVALID, 18]],  // 16x64
+    [[21, BLOCK_INVALID], [8, 19]],  // 64x16
 ];
 /// `mode_lf_lut[MB_MODE_COUNT]` (av1_loopfilter.c:41): maps a prediction mode
 /// to the mode-delta index — 0 for all intra + GLOBALMV + GLOBAL_GLOBALMV,
@@ -300,8 +308,7 @@ pub fn lf_frame_init(p: &LfParams, plane_start: usize, plane_end: usize) -> LfIn
     };
     // update_sharpness (av1_loopfilter.c:47-66) + the hev_thr init (:120-121).
     for lvl in 0..=MAX_LOOP_FILTER {
-        let mut block_inside_limit =
-            lvl >> ((p.sharpness > 0) as i32 + (p.sharpness > 4) as i32);
+        let mut block_inside_limit = lvl >> ((p.sharpness > 0) as i32 + (p.sharpness > 4) as i32);
         if p.sharpness > 0 && block_inside_limit > 9 - p.sharpness {
             block_inside_limit = 9 - p.sharpness;
         }
@@ -327,7 +334,11 @@ pub fn lf_frame_init(p: &LfParams, plane_start: usize, plane_end: usize) -> LfIn
         for seg_id in 0..MAX_SEGMENTS {
             #[allow(clippy::needless_range_loop)]
             for dir in 0..2 {
-                let mut lvl_seg = if dir == 0 { filt_lvl[plane] } else { filt_lvl_r[plane] };
+                let mut lvl_seg = if dir == 0 {
+                    filt_lvl[plane]
+                } else {
+                    filt_lvl_r[plane]
+                };
                 let f = SEG_LVL_LF_LUT[plane][dir];
                 if p.seg.is_active(seg_id, f) {
                     lvl_seg = clamp_lf(lvl_seg + p.seg.data[seg_id][f]);
@@ -478,7 +489,11 @@ fn set_lpf_parameters(
                 TX_SIZE_HIGH_UNIT_LOG2[ts].min(TX_SIZE_HIGH_UNIT_LOG2[pv_ts])
             } as usize;
             filter_length = if plane != 0 {
-                if dim == 0 { 4 } else { 6 }
+                if dim == 0 {
+                    4
+                } else {
+                    6
+                }
             } else {
                 TX_DIM_TO_FILTER_LENGTH[dim]
             };
@@ -570,7 +585,11 @@ fn set_lpf_parameters_opt(
                 TX_SIZE_HIGH_UNIT_LOG2[ts].min(TX_SIZE_HIGH_UNIT_LOG2[pv_ts])
             } as usize;
             filter_length = if plane != 0 {
-                if dim == 0 { 4 } else { 6 }
+                if dim == 0 {
+                    4
+                } else {
+                    6
+                }
             } else {
                 TX_DIM_TO_FILTER_LENGTH[dim]
             };
@@ -781,10 +800,14 @@ fn filter_block_plane_opt(
         )
     } else {
         (
-            round_pot((((plane_h << ss_y) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_y)
-                as u32,
-            round_pot((((plane_w << ss_x) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_x)
-                as u32,
+            round_pot(
+                (((plane_h << ss_y) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32,
+                ss_y,
+            ) as u32,
+            round_pot(
+                (((plane_w << ss_x) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32,
+                ss_x,
+            ) as u32,
         )
     };
     let y_range = ((plane_mi_rows as i32) - ((mi_row >> ss_y) as i32))
@@ -865,14 +888,16 @@ fn filter_block_plane_opt(
                     grid, p, lfi, 1, curr_x, curr_y, plane, ss_x, ss_y, prev_ts,
                 );
                 line[y] = (ts, len, level);
-                min_dim =
-                    min_dim.min(batch_unit_dim(grid, p, 1, curr_x, curr_y, plane, ss_x, ss_y));
+                min_dim = min_dim.min(batch_unit_dim(
+                    grid, p, 1, curr_x, curr_y, plane, ss_x, ss_y,
+                ));
                 y += TX_SIZE_HIGH_UNIT[ts];
                 prev_ts = Some(ts);
             }
             if y0 > 0 {
-                min_dim =
-                    min_dim.min(batch_prev_dim(grid, p, 1, curr_x, y0 as u32, plane, ss_x, ss_y));
+                min_dim = min_dim.min(batch_prev_dim(
+                    grid, p, 1, curr_x, y0 as u32, plane, ss_x, ss_y,
+                ));
             }
             let nseg = if (x & 3) == 0 && x + 3 < x_range && min_dim >= 16 {
                 4
@@ -887,7 +912,9 @@ fn filter_block_plane_opt(
                 if len > 0 {
                     let (mblim, lim, hev) = lfi.lfthr[level as usize];
                     let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
-                    highbd::horizontal_n(len as u32, buf, center, stride, mblim, lim, hev, bd, nseg);
+                    highbd::horizontal_n(
+                        len as u32, buf, center, stride, mblim, lim, hev, bd, nseg,
+                    );
                 }
                 y += TX_SIZE_HIGH_UNIT[ts];
             }
@@ -1062,12 +1089,18 @@ fn loop_filter_frame_impl(
             for dir in 0..2 {
                 let mut mi_col = 0usize;
                 while (mi_col as i32) < grid.mi_cols {
-                    let (pb, stride, ss_x, ss_y, w, h): (&mut [u16], usize, usize, usize, u32, u32) =
-                        match plane {
-                            0 => (buf.y, buf.y_stride, 0, 0, buf.crop_width, buf.crop_height),
-                            1 => (buf.u, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
-                            _ => (buf.v, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
-                        };
+                    let (pb, stride, ss_x, ss_y, w, h): (
+                        &mut [u16],
+                        usize,
+                        usize,
+                        usize,
+                        u32,
+                        u32,
+                    ) = match plane {
+                        0 => (buf.y, buf.y_stride, 0, 0, buf.crop_width, buf.crop_height),
+                        1 => (buf.u, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
+                        _ => (buf.v, buf.uv_stride, buf.ss_x, buf.ss_y, uv_w, uv_h),
+                    };
                     if lpf_opt {
                         filter_block_plane_opt(
                             dir, pb, stride, buf.bd, grid, p, &lfi, plane, ss_x, ss_y, w, h,
@@ -1214,10 +1247,14 @@ fn filter_block_plane_u8_opt(
         )
     } else {
         (
-            round_pot((((plane_h << ss_y) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_y)
-                as u32,
-            round_pot((((plane_w << ss_x) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32, ss_x)
-                as u32,
+            round_pot(
+                (((plane_h << ss_y) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32,
+                ss_y,
+            ) as u32,
+            round_pot(
+                (((plane_w << ss_x) + MI_SIZE as u32 - 1) >> MI_SIZE_LOG2) as i32,
+                ss_x,
+            ) as u32,
         )
     };
     let y_range = ((plane_mi_rows as i32) - ((mi_row >> ss_y) as i32))
@@ -1288,14 +1325,16 @@ fn filter_block_plane_u8_opt(
                     grid, p, lfi, 1, curr_x, curr_y, plane, ss_x, ss_y, prev_ts,
                 );
                 line[y] = (ts, len, level);
-                min_dim =
-                    min_dim.min(batch_unit_dim(grid, p, 1, curr_x, curr_y, plane, ss_x, ss_y));
+                min_dim = min_dim.min(batch_unit_dim(
+                    grid, p, 1, curr_x, curr_y, plane, ss_x, ss_y,
+                ));
                 y += TX_SIZE_HIGH_UNIT[ts];
                 prev_ts = Some(ts);
             }
             if y0 > 0 {
-                min_dim =
-                    min_dim.min(batch_prev_dim(grid, p, 1, curr_x, y0 as u32, plane, ss_x, ss_y));
+                min_dim = min_dim.min(batch_prev_dim(
+                    grid, p, 1, curr_x, y0 as u32, plane, ss_x, ss_y,
+                ));
             }
             let nseg = if (x & 3) == 0 && x + 3 < x_range && min_dim >= 16 {
                 4
@@ -1310,7 +1349,9 @@ fn filter_block_plane_u8_opt(
                 if len > 0 {
                     let (mblim, lim, hev) = lfi.lfthr[level as usize];
                     let center = origin + y * MI_SIZE * stride + x * MI_SIZE;
-                    loopfilter::horizontal_n(len as u32, buf, center, stride, mblim, lim, hev, nseg);
+                    loopfilter::horizontal_n(
+                        len as u32, buf, center, stride, mblim, lim, hev, nseg,
+                    );
                 }
                 y += TX_SIZE_HIGH_UNIT[ts];
             }
@@ -1413,13 +1454,11 @@ fn loop_filter_frame_u8_impl(
                         };
                     if lpf_opt {
                         filter_block_plane_u8_opt(
-                            dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row,
-                            mi_col,
+                            dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row, mi_col,
                         );
                     } else {
                         filter_block_plane_u8(
-                            dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row,
-                            mi_col,
+                            dir, pb, stride, grid, p, &lfi, plane, ss_x, ss_y, w, h, mi_row, mi_col,
                         );
                     }
                     mi_col += MAX_MIB_SIZE;

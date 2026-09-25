@@ -17,8 +17,10 @@
 //! previously geometry-unit-locked only), so it hardens the shared intrabc/inter
 //! search path as well.
 
-use aom_encode::intrabc_search::{fill_nmv_costs, full_pixel_search_inter, FullMvLimits, MV_SUBPEL_HIGH};
 use aom_dsp::entropy::default_cdfs::{DEFAULT_NMV_COMPS, DEFAULT_NMV_JOINTS};
+use aom_encode::intrabc_search::{
+    FullMvLimits, MV_SUBPEL_HIGH, fill_nmv_costs, full_pixel_search_inter,
+};
 use aom_sys_ref::ref_full_pixel_search;
 
 struct Rng(u64);
@@ -85,21 +87,8 @@ fn run_case(
     );
 
     let (pvar, pr, pc) = full_pixel_search_inter(
-        src16,
-        0,
-        w,
-        refu16,
-        ref_origin,
-        ref_stride,
-        w,
-        h,
-        ref_mv.0,
-        ref_mv.1,
-        &dv,
-        epb,
-        spb,
-        limits,
-        step_param,
+        src16, 0, w, refu16, ref_origin, ref_stride, w, h, ref_mv.0, ref_mv.1, &dv, epb, spb,
+        limits, step_param,
     );
 
     let (cvar, cr, cc) = ref_full_pixel_search(
@@ -117,7 +106,12 @@ fn run_case(
         epb,
         spb,
         step_param as i32,
-        (limits.row_min, limits.row_max, limits.col_min, limits.col_max),
+        (
+            limits.row_min,
+            limits.row_max,
+            limits.col_min,
+            limits.col_max,
+        ),
     );
 
     assert_eq!(
@@ -210,7 +204,9 @@ fn full_pixel_search_converging_content_matches_real_c() {
             let mut src8 = vec![0u8; w * h];
             for i in 0..h {
                 for j in 0..w {
-                    let p = (origin as i64 + (dy + i as i32) as i64 * stride as i64 + (dx + j as i32) as i64) as usize;
+                    let p = (origin as i64
+                        + (dy + i as i32) as i64 * stride as i64
+                        + (dx + j as i32) as i64) as usize;
                     src8[i * w + j] = refu8[p];
                 }
             }

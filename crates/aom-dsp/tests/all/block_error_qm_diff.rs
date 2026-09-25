@@ -39,7 +39,7 @@ fn perm(rng: &mut Rng, n: usize) -> Vec<i16> {
 // Per-bd coefficient magnitude bits (per the C overflow note: bd8=18, bd10=20,
 // bd12=22 bits including sign).
 fn bits_for(bd: u8) -> u32 {
-    (17 + (bd as u32 - 8)) .min(21)
+    (17 + (bd as u32 - 8)).min(21)
 }
 
 #[test]

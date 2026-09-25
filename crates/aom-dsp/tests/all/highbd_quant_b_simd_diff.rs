@@ -12,8 +12,8 @@
 
 use aom_dsp::quant::aom_highbd_quantize_b_no_qmatrix;
 use aom_sys_ref as c;
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -64,11 +64,27 @@ fn assert_case(
     let mut q_got = vec![0i32; n];
     let mut dq_got = vec![0i32; n];
     let eob_got = aom_highbd_quantize_b_no_qmatrix(
-        zbin, round, quant, quant_shift, dequant, log_scale, scan, iscan, coeff,
-        &mut q_got, &mut dq_got,
+        zbin,
+        round,
+        quant,
+        quant_shift,
+        dequant,
+        log_scale,
+        scan,
+        iscan,
+        coeff,
+        &mut q_got,
+        &mut dq_got,
     );
     let (q_ref, dq_ref, eob_ref) = c::ref_highbd_quantize_b(
-        log_scale, coeff, zbin, round, quant, quant_shift, dequant, scan,
+        log_scale,
+        coeff,
+        zbin,
+        round,
+        quant,
+        quant_shift,
+        dequant,
+        scan,
     );
     assert_eq!(eob_got, eob_ref, "{label}: eob");
     assert_eq!(q_got, q_ref, "{label}: qcoeff\ncoeff={coeff:?}");
@@ -103,8 +119,15 @@ fn highbd_quantize_b_simd_bit_identical_to_c_at_every_tier() {
                         .collect();
                     assert_case(
                         &format!("[{tier}] prod n={n} ls={ls} rep={rep}"),
-                        &zbin, &round, &quant, &qshift, &dequant, ls,
-                        &scan, &iscan, &coeff,
+                        &zbin,
+                        &round,
+                        &quant,
+                        &qshift,
+                        &dequant,
+                        ls,
+                        &scan,
+                        &iscan,
+                        &coeff,
                     );
                 }
                 // Adversarial: full-range i32 coeffs — every chunk trips the
@@ -115,16 +138,22 @@ fn highbd_quantize_b_simd_bit_identical_to_c_at_every_tier() {
                     let quant = [rng.pos_i16(1, 32767), rng.pos_i16(1, 32767)];
                     let qshift = [rng.pos_i16(1, 32767), rng.pos_i16(1, 32767)];
                     let dequant = [rng.pos_i16(1, 8000), rng.pos_i16(1, 8000)];
-                    let mut coeff: Vec<i32> =
-                        (0..n).map(|_| rng.next() as i32).collect();
+                    let mut coeff: Vec<i32> = (0..n).map(|_| rng.next() as i32).collect();
                     coeff[0] = i32::MIN;
                     coeff[n / 3] = i32::MAX;
                     coeff[2 * n / 3] = -(1 << 27);
                     coeff[n / 2] = (1 << 26) + 7;
                     assert_case(
                         &format!("[{tier}] adv n={n} ls={ls} rep={rep}"),
-                        &zbin, &round, &quant, &qshift, &dequant, ls,
-                        &scan, &iscan, &coeff,
+                        &zbin,
+                        &round,
+                        &quant,
+                        &qshift,
+                        &dequant,
+                        ls,
+                        &scan,
+                        &iscan,
+                        &coeff,
                     );
                 }
                 // Threshold straddles: coeff magnitudes right at the tmp1
@@ -147,8 +176,15 @@ fn highbd_quantize_b_simd_bit_identical_to_c_at_every_tier() {
                 }
                 assert_case(
                     &format!("[{tier}] edges n={n} ls={ls}"),
-                    &zbin, &round, &quant, &qshift, &dequant, ls,
-                    &scan, &iscan, &edge,
+                    &zbin,
+                    &round,
+                    &quant,
+                    &qshift,
+                    &dequant,
+                    ls,
+                    &scan,
+                    &iscan,
+                    &edge,
                 );
                 // Full-range i16 tables (zero/negative values that
                 // av1_build_quantizer never produces) trip the preconditions.
@@ -163,8 +199,15 @@ fn highbd_quantize_b_simd_bit_identical_to_c_at_every_tier() {
                         .collect();
                     assert_case(
                         &format!("[{tier}] advtbl n={n} ls={ls}"),
-                        &zbin, &round, &quant, &qshift, &dequant, ls,
-                        &scan, &iscan, &coeff,
+                        &zbin,
+                        &round,
+                        &quant,
+                        &qshift,
+                        &dequant,
+                        ls,
+                        &scan,
+                        &iscan,
+                        &coeff,
                     );
                 }
             }

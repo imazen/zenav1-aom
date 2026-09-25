@@ -23,16 +23,16 @@
 //! ALLINTRA 13 / GOOD 20 — the only speed-0 tx-layer sf delta between the
 //! usages).
 
+use aom_dsp::intra::cfl::{CflCtx, cfl_store_tx};
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{CoeffCostTables, TxTypeCosts};
 use aom_encode::encode_intra::{
     TrellisOptType, UvEncodeParams, UvWinner, encode_intra_block_plane_uv, is_trellis_used,
 };
 use aom_encode::intra_uv_rd::{
     UV_CFL_PRED, UvRdEnv, av1_get_tx_size_uv, chroma_plane_offset, is_chroma_reference,
 };
-use aom_dsp::intra::cfl::{CflCtx, cfl_store_tx};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{CoeffCostTables, TxTypeCosts};
 
 use crate::common::*;
 
@@ -103,9 +103,8 @@ fn encode_intra_block_plane_uv_matches_c_walk() {
         // `chroma_plane_offset` takes a SUBTRACTED band base since the
         // row-band threading; this cell wants margin-anchored absolute
         // offsets, so ask for the block offset (base 0) and add the margin.
-        let ref_off = chroma_plane_offset(0, STRIDE, mi_row, mi_col, bsize, ss_x, ss_y)
-            + 32 * STRIDE
-            + 32;
+        let ref_off =
+            chroma_plane_offset(0, STRIDE, mi_row, mi_col, bsize, ss_x, ss_y) + 32 * STRIDE + 32;
 
         for iter in 0..12 {
             // BOTH usage arms of the chroma trellis-table sf.

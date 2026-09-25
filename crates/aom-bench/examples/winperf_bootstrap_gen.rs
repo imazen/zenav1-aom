@@ -101,7 +101,11 @@ fn gen_one(content: winperf::Content, w: usize, h: usize, q: i32, s: i32) {
         }
         out.push('\n');
         std::fs::write(&path, &out).unwrap_or_else(|e| panic!("write {path}: {e}"));
-        println!("wrote {path}: {} bootstrap bytes -> {} chars", boot.len(), out.len());
+        println!(
+            "wrote {path}: {} bootstrap bytes -> {} chars",
+            boot.len(),
+            out.len()
+        );
 
         // Also print the source-plane checksums the winperf unit test pins, so
         // a regeneration and a re-pin are one step rather than two.

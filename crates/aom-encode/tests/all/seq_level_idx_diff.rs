@@ -57,8 +57,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
     while pos < bytes.len() {
         let hdr = read_obu_header(&bytes[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));
@@ -82,11 +82,27 @@ fn real_reduced_seq_level(w: usize, h: usize) -> (i32, bool) {
     // speed-independent (set at init from dims + fps only).
     let y = vec![128u16; w * h];
     let bytes = c::ref_encode_av1_kf(
-        &y, &[], &[], w, h, 8, /*mono*/ true, 1, 1, /*cq*/ 32, /*cpu*/ 9,
-        /*cdef*/ false, /*restoration*/ false, /*usage=ALLINTRA*/ 2, /*aq*/ 0,
+        &y,
+        &[],
+        &[],
+        w,
+        h,
+        8,
+        /*mono*/ true,
+        1,
+        1,
+        /*cq*/ 32,
+        /*cpu*/ 9,
+        /*cdef*/ false,
+        /*restoration*/ false,
+        /*usage=ALLINTRA*/ 2,
+        /*aq*/ 0,
         /*two_pass*/ false,
     );
-    assert!(!bytes.is_empty(), "shim_encode_av1_kf must produce a stream");
+    assert!(
+        !bytes.is_empty(),
+        "shim_encode_av1_kf must produce a stream"
+    );
     let obus = walk_obus(&bytes);
     let seq_payload = obus
         .iter()
@@ -114,11 +130,26 @@ fn seq_level_idx_matches_real_reduced_header() {
         (513, 288, SEQ_LEVEL_2_1, "just over 2.0 luma cap -> 2.1"),
         (704, 396, SEQ_LEVEL_2_1, "2.1 luma boundary (704*396)"),
         (705, 396, SEQ_LEVEL_3_0, "just over 2.1 luma cap -> 3.0"),
-        (64, 1160, SEQ_LEVEL_2_1, "height dim_mult: 1160 > 288*4 fails 2.0"),
-        (2050, 64, SEQ_LEVEL_2_1, "width dim_mult: 2050 > 512*4 fails 2.0"),
+        (
+            64,
+            1160,
+            SEQ_LEVEL_2_1,
+            "height dim_mult: 1160 > 288*4 fails 2.0",
+        ),
+        (
+            2050,
+            64,
+            SEQ_LEVEL_2_1,
+            "width dim_mult: 2050 > 512*4 fails 2.0",
+        ),
         (800, 600, SEQ_LEVEL_3_0, "3.0 by luma (480000)"),
         (1280, 720, SEQ_LEVEL_3_1, "720p -> 3.1"),
-        (1408, 768, SEQ_LEVEL_4_0, "over 3.1 luma cap -> 4.0 (dim_mult 3)"),
+        (
+            1408,
+            768,
+            SEQ_LEVEL_4_0,
+            "over 3.1 luma cap -> 4.0 (dim_mult 3)",
+        ),
     ];
 
     let mut seen = std::collections::BTreeSet::new();

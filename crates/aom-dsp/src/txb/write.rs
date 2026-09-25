@@ -10,13 +10,13 @@
 //! adaptive state. The producing quantizer supplies `tcoeff` (transposed
 //! layout), `eob`, and the two entropy contexts (`txb_skip_ctx`, `dc_sign_ctx`).
 
+use crate::entropy::cdf::write_symbol;
+use crate::entropy::enc::OdEcEnc;
 use crate::txb::scan::scan;
 use crate::txb::{
     get_br_ctx, get_eob_pos_token, get_nz_map_contexts, txb_high, txb_init_levels, txb_wide,
     TxClass, EOB_OFFSET_BITS, TX_PAD_2D, TX_TYPE_TO_CLASS,
 };
-use crate::entropy::cdf::write_symbol;
-use crate::entropy::enc::OdEcEnc;
 
 // Header-static index tables (common_data.h / entropy.h).
 pub(crate) const TXSIZE_LOG2_MINUS4: [i32; 19] =

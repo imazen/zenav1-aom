@@ -49,7 +49,15 @@ use aom_sys_ref as c;
 /// quantizes to a handful of coefficients per block and the leaf pick is a
 /// near-tie everywhere, so a grid built only from it would exercise the TX_4X4
 /// arm without ever loading it. This adds high-frequency texture on top.
-fn textured_cell(label: &str, w: usize, h: usize, mono: bool, bd: u8, cq: i32, speed: i32) -> EncodeCell {
+fn textured_cell(
+    label: &str,
+    w: usize,
+    h: usize,
+    mono: bool,
+    bd: u8,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let peak = (1u32 << bd) - 1;
     let scale = |v: u32| -> u16 { ((v * peak) / 255) as u16 };
     let mut y = vec![0u16; w * h];
@@ -101,7 +109,15 @@ fn textured_cell(label: &str, w: usize, h: usize, mono: bool, bd: u8, cq: i32, s
 /// cpu8 — byte-identical, and vacuous with respect to the arms this landing
 /// wrote. Measured on this grid: textured 64x64 gives 0 estimate leaves at
 /// cpu8; the smooth 128x128 gives 256.
-fn smooth_cell(label: &str, w: usize, h: usize, mono: bool, bd: u8, cq: i32, speed: i32) -> EncodeCell {
+fn smooth_cell(
+    label: &str,
+    w: usize,
+    h: usize,
+    mono: bool,
+    bd: u8,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let peak = (1u32 << bd) - 1;
     let scale = |v: u32| -> u16 { ((v * peak) / 255) as u16 };
     let mut y = vec![0u16; w * h];

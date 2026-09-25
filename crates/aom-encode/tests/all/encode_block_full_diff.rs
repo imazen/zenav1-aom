@@ -4,15 +4,15 @@
 //! identical CDF adaptation (coeff arena + ext-tx slot) to the C reference steps
 //! chained (fwd -> quant -> get_txb_ctx -> optimize -> ref_write_coeffs_txb_full).
 
-use aom_encode::{
-    BlockContext, OptimizeInputs, QuantKind, QuantParams, TxTypeContext, encode_block_coeffs_full,
-};
 use aom_dsp::entropy::enc::OdEcEnc;
-use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
 use aom_dsp::txb::{
     CDF_ARENA_LEN, CoeffCostTables, ext_tx_derive, iscan as real_iscan, scan, txb_high, txb_wide,
 };
+use aom_encode::{
+    BlockContext, OptimizeInputs, QuantKind, QuantParams, TxTypeContext, encode_block_coeffs_full,
+};
+use aom_sys_ref as c;
 #[cfg(target_arch = "x86_64")]
 use archmage::SimdToken;
 

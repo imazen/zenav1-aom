@@ -719,16 +719,8 @@ fn fadst8x4_neon(i: &[int16x8_t; 4], o: &mut [int16x8_t; 4], cos_bit: i32) {
     let l = |v: int16x8_t| vget_low_s16(v);
     let h = |v: int16x8_t| vget_high_s16(v);
 
-    let mut ul = [vmlal_lane_s16::<0>(
-        vmull_lane_s16::<1>(l(i[1]), sinpi),
-        l(i[0]),
-        sinpi,
-    ); 4];
-    let mut uh = [vmlal_lane_s16::<0>(
-        vmull_lane_s16::<1>(h(i[1]), sinpi),
-        h(i[0]),
-        sinpi,
-    ); 4];
+    let mut ul = [vmlal_lane_s16::<0>(vmull_lane_s16::<1>(l(i[1]), sinpi), l(i[0]), sinpi); 4];
+    let mut uh = [vmlal_lane_s16::<0>(vmull_lane_s16::<1>(h(i[1]), sinpi), h(i[0]), sinpi); 4];
     ul[0] = vmlal_lane_s16::<3>(ul[0], l(i[3]), sinpi);
     uh[0] = vmlal_lane_s16::<3>(uh[0], h(i[3]), sinpi);
     ul[0] = vmlal_lane_s16::<2>(ul[0], l(i[2]), sinpi);
@@ -971,10 +963,7 @@ pub(crate) fn fwd_8x4_fused(
         let Some(d) = output.get_mut(c * 4..c * 4 + 4) else {
             return false;
         };
-        vst1q_s32(
-            <&mut [i32; 4]>::try_from(d).unwrap(),
-            rect_store_lane(*v),
-        );
+        vst1q_s32(<&mut [i32; 4]>::try_from(d).unwrap(), rect_store_lane(*v));
     }
     true
 }
@@ -1419,8 +1408,7 @@ pub(crate) fn fwd_16x16_fused(
         let mut col = run_16_x8(fwd16_as_rb(kc), &b, cos_bit_col);
         shr2_x8(&mut col);
         w[8 * i..8 * i + 8].copy_from_slice(&transpose8x8(&col[..8].try_into().unwrap()));
-        w[16 + 8 * i..16 + 8 * i + 8]
-            .copy_from_slice(&transpose8x8(&col[8..].try_into().unwrap()));
+        w[16 + 8 * i..16 + 8 * i + 8].copy_from_slice(&transpose8x8(&col[8..].try_into().unwrap()));
     }
     if vmaxvq_u16(mx) > bound {
         return false;

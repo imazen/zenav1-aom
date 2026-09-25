@@ -80,7 +80,8 @@ fn upsampled_pred_matches_real_c() {
                     assert_eq!(want.len(), w * h);
                     for i in 0..w * h {
                         assert_eq!(
-                            got[i], want[i] as u16,
+                            got[i],
+                            want[i] as u16,
                             "mismatch w={w} h={h} sx={sx} sy={sy} at ({}, {}): port {} != C {}",
                             i / w,
                             i % w,

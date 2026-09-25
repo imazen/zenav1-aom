@@ -13,7 +13,14 @@ use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
 use aom_sys_ref as c;
 
 /// Same recipe as `eprof_x86::mirror_tile` / `dump_cell_yuv`.
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -83,7 +90,14 @@ fn main() {
             speed,
         )
     } else {
-        mirror_tile(&base, &format!("photo_{w}x{h}_cq{cq}_s{speed}"), w, h, cq, speed)
+        mirror_tile(
+            &base,
+            &format!("photo_{w}x{h}_cq{cq}_s{speed}"),
+            w,
+            h,
+            cq,
+            speed,
+        )
     };
 
     // Optional 6th arg: CDEF mode — `1` enables plain CDEF on both arms (the
@@ -92,7 +106,13 @@ fn main() {
     // routed through the cfg shim).
     let cdef_mode: i32 = a.get(6).map(|s| s.parse().unwrap()).unwrap_or(0);
     let mut cfg = KeyFrameConfig::allintra_speed0(
-        cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
+        cell.w,
+        cell.h,
+        cell.bd,
+        cell.mono,
+        cell.ss_x,
+        cell.ss_y,
+        cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
     // Optional 7th/8th args (after cdef_mode): tile grid `C,R` and port worker
@@ -115,11 +135,8 @@ fn main() {
     cfg.enable_restoration = cdef_mode == 0;
     cfg.quality.cdef_adaptive = cdef_mode == 3;
 
-    let port = encode_key_frame(
-        KeyFramePlanes::new(&cell.y, &cell.u, &cell.v),
-        &cfg,
-    )
-    .expect("the port must encode this cell");
+    let port = encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), &cfg)
+        .expect("the port must encode this cell");
     let cref = if cdef_mode == 3 {
         c::ref_encode_av1_kf_cfg(
             &cell.y,

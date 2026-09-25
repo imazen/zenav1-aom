@@ -3,7 +3,6 @@
 //! `cdef_find_dir` (the 8x8 direction search) + the `cdef_filter_block`
 //! variants + the [`frame`] module (the `av1_cdef_frame` decoder walk).
 
-
 pub mod frame;
 mod simd;
 

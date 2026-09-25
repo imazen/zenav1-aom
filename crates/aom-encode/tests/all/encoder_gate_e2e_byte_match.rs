@@ -32,6 +32,15 @@
 //! **Honest labelling is mandatory here — see the per-case `eprintln!` and
 //! the final assertion message for exactly what's bootstrapped vs derived.**
 
+use aom_dsp::entropy::enc::OdEcEnc;
+use aom_dsp::entropy::header::{
+    CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
+    RestorationHeader, TileInfoHeader, read_sequence_header_obu, read_uncompressed_header,
+};
+use aom_dsp::entropy::obu::read_obu_header;
+use aom_dsp::entropy::partition::KfFrameContext;
+use aom_dsp::entropy::rb::ReadBitBuffer;
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::SbEncodeEnv;
 use aom_encode::intra_uv_rd::UvLoopPolicy;
@@ -45,15 +54,6 @@ use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_b
 use aom_encode::real_costs::derive_real_costs;
 use aom_encode::speed_features::SpeedFeatures;
 use aom_encode::tx_search::TxTypeSearchPolicy;
-use aom_dsp::entropy::enc::OdEcEnc;
-use aom_dsp::entropy::header::{
-    CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
-    RestorationHeader, TileInfoHeader, read_sequence_header_obu, read_uncompressed_header,
-};
-use aom_dsp::entropy::obu::read_obu_header;
-use aom_dsp::entropy::partition::KfFrameContext;
-use aom_dsp::entropy::rb::ReadBitBuffer;
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
 
 const OBU_SEQUENCE_HEADER: u32 = 1;
@@ -75,8 +75,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
             hdr.obu_has_size_field,
             "shim_encode_av1_kf always sets has_size_field"
         );
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));
@@ -334,7 +334,17 @@ fn attempt_case_content_uv(
     uv_content: impl Fn(usize, usize) -> u8,
 ) -> bool {
     attempt_case_content_uv_sep(
-        w, h, mono, ss_x, ss_y, usage, cq_level, cpu_used, speed, content, &uv_content,
+        w,
+        h,
+        mono,
+        ss_x,
+        ss_y,
+        usage,
+        cq_level,
+        cpu_used,
+        speed,
+        content,
+        &uv_content,
         &uv_content,
     )
 }
@@ -612,7 +622,7 @@ fn attempt_case_content_uv_sep(
     // speed-0 policy (the GOOD setter is out of the all-intra slice).
     let sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
     let env = SbEncodeEnv {
-            ref_frame: None,
+        ref_frame: None,
         sb_size: SB,
         mi_rows,
         mi_cols,
@@ -660,10 +670,10 @@ fn attempt_case_content_uv_sep(
     };
     let pick_cfg = PickFrameCfg {
         fixed_partition_size: None,
-            fs_sf: Default::default(),
-            inter: None,
+        fs_sf: Default::default(),
+        inter: None,
         intrabc: None,
-            search_allow_intrabc: false,
+        search_allow_intrabc: false,
         intra_tools: Default::default(),
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,
@@ -3544,13 +3554,20 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         let tus = ivf_temporal_units(&ivf);
         let frame = c::ref_decode_av1_kf(&tus[0], fw, fh);
         let bd = frame.info[0] as u8;
-        assert_eq!(bd, 8, "{name}: this harness (attempt_case_content_uv_sep) is bd8-only");
+        assert_eq!(
+            bd, 8,
+            "{name}: this harness (attempt_case_content_uv_sep) is bd8-only"
+        );
         let mono = frame.info[1] != 0;
         let ss_x = frame.info[2] as usize;
         let ss_y = frame.info[3] as usize;
         let fcw = (fw + ss_x) >> ss_x; // full-frame chroma stride (tight row-major)
         let (y, u, v) = (frame.y, frame.u, frame.v);
-        let (w, h) = if crop_w == 0 { (fw, fh) } else { (crop_w, crop_h) };
+        let (w, h) = if crop_w == 0 {
+            (fw, fh)
+        } else {
+            (crop_w, crop_h)
+        };
         assert!(
             off_x + w <= fw && off_y + h <= fh,
             "{name}: crop {w}x{h}@{off_x},{off_y} exceeds frame {fw}x{fh}"
@@ -3592,7 +3609,14 @@ fn encoder_gate_real_content_speed1to4_e2e() {
 
     eprintln!("\n=== TASK#39 real-content speed 1-4 map (MATCH = byte-exact vs real aomenc) ===");
     for (label, ok) in &results {
-        eprintln!("  {label}: {}", if *ok { "MATCH" } else { "DIFF (speed>=1 real divergence)" });
+        eprintln!(
+            "  {label}: {}",
+            if *ok {
+                "MATCH"
+            } else {
+                "DIFF (speed>=1 real divergence)"
+            }
+        );
     }
     let matched = results.iter().filter(|(_, ok)| *ok).count();
     let diverged: Vec<&String> = results

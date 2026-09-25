@@ -18,7 +18,6 @@ use aom_decode::frame::{
 use aom_decode::superres::coded_frame_width;
 use aom_sys_ref as c;
 
-
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {

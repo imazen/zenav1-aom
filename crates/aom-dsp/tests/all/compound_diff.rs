@@ -24,8 +24,9 @@
 //! port that dropped both clamps.
 
 use aom_dsp::inter::compound::{
-    CompoundType, DiffwtdMaskType, build_compound_diffwtd_mask, build_compound_diffwtd_mask_d16,
+    build_compound_diffwtd_mask, build_compound_diffwtd_mask_d16,
     build_compound_diffwtd_mask_highbd, dist_wtd_comp_weight_assign, get_compound_type_mask,
+    CompoundType, DiffwtdMaskType,
 };
 use aom_dsp::inter::interintra::wedge_mask_signed;
 use aom_sys_ref::{

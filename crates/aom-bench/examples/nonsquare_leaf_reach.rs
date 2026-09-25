@@ -97,7 +97,15 @@ fn mirror_tile(base: &EncodeCell, w: usize, h: usize, cq: i32, speed: i32) -> En
 }
 
 /// Crop / mirror-extend a raw I420 source to `w x h`.
-fn from_i420(buf: &[u8], sw: usize, sh: usize, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn from_i420(
+    buf: &[u8],
+    sw: usize,
+    sh: usize,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -173,7 +181,11 @@ fn row(content: &str, cell: &EncodeCell) {
         .collect();
     let (verdict, plen, delta) = match &got {
         Ok(p) if p == &real => ("MATCH", p.len() as i64, 0),
-        Ok(p) => ("DIVERGE", p.len() as i64, p.len() as i64 - real.len() as i64),
+        Ok(p) => (
+            "DIVERGE",
+            p.len() as i64,
+            p.len() as i64 - real.len() as i64,
+        ),
         Err(_) => ("PANIC", -1, 0),
     };
     println!(
@@ -202,7 +214,9 @@ fn row(content: &str, cell: &EncodeCell) {
 fn main() {
     c::ref_init();
     println!("# nonsquare_leaf_reach — multi-txb (non-square) leaves in the nonrd estimate arm");
-    println!("content\tsize\tpx\tcq\tspeed\tport_bytes\tdelta\tc_bytes\tverdict\tnsq\tnsq_by_bsize");
+    println!(
+        "content\tsize\tpx\tcq\tspeed\tport_bytes\tdelta\tc_bytes\tverdict\tnsq\tnsq_by_bsize"
+    );
 
     let args: Vec<String> = std::env::args().collect();
     // Optional raw I420 source: `-- <file.yuv> <w> <h>`.
@@ -298,7 +312,10 @@ fn main() {
         for &cq in &cqs {
             for speed in [8, 9] {
                 row("smallreal", &mirror_tile(&base, w, h, cq, speed));
-                row("smalldiag", &EncodeCell::synthetic_diag("nsq", w, h, cq, speed));
+                row(
+                    "smalldiag",
+                    &EncodeCell::synthetic_diag("nsq", w, h, cq, speed),
+                );
             }
         }
     }

@@ -84,7 +84,11 @@ fn to_mono(base: &EncodeCell, label: &str) -> EncodeCell {
 /// informative as the source's, just carried at a different sampling grid.
 fn to_ss(base: &EncodeCell, label: &str, ss_x: usize, ss_y: usize) -> EncodeCell {
     assert!(!base.mono, "{label}: source must carry chroma");
-    assert_eq!((base.ss_x, base.ss_y), (1, 1), "{label}: source must be 4:2:0");
+    assert_eq!(
+        (base.ss_x, base.ss_y),
+        (1, 1),
+        "{label}: source must be 4:2:0"
+    );
     let (bcw, _bch) = ((base.w + 1) >> 1, (base.h + 1) >> 1);
     let (cw, ch) = ((base.w + ss_x) >> ss_x, (base.h + ss_y) >> ss_y);
     let mut u = vec![0u16; cw * ch];
@@ -152,8 +156,20 @@ fn cells() -> Vec<EncodeCell> {
     // Two real photographic sources: bd8 4:2:0 and bd10 4:2:0. 64x64 crops keep
     // every cell a single SB-exact superblock, so nothing here is confounded
     // with the frame-edge axis (that is `s4cov_partial_sb_axis.rs`).
-    let b8 = EncodeCell::real_content("b8", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), 32, 0);
-    let b10 = EncodeCell::real_content("b10", "av1-1-b10-00-quantizer-00", Some((64, 64, 64, 64)), 32, 0);
+    let b8 = EncodeCell::real_content(
+        "b8",
+        "av1-1-b8-00-quantizer-00",
+        Some((64, 64, 64, 64)),
+        32,
+        0,
+    );
+    let b10 = EncodeCell::real_content(
+        "b10",
+        "av1-1-b10-00-quantizer-00",
+        Some((64, 64, 64, 64)),
+        32,
+        0,
+    );
     assert_eq!(b8.bd, 8, "bd8 source");
     assert_eq!(b10.bd, 10, "bd10 source");
     // The high-bit-depth MONO cells drop the chroma of the textured `b10`
@@ -385,7 +401,10 @@ fn qm_axis_bitdepth_subsampling_qindex_byte_matches() {
         .filter(|r| !r.off_ok)
         .map(|r| (r.label.clone(), r.speed))
         .collect();
-    let pinned: Vec<(String, i32)> = HBD_OPEN.iter().map(|(l, s)| ((*l).to_string(), *s)).collect();
+    let pinned: Vec<(String, i32)> = HBD_OPEN
+        .iter()
+        .map(|(l, s)| ((*l).to_string(), *s))
+        .collect();
     assert_eq!(
         observed, pinned,
         "the high-bit-depth open set moved. A row that started MATCHING means the bd10/bd12 \
@@ -437,7 +456,10 @@ fn qm_axis_cells_reach_the_named_residual() {
         "4:2:2 must be covered"
     );
     assert!(has(&|c| c.cq_level == 5), "the cq5 extreme must be covered");
-    assert!(has(&|c| c.cq_level == 63), "the cq63 extreme must be covered");
+    assert!(
+        has(&|c| c.cq_level == 63),
+        "the cq63 extreme must be covered"
+    );
     // Crossings, not just marginals: a bd12 non-420 cell and a bd12 qindex
     // extreme both exist, so the axis is not covered one factor at a time.
     assert!(

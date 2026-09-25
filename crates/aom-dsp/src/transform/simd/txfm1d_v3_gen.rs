@@ -7,17 +7,23 @@
 //! (`hb`) are `#[rite(<tier>)]` in `super::prims`, cfg-selected there under one
 //! unsuffixed name, so this file needs no cfg and no tier suffixes.
 #![allow(clippy::needless_range_loop)]
+use super::prims::{hb, negv};
+use crate::transform::cospi::cospi_arr;
 use archmage::prelude::*;
 use magetypes::simd::generic::i32x8 as I32x8;
-use crate::transform::cospi::cospi_arr;
-use super::prims::{hb, negv};
 
 /// 8-column lane-batched twin of [`crate::transform::av1_fdct8`] (transpiled; per-lane
 /// bit-identical to the scalar kernel on the full `i32` domain — pinned by
 /// the `simd::tests` differential at every token permutation, incl. neon).
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fdct8_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<Token>], cos_bit: i32, stage_range: &[i8]) {
+pub(crate) fn av1_fdct8_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
+    cos_bit: i32,
+    stage_range: &[i8],
+) {
     let cospi = cospi_arr(cos_bit);
     let mut step = [i32x8::zero(t); 8];
     out[0] = input[0] + input[7];
@@ -67,7 +73,13 @@ pub(crate) fn av1_fdct8_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<
 /// the `simd::tests` differential at every token permutation, incl. neon).
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fdct16_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<Token>], cos_bit: i32, stage_range: &[i8]) {
+pub(crate) fn av1_fdct16_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
+    cos_bit: i32,
+    stage_range: &[i8],
+) {
     let cospi = cospi_arr(cos_bit);
     let mut step = [i32x8::zero(t); 16];
     out[0] = input[0] + input[15];
@@ -189,7 +201,13 @@ pub(crate) fn av1_fdct16_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8
 /// the `simd::tests` differential at every token permutation, incl. neon).
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fdct32_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<Token>], cos_bit: i32, stage_range: &[i8]) {
+pub(crate) fn av1_fdct32_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
+    cos_bit: i32,
+    stage_range: &[i8],
+) {
     let cospi = cospi_arr(cos_bit);
     let mut step = [i32x8::zero(t); 32];
     out[0] = input[0] + input[31];
@@ -487,7 +505,13 @@ pub(crate) fn av1_fdct32_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8
 /// the `simd::tests` differential at every token permutation, incl. neon).
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fdct64_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<Token>], cos_bit: i32, stage_range: &[i8]) {
+pub(crate) fn av1_fdct64_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
+    cos_bit: i32,
+    stage_range: &[i8],
+) {
     let cospi = cospi_arr(cos_bit);
     let mut step = [i32x8::zero(t); 64];
     out[0] = input[0] + input[63];
@@ -1201,7 +1225,13 @@ pub(crate) fn av1_fdct64_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8
 /// the `simd::tests` differential at every token permutation, incl. neon).
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fadst8_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<Token>], cos_bit: i32, stage_range: &[i8]) {
+pub(crate) fn av1_fadst8_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
+    cos_bit: i32,
+    stage_range: &[i8],
+) {
     let cospi = cospi_arr(cos_bit);
     let mut step = [i32x8::zero(t); 8];
     out[0] = input[0];
@@ -1267,7 +1297,13 @@ pub(crate) fn av1_fadst8_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8
 /// the `simd::tests` differential at every token permutation, incl. neon).
 #[magetypes(define(i32x8), v3, neon, -scalar)]
 #[allow(unused_variables)]
-pub(crate) fn av1_fadst16_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<Token>], cos_bit: i32, stage_range: &[i8]) {
+pub(crate) fn av1_fadst16_impl(
+    t: Token,
+    input: &[I32x8<Token>],
+    out: &mut [I32x8<Token>],
+    cos_bit: i32,
+    stage_range: &[i8],
+) {
     let cospi = cospi_arr(cos_bit);
     let mut step = [i32x8::zero(t); 16];
     out[0] = input[0];
@@ -1415,4 +1451,3 @@ pub(crate) fn av1_fadst16_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x
     out[14] = step[15];
     out[15] = step[0];
 }
-

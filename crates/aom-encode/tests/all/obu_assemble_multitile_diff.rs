@@ -23,11 +23,11 @@
 //! overwrite, not just the trivial 0 the placeholder already holds.
 
 use aom_decode::frame::decode_frame_obus_prefilter;
-use aom_encode::obu_assemble::assemble_multitile_frame_obu_payload_derived;
 use aom_dsp::entropy::header::write_frame_header_obu;
 use aom_dsp::entropy::leb128::uleb_decode;
 use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::wb::WriteBitBuffer;
+use aom_encode::obu_assemble::assemble_multitile_frame_obu_payload_derived;
 use aom_sys_ref as c;
 
 const OBU_FRAME: u32 = 6;

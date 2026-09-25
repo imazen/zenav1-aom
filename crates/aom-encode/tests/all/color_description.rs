@@ -30,9 +30,7 @@ use aom_dsp::entropy::header::read_color_config;
 use aom_dsp::entropy::leb128::uleb_decode;
 use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::rb::ReadBitBuffer;
-use aom_encode::key_frame::{
-    ColorDescription, KeyFrameConfig, KeyFramePlanes, encode_key_frame,
-};
+use aom_encode::key_frame::{ColorDescription, KeyFrameConfig, KeyFramePlanes, encode_key_frame};
 
 /// `OBU_SEQUENCE_HEADER`.
 const OBU_SEQ: u32 = 1;
@@ -47,17 +45,23 @@ fn planes(cfg: &KeyFrameConfig) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
             (((r + c) * 37 % 200) as u32 * max / 255) as u16
         })
         .collect();
-    let (cw, ch) = ((cfg.width + cfg.ss_x) >> cfg.ss_x, (cfg.height + cfg.ss_y) >> cfg.ss_y);
+    let (cw, ch) = (
+        (cfg.width + cfg.ss_x) >> cfg.ss_x,
+        (cfg.height + cfg.ss_y) >> cfg.ss_y,
+    );
     let n = if cfg.monochrome { 0 } else { cw * ch };
-    let u: Vec<u16> = (0..n).map(|i| ((i * 11 % 160) as u32 * max / 255) as u16).collect();
-    let v: Vec<u16> = (0..n).map(|i| ((i * 17 % 140) as u32 * max / 255) as u16).collect();
+    let u: Vec<u16> = (0..n)
+        .map(|i| ((i * 11 % 160) as u32 * max / 255) as u16)
+        .collect();
+    let v: Vec<u16> = (0..n)
+        .map(|i| ((i * 17 % 140) as u32 * max / 255) as u16)
+        .collect();
     (y, u, v)
 }
 
 fn encode(cfg: &KeyFrameConfig) -> Vec<u8> {
     let (y, u, v) = planes(cfg);
-    encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg)
-        .expect("the cell must encode")
+    encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg).expect("the cell must encode")
 }
 
 /// Walk the temporal unit to the sequence-header OBU and parse its
@@ -78,7 +82,10 @@ fn seq_color(stream: &[u8]) -> aom_dsp::entropy::header::ColorConfigParams {
             let profile = rb.read_literal(3) as i32;
             let _still = rb.read_bit();
             let reduced = rb.read_bit();
-            assert_eq!(reduced, 1, "encode_key_frame emits a reduced still-picture header");
+            assert_eq!(
+                reduced, 1,
+                "encode_key_frame emits a reduced still-picture header"
+            );
             // seq_level_idx[0] f(5), then frame width/height bits + max dims,
             // then the feature flags -- all fixed-width in the reduced header.
             let _level = rb.read_literal(5);
@@ -93,7 +100,10 @@ fn seq_color(stream: &[u8]) -> aom_dsp::entropy::header::ColorConfigParams {
             }
             return read_color_config(&mut rb, profile);
         }
-        assert_eq!(hdr.obu_type, OBU_TD, "only a TD may precede the sequence header");
+        assert_eq!(
+            hdr.obu_type, OBU_TD,
+            "only a TD may precede the sequence header"
+        );
         off = payload_at + size;
         assert!(off < stream.len(), "no sequence header in the stream");
     }
@@ -109,12 +119,24 @@ fn cfg_420(cq: i32) -> KeyFrameConfig {
 fn the_default_description_is_the_historical_hardcode() {
     let d = ColorDescription::default();
     assert_eq!(
-        (d.color_primaries, d.transfer_characteristics, d.matrix_coefficients, d.full_range),
+        (
+            d.color_primaries,
+            d.transfer_characteristics,
+            d.matrix_coefficients,
+            d.full_range
+        ),
         (2, 2, 2, false),
         "the default must stay AOM_CICP_*_UNSPECIFIED + AOM_CR_STUDIO_RANGE"
     );
     let c = seq_color(&encode(&cfg_420(32)));
-    assert_eq!((c.color_primaries, c.transfer_characteristics, c.matrix_coefficients), (2, 2, 2));
+    assert_eq!(
+        (
+            c.color_primaries,
+            c.transfer_characteristics,
+            c.matrix_coefficients
+        ),
+        (2, 2, 2)
+    );
     assert!(!c.color_range, "the default codes studio range");
 }
 
@@ -132,11 +154,18 @@ fn a_full_range_description_reaches_the_bitstream_and_round_trips() {
     let stream = encode(&cfg);
     let c = seq_color(&stream);
     assert_eq!(
-        (c.color_primaries, c.transfer_characteristics, c.matrix_coefficients),
+        (
+            c.color_primaries,
+            c.transfer_characteristics,
+            c.matrix_coefficients
+        ),
         (1, 13, 6),
         "the CICP triple must survive the writer/reader round trip"
     );
-    assert!(c.color_range, "full_range must reach the coded color_range bit");
+    assert!(
+        c.color_range,
+        "full_range must reach the coded color_range bit"
+    );
 
     // A field the decoder rejects is worse than one that is merely wrong.
     let dec = aom_decode::frame::decode_frame_obus(&stream)
@@ -150,7 +179,11 @@ fn a_full_range_description_reaches_the_bitstream_and_round_trips() {
     studio.color.full_range = false;
     let s2 = encode(&studio);
     assert_ne!(stream, s2, "the range bit must be observable in the bytes");
-    assert_eq!(stream.len(), s2.len(), "it is one bit inside a fixed-width field");
+    assert_eq!(
+        stream.len(),
+        s2.len(),
+        "it is one bit inside a fixed-width field"
+    );
 }
 
 /// Monochrome carries a range bit too -- this is the path AVIF alpha needs.
@@ -161,7 +194,10 @@ fn monochrome_full_range_is_codable_and_that_is_what_alpha_needs() {
     let stream = encode(&cfg);
     let c = seq_color(&stream);
     assert!(c.monochrome, "the cell is monochrome");
-    assert!(c.color_range, "an alpha plane is a FULL-RANGE monochrome item");
+    assert!(
+        c.color_range,
+        "an alpha plane is a FULL-RANGE monochrome item"
+    );
     aom_decode::frame::decode_frame_obus(&stream).expect("must decode");
 }
 
@@ -172,7 +208,9 @@ fn non_conformant_descriptions_are_refused_by_name() {
     // requirement, and libaom asserts it in `write_color_config`.
     let mut id420 = cfg_420(32);
     id420.color.matrix_coefficients = 0;
-    let e = id420.validate_configuration().expect_err("MC_IDENTITY at 4:2:0 must be refused");
+    let e = id420
+        .validate_configuration()
+        .expect_err("MC_IDENTITY at 4:2:0 must be refused");
     assert!(
         format!("{e}").contains("MC_IDENTITY"),
         "the refusal must name the field, got: {e}"
@@ -182,7 +220,9 @@ fn non_conformant_descriptions_are_refused_by_name() {
     // not a blanket ban (a refusal that always fires gates nothing).
     let mut id444 = KeyFrameConfig::allintra_speed0(64, 64, 8, false, 0, 0, 32);
     id444.color.matrix_coefficients = 0;
-    id444.validate_configuration().expect("MC_IDENTITY at 4:4:4 is conformant");
+    id444
+        .validate_configuration()
+        .expect("MC_IDENTITY at 4:4:4 is conformant");
 
     // The sRGB triple codes NO range bit -- the spec fixes it full -- so a
     // studio-range request there would be silently mis-signalled.
@@ -194,12 +234,16 @@ fn non_conformant_descriptions_are_refused_by_name() {
     let e = srgb_studio
         .validate_configuration()
         .expect_err("sRGB + studio range must be refused, not silently coded as full");
-    assert!(format!("{e}").contains("sRGB"), "the refusal must name it, got: {e}");
+    assert!(
+        format!("{e}").contains("sRGB"),
+        "the refusal must name it, got: {e}"
+    );
 
     // CICP fields are f(8).
     let mut big = cfg_420(32);
     big.color.color_primaries = 256;
-    big.validate_configuration().expect_err("a CICP code point past 255 must be refused");
+    big.validate_configuration()
+        .expect_err("a CICP code point past 255 must be refused");
 
     // Every refusal above is `unsupported`, not a transient failure.
     assert_eq!(

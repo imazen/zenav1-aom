@@ -12,8 +12,8 @@
 use aom_dsp::dist::{sse, sse_scalar, sse_u16_u8, sse_u16_u8_scalar};
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -33,7 +33,7 @@ const DIMS: &[(usize, usize)] = &[
     (4, 4),
     (4, 16),
     (4, 64),
-    (4, 2),  // w4 arm's h % 4 != 0 scalar-tail route
+    (4, 2), // w4 arm's h % 4 != 0 scalar-tail route
     (4, 6),
     (8, 4),
     (8, 8),
@@ -73,10 +73,15 @@ fn sse_family_simd_bit_identical_to_scalar_at_every_tier() {
             for case in 0..3 {
                 let a_stride = w + (rng.next() % 9) as usize; // strided rows
                 let b_stride = w + (rng.next() % 9) as usize;
-                let mut a16: Vec<u16> =
-                    (0..a_stride * h).map(|_| (rng.next() & 0xff) as u16).collect();
-                let mut a8: Vec<u8> = (0..a_stride * h).map(|_| (rng.next() & 0xff) as u8).collect();
-                let mut b8: Vec<u8> = (0..b_stride * h).map(|_| (rng.next() & 0xff) as u8).collect();
+                let mut a16: Vec<u16> = (0..a_stride * h)
+                    .map(|_| (rng.next() & 0xff) as u16)
+                    .collect();
+                let mut a8: Vec<u8> = (0..a_stride * h)
+                    .map(|_| (rng.next() & 0xff) as u8)
+                    .collect();
+                let mut b8: Vec<u8> = (0..b_stride * h)
+                    .map(|_| (rng.next() & 0xff) as u8)
+                    .collect();
                 if case == 1 {
                     // Max-diff boundary: a all-max, b all-zero.
                     a16.fill(255);

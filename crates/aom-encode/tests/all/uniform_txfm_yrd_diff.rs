@@ -12,11 +12,11 @@
 //! planes are compared (verifying the recon feedback the next txb predicts
 //! from), plus (rd, rate, dist, sse, skip).
 
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{TxTypeCosts, fill_tx_type_costs};
 use aom_encode::mode_costs::{TxSizeCosts, fill_tx_size_costs, tx_size_cost};
 use aom_encode::tx_search::{TxTypeSearchPolicy, TxfmYrdEnv, uniform_txfm_yrd_intra};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{TxTypeCosts, fill_tx_type_costs};
 
 use crate::common::*;
 
@@ -318,7 +318,7 @@ fn uniform_txfm_yrd_intra_matches_c_walk() {
                             &txb_skip, &base_eob, &base, &eob_extra, &dc_sign, &lps, &eob_tbl,
                         ),
                         (&c_ttc_intra, &c_ttc_inter),
-                    use_intra_dct_only,
+                        use_intra_dct_only,
                     );
                     // recon_intra (tx_search.c:930-932) reconstructs a txb into
                     // the recon plane ONLY when it is NOT the last
@@ -633,7 +633,7 @@ fn pick_uniform_tx_size_type_yrd_matches_c_depth_loop() {
                     skip_ctx,
                     &ts_flat,
                     tx_size_ctx,
-                use_intra_dct_only,
+                    use_intra_dct_only,
                 );
                 if let Some((rate, dist, sse, w)) = res {
                     best_c = Some((0, rd, rate, dist, sse, w));
@@ -674,7 +674,7 @@ fn pick_uniform_tx_size_type_yrd_matches_c_depth_loop() {
                         skip_ctx,
                         &ts_flat,
                         tx_size_ctx,
-                    use_intra_dct_only,
+                        use_intra_dct_only,
                     );
                     rd_arr[depth as usize] = rd;
                     if rd < best_rd_c {

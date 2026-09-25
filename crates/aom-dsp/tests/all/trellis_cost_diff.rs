@@ -5,7 +5,10 @@
 
 use aom_sys_ref as c;
 
-use aom_dsp::txb::{coeff_cost_eob, coeff_cost_general, two_coeff_cost_simple, txb_bhl, txb_wide, CoeffCostTables, TxClass};
+use aom_dsp::txb::{
+    coeff_cost_eob, coeff_cost_general, two_coeff_cost_simple, txb_bhl, txb_wide, CoeffCostTables,
+    TxClass,
+};
 
 struct Rng(u64);
 impl Rng {
@@ -80,24 +83,86 @@ fn trellis_cost_helpers_identical() {
 
             // get_two_coeff_cost_simple (assumes ci > 0, abs_qc may be 0..).
             if ci > 0 {
-                let (gc, gl) = two_coeff_cost_simple(ci, abs_qc, coeff_ctx_g, &t, bhl, tx_class, &levels);
-                let (wc, wl) = c::ref_two_coeff_cost_simple(ci, abs_qc, coeff_ctx_g, &base, &lps, bhl, tc, &levels);
-                assert_eq!((gc, gl), (wc, wl), "two_coeff_simple ts={tx_size} ci={ci} qc={abs_qc}");
+                let (gc, gl) =
+                    two_coeff_cost_simple(ci, abs_qc, coeff_ctx_g, &t, bhl, tx_class, &levels);
+                let (wc, wl) = c::ref_two_coeff_cost_simple(
+                    ci,
+                    abs_qc,
+                    coeff_ctx_g,
+                    &base,
+                    &lps,
+                    bhl,
+                    tc,
+                    &levels,
+                );
+                assert_eq!(
+                    (gc, gl),
+                    (wc, wl),
+                    "two_coeff_simple ts={tx_size} ci={ci} qc={abs_qc}"
+                );
             }
 
             // get_coeff_cost_eob (abs_qc >= 1 at the eob position).
             let eob_qc = abs_qc.max(1);
-            let ge = coeff_cost_eob(ci, eob_qc, sign, coeff_ctx_e, dc_sign_ctx, &t, bhl, tx_class);
-            let we = c::ref_coeff_cost_eob(ci, eob_qc, sign, coeff_ctx_e, dc_sign_ctx, &base_eob, &dc_sign, &lps, bhl, tc);
+            let ge = coeff_cost_eob(
+                ci,
+                eob_qc,
+                sign,
+                coeff_ctx_e,
+                dc_sign_ctx,
+                &t,
+                bhl,
+                tx_class,
+            );
+            let we = c::ref_coeff_cost_eob(
+                ci,
+                eob_qc,
+                sign,
+                coeff_ctx_e,
+                dc_sign_ctx,
+                &base_eob,
+                &dc_sign,
+                &lps,
+                bhl,
+                tc,
+            );
             assert_eq!(ge, we, "coeff_cost_eob ts={tx_size} ci={ci} qc={eob_qc}");
 
             // get_coeff_cost_general, both is_last polarities.
             for &is_last in &[false, true] {
                 let cc = if is_last { coeff_ctx_e } else { coeff_ctx_g };
                 let qc = if is_last { eob_qc } else { abs_qc };
-                let gg = coeff_cost_general(is_last, ci, qc, sign, cc, dc_sign_ctx, &t, bhl, tx_class, &levels);
-                let wg = c::ref_coeff_cost_general(is_last, ci, qc, sign, cc, dc_sign_ctx, &base_eob, &base, &dc_sign, &lps, bhl, tc, &levels);
-                assert_eq!(gg, wg, "coeff_cost_general last={is_last} ts={tx_size} ci={ci} qc={qc}");
+                let gg = coeff_cost_general(
+                    is_last,
+                    ci,
+                    qc,
+                    sign,
+                    cc,
+                    dc_sign_ctx,
+                    &t,
+                    bhl,
+                    tx_class,
+                    &levels,
+                );
+                let wg = c::ref_coeff_cost_general(
+                    is_last,
+                    ci,
+                    qc,
+                    sign,
+                    cc,
+                    dc_sign_ctx,
+                    &base_eob,
+                    &base,
+                    &dc_sign,
+                    &lps,
+                    bhl,
+                    tc,
+                    &levels,
+                );
+                assert_eq!(
+                    gg, wg,
+                    "coeff_cost_general last={is_last} ts={tx_size} ci={ci} qc={qc}"
+                );
             }
         }
     }

@@ -41,6 +41,22 @@ pub mod inter_localize;
 #[cfg(feature = "c-oracle")]
 pub mod rd_close;
 
+use aom_dsp::entropy::enc::OdEcEnc;
+use aom_dsp::entropy::header::{
+    CdefHeader, FilmGrainParams, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader,
+    LoopfilterHeader, RestorationHeader, TileInfoHeader, read_sequence_header_obu,
+    read_uncompressed_header,
+};
+use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
+use aom_dsp::entropy::obu::read_obu_header;
+use aom_dsp::entropy::partition::KfFrameContext;
+use aom_dsp::entropy::rb::ReadBitBuffer;
+use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame_opt};
+use aom_dsp::quant::{
+    Dequants, Quants, aom_get_qmlevel_allintra, av1_build_quantizer, av1_dc_quant_qtx, set_q_index,
+};
+use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, LrSearchSf, pick_filter_restoration};
+use aom_dsp::txb::cost_tokens_from_cdf;
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::{SbEncodeEnv, SbTree};
 use aom_encode::intra_uv_rd::UvLoopPolicy;
@@ -57,24 +73,8 @@ use aom_encode::rd::{
 };
 use aom_encode::real_costs::derive_real_costs;
 use aom_encode::speed_features::SpeedFeatures;
-use aom_dsp::entropy::enc::OdEcEnc;
-use aom_dsp::entropy::header::{
-    CdefHeader, FilmGrainParams, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader,
-    LoopfilterHeader, RestorationHeader, TileInfoHeader, read_sequence_header_obu,
-    read_uncompressed_header,
-};
-use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
-use aom_dsp::entropy::obu::read_obu_header;
-use aom_dsp::entropy::partition::KfFrameContext;
-use aom_dsp::entropy::rb::ReadBitBuffer;
-use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame_opt};
-use aom_dsp::quant::{
-    Dequants, Quants, aom_get_qmlevel_allintra, av1_build_quantizer, av1_dc_quant_qtx, set_q_index,
-};
-use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, LrSearchSf, pick_filter_restoration};
 #[cfg(feature = "c-oracle")]
 use aom_sys_ref as c;
-use aom_dsp::txb::cost_tokens_from_cdf;
 
 const OBU_SEQUENCE_HEADER: u32 = 1;
 const OBU_FRAME: u32 = 6;
@@ -179,7 +179,10 @@ pub fn stream_frame_header(stream: &[u8]) -> FrameHeaderObu {
         },
         num_planes: if cc.monochrome { 1 } else { 3 },
         separate_uv_delta_q: cc.separate_uv_delta_q,
-        cdef: CdefHeader { enable_cdef: s.enable_cdef, ..Default::default() },
+        cdef: CdefHeader {
+            enable_cdef: s.enable_cdef,
+            ..Default::default()
+        },
         restoration: RestorationHeader {
             enable_restoration: s.enable_restoration,
             sb_size_128: s.sb_size_128,
@@ -228,8 +231,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
         let hdr = read_obu_header(&bytes[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
         assert!(hdr.obu_has_size_field, "shim always sets has_size_field");
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));
@@ -291,7 +294,10 @@ fn replay_sb_qindex_tile_order(
     base_qindex: i32,
     mut sb_qindex: impl FnMut(i32, i32, i32) -> i32,
 ) -> (Vec<i32>, bool) {
-    let n_sb = tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>();
+    let n_sb = tile_grid
+        .iter()
+        .map(|t| (t.4 * t.5) as usize)
+        .sum::<usize>();
     let mut per_sb = vec![base_qindex; n_sb];
     let mut used = false;
     for &(mi_row_start, mi_col_start, _, _, n_sb_rows, n_sb_cols) in tile_grid {
@@ -1567,7 +1573,10 @@ impl EncodeCell {
             })
             .collect();
         assert_eq!(
-            tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>(),
+            tile_grid
+                .iter()
+                .map(|t| (t.4 * t.5) as usize)
+                .sum::<usize>(),
             (n_sb_x * n_sb_y) as usize,
             "{}: the tile grid must partition every superblock exactly once",
             self.label
@@ -1939,21 +1948,26 @@ impl EncodeCell {
             )
         };
         assert_eq!(
-            sct.allow_screen_content_tools, p.allow_screen_content_tools,
+            sct.allow_screen_content_tools,
+            p.allow_screen_content_tools,
             "{w}x{h}: the ported screen-content decision disagrees with the oracle header's \
              allow_screen_content_tools (palette={} intrabc={} photo={} fast={}). If the \
              detector said 0 and the header says 1, the remaining C arm is \
              av1_determine_sc_tools_with_encoding's two-pass trial encode (encoder.c:3312, \
              live on allintra below speed 8) — NOT ported; or the cell was encoded with \
              --tune-content=screen without declaring `ToggleKnobs::tune_content_screen`",
-            sct.count_palette, sct.count_intrabc, sct.count_photo,
+            sct.count_palette,
+            sct.count_intrabc,
+            sct.count_photo,
             sf.screen_detection_mode2_fast_detection
         );
         assert!(
             !p.allow_intrabc || sct.allow_intrabc,
             "{w}x{h}: the oracle header codes allow_intrabc=1 but the ported detector's \
              search-time decision is 0 (palette={} intrabc={} photo={})",
-            sct.count_palette, sct.count_intrabc, sct.count_photo
+            sct.count_palette,
+            sct.count_intrabc,
+            sct.count_photo
         );
         let search_allow_intrabc = sct.allow_intrabc;
         // rd_pick_intrabc_mode_sb's frame-wide gates (rdopt.c:3432-3434):
@@ -2318,7 +2332,8 @@ impl EncodeCell {
         // the header never announced, and the stream was non-conformant (both
         // libaom and the port decoder rejected it; the wave's byte gate refused
         // the cell). Gate the whole LR stage on the final allow_intrabc.
-        let lr_stage = (lr_stage || (s.enable_restoration && !p.coded_lossless)) && !p.allow_intrabc;
+        let lr_stage =
+            (lr_stage || (s.enable_restoration && !p.coded_lossless)) && !p.allow_intrabc;
         if lr_stage {
             assert!(
                 s.enable_restoration,
@@ -2473,8 +2488,10 @@ impl EncodeCell {
                 // `LrRefState` (C's `av1_reset_loop_restoration`, called from
                 // `write_modes` per tile) on every call, so the per-tile loop is
                 // what makes the LR delta-coding references tile-local.
-                for (t, &(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols)) in
-                    tile_grid.iter().enumerate()
+                for (
+                    t,
+                    &(mi_row_start, mi_col_start, mi_row_end, mi_col_end, n_sb_rows, n_sb_cols),
+                ) in tile_grid.iter().enumerate()
                 {
                     env.tile_row_start = mi_row_start;
                     env.tile_col_start = mi_col_start;
@@ -3395,8 +3412,7 @@ mod tests {
         // (`td->deltaq_used |= (x->delta_qindex != 0)`, encodeframe.c:375,
         // OR-reduced at :1593): a probe that never moves off the base reports
         // false, which is what clears `delta_q_present` (bitstream.c:4286-4289).
-        let (per_sb, used) =
-            replay_sb_qindex_tile_order(&two_cols, 4, SB_MI, BASE, |_, _, _| BASE);
+        let (per_sb, used) = replay_sb_qindex_tile_order(&two_cols, 4, SB_MI, BASE, |_, _, _| BASE);
         assert_eq!(per_sb, vec![BASE; 8]);
         assert!(!used);
     }

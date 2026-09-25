@@ -64,7 +64,11 @@ struct Source {
 fn load(path: &str, w: usize, h: usize) -> Source {
     let buf = std::fs::read(path).expect("read .yuv");
     let (cw, ch) = (w / 2, h / 2);
-    assert_eq!(buf.len(), w * h + 2 * cw * ch, "{path}: not an {w}x{h} I420");
+    assert_eq!(
+        buf.len(),
+        w * h + 2 * cw * ch,
+        "{path}: not an {w}x{h} I420"
+    );
     let y = buf[..w * h].to_vec();
     let u = buf[w * h..w * h + cw * ch].to_vec();
     let v = buf[w * h + cw * ch..].to_vec();
@@ -86,7 +90,14 @@ fn load(path: &str, w: usize, h: usize) -> Source {
             );
         }
     }
-    Source { w, h, y, u, v, rgba }
+    Source {
+        w,
+        h,
+        y,
+        u,
+        v,
+        rgba,
+    }
 }
 
 fn enc_aom(s: &Source) -> usize {
@@ -97,13 +108,24 @@ fn enc_aom(s: &Source) -> usize {
     let mut cfg = KeyFrameConfig::allintra_speed0(s.w, s.h, 8, false, 1, 1, AOM_CQ);
     cfg.cpu_used = SPEED_AOM;
     cfg.enable_restoration = true;
-    encode_key_frame(KeyFramePlanes { y: &y, u: &u, v: &v }, &cfg)
-        .expect("zenav1-aom encode")
-        .len()
+    encode_key_frame(
+        KeyFramePlanes {
+            y: &y,
+            u: &u,
+            v: &v,
+        },
+        &cfg,
+    )
+    .expect("zenav1-aom encode")
+    .len()
 }
 
 fn enc_svt(s: &Source) -> usize {
-    let rc = RcConfig { mode: RcMode::Cqp, qp: SVT_QP, ..RcConfig::default() };
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp: SVT_QP,
+        ..RcConfig::default()
+    };
     let mut p = EncodePipeline::new(s.w as u32, s.h as u32, SPEED_SVT, rc, 0, 1)
         .with_bit_depth(8)
         .with_tile_rows_log2(0)
@@ -175,7 +197,11 @@ fn main() {
         std::process::exit(2);
     }
     let (path, w, h) = (a[1].clone(), a[2].parse().unwrap(), a[3].parse().unwrap());
-    let md_out = a.iter().position(|x| x == "--md").and_then(|i| a.get(i + 1)).cloned();
+    let md_out = a
+        .iter()
+        .position(|x| x == "--md")
+        .and_then(|i| a.get(i + 1))
+        .cloned();
 
     // Sizes first, printed OUTSIDE the benchmark: a speed chart with no rate
     // beside it invites exactly the misreading this harness exists to avoid.
@@ -200,11 +226,20 @@ fn main() {
             // Each arm is 50 ms - 3 s per call, so a handful of rounds is
             // already minutes. zenbench stops early once the estimate is
             // precise enough; this is the ceiling, not the target.
-            group.config().max_rounds(12).max_time(Duration::from_secs(900));
-            group.bench("zenav1-aom", |b| b.iter(|| zenbench::black_box(enc_aom(src))));
-            group.bench("zenav1-svt", |b| b.iter(|| zenbench::black_box(enc_svt(src))));
+            group
+                .config()
+                .max_rounds(12)
+                .max_time(Duration::from_secs(900));
+            group.bench("zenav1-aom", |b| {
+                b.iter(|| zenbench::black_box(enc_aom(src)))
+            });
+            group.bench("zenav1-svt", |b| {
+                b.iter(|| zenbench::black_box(enc_svt(src)))
+            });
             group.bench("ravif", |b| b.iter(|| zenbench::black_box(enc_ravif(src))));
-            group.bench("zenrav1e", |b| b.iter(|| zenbench::black_box(enc_rav1e(src))));
+            group.bench("zenrav1e", |b| {
+                b.iter(|| zenbench::black_box(enc_rav1e(src)))
+            });
         });
     });
 

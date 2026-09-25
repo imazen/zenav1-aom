@@ -20,14 +20,14 @@
 //! also leaves ta/tl zeroed (`if (enable_optimize_b)` gate, encodemb.c:817).
 //! The skip_txfm arm (dead in the KF intra RD path) is exercised explicitly.
 
+use aom_dsp::intra::cfl::{CFL_BUF_SQUARE, CflCtx};
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{CoeffCostTables, ext_tx_set_type};
 use aom_encode::encode_intra::{
     EncodeIntraYEnv, TrellisOptType, encode_intra_block_plane_y, is_trellis_used,
 };
 use aom_encode::tx_search::AV1_EXT_TX_USED_FLAG;
-use aom_dsp::intra::cfl::{CFL_BUF_SQUARE, CflCtx};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{CoeffCostTables, ext_tx_set_type};
 
 use crate::common::*;
 

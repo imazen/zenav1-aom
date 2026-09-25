@@ -2,8 +2,8 @@
 //! libaom: `get_txb_ctx` (neighbours -> txb_skip_ctx/dc_sign_ctx) and
 //! `av1_get_txb_entropy_context` (block -> packed neighbour context).
 
+use aom_dsp::txb::{get_txb_ctx, scan, txb_entropy_context, txb_high, txb_wide};
 use aom_sys_ref as c;
-use aom_dsp::txb::{get_txb_ctx, scan, txb_high, txb_wide, txb_entropy_context};
 
 struct Rng(u64);
 impl Rng {
@@ -73,7 +73,10 @@ fn txb_entropy_context_matches_c() {
                 }
                 let got = txb_entropy_context(&qcoeff, tx_size, tx_type, eob);
                 let want = c::ref_txb_entropy_context(&qcoeff, tx_size, tx_type, eob);
-                assert_eq!(got, want, "txb_entropy_context ts={tx_size} tt={tx_type} eob={eob}");
+                assert_eq!(
+                    got, want,
+                    "txb_entropy_context ts={tx_size} tt={tx_type} eob={eob}"
+                );
             }
         }
     }

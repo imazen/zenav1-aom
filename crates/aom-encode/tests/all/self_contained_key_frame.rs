@@ -954,10 +954,10 @@ fn sweep_cells() -> Vec<Cell> {
     // pin's bracket and is byte-identical now; they are the regression lock.
     for (w, h, cq, speed) in [
         (256usize, 256usize, 32i32, 7i32), // the pin cell
-        (320, 320, 32, 7),               // the pin's other s7 divergence
-        (192, 192, 32, 9),               // the pin's s9 divergence
-        (100, 60, 32, 9),                // the KB-44 "newly measured" s9 cell
-        (256, 256, 32, 8),               // the arm's mid-speed
+        (320, 320, 32, 7),                 // the pin's other s7 divergence
+        (192, 192, 32, 9),                 // the pin's s9 divergence
+        (100, 60, 32, 9),                  // the KB-44 "newly measured" s9 cell
+        (256, 256, 32, 8),                 // the arm's mid-speed
     ] {
         v.push(
             Cell::new(
@@ -1390,11 +1390,8 @@ fn mutated_sequence_header_is_caught() {
     // only its frame OBU, behind the original (unmutated) TD + sequence header.
     let mut mutated_cell_cfg = cell_cfg(cell);
     mutated_cell_cfg.cq_level = cell.cq + 20;
-    let other = encode_key_frame(
-        KeyFramePlanes::new(&y, &u, &v),
-        &mutated_cell_cfg,
-    )
-    .expect("the mutated config is inside the envelope");
+    let other = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &mutated_cell_cfg)
+        .expect("the mutated config is inside the envelope");
 
     let truth_obus = walk_obus(&truth);
     let other_obus = walk_obus(&other);
@@ -1499,10 +1496,7 @@ fn refuses_configurations_it_has_no_gate_for() {
     let cy = vec![128u16; 64 * 64];
     let cuv = vec![128u16; 64 * 32];
     assert!(matches!(
-        encode_key_frame(
-            KeyFramePlanes::new(&cy, &cuv, &cuv),
-            &bad_ss
-        ),
+        encode_key_frame(KeyFramePlanes::new(&cy, &cuv, &cuv), &bad_ss),
         Err(KeyFrameError::Unsupported(_))
     ));
 
@@ -1520,10 +1514,7 @@ fn refuses_configurations_it_has_no_gate_for() {
                 .collect();
             let uv = vec![128u16; w.div_ceil(2) * h.div_ceil(2)];
             let r = std::panic::catch_unwind(|| {
-                encode_key_frame(
-                    KeyFramePlanes::new(&y, &uv, &uv),
-                    &cfg,
-                )
+                encode_key_frame(KeyFramePlanes::new(&y, &uv, &uv), &cfg)
             });
             assert!(
                 r.is_ok(),
@@ -1542,11 +1533,7 @@ fn refuses_configurations_it_has_no_gate_for() {
     let wide = KeyFrameConfig::allintra_speed0(4160, 64, 8, true, 1, 1, 32);
     let wide_y = vec![128u16; 4160 * 64];
     assert!(
-        encode_key_frame(
-            KeyFramePlanes::new(&wide_y, &[], &[]),
-            &wide
-        )
-        .is_ok(),
+        encode_key_frame(KeyFramePlanes::new(&wide_y, &[], &[]), &wide).is_ok(),
         "a mandatory-tile-split frame must encode"
     );
 }
@@ -2102,10 +2089,7 @@ fn coded_lossless_reconstructs_the_source_exactly() {
         // zenavif#45's own shape: a panic out of a library entry point is a
         // defect regardless of the bytes it would have produced.
         let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            encode_key_frame(
-                KeyFramePlanes::new(&y, &u, &v),
-                &cell_cfg(cell),
-            )
+            encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cell_cfg(cell))
         }))
         .unwrap_or_else(|_| {
             panic!(
@@ -2237,8 +2221,8 @@ fn screen_content_tools_byte_match_real_aomenc() {
                         // speed-dependent, so the matrix asserts at least one
                         // cq0 cell fires (below) rather than every cell.
                         let c_ibc_only = c::ref_encode_av1_kf_screen_content(
-                            &y, &u, &v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0,
-                            false, false, true,
+                            &y, &u, &v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0, false,
+                            false, true,
                         );
                         if c_ibc_only != c_off {
                             cq0_ibc_engaged.push(label.clone());
@@ -2250,11 +2234,8 @@ fn screen_content_tools_byte_match_real_aomenc() {
                     cfg.enable_restoration = true;
                     cfg.enable_palette = true;
                     cfg.enable_intrabc = true;
-                    let port = encode_key_frame(
-                        KeyFramePlanes::new(&y, &u, &v),
-                        &cfg,
-                    )
-                    .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
+                    let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
+                        .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
 
                     // CONFORMANCE, not just parity. A screen frame sets
                     // `allow_intrabc`, which makes `uncompressed_header` SKIP
@@ -2300,11 +2281,8 @@ fn screen_content_tools_byte_match_real_aomenc() {
                     let mut cfg_off = cfg.clone();
                     cfg_off.enable_palette = false;
                     cfg_off.enable_intrabc = false;
-                    let port_off = encode_key_frame(
-                        KeyFramePlanes::new(&y, &u, &v),
-                        &cfg_off,
-                    )
-                    .unwrap_or_else(|e| panic!("{label}: tools-off encode refused: {e}"));
+                    let port_off = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg_off)
+                        .unwrap_or_else(|e| panic!("{label}: tools-off encode refused: {e}"));
                     if port_off != c_off {
                         open.push(format!(
                             "{label}: tools-OFF port {} bytes vs C {} bytes",
@@ -2325,7 +2303,10 @@ fn screen_content_tools_byte_match_real_aomenc() {
         "no cq0 cell engaged IntraBC — the lossless IntraBC arm is unwitnessed"
     );
     println!("cq0 IntraBC engaged on: {}", cq0_ibc_engaged.join(", "));
-    println!("screen-tools parity: {}/{checked} byte-exact", checked - open.len());
+    println!(
+        "screen-tools parity: {}/{checked} byte-exact",
+        checked - open.len()
+    );
     for o in &open {
         println!("  {o}");
     }

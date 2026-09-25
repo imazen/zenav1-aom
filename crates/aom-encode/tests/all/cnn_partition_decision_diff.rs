@@ -160,7 +160,11 @@ fn predict_decision_matches_c() {
     eprintln!(
         "predict_decision_matches_c: {n} cases, bit-exact logits + flags vs {} engine; \
          {n_prune} of them prune",
-        if simd_tier { "dispatched-AVX2" } else { "C-scalar" },
+        if simd_tier {
+            "dispatched-AVX2"
+        } else {
+            "C-scalar"
+        },
     );
     assert!(n_prune > 0, "sweep must exercise the pruning path");
 }

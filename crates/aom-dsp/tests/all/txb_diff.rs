@@ -9,11 +9,11 @@
 //! from txb_common.h and will be end-to-end validated by the future
 //! `av1_write_coeffs_txb` full diff).
 
-use aom_sys_ref as c;
 use aom_dsp::txb::{
-    get_eob_pos_token, get_nz_map_contexts, nz_map_ctx_offset, txb_high, txb_init_levels,
-    txb_wide, TX_PAD_2D, TX_TYPE_TO_CLASS,
+    get_eob_pos_token, get_nz_map_contexts, nz_map_ctx_offset, txb_high, txb_init_levels, txb_wide,
+    TX_PAD_2D, TX_TYPE_TO_CLASS,
 };
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -33,11 +33,15 @@ fn gen_coeff(rng: &mut Rng) -> i32 {
     let r = rng.next();
     let mag = match r % 10 {
         0..=5 => 0,
-        6..=7 => (r >> 8) as i32 % 4,          // 0..3 — the ctx-sensitive range
-        8 => (r >> 8) as i32 % 200,            // mid magnitudes (clamp boundary)
+        6..=7 => (r >> 8) as i32 % 4, // 0..3 — the ctx-sensitive range
+        8 => (r >> 8) as i32 % 200,   // mid magnitudes (clamp boundary)
         _ => 128 + ((r >> 8) as i32 % 100_000), // clamps to 127 in the level map
     };
-    if (r >> 40) & 1 == 1 { -mag } else { mag }
+    if (r >> 40) & 1 == 1 {
+        -mag
+    } else {
+        mag
+    }
 }
 
 #[test]
@@ -53,7 +57,11 @@ fn nz_ctx_offset_tables_match_c() {
 #[test]
 fn eob_pos_token_matches_c() {
     for eob in 1..=1024i32 {
-        assert_eq!(get_eob_pos_token(eob), c::ref_eob_pos_token(eob), "eob={eob}");
+        assert_eq!(
+            get_eob_pos_token(eob),
+            c::ref_eob_pos_token(eob),
+            "eob={eob}"
+        );
     }
 }
 

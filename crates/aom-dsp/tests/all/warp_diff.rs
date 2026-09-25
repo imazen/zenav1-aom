@@ -18,7 +18,9 @@
 //! that lives in the decoder driver and is locked by the frame-MD5 / census-match
 //! gate there.
 
-use aom_dsp::inter::warp::{find_projection, get_shear_params, warp_affine, WarpedMotionParams, AFFINE};
+use aom_dsp::inter::warp::{
+    find_projection, get_shear_params, warp_affine, WarpedMotionParams, AFFINE,
+};
 use aom_sys_ref::{ref_find_projection, ref_get_shear_params, ref_warp_affine};
 
 struct Rng(u64);

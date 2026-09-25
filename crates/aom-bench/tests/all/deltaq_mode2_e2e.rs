@@ -61,8 +61,10 @@ fn run_cell(cell: &EncodeCell) -> Result<usize, String> {
 /// shapes. Any divergence is a regression.
 #[test]
 fn deltaq_mode2_perceptual_wavelet_e2e() {
-    let mut cells: Vec<EncodeCell> =
-        [12, 20, 32, 48, 63].into_iter().map(|cq| cell(192, 192, cq)).collect();
+    let mut cells: Vec<EncodeCell> = [12, 20, 32, 48, 63]
+        .into_iter()
+        .map(|cq| cell(192, 192, cq))
+        .collect();
     // Non-square shapes exercise the running-base delta chain across a
     // different SB raster.
     cells.push(cell(192, 128, 32));

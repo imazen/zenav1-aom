@@ -12,11 +12,11 @@
 //!   selectors, and the quantizer kernel together for a real block, and asserts
 //!   the forward/inverse selectors agree on the QM-vs-flat (tx_type) gating.
 
-use aom_encode::{QuantKind, QuantParams, xform_quant};
 use aom_dsp::quant::{aom_get_qmlevel_allintra, qmatrix};
-use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
 use aom_dsp::txb::{iscan, scan, txb_high, txb_wide};
+use aom_encode::{QuantKind, QuantParams, xform_quant};
+use aom_sys_ref as c;
 #[cfg(target_arch = "x86_64")]
 use archmage::SimdToken;
 

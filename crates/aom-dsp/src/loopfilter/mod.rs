@@ -6,7 +6,6 @@
 //! and 1 for vertical filters; the per-position step is the opposite.
 //! Validated byte-for-byte against C for random pixel windows + thresholds.
 
-
 pub mod frame;
 pub mod highbd;
 mod simd;
@@ -46,7 +45,18 @@ fn filter_mask2(limit: u8, blimit: u8, p1: u8, p0: u8, q0: u8, q1: u8) -> i8 {
 
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn filter_mask(limit: u8, blimit: u8, p3: u8, p2: u8, p1: u8, p0: u8, q0: u8, q1: u8, q2: u8, q3: u8) -> i8 {
+fn filter_mask(
+    limit: u8,
+    blimit: u8,
+    p3: u8,
+    p2: u8,
+    p1: u8,
+    p0: u8,
+    q0: u8,
+    q1: u8,
+    q2: u8,
+    q3: u8,
+) -> i8 {
     let l = limit as i32;
     let mut mask = 0i8;
     mask |= -((iabs(p3, p2) > l) as i8);
@@ -61,7 +71,16 @@ fn filter_mask(limit: u8, blimit: u8, p3: u8, p2: u8, p1: u8, p0: u8, q0: u8, q1
 
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn filter_mask3_chroma(limit: u8, blimit: u8, p2: u8, p1: u8, p0: u8, q0: u8, q1: u8, q2: u8) -> i8 {
+fn filter_mask3_chroma(
+    limit: u8,
+    blimit: u8,
+    p2: u8,
+    p1: u8,
+    p0: u8,
+    q0: u8,
+    q1: u8,
+    q2: u8,
+) -> i8 {
     let l = limit as i32;
     let mut mask = 0i8;
     mask |= -((iabs(p2, p1) > l) as i8);
@@ -98,7 +117,15 @@ fn flat_mask4(thresh: u8, p3: u8, p2: u8, p1: u8, p0: u8, q0: u8, q1: u8, q2: u8
 }
 
 /// `filter4`, operating on buffer indices for op1/op0/oq0/oq1.
-fn filter4(buf: &mut [u8], i_op1: usize, i_op0: usize, i_oq0: usize, i_oq1: usize, mask: i8, thresh: u8) {
+fn filter4(
+    buf: &mut [u8],
+    i_op1: usize,
+    i_op0: usize,
+    i_oq0: usize,
+    i_oq1: usize,
+    mask: i8,
+    thresh: u8,
+) {
     let (op1, op0, oq0, oq1) = (buf[i_op1], buf[i_op0], buf[i_oq0], buf[i_oq1]);
     let ps1 = (op1 ^ 0x80) as i8;
     let ps0 = (op0 ^ 0x80) as i8;
@@ -137,8 +164,18 @@ fn filter6(buf: &mut [u8], idx: [usize; 6], mask: i8, thresh: u8, flat: i8) {
 fn filter8(buf: &mut [u8], idx: [usize; 8], mask: i8, thresh: u8, flat: i8) {
     if flat != 0 && mask != 0 {
         let [i3, i2, i1, i0, j0, j1, j2, j3] = idx;
-        let (p3, p2, p1, p0) = (buf[i3] as i32, buf[i2] as i32, buf[i1] as i32, buf[i0] as i32);
-        let (q0, q1, q2, q3) = (buf[j0] as i32, buf[j1] as i32, buf[j2] as i32, buf[j3] as i32);
+        let (p3, p2, p1, p0) = (
+            buf[i3] as i32,
+            buf[i2] as i32,
+            buf[i1] as i32,
+            buf[i0] as i32,
+        );
+        let (q0, q1, q2, q3) = (
+            buf[j0] as i32,
+            buf[j1] as i32,
+            buf[j2] as i32,
+            buf[j3] as i32,
+        );
         buf[i2] = rpo2(p3 + p3 + p3 + 2 * p2 + p1 + p0 + q0, 3);
         buf[i1] = rpo2(p3 + p3 + p2 + 2 * p1 + p0 + q0 + q1, 3);
         buf[i0] = rpo2(p3 + p2 + p1 + 2 * p0 + q0 + q1 + q2, 3);
@@ -156,19 +193,51 @@ fn filter14(buf: &mut [u8], idx: [usize; 14], mask: i8, thresh: u8, flat: i8, fl
         let (p6, p5, p4, p3, p2, p1, p0) = (v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
         let (q0, q1, q2, q3, q4, q5, q6) = (v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
         buf[idx[1]] = rpo2(p6 * 7 + p5 * 2 + p4 * 2 + p3 + p2 + p1 + p0 + q0, 4);
-        buf[idx[2]] = rpo2(p6 * 5 + p5 * 2 + p4 * 2 + p3 * 2 + p2 + p1 + p0 + q0 + q1, 4);
-        buf[idx[3]] = rpo2(p6 * 4 + p5 + p4 * 2 + p3 * 2 + p2 * 2 + p1 + p0 + q0 + q1 + q2, 4);
-        buf[idx[4]] = rpo2(p6 * 3 + p5 + p4 + p3 * 2 + p2 * 2 + p1 * 2 + p0 + q0 + q1 + q2 + q3, 4);
-        buf[idx[5]] = rpo2(p6 * 2 + p5 + p4 + p3 + p2 * 2 + p1 * 2 + p0 * 2 + q0 + q1 + q2 + q3 + q4, 4);
-        buf[idx[6]] = rpo2(p6 + p5 + p4 + p3 + p2 + p1 * 2 + p0 * 2 + q0 * 2 + q1 + q2 + q3 + q4 + q5, 4);
-        buf[idx[7]] = rpo2(p5 + p4 + p3 + p2 + p1 + p0 * 2 + q0 * 2 + q1 * 2 + q2 + q3 + q4 + q5 + q6, 4);
-        buf[idx[8]] = rpo2(p4 + p3 + p2 + p1 + p0 + q0 * 2 + q1 * 2 + q2 * 2 + q3 + q4 + q5 + q6 * 2, 4);
-        buf[idx[9]] = rpo2(p3 + p2 + p1 + p0 + q0 + q1 * 2 + q2 * 2 + q3 * 2 + q4 + q5 + q6 * 3, 4);
-        buf[idx[10]] = rpo2(p2 + p1 + p0 + q0 + q1 + q2 * 2 + q3 * 2 + q4 * 2 + q5 + q6 * 4, 4);
-        buf[idx[11]] = rpo2(p1 + p0 + q0 + q1 + q2 + q3 * 2 + q4 * 2 + q5 * 2 + q6 * 5, 4);
+        buf[idx[2]] = rpo2(
+            p6 * 5 + p5 * 2 + p4 * 2 + p3 * 2 + p2 + p1 + p0 + q0 + q1,
+            4,
+        );
+        buf[idx[3]] = rpo2(
+            p6 * 4 + p5 + p4 * 2 + p3 * 2 + p2 * 2 + p1 + p0 + q0 + q1 + q2,
+            4,
+        );
+        buf[idx[4]] = rpo2(
+            p6 * 3 + p5 + p4 + p3 * 2 + p2 * 2 + p1 * 2 + p0 + q0 + q1 + q2 + q3,
+            4,
+        );
+        buf[idx[5]] = rpo2(
+            p6 * 2 + p5 + p4 + p3 + p2 * 2 + p1 * 2 + p0 * 2 + q0 + q1 + q2 + q3 + q4,
+            4,
+        );
+        buf[idx[6]] = rpo2(
+            p6 + p5 + p4 + p3 + p2 + p1 * 2 + p0 * 2 + q0 * 2 + q1 + q2 + q3 + q4 + q5,
+            4,
+        );
+        buf[idx[7]] = rpo2(
+            p5 + p4 + p3 + p2 + p1 + p0 * 2 + q0 * 2 + q1 * 2 + q2 + q3 + q4 + q5 + q6,
+            4,
+        );
+        buf[idx[8]] = rpo2(
+            p4 + p3 + p2 + p1 + p0 + q0 * 2 + q1 * 2 + q2 * 2 + q3 + q4 + q5 + q6 * 2,
+            4,
+        );
+        buf[idx[9]] = rpo2(
+            p3 + p2 + p1 + p0 + q0 + q1 * 2 + q2 * 2 + q3 * 2 + q4 + q5 + q6 * 3,
+            4,
+        );
+        buf[idx[10]] = rpo2(
+            p2 + p1 + p0 + q0 + q1 + q2 * 2 + q3 * 2 + q4 * 2 + q5 + q6 * 4,
+            4,
+        );
+        buf[idx[11]] = rpo2(
+            p1 + p0 + q0 + q1 + q2 + q3 * 2 + q4 * 2 + q5 * 2 + q6 * 5,
+            4,
+        );
         buf[idx[12]] = rpo2(p0 + q0 + q1 + q2 + q3 + q4 * 2 + q5 * 2 + q6 * 7, 4);
     } else {
-        let idx8 = [idx[3], idx[4], idx[5], idx[6], idx[7], idx[8], idx[9], idx[10]];
+        let idx8 = [
+            idx[3], idx[4], idx[5], idx[6], idx[7], idx[8], idx[9], idx[10],
+        ];
         filter8(buf, idx8, mask, thresh, flat);
     }
 }
@@ -182,45 +251,101 @@ fn idx(center: isize, k: isize, ts: isize) -> usize {
     (center + k * ts) as usize
 }
 
-fn lpf_4(buf: &mut [u8], mut center: isize, ts: isize, step: isize, blimit: u8, limit: u8, thresh: u8) {
+fn lpf_4(
+    buf: &mut [u8],
+    mut center: isize,
+    ts: isize,
+    step: isize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     for _ in 0..4 {
         let p1 = buf[idx(center, -2, ts)];
         let p0 = buf[idx(center, -1, ts)];
         let q0 = buf[idx(center, 0, ts)];
         let q1 = buf[idx(center, 1, ts)];
         let mask = filter_mask2(limit, blimit, p1, p0, q0, q1);
-        filter4(buf, idx(center, -2, ts), idx(center, -1, ts), idx(center, 0, ts), idx(center, 1, ts), mask, thresh);
+        filter4(
+            buf,
+            idx(center, -2, ts),
+            idx(center, -1, ts),
+            idx(center, 0, ts),
+            idx(center, 1, ts),
+            mask,
+            thresh,
+        );
         center += step;
     }
 }
 
-fn lpf_6(buf: &mut [u8], mut center: isize, ts: isize, step: isize, blimit: u8, limit: u8, thresh: u8) {
+fn lpf_6(
+    buf: &mut [u8],
+    mut center: isize,
+    ts: isize,
+    step: isize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     for _ in 0..4 {
         let g = |k| buf[idx(center, k, ts)];
         let (p2, p1, p0) = (g(-3), g(-2), g(-1));
         let (q0, q1, q2) = (g(0), g(1), g(2));
         let mask = filter_mask3_chroma(limit, blimit, p2, p1, p0, q0, q1, q2);
         let flat = flat_mask3_chroma(1, p2, p1, p0, q0, q1, q2);
-        let ix = [idx(center, -3, ts), idx(center, -2, ts), idx(center, -1, ts), idx(center, 0, ts), idx(center, 1, ts), idx(center, 2, ts)];
+        let ix = [
+            idx(center, -3, ts),
+            idx(center, -2, ts),
+            idx(center, -1, ts),
+            idx(center, 0, ts),
+            idx(center, 1, ts),
+            idx(center, 2, ts),
+        ];
         filter6(buf, ix, mask, thresh, flat);
         center += step;
     }
 }
 
-fn lpf_8(buf: &mut [u8], mut center: isize, ts: isize, step: isize, blimit: u8, limit: u8, thresh: u8) {
+fn lpf_8(
+    buf: &mut [u8],
+    mut center: isize,
+    ts: isize,
+    step: isize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     for _ in 0..4 {
         let g = |k| buf[idx(center, k, ts)];
         let (p3, p2, p1, p0) = (g(-4), g(-3), g(-2), g(-1));
         let (q0, q1, q2, q3) = (g(0), g(1), g(2), g(3));
         let mask = filter_mask(limit, blimit, p3, p2, p1, p0, q0, q1, q2, q3);
         let flat = flat_mask4(1, p3, p2, p1, p0, q0, q1, q2, q3);
-        let ix = [idx(center, -4, ts), idx(center, -3, ts), idx(center, -2, ts), idx(center, -1, ts), idx(center, 0, ts), idx(center, 1, ts), idx(center, 2, ts), idx(center, 3, ts)];
+        let ix = [
+            idx(center, -4, ts),
+            idx(center, -3, ts),
+            idx(center, -2, ts),
+            idx(center, -1, ts),
+            idx(center, 0, ts),
+            idx(center, 1, ts),
+            idx(center, 2, ts),
+            idx(center, 3, ts),
+        ];
         filter8(buf, ix, mask, thresh, flat);
         center += step;
     }
 }
 
-fn lpf_14(buf: &mut [u8], mut center: isize, ts: isize, step: isize, blimit: u8, limit: u8, thresh: u8) {
+fn lpf_14(
+    buf: &mut [u8],
+    mut center: isize,
+    ts: isize,
+    step: isize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     for _ in 0..4 {
         let g = |k| buf[idx(center, k, ts)];
         let (p6, p5, p4, p3, p2, p1, p0) = (g(-7), g(-6), g(-5), g(-4), g(-3), g(-2), g(-1));
@@ -241,7 +366,16 @@ fn lpf_14(buf: &mut [u8], mut center: isize, ts: isize, step: isize, blimit: u8,
 /// used as the SIMD kernel's `_scalar` tier ([`simd::lpf_u8`]) and by the
 /// pure-scalar entries. `ts` = tap stride, `step` = position advance.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn lpf_scalar(width: u32, buf: &mut [u8], center: usize, ts: isize, step: isize, blimit: u8, limit: u8, thresh: u8) {
+pub(crate) fn lpf_scalar(
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    ts: isize,
+    step: isize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     let c = center as isize;
     match width {
         4 => lpf_4(buf, c, ts, step, blimit, limit, thresh),
@@ -257,25 +391,57 @@ pub(crate) fn lpf_scalar(width: u32, buf: &mut [u8], center: usize, ts: isize, s
 /// `p` is the pitch. `center` is the index of `s[0]` in `buf`. Horizontal
 /// filters: taps stride by pitch, positions advance by 1. SIMD-dispatched
 /// (bit-identical to [`lpf_scalar`] at every token tier — `lpf_lowbd_simd_diff`).
-pub fn horizontal(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
+pub fn horizontal(
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    p: usize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     simd::lpf_u8(width, buf, center, p as isize, 1, blimit, limit, thresh, 1);
 }
 
 /// Vertical filters: taps stride by 1, positions advance by pitch.
 /// SIMD-dispatched.
-pub fn vertical(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
+pub fn vertical(
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    p: usize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     simd::lpf_u8(width, buf, center, 1, p as isize, blimit, limit, thresh, 1);
 }
 
 /// Pure-scalar lowbd horizontal deblock (never SIMD-dispatched) — the fixed
 /// reference for the SIMD-vs-scalar differential.
-pub fn horizontal_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
+pub fn horizontal_scalar(
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    p: usize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     lpf_scalar(width, buf, center, p as isize, 1, blimit, limit, thresh);
 }
 
 /// Pure-scalar lowbd vertical deblock (never SIMD-dispatched) — the fixed
 /// reference for the SIMD-vs-scalar differential.
-pub fn vertical_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8) {
+pub fn vertical_scalar(
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    p: usize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+) {
     lpf_scalar(width, buf, center, 1, p as isize, blimit, limit, thresh);
 }
 
@@ -285,13 +451,35 @@ pub fn vertical_scalar(width: u32, buf: &mut [u8], center: usize, p: usize, blim
 /// this call's limits. Per-segment arithmetic is identical to `nseg`
 /// separate [`horizontal`] calls, so batching cannot move a pixel.
 #[allow(clippy::too_many_arguments)]
-pub fn horizontal_n(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8, nseg: usize) {
-    simd::lpf_u8(width, buf, center, p as isize, 1, blimit, limit, thresh, nseg);
+pub fn horizontal_n(
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    p: usize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+    nseg: usize,
+) {
+    simd::lpf_u8(
+        width, buf, center, p as isize, 1, blimit, limit, thresh, nseg,
+    );
 }
 
 /// Lowbd vertical deblock covering `nseg` adjacent 4-position segments —
 /// the batched twin of [`vertical`]; segments at `center + s*4*p`.
 #[allow(clippy::too_many_arguments)]
-pub fn vertical_n(width: u32, buf: &mut [u8], center: usize, p: usize, blimit: u8, limit: u8, thresh: u8, nseg: usize) {
-    simd::lpf_u8(width, buf, center, 1, p as isize, blimit, limit, thresh, nseg);
+pub fn vertical_n(
+    width: u32,
+    buf: &mut [u8],
+    center: usize,
+    p: usize,
+    blimit: u8,
+    limit: u8,
+    thresh: u8,
+    nseg: usize,
+) {
+    simd::lpf_u8(
+        width, buf, center, 1, p as isize, blimit, limit, thresh, nseg,
+    );
 }

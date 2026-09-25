@@ -71,7 +71,6 @@ fn rpot_u32(v: u32, n: u32) -> u32 {
     (v + ((1u32 << n) >> 1)) >> n
 }
 
-
 /// Build the two SGR integral images over the `[-3, +3)`-extended source —
 /// `integral_images_highbd` (selfguided_sse4.c): `ii_sum[y][x]` is the sum of
 /// `src[0..y][0..x]`, `ii_sq[y][x]` the sum of squares. Row 0 and column 0
@@ -236,9 +235,7 @@ fn integral_image<P: crate::restore::pick::LrPixel>(
     ii_stride: usize,
 ) {
     archmage::incant!(
-        integral_image_impl(
-            src, src_off, src_stride, width, height, ii_sq, ii_sum, ii_stride
-        ),
+        integral_image_impl(src, src_off, src_stride, width, height, ii_sq, ii_sum, ii_stride),
         [v3, scalar]
     );
 }
@@ -606,8 +603,8 @@ fn calc_ab(
 ) {
     archmage::incant!(
         calc_ab_impl(
-            ii_sq, ii_sum, ii_stride, y0, ystep, rows, x0, count, r, n, s, one_by_x,
-            shift_a, shift_b, a_buf, b_buf, ab_off, abstep
+            ii_sq, ii_sum, ii_stride, y0, ystep, rows, x0, count, r, n, s, one_by_x, shift_a,
+            shift_b, a_buf, b_buf, ab_off, abstep
         ),
         [v3, neon, wasm128, scalar]
     )
@@ -848,18 +845,14 @@ fn sgr_final_full_impl<P: crate::restore::pick::LrPixel>(
                 + i32x8::from_slice(token, &b_d[j..j + 8])
                 + i32x8::from_slice(token, &b_d[j + 2..j + 10]);
             let vb = (fb + tb) * c4 - tb;
-            let src = i32x8::from_array(
-                token,
-                core::array::from_fn(|t| drow[j + t].to_i32()),
-            );
+            let src = i32x8::from_array(token, core::array::from_fn(|t| drow[j + t].to_i32()));
             let w = (va * src + vb + rnd).shr_arithmetic_const::<9>();
             w.store((&mut dout[j..j + 8]).try_into().unwrap());
             j += 8;
         }
         while j < width {
             let k = k0 + j;
-            let v = sgr_final_px(a, k, bs, 0) * drow[j].to_i32()
-                + sgr_final_px(b, k, bs, 0);
+            let v = sgr_final_px(a, k, bs, 0) * drow[j].to_i32() + sgr_final_px(b, k, bs, 0);
             dout[j] = rpot_i32(v, SH);
             j += 1;
         }
@@ -886,8 +879,7 @@ fn sgr_final_full_impl_scalar<P: crate::restore::pick::LrPixel>(
     for i in 0..height {
         for j in 0..width {
             let k = org + i * bs + j;
-            let v = sgr_final_px(a, k, bs, 0)
-                * dgd[dgd_origin + i * dgd_stride + j].to_i32()
+            let v = sgr_final_px(a, k, bs, 0) * dgd[dgd_origin + i * dgd_stride + j].to_i32()
                 + sgr_final_px(b, k, bs, 0);
             dst[i * dst_stride + j] = rpot_i32(v, SH);
         }
@@ -953,18 +945,14 @@ fn sgr_final_fast_impl<P: crate::restore::pick::LrPixel>(
                     + i32x8::from_slice(token, &b_u[j + 2..j + 10])
                     + i32x8::from_slice(token, &b_d[j + 2..j + 10]);
                 let vb = (fb + sb) * c5 + sb;
-                let src = i32x8::from_array(
-                    token,
-                    core::array::from_fn(|t| drow[j + t].to_i32()),
-                );
+                let src = i32x8::from_array(token, core::array::from_fn(|t| drow[j + t].to_i32()));
                 let w = (va * src + vb + rnd_even).shr_arithmetic_const::<9>();
                 w.store((&mut dout[j..j + 8]).try_into().unwrap());
                 j += 8;
             }
             while j < width {
                 let k = k0 + j;
-                let v = sgr_final_px(a, k, bs, 1) * drow[j].to_i32()
-                    + sgr_final_px(b, k, bs, 1);
+                let v = sgr_final_px(a, k, bs, 1) * drow[j].to_i32() + sgr_final_px(b, k, bs, 1);
                 dout[j] = rpot_i32(v, SH_EVEN);
                 j += 1;
             }
@@ -979,18 +967,14 @@ fn sgr_final_fast_impl<P: crate::restore::pick::LrPixel>(
                 let fb = i32x8::from_slice(token, &b_c[j..j + 8])
                     + i32x8::from_slice(token, &b_c[j + 2..j + 10]);
                 let vb = (fb + sb) * c5 + sb;
-                let src = i32x8::from_array(
-                    token,
-                    core::array::from_fn(|t| drow[j + t].to_i32()),
-                );
+                let src = i32x8::from_array(token, core::array::from_fn(|t| drow[j + t].to_i32()));
                 let w = (va * src + vb + rnd_odd).shr_arithmetic_const::<8>();
                 w.store((&mut dout[j..j + 8]).try_into().unwrap());
                 j += 8;
             }
             while j < width {
                 let k = k0 + j;
-                let v = sgr_final_px(a, k, bs, 2) * drow[j].to_i32()
-                    + sgr_final_px(b, k, bs, 2);
+                let v = sgr_final_px(a, k, bs, 2) * drow[j].to_i32() + sgr_final_px(b, k, bs, 2);
                 dout[j] = rpot_i32(v, SH_ODD);
                 j += 1;
             }
@@ -1023,15 +1007,15 @@ fn sgr_final_fast_impl_scalar<P: crate::restore::pick::LrPixel>(
         if i & 1 == 0 {
             for j in 0..width {
                 let k = k_row + j;
-                let v = sgr_final_px(a, k, bs, 1) * dgd[l_row + j].to_i32()
-                    + sgr_final_px(b, k, bs, 1);
+                let v =
+                    sgr_final_px(a, k, bs, 1) * dgd[l_row + j].to_i32() + sgr_final_px(b, k, bs, 1);
                 dst[m_row + j] = rpot_i32(v, SH_EVEN);
             }
         } else {
             for j in 0..width {
                 let k = k_row + j;
-                let v = sgr_final_px(a, k, bs, 2) * dgd[l_row + j].to_i32()
-                    + sgr_final_px(b, k, bs, 2);
+                let v =
+                    sgr_final_px(a, k, bs, 2) * dgd[l_row + j].to_i32() + sgr_final_px(b, k, bs, 2);
                 dst[m_row + j] = rpot_i32(v, SH_ODD);
             }
         }
@@ -1132,36 +1116,14 @@ pub fn selfguided_restoration<P: crate::restore::pick::LrPixel>(
     debug_assert!(!(rads[0] == 0 && rads[1] == 0));
     if rads[0] > 0 {
         selfguided_fast(
-            dgd,
-            dgd_off,
-            dgd_stride,
-            &s.ii[0],
-            &s.ii[1],
-            ii_stride,
-            width,
-            height,
-            flt0,
-            flt_stride,
-            bit_depth,
-            ep,
-            &mut s.ab,
+            dgd, dgd_off, dgd_stride, &s.ii[0], &s.ii[1], ii_stride, width, height, flt0,
+            flt_stride, bit_depth, ep, &mut s.ab,
         );
     }
     if rads[1] > 0 {
         selfguided_full(
-            dgd,
-            dgd_off,
-            dgd_stride,
-            &s.ii[0],
-            &s.ii[1],
-            ii_stride,
-            width,
-            height,
-            flt1,
-            flt_stride,
-            bit_depth,
-            ep,
-            &mut s.ab,
+            dgd, dgd_off, dgd_stride, &s.ii[0], &s.ii[1], ii_stride, width, height, flt1,
+            flt_stride, bit_depth, ep, &mut s.ab,
         );
     }
     SGR_TLS.with(|c| *c.borrow_mut() = s);

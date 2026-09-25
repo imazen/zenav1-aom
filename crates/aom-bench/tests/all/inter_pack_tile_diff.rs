@@ -38,7 +38,7 @@
 //! unit-tested) nor multi-block CDF adaptation — both are the next rungs.
 
 use aom_bench::{EncodeCell, MultiFrameEncodeCell};
-use aom_dsp::entropy::dv_ref::{find_inter_mv_refs, DvNbr, DvTileBounds};
+use aom_dsp::entropy::dv_ref::{DvNbr, DvTileBounds, find_inter_mv_refs};
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
@@ -46,12 +46,12 @@ use aom_dsp::entropy::header::{
 };
 use aom_dsp::entropy::header::{read_sequence_header_obu, read_uncompressed_header};
 use aom_dsp::entropy::partition::{
-    get_intra_inter_context, partition_plane_context, single_ref_p1_context, skip_txfm_context,
-    write_partition, KfFrameContext,
+    KfFrameContext, get_intra_inter_context, partition_plane_context, single_ref_p1_context,
+    skip_txfm_context, write_partition,
 };
 use aom_dsp::entropy::rb::ReadBitBuffer;
-use aom_encode::inter_costs::{InterFrameCdfs, SingleRefCtx, LAST_FRAME, NEARESTMV};
-use aom_encode::inter_pack::{write_inter_leaf_mode_info, InterLeafCtx, InterLeafSyntax};
+use aom_encode::inter_costs::{InterFrameCdfs, LAST_FRAME, NEARESTMV, SingleRefCtx};
+use aom_encode::inter_pack::{InterLeafCtx, InterLeafSyntax, write_inter_leaf_mode_info};
 
 const KF_REF_DELTAS: [i8; 8] = [1, 0, 0, 0, -1, 0, -1, -1];
 const KF_MODE_DELTAS: [i8; 2] = [0, 0];
@@ -69,7 +69,11 @@ fn base(label: &str, w: usize, h: usize, mono: bool, cq: i32) -> EncodeCell {
             y[r * w + c] = content(r, c);
         }
     }
-    let (cw, ch) = if mono { (0, 0) } else { ((w + 1) >> 1, (h + 1) >> 1) };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + 1) >> 1, (h + 1) >> 1)
+    };
     let cont_uv = |r: usize, c: usize| -> u16 { (110 + ((r * 2 + c) % 40)) as u16 };
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];
@@ -163,7 +167,9 @@ fn tile_limits(mi_cols: i32, mi_rows: i32, mib_size_log2: u32) -> TileInfoHeader
 /// Parse the real 2-frame stream: return frame 1's OBU payload and the exact
 /// bit-length of its frame header, so the tile data can be split off without
 /// hardcoding an offset.
-fn frame1_payload_and_header_bits(stream: &[u8]) -> (Vec<u8>, usize, FrameHeaderObu, FrameHeaderObu) {
+fn frame1_payload_and_header_bits(
+    stream: &[u8],
+) -> (Vec<u8>, usize, FrameHeaderObu, FrameHeaderObu) {
     let obus = walk(stream);
     let seq_payload = obus
         .iter()
@@ -304,7 +310,13 @@ fn port_encode_p_tile_with_mode(
     // --- partition symbol: PARTITION_NONE at the 64x64 SB root ---
     let above_ctx = [0i8; 64];
     let left_ctx = [0i8; 64];
-    let pctx = partition_plane_context(&above_ctx, &left_ctx, mi_row as usize, mi_col as usize, bsize);
+    let pctx = partition_plane_context(
+        &above_ctx,
+        &left_ctx,
+        mi_row as usize,
+        mi_col as usize,
+        bsize,
+    );
     let cdf_len = aom_dsp::entropy::partition::partition_cdf_length(bsize);
     write_partition(
         &mut enc,
@@ -482,8 +494,8 @@ fn tile_byte_gate_discriminates_a_wrong_mode() {
 #[test]
 fn zero_mv_p_frame_payload_byte_exact_vs_aomenc() {
     use aom_encode::inter_frame::{
-        derive_lowdelay_p_frame_header, LowDelayPHeaderParams, TWO_FRAME_P_REF_MAP_IDX,
-        TWO_FRAME_P_REFRESH_FLAGS,
+        LowDelayPHeaderParams, TWO_FRAME_P_REF_MAP_IDX, TWO_FRAME_P_REFRESH_FLAGS,
+        derive_lowdelay_p_frame_header,
     };
     use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
     use aom_encode::rc::base_qindex_lowdelay_p_from_cq;

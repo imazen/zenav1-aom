@@ -40,6 +40,9 @@
 //! quadrant-mixed content (flat / detailed) so NONE and SPLIT genuinely
 //! trade wins.
 
+use aom_dsp::intra::cfl::CflCtx;
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{CoeffCostSet, TxTypeCosts, fill_tx_type_costs};
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::{SbEncodeEnv, SbTree, TileCtxState};
 use aom_encode::hog::prune_intra_mode_with_hog_y as _rust_hog; // (symmetry doc)
@@ -54,10 +57,7 @@ use aom_encode::partition_pick::{
 };
 use aom_encode::rd_pick::{RdPickUvArgs, RdPickUvOutcome, ReencodeParams, rd_pick_intra_mode_sb};
 use aom_encode::tx_search::{TxTypeSearchPolicy, TxfmYrdEnv};
-use aom_dsp::intra::cfl::CflCtx;
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{CoeffCostSet, TxTypeCosts, fill_tx_type_costs};
 
 use crate::common::*;
 
@@ -360,7 +360,8 @@ impl CPick<'_> {
         // (plane_bsize == BLOCK_4X4). The reference used to transcribe the
         // same `!lossless && w<=32 && h<=32` simplification as the port (a
         // shared bug this differential therefore couldn't catch — KB-5).
-        let cfl_allowed = aom_dsp::entropy::partition::is_cfl_allowed(bsize, self.lossless, ss_x, ss_y);
+        let cfl_allowed =
+            aom_dsp::entropy::partition::is_cfl_allowed(bsize, self.lossless, ss_x, ss_y);
         // Chroma has no tx-size depth search -- pre-select the ONE real
         // per-txs_ctx table THIS leaf's uv_tx_size uses (mirrors
         // partition_pick.rs::leaf_pick_sb_modes's fix).
@@ -505,7 +506,7 @@ impl CPick<'_> {
                     mv_row: 0,
                     mv_col: 0,
                     inter_mode_context: 0,
-        interp_filter: 0,
+                    interp_filter: 0,
                     raw_rdstats: stats,
                     palette_y: None,
                     palette_uv: None,

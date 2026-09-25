@@ -11,9 +11,28 @@ use aom_dsp::dist::{
 use aom_sys_ref as c;
 
 const SIZES: [(usize, usize); 22] = [
-    (4, 4), (4, 8), (4, 16), (8, 4), (8, 8), (8, 16), (8, 32), (16, 4), (16, 8), (16, 16), (16, 32),
-    (16, 64), (32, 8), (32, 16), (32, 32), (32, 64), (64, 16), (64, 32), (64, 64), (64, 128),
-    (128, 64), (128, 128),
+    (4, 4),
+    (4, 8),
+    (4, 16),
+    (8, 4),
+    (8, 8),
+    (8, 16),
+    (8, 32),
+    (16, 4),
+    (16, 8),
+    (16, 16),
+    (16, 32),
+    (16, 64),
+    (32, 8),
+    (32, 16),
+    (32, 32),
+    (32, 64),
+    (64, 16),
+    (64, 32),
+    (64, 64),
+    (64, 128),
+    (128, 64),
+    (128, 128),
 ];
 
 struct Rng(u64);
@@ -63,15 +82,23 @@ fn hbd_sad_variance_byte_identical() {
                 // highbd masked SAD (all 22 sizes, both polarities)
                 let sp2: Vec<u16> = (0..w * h).map(|_| rng.px(mask)).collect();
                 let m_stride = w + 8;
-                let msk: Vec<u8> = (0..m_stride * (h + 2)).map(|_| (rng.next() % 65) as u8).collect();
+                let msk: Vec<u8> = (0..m_stride * (h + 2))
+                    .map(|_| (rng.next() % 65) as u8)
+                    .collect();
                 for inv in [false, true] {
-                    let gm = highbd_masked_sad(&a, a_stride, &b, b_stride, &sp2, &msk, m_stride, inv, w, h);
-                    let wm = c::ref_hbd_masked_sad(idx, &a, a_stride, &b, b_stride, &sp2, &msk, m_stride, inv);
+                    let gm = highbd_masked_sad(
+                        &a, a_stride, &b, b_stride, &sp2, &msk, m_stride, inv, w, h,
+                    );
+                    let wm = c::ref_hbd_masked_sad(
+                        idx, &a, a_stride, &b, b_stride, &sp2, &msk, m_stride, inv,
+                    );
                     assert_eq!(gm, wm, "hbd_masked_sad {w}x{h} bd={bd} inv={inv}");
                 }
 
                 // highbd OBMC SAD
-                let wsrc: Vec<i32> = (0..w * h).map(|_| (rng.next() % (4096 * 4096)) as i32).collect();
+                let wsrc: Vec<i32> = (0..w * h)
+                    .map(|_| (rng.next() % (4096 * 4096)) as i32)
+                    .collect();
                 let omask: Vec<i32> = (0..w * h).map(|_| (rng.next() % 4097) as i32).collect();
                 let go = highbd_obmc_sad(&a, a_stride, &wsrc, &omask, w, h);
                 let wo = c::ref_hbd_obmc_sad(idx, &a, a_stride, &wsrc, &omask);
@@ -85,9 +112,14 @@ fn hbd_sad_variance_byte_identical() {
                 // highbd sub-pixel variance over all 8x8 subpel offsets
                 let xo = (rng.next() % 8) as usize;
                 let yo = (rng.next() % 8) as usize;
-                let (gv2, gs2) = highbd_sub_pixel_variance(&a, a_stride, xo, yo, &b, b_stride, w, h, bd);
+                let (gv2, gs2) =
+                    highbd_sub_pixel_variance(&a, a_stride, xo, yo, &b, b_stride, w, h, bd);
                 let (wv2, ws2) = c::ref_hbd_subpel_var(idx, bd, &a, a_stride, xo, yo, &b, b_stride);
-                assert_eq!((gv2, gs2), (wv2, ws2), "hbd_subpel_var {w}x{h} bd={bd} xo={xo} yo={yo}");
+                assert_eq!(
+                    (gv2, gs2),
+                    (wv2, ws2),
+                    "hbd_subpel_var {w}x{h} bd={bd} xo={xo} yo={yo}"
+                );
             }
         }
     }
@@ -131,5 +163,8 @@ fn hbd_variance_near_flat_clamp() {
             }
         }
     }
-    assert!(clamped_hits > 200, "clamp branch unexercised: {clamped_hits}");
+    assert!(
+        clamped_hits > 200,
+        "clamp branch unexercised: {clamped_hits}"
+    );
 }

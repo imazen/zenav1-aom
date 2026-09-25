@@ -146,7 +146,6 @@ fn stream_allow_screen_content(stream: &[u8]) -> bool {
     p.prefix.allow_screen_content_tools
 }
 
-
 /// Few-colour "terminal text" luma (the `rd_close_palette` recipe, verbatim):
 /// period-8 exact repeats + large flat runs, so libaom's ANTIALIASING_AWARE
 /// screen-content detection fires.
@@ -236,7 +235,11 @@ enum Verdict {
 /// delta, the panic's last line (empty when none), and this thread's
 /// `palette_gate_reach()` for the run. A PANIC is a distinct outcome, not a
 /// test abort — the whole point of this file is the shape of the refusal set.
-fn measure(cell: &EncodeCell, c_tu: &[u8], knobs: &ToggleKnobs) -> (Verdict, i64, String, [u64; 3]) {
+fn measure(
+    cell: &EncodeCell,
+    c_tu: &[u8],
+    knobs: &ToggleKnobs,
+) -> (Verdict, i64, String, [u64; 3]) {
     let real = EncodeCell::frame_obu_payload(c_tu);
     let msg = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let sink = std::sync::Arc::clone(&msg);

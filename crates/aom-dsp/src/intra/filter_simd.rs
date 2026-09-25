@@ -145,7 +145,10 @@ pub(crate) fn filter_intra_predict_high_impl(
             for j in 1..7 {
                 acc = acc + i32x8::splat(t, p[j]) * tv[j];
             }
-            let v = ((acc + eight).shr_arithmetic_const::<4>()).max(zero).min(maxv).to_array();
+            let v = ((acc + eight).shr_arithmetic_const::<4>())
+                .max(zero)
+                .min(maxv)
+                .to_array();
             for k in 0..4 {
                 row0[c + k] = v[k] as u16;
                 row1[c + k] = v[k + 4] as u16;
@@ -156,7 +159,12 @@ pub(crate) fn filter_intra_predict_high_impl(
         row_copy!(r * dst_stride, row1);
         // [u16; 33] is above LLVM's memcpy-inline threshold; chunked const-size
         // moves keep this off the call path.
-        for (p, v) in prev.as_chunks_mut::<8>().0.iter_mut().zip(row1.as_chunks::<8>().0) {
+        for (p, v) in prev
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(row1.as_chunks::<8>().0)
+        {
             p.copy_from_slice(v);
         }
         prev[32] = row1[32];
@@ -193,7 +201,10 @@ mod tests {
         for m in 0..5 {
             for k in 0..8 {
                 for j in 0..7 {
-                    assert_eq!(TAPS_T[m][j][k], FILTER_INTRA_TAPS[m][k][j] as i32, "m{m} k{k} j{j}");
+                    assert_eq!(
+                        TAPS_T[m][j][k], FILTER_INTRA_TAPS[m][k][j] as i32,
+                        "m{m} k{k} j{j}"
+                    );
                 }
             }
         }

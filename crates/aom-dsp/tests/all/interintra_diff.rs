@@ -14,7 +14,9 @@
 //! per-mode indexing, and the frame-MD5 decoder gate covers the smooth combine
 //! end-to-end.
 
-use aom_dsp::inter::interintra::{blend_a64_mask, build_smooth_interintra_mask, combine_interintra, wedge_mask};
+use aom_dsp::inter::interintra::{
+    blend_a64_mask, build_smooth_interintra_mask, combine_interintra, wedge_mask,
+};
 use aom_sys_ref::{ref_blend_a64_mask, ref_ii_wedge_mask};
 
 struct Rng(u64);
@@ -97,7 +99,9 @@ fn wedge_mask_matches_c() {
         }
     }
     assert_eq!(n, 9 * 16);
-    eprintln!("wedge_mask: {n} (bsize,index) baked masks byte-identical to av1_wedge_params_lookup");
+    eprintln!(
+        "wedge_mask: {n} (bsize,index) baked masks byte-identical to av1_wedge_params_lookup"
+    );
 }
 
 #[test]
@@ -119,7 +123,16 @@ fn combine_interintra_wedge_matches_c() {
                 let mut comp = vec![0u16; pw * ph];
                 combine_interintra(
                     3, // II_SMOOTH (unused on the wedge path)
-                    true, index, bsize, plane_bsize, &mut comp, pw, &inter, pw, &intra, pw,
+                    true,
+                    index,
+                    bsize,
+                    plane_bsize,
+                    &mut comp,
+                    pw,
+                    &inter,
+                    pw,
+                    &intra,
+                    pw,
                 );
                 // Reference: C blend of intra (src0) vs inter (src1) with the baked
                 // wedge mask, subsampled by (subw, subh).

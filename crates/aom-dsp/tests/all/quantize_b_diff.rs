@@ -1,8 +1,8 @@
 //! Differential harness for `aom_quantize_b` (no quant matrix) vs C libaom
 //! v3.14.1, across log_scale in {0,1,2}. Checks qcoeff, dqcoeff, eob.
 
-use aom_sys_ref as c;
 use aom_dsp::quant::aom_quantize_b_no_qmatrix;
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -56,8 +56,17 @@ fn check(rng: &mut Rng, log_scale: i32, n: usize, scan: &[i16]) {
     // the real `av1_scan_orders` rows do.
     let iscan = invert(scan);
     let eob_got = aom_quantize_b_no_qmatrix(
-        &zbin, &round, &quant, &quant_shift, &dequant, log_scale, scan, &iscan, &coeff,
-        &mut q_got, &mut dq_got,
+        &zbin,
+        &round,
+        &quant,
+        &quant_shift,
+        &dequant,
+        log_scale,
+        scan,
+        &iscan,
+        &coeff,
+        &mut q_got,
+        &mut dq_got,
     );
 
     // Per-arch oracle: on x86-64 the live tier mirrors C AVX2, which agrees
@@ -67,15 +76,40 @@ fn check(rng: &mut Rng, log_scale: i32, n: usize, scan: &[i16]) {
     // lane-for-lane, so compare against the real exported NEON kernel.
     #[cfg(target_arch = "aarch64")]
     let (q_want, dq_want, eob_want) = c::ref_quantize_b_neon(
-        log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, scan, &iscan,
+        log_scale,
+        &coeff,
+        &zbin,
+        &round,
+        &quant,
+        &quant_shift,
+        &dequant,
+        scan,
+        &iscan,
     );
     #[cfg(not(target_arch = "aarch64"))]
-    let (q_want, dq_want, eob_want) =
-        c::ref_quantize_b(log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, scan);
+    let (q_want, dq_want, eob_want) = c::ref_quantize_b(
+        log_scale,
+        &coeff,
+        &zbin,
+        &round,
+        &quant,
+        &quant_shift,
+        &dequant,
+        scan,
+    );
 
-    assert_eq!(eob_got, eob_want, "eob mismatch log_scale={log_scale} n={n}");
-    assert_eq!(q_got, q_want, "qcoeff mismatch log_scale={log_scale} n={n}\ncoeff={coeff:?}");
-    assert_eq!(dq_got, dq_want, "dqcoeff mismatch log_scale={log_scale} n={n}");
+    assert_eq!(
+        eob_got, eob_want,
+        "eob mismatch log_scale={log_scale} n={n}"
+    );
+    assert_eq!(
+        q_got, q_want,
+        "qcoeff mismatch log_scale={log_scale} n={n}\ncoeff={coeff:?}"
+    );
+    assert_eq!(
+        dq_got, dq_want,
+        "dqcoeff mismatch log_scale={log_scale} n={n}"
+    );
 }
 
 #[test]

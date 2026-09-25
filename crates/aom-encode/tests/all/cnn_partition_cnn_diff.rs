@@ -119,6 +119,10 @@ fn cnn_predict_matches_resolved_engine_bit_exact() {
     eprintln!(
         "cnn_predict: {} windows BIT-EXACT vs {} engine",
         windows.len(),
-        if simd_tier { "dispatched-AVX2" } else { "C-scalar" },
+        if simd_tier {
+            "dispatched-AVX2"
+        } else {
+            "C-scalar"
+        },
     );
 }

@@ -60,7 +60,9 @@ fn main() {
         speed_settings: SpeedSettings::from_preset(speed),
         ..Default::default()
     };
-    let cfg = Config::new().with_encoder_config(enc).with_threads(threads.max(1));
+    let cfg = Config::new()
+        .with_encoder_config(enc)
+        .with_threads(threads.max(1));
 
     let mk_frame = |ctx: &Context<u8>| {
         let mut f = ctx.new_frame();

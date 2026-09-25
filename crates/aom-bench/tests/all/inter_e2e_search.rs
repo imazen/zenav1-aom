@@ -37,7 +37,11 @@ fn base(label: &str, w: usize, h: usize, mono: bool, cq: i32) -> EncodeCell {
             y[r * w + c] = content(r, c);
         }
     }
-    let (cw, ch) = if mono { (0, 0) } else { ((w + 1) >> 1, (h + 1) >> 1) };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + 1) >> 1, (h + 1) >> 1)
+    };
     let cont_uv = |r: usize, c: usize| -> u16 { (110 + ((r * 2 + c) % 40)) as u16 };
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];

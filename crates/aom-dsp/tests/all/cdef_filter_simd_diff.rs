@@ -13,11 +13,13 @@
 //! strength/damping ranges, all 8 directions, both tap parities, all four
 //! primary/secondary enable combos, heights 4 and 8.
 
-use aom_dsp::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, cdef_filter_block_16, cdef_filter_block_16_scalar};
+use aom_dsp::cdef::{
+    cdef_filter_block_16, cdef_filter_block_16_scalar, CDEF_BSTRIDE, CDEF_VERY_LARGE,
+};
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -128,7 +130,11 @@ fn cdef_filter16_w8_simd_bit_identical_to_scalar_at_every_tier() {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(report.permutations_run >= 2);
 }

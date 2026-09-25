@@ -33,10 +33,21 @@ use aom_sys_ref as c;
 /// Deterministic textured content: a low-frequency gradient plus a hashed
 /// texture whose amplitude varies by region, so partitions, transforms and the
 /// delta-q maps all have real decisions to make. Chroma gets its own phase.
-fn planes(w: usize, h: usize, bd: u8, mono: bool, ss_x: usize, ss_y: usize, seed: u32) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+fn planes(
+    w: usize,
+    h: usize,
+    bd: u8,
+    mono: bool,
+    ss_x: usize,
+    ss_y: usize,
+    seed: u32,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let maxv = (1u32 << bd) - 1;
     let sample = |r: usize, col: usize, phase: u32| -> u16 {
-        let mut x = (r as u32).wrapping_mul(0x9E37_79B9) ^ (col as u32).wrapping_mul(0x85EB_CA6B) ^ seed ^ phase;
+        let mut x = (r as u32).wrapping_mul(0x9E37_79B9)
+            ^ (col as u32).wrapping_mul(0x85EB_CA6B)
+            ^ seed
+            ^ phase;
         x ^= x >> 15;
         x = x.wrapping_mul(0x2C1B_3C6D);
         x ^= x >> 12;
@@ -82,24 +93,96 @@ fn ref_cfg(cfg: &KeyFrameConfig, grain_table: Option<std::path::PathBuf>) -> c::
             ctrls.push((id, v as i32));
         }
     };
-    flag(t.enable_rect_partitions != d.enable_rect_partitions, AV1E_SET_ENABLE_RECT_PARTITIONS, t.enable_rect_partitions);
-    flag(t.enable_ab_partitions != d.enable_ab_partitions, AV1E_SET_ENABLE_AB_PARTITIONS, t.enable_ab_partitions);
-    flag(t.enable_1to4_partitions != d.enable_1to4_partitions, AV1E_SET_ENABLE_1TO4_PARTITIONS, t.enable_1to4_partitions);
-    flag(t.enable_intra_edge_filter != d.enable_intra_edge_filter, AV1E_SET_ENABLE_INTRA_EDGE_FILTER, t.enable_intra_edge_filter);
-    flag(t.enable_filter_intra != d.enable_filter_intra, AV1E_SET_ENABLE_FILTER_INTRA, t.enable_filter_intra);
-    flag(t.enable_smooth_intra != d.enable_smooth_intra, AV1E_SET_ENABLE_SMOOTH_INTRA, t.enable_smooth_intra);
-    flag(t.enable_paeth_intra != d.enable_paeth_intra, AV1E_SET_ENABLE_PAETH_INTRA, t.enable_paeth_intra);
-    flag(t.enable_cfl_intra != d.enable_cfl_intra, AV1E_SET_ENABLE_CFL_INTRA, t.enable_cfl_intra);
-    flag(t.enable_directional_intra != d.enable_directional_intra, AV1E_SET_ENABLE_DIRECTIONAL_INTRA, t.enable_directional_intra);
-    flag(t.enable_diagonal_intra != d.enable_diagonal_intra, AV1E_SET_ENABLE_DIAGONAL_INTRA, t.enable_diagonal_intra);
-    flag(t.enable_angle_delta != d.enable_angle_delta, AV1E_SET_ENABLE_ANGLE_DELTA, t.enable_angle_delta);
-    flag(t.enable_tx64 != d.enable_tx64, AV1E_SET_ENABLE_TX64, t.enable_tx64);
-    flag(t.enable_rect_tx != d.enable_rect_tx, AV1E_SET_ENABLE_RECT_TX, t.enable_rect_tx);
-    flag(t.enable_flip_idtx != d.enable_flip_idtx, AV1E_SET_ENABLE_FLIP_IDTX, t.enable_flip_idtx);
-    flag(t.use_intra_dct_only != d.use_intra_dct_only, AV1E_SET_INTRA_DCT_ONLY, t.use_intra_dct_only);
-    flag(t.use_intra_default_tx_only != d.use_intra_default_tx_only, AV1E_SET_INTRA_DEFAULT_TX_ONLY, t.use_intra_default_tx_only);
-    flag(t.reduced_tx_type_set != d.reduced_tx_type_set, AV1E_SET_REDUCED_TX_TYPE_SET, t.reduced_tx_type_set);
-    flag(t.enable_tx_size_search != d.enable_tx_size_search, AV1E_SET_ENABLE_TX_SIZE_SEARCH, t.enable_tx_size_search);
+    flag(
+        t.enable_rect_partitions != d.enable_rect_partitions,
+        AV1E_SET_ENABLE_RECT_PARTITIONS,
+        t.enable_rect_partitions,
+    );
+    flag(
+        t.enable_ab_partitions != d.enable_ab_partitions,
+        AV1E_SET_ENABLE_AB_PARTITIONS,
+        t.enable_ab_partitions,
+    );
+    flag(
+        t.enable_1to4_partitions != d.enable_1to4_partitions,
+        AV1E_SET_ENABLE_1TO4_PARTITIONS,
+        t.enable_1to4_partitions,
+    );
+    flag(
+        t.enable_intra_edge_filter != d.enable_intra_edge_filter,
+        AV1E_SET_ENABLE_INTRA_EDGE_FILTER,
+        t.enable_intra_edge_filter,
+    );
+    flag(
+        t.enable_filter_intra != d.enable_filter_intra,
+        AV1E_SET_ENABLE_FILTER_INTRA,
+        t.enable_filter_intra,
+    );
+    flag(
+        t.enable_smooth_intra != d.enable_smooth_intra,
+        AV1E_SET_ENABLE_SMOOTH_INTRA,
+        t.enable_smooth_intra,
+    );
+    flag(
+        t.enable_paeth_intra != d.enable_paeth_intra,
+        AV1E_SET_ENABLE_PAETH_INTRA,
+        t.enable_paeth_intra,
+    );
+    flag(
+        t.enable_cfl_intra != d.enable_cfl_intra,
+        AV1E_SET_ENABLE_CFL_INTRA,
+        t.enable_cfl_intra,
+    );
+    flag(
+        t.enable_directional_intra != d.enable_directional_intra,
+        AV1E_SET_ENABLE_DIRECTIONAL_INTRA,
+        t.enable_directional_intra,
+    );
+    flag(
+        t.enable_diagonal_intra != d.enable_diagonal_intra,
+        AV1E_SET_ENABLE_DIAGONAL_INTRA,
+        t.enable_diagonal_intra,
+    );
+    flag(
+        t.enable_angle_delta != d.enable_angle_delta,
+        AV1E_SET_ENABLE_ANGLE_DELTA,
+        t.enable_angle_delta,
+    );
+    flag(
+        t.enable_tx64 != d.enable_tx64,
+        AV1E_SET_ENABLE_TX64,
+        t.enable_tx64,
+    );
+    flag(
+        t.enable_rect_tx != d.enable_rect_tx,
+        AV1E_SET_ENABLE_RECT_TX,
+        t.enable_rect_tx,
+    );
+    flag(
+        t.enable_flip_idtx != d.enable_flip_idtx,
+        AV1E_SET_ENABLE_FLIP_IDTX,
+        t.enable_flip_idtx,
+    );
+    flag(
+        t.use_intra_dct_only != d.use_intra_dct_only,
+        AV1E_SET_INTRA_DCT_ONLY,
+        t.use_intra_dct_only,
+    );
+    flag(
+        t.use_intra_default_tx_only != d.use_intra_default_tx_only,
+        AV1E_SET_INTRA_DEFAULT_TX_ONLY,
+        t.use_intra_default_tx_only,
+    );
+    flag(
+        t.reduced_tx_type_set != d.reduced_tx_type_set,
+        AV1E_SET_REDUCED_TX_TYPE_SET,
+        t.reduced_tx_type_set,
+    );
+    flag(
+        t.enable_tx_size_search != d.enable_tx_size_search,
+        AV1E_SET_ENABLE_TX_SIZE_SEARCH,
+        t.enable_tx_size_search,
+    );
     if t.min_partition_size_px != d.min_partition_size_px {
         ctrls.push((AV1E_SET_MIN_PARTITION_SIZE, t.min_partition_size_px as i32));
     }
@@ -152,7 +235,15 @@ struct Outcome {
 /// the port's stream) is asserted unconditionally, the byte leg is returned.
 fn run(label: &str, cfg: &KeyFrameConfig, grain_table: Option<std::path::PathBuf>) -> Outcome {
     c::ref_init();
-    let (y, u, v) = planes(cfg.width, cfg.height, cfg.bit_depth, cfg.monochrome, cfg.ss_x, cfg.ss_y, 7);
+    let (y, u, v) = planes(
+        cfg.width,
+        cfg.height,
+        cfg.bit_depth,
+        cfg.monochrome,
+        cfg.ss_x,
+        cfg.ss_y,
+        7,
+    );
     let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg)
         .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
     let c_tu = c::ref_encode_av1_kf_cfg(
@@ -181,14 +272,27 @@ fn run(label: &str, cfg: &KeyFrameConfig, grain_table: Option<std::path::PathBuf
     );
     let byte_match = port == c_tu;
     if !byte_match {
-        let first = port.iter().zip(c_tu.iter()).position(|(a, b)| a != b).unwrap_or(port.len().min(c_tu.len()));
-        eprintln!("{label}: MISMATCH port {} B vs C {} B, first diff at {first}", port.len(), c_tu.len());
+        let first = port
+            .iter()
+            .zip(c_tu.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(port.len().min(c_tu.len()));
+        eprintln!(
+            "{label}: MISMATCH port {} B vs C {} B, first diff at {first}",
+            port.len(),
+            c_tu.len()
+        );
         if first < 24 {
             eprintln!("  port[0..24] {:02x?}", &port[..24.min(port.len())]);
             eprintln!("  c   [0..24] {:02x?}", &c_tu[..24.min(c_tu.len())]);
         }
     }
-    Outcome { label: label.to_string(), byte_match, port_len: port.len(), c_len: c_tu.len() }
+    Outcome {
+        label: label.to_string(),
+        byte_match,
+        port_len: port.len(),
+        c_len: c_tu.len(),
+    }
 }
 
 /// Byte-identity gate with a SELF-PROMOTING pin: `pinned_open` is the exact set
@@ -197,12 +301,23 @@ fn run(label: &str, cfg: &KeyFrameConfig, grain_table: Option<std::path::PathBuf
 /// one that enters it is a regression. The decode leg is asserted inside
 /// [`run`] for every cell regardless.
 fn report(gate: &str, outcomes: &[Outcome], pinned_open: &[&str]) {
-    let mut open: Vec<&str> = outcomes.iter().filter(|o| !o.byte_match).map(|o| o.label.as_str()).collect();
+    let mut open: Vec<&str> = outcomes
+        .iter()
+        .filter(|o| !o.byte_match)
+        .map(|o| o.label.as_str())
+        .collect();
     open.sort_unstable();
     let matched = outcomes.len() - open.len();
-    println!("{gate}: {matched}/{} byte-identical, {} pinned open", outcomes.len(), pinned_open.len());
+    println!(
+        "{gate}: {matched}/{} byte-identical, {} pinned open",
+        outcomes.len(),
+        pinned_open.len()
+    );
     for o in outcomes.iter().filter(|o| !o.byte_match) {
-        println!("  OPEN {} (port {} B vs C {} B)", o.label, o.port_len, o.c_len);
+        println!(
+            "  OPEN {} (port {} B vs C {} B)",
+            o.label, o.port_len, o.c_len
+        );
     }
     let pinned: std::collections::BTreeSet<&str> = pinned_open.iter().copied().collect();
     let observed: std::collections::BTreeSet<&str> = open.iter().copied().collect();
@@ -214,13 +329,25 @@ fn report(gate: &str, outcomes: &[Outcome], pinned_open: &[&str]) {
     );
 }
 
-fn base(w: usize, h: usize, bd: u8, mono: bool, ss: (usize, usize), cq: i32, speed: i32) -> KeyFrameConfig {
+fn base(
+    w: usize,
+    h: usize,
+    bd: u8,
+    mono: bool,
+    ss: (usize, usize),
+    cq: i32,
+    speed: i32,
+) -> KeyFrameConfig {
     let mut cfg = KeyFrameConfig::allintra_speed0(w, h, bd, mono, ss.0, ss.1, cq);
     cfg.cpu_used = speed;
     cfg
 }
 
-const FORMATS: [(&str, bool, (usize, usize)); 3] = [("420", false, (1, 1)), ("mono", true, (1, 1)), ("444", false, (0, 0))];
+const FORMATS: [(&str, bool, (usize, usize)); 3] = [
+    ("420", false, (1, 1)),
+    ("mono", true, (1, 1)),
+    ("444", false, (0, 0)),
+];
 
 /// **tune=IQ / tune=SSIMULACRA2, the whole `handle_tuning` bundle** through the
 /// shipping path: QM 2..=10, sharpness 7, QM-PSNR distortion, ADAPTIVE CDEF,
@@ -243,7 +370,11 @@ fn tune_bundles_byte_match_real_aomenc() {
                             let mut cfg = base(sz, sz, 8, mono, ss, cq, speed);
                             cfg.apply_tune(tune);
                             cfg.enable_restoration = lr;
-                            out.push(run(&format!("{tune:?} {fmt} {sz}x{sz} cq{cq} s{speed} lr{}", lr as u8), &cfg, None));
+                            out.push(run(
+                                &format!("{tune:?} {fmt} {sz}x{sz} cq{cq} s{speed} lr{}", lr as u8),
+                                &cfg,
+                                None,
+                            ));
                         }
                     }
                 }
@@ -279,15 +410,37 @@ fn tune_bundles_at_fast_presets_decode_and_are_pinned() {
             for &speed in &[6i32, 8] {
                 let mut cfg = base(128, 128, 8, mono, ss, 20, speed);
                 cfg.apply_tune(tune);
-                out.push(run(&format!("{tune:?} {fmt} 128x128 cq20 s{speed}"), &cfg, None));
+                out.push(run(
+                    &format!("{tune:?} {fmt} 128x128 cq20 s{speed}"),
+                    &cfg,
+                    None,
+                ));
             }
         }
     }
-    let open: Vec<&str> = out.iter().filter(|o| !o.byte_match).map(|o| o.label.as_str()).collect();
-    let closed: Vec<&str> = out.iter().filter(|o| o.byte_match).map(|o| o.label.as_str()).collect();
-    println!("tune at fast presets: {} open, {} byte-identical (all decode)", open.len(), closed.len());
+    let open: Vec<&str> = out
+        .iter()
+        .filter(|o| !o.byte_match)
+        .map(|o| o.label.as_str())
+        .collect();
+    let closed: Vec<&str> = out
+        .iter()
+        .filter(|o| o.byte_match)
+        .map(|o| o.label.as_str())
+        .collect();
+    println!(
+        "tune at fast presets: {} open, {} byte-identical (all decode)",
+        open.len(),
+        closed.len()
+    );
     for o in &out {
-        println!("  {} {}: port {} B vs C {} B", if o.byte_match { "MATCH" } else { "open " }, o.label, o.port_len, o.c_len);
+        println!(
+            "  {} {}: port {} B vs C {} B",
+            if o.byte_match { "MATCH" } else { "open " },
+            o.label,
+            o.port_len,
+            o.c_len
+        );
     }
     let pinned: std::collections::BTreeSet<&str> = TUNE_FAST_CDEF_OPEN.iter().copied().collect();
     let observed: std::collections::BTreeSet<&str> = open.iter().copied().collect();
@@ -321,11 +474,24 @@ fn quality_knobs_byte_match_real_aomenc() {
     }
     // Sharpness, alone and with the adaptive cap (three cap arms: qindex 48 / 128 / 200).
     for &sh in &[3i32, 7] {
-        for &(cq, adaptive) in &[(12i32, false), (32, false), (12, true), (32, true), (50, true)] {
+        for &(cq, adaptive) in &[
+            (12i32, false),
+            (32, false),
+            (12, true),
+            (32, true),
+            (50, true),
+        ] {
             let mut cfg = base(sz, sz, 8, false, (1, 1), cq, 0);
             cfg.quality.sharpness = sh;
             cfg.quality.adaptive_sharpness = adaptive;
-            out.push(run(&format!("sharpness{sh}{} 420 cq{cq}", if adaptive { "+adaptive" } else { "" }), &cfg, None));
+            out.push(run(
+                &format!(
+                    "sharpness{sh}{} 420 cq{cq}",
+                    if adaptive { "+adaptive" } else { "" }
+                ),
+                &cfg,
+                None,
+            ));
         }
     }
     // Chroma delta-q: the constant PSNR arm at every subsampling, and the tune
@@ -342,7 +508,11 @@ fn quality_knobs_byte_match_real_aomenc() {
             let mut cfg = base(sz, sz, 8, mono, ss, 32, 0);
             cfg.quality.tune = tune;
             cfg.quality.chroma_deltaq = true;
-            out.push(run(&format!("chroma-deltaq {tune:?} {fmt} cq32"), &cfg, None));
+            out.push(run(
+                &format!("chroma-deltaq {tune:?} {fmt} cq32"),
+                &cfg,
+                None,
+            ));
         }
     }
     // 4:2:2 chroma delta-q arm.
@@ -353,7 +523,11 @@ fn quality_knobs_byte_match_real_aomenc() {
     }
     // Delta-q modes alone, at the RD speeds and the nonrd speed 8 (KB-46), with
     // and without delta-lf; strength 50 / 100 / 200 for Variance Boost.
-    for mode in [DeltaQMode::Perceptual, DeltaQMode::PerceptualAi, DeltaQMode::VarianceBoost] {
+    for mode in [
+        DeltaQMode::Perceptual,
+        DeltaQMode::PerceptualAi,
+        DeltaQMode::VarianceBoost,
+    ] {
         for &speed in &[0i32, 3, 8] {
             for &cq in &[20i32, 44] {
                 for &dlf in &[false, true] {
@@ -363,7 +537,11 @@ fn quality_knobs_byte_match_real_aomenc() {
                     let mut cfg = base(sz, sz, 8, false, (1, 1), cq, speed);
                     cfg.quality.deltaq_mode = mode;
                     cfg.quality.delta_lf = dlf;
-                    out.push(run(&format!("deltaq {mode:?} 420 cq{cq} s{speed} dlf{}", dlf as u8), &cfg, None));
+                    out.push(run(
+                        &format!("deltaq {mode:?} 420 cq{cq} s{speed} dlf{}", dlf as u8),
+                        &cfg,
+                        None,
+                    ));
                 }
             }
         }
@@ -372,7 +550,11 @@ fn quality_knobs_byte_match_real_aomenc() {
         let mut cfg = base(sz, sz, 8, false, (1, 1), 32, 0);
         cfg.quality.deltaq_mode = DeltaQMode::VarianceBoost;
         cfg.quality.deltaq_strength = strength;
-        out.push(run(&format!("deltaq VarianceBoost strength{strength} 420 cq32"), &cfg, None));
+        out.push(run(
+            &format!("deltaq VarianceBoost strength{strength} 420 cq32"),
+            &cfg,
+            None,
+        ));
     }
     // CDEF_ADAPTIVE on the PSNR tune (`--enable-cdef=3`): off / halve+zero /
     // halve / full. cq 55/56 straddle the `rc_cfg.cq_level <= 220` boundary
@@ -401,30 +583,75 @@ fn quality_knobs_byte_match_real_aomenc() {
 #[test]
 fn coding_tools_byte_match_real_aomenc() {
     let flips: Vec<(&str, Box<dyn Fn(&mut CodingTools)>)> = vec![
-        ("rect-partitions=0", Box::new(|t| t.enable_rect_partitions = false)),
-        ("ab-partitions=0", Box::new(|t| t.enable_ab_partitions = false)),
-        ("1to4-partitions=0", Box::new(|t| t.enable_1to4_partitions = false)),
-        ("min-partition=16", Box::new(|t| t.min_partition_size_px = 16)),
-        ("max-partition=32", Box::new(|t| t.max_partition_size_px = 32)),
-        ("intra-edge-filter=0", Box::new(|t| t.enable_intra_edge_filter = false)),
-        ("filter-intra=0", Box::new(|t| t.enable_filter_intra = false)),
-        ("smooth-intra=0", Box::new(|t| t.enable_smooth_intra = false)),
+        (
+            "rect-partitions=0",
+            Box::new(|t| t.enable_rect_partitions = false),
+        ),
+        (
+            "ab-partitions=0",
+            Box::new(|t| t.enable_ab_partitions = false),
+        ),
+        (
+            "1to4-partitions=0",
+            Box::new(|t| t.enable_1to4_partitions = false),
+        ),
+        (
+            "min-partition=16",
+            Box::new(|t| t.min_partition_size_px = 16),
+        ),
+        (
+            "max-partition=32",
+            Box::new(|t| t.max_partition_size_px = 32),
+        ),
+        (
+            "intra-edge-filter=0",
+            Box::new(|t| t.enable_intra_edge_filter = false),
+        ),
+        (
+            "filter-intra=0",
+            Box::new(|t| t.enable_filter_intra = false),
+        ),
+        (
+            "smooth-intra=0",
+            Box::new(|t| t.enable_smooth_intra = false),
+        ),
         ("paeth-intra=0", Box::new(|t| t.enable_paeth_intra = false)),
         ("cfl-intra=0", Box::new(|t| t.enable_cfl_intra = false)),
-        ("directional-intra=0", Box::new(|t| t.enable_directional_intra = false)),
-        ("diagonal-intra=0", Box::new(|t| t.enable_diagonal_intra = false)),
+        (
+            "directional-intra=0",
+            Box::new(|t| t.enable_directional_intra = false),
+        ),
+        (
+            "diagonal-intra=0",
+            Box::new(|t| t.enable_diagonal_intra = false),
+        ),
         ("angle-delta=0", Box::new(|t| t.enable_angle_delta = false)),
         ("tx64=0", Box::new(|t| t.enable_tx64 = false)),
         ("rect-tx=0", Box::new(|t| t.enable_rect_tx = false)),
         ("flip-idtx=0", Box::new(|t| t.enable_flip_idtx = false)),
-        ("intra-dct-only=1", Box::new(|t| t.use_intra_dct_only = true)),
-        ("intra-default-tx-only=1", Box::new(|t| t.use_intra_default_tx_only = true)),
-        ("reduced-tx-type-set=1", Box::new(|t| t.reduced_tx_type_set = true)),
-        ("tx-size-search=0", Box::new(|t| t.enable_tx_size_search = false)),
+        (
+            "intra-dct-only=1",
+            Box::new(|t| t.use_intra_dct_only = true),
+        ),
+        (
+            "intra-default-tx-only=1",
+            Box::new(|t| t.use_intra_default_tx_only = true),
+        ),
+        (
+            "reduced-tx-type-set=1",
+            Box::new(|t| t.reduced_tx_type_set = true),
+        ),
+        (
+            "tx-size-search=0",
+            Box::new(|t| t.enable_tx_size_search = false),
+        ),
         ("cdf-update-mode=2", Box::new(|t| t.cdf_update_mode = 2)),
         ("trellis=full", Box::new(|t| t.trellis = TrellisMode::Full)),
         ("trellis=off", Box::new(|t| t.trellis = TrellisMode::Off)),
-        ("trellis=final-pass", Box::new(|t| t.trellis = TrellisMode::FinalPass)),
+        (
+            "trellis=final-pass",
+            Box::new(|t| t.trellis = TrellisMode::FinalPass),
+        ),
     ];
     let mut out = Vec::new();
     for (name, flip) in &flips {
@@ -460,9 +687,11 @@ fn film_grain_table_byte_matches_real_aomenc() {
     c::ref_init();
     let mut out = Vec::new();
     for &tv in &[1i32, 2, 6, 15] {
-        let path = std::env::temp_dir().join(format!("aomrs_tools_grain_{}_{tv}.tbl", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("aomrs_tools_grain_{}_{tv}.tbl", std::process::id()));
         c::ref_write_grain_table_test_vector(tv, &path);
-        let entries = read_film_grain_table(&std::fs::read(&path).expect("read table")).expect("parse table");
+        let entries =
+            read_film_grain_table(&std::fs::read(&path).expect("read table")).expect("parse table");
         let mut fg = FilmGrainParams::default();
         assert!(lookup(&entries, 0, &mut fg), "tv{tv}: time-0 lookup");
         for &(fmt, mono, ss) in &FORMATS {
@@ -474,22 +703,48 @@ fn film_grain_table_byte_matches_real_aomenc() {
             // Does the oracle DECODER accept C's OWN grain stream? If not, the
             // decode leg cannot be run on this knob through this shim.
             let (y, u, v) = planes(128, 128, 8, mono, ss.0, ss.1, 7);
-            let c_tu = c::ref_encode_av1_kf_cfg(&y, &u, &v, 128, 128, 8, mono, ss.0 as i32, ss.1 as i32, 32, 0, 2, &ref_cfg(&cfg, Some(path.clone())));
+            let c_tu = c::ref_encode_av1_kf_cfg(
+                &y,
+                &u,
+                &v,
+                128,
+                128,
+                8,
+                mono,
+                ss.0 as i32,
+                ss.1 as i32,
+                32,
+                0,
+                2,
+                &ref_cfg(&cfg, Some(path.clone())),
+            );
             // The oracle decoder REJECTS libaom's OWN tv15-on-monochrome stream
             // (chroma-scaling-from-luma grain with no chroma planes), so the
             // decode leg is run only where the oracle accepts its own output;
             // the byte leg holds everywhere.
-            let c_accepts = std::panic::catch_unwind(|| c::ref_decode_av1_kf(&c_tu, 128, 128)).is_ok();
+            let c_accepts =
+                std::panic::catch_unwind(|| c::ref_decode_av1_kf(&c_tu, 128, 128)).is_ok();
             let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
                 .unwrap_or_else(|e| panic!("grain tv{tv} {fmt}: refused: {e}"));
             if c_accepts {
                 let c_dec = c::ref_decode_av1_kf(&port, 128, 128);
                 let p_dec = aom_decode::frame::decode_frame_obus(&port).expect("port decode");
-                assert_eq!((&p_dec.y, &p_dec.u, &p_dec.v), (&c_dec.y, &c_dec.u, &c_dec.v), "grain tv{tv} {fmt}: decoders disagree");
+                assert_eq!(
+                    (&p_dec.y, &p_dec.u, &p_dec.v),
+                    (&c_dec.y, &c_dec.u, &c_dec.v),
+                    "grain tv{tv} {fmt}: decoders disagree"
+                );
             } else {
-                println!("grain tv{tv} {fmt}: oracle decoder rejects libaom's own stream; byte leg only");
+                println!(
+                    "grain tv{tv} {fmt}: oracle decoder rejects libaom's own stream; byte leg only"
+                );
             }
-            out.push(Outcome { label: format!("grain tv{tv} {fmt}"), byte_match: port == c_tu, port_len: port.len(), c_len: c_tu.len() });
+            out.push(Outcome {
+                label: format!("grain tv{tv} {fmt}"),
+                byte_match: port == c_tu,
+                port_len: port.len(),
+                c_len: c_tu.len(),
+            });
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -512,7 +767,11 @@ fn superres_fixed_byte_matches_real_aomenc() {
                     }
                     let mut cfg = base(w, 96, bd, mono, ss, 32, 0);
                     cfg.superres_denom = denom;
-                    out.push(run(&format!("superres d{denom} {fmt} bd{bd} {w}x96"), &cfg, None));
+                    out.push(run(
+                        &format!("superres d{denom} {fmt} bd{bd} {w}x96"),
+                        &cfg,
+                        None,
+                    ));
                 }
             }
         }
@@ -556,8 +815,14 @@ fn new_knob_refusals_are_named() {
     };
     for (name, cfg) in cases {
         let q = cfg.validate_configuration();
-        assert!(matches!(q, Err(KeyFrameError::Unsupported(_))), "{name}: support query must refuse by name, got {q:?}");
+        assert!(
+            matches!(q, Err(KeyFrameError::Unsupported(_))),
+            "{name}: support query must refuse by name, got {q:?}"
+        );
         let e = encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &cfg);
-        assert!(matches!(e, Err(KeyFrameError::Unsupported(_))), "{name}: encoder must refuse the same way, got {e:?}");
+        assert!(
+            matches!(e, Err(KeyFrameError::Unsupported(_))),
+            "{name}: encoder must refuse the same way, got {e:?}"
+        );
     }
 }

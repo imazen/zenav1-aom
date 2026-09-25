@@ -66,8 +66,8 @@
 use aom_bench::{EncodeCell, ToggleKnobs, winperf};
 use aom_dsp::census::{
     self, BSIZE_NAME, Counts, FILTER_INTRA_MODE_NAME, INTRA_CLASS, MODE_NAME, N_ANGLE_DELTA,
-    N_BSIZE, N_FILTER_INTRA_MODE, N_MODE, N_PALETTE_SIZE, N_PLANE, N_TX_SIZE, N_TX_TYPE,
-    N_UV_MODE, PLANE_NAME, TX_SIZE_NAME, TX_TYPE_NAME, UV_MODE_NAME,
+    N_BSIZE, N_FILTER_INTRA_MODE, N_MODE, N_PALETTE_SIZE, N_PLANE, N_TX_SIZE, N_TX_TYPE, N_UV_MODE,
+    PLANE_NAME, TX_SIZE_NAME, TX_TYPE_NAME, UV_MODE_NAME,
 };
 
 /// How the census drives the encoder, so a row can say which encoder it is a
@@ -127,7 +127,12 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let (w, h, cq, speed) = winperf::CELL;
     let _ = (w, h);
-    let mut opts = Opts { speed, cq, palette: false, intrabc: false };
+    let mut opts = Opts {
+        speed,
+        cq,
+        palette: false,
+        intrabc: false,
+    };
     let mut args: Vec<String> = Vec::new();
     let mut it = argv.iter();
     while let Some(a) = it.next() {
@@ -148,7 +153,10 @@ fn main() {
             other => args.push(other.to_string()),
         }
     }
-    assert!(!args.is_empty(), "usage: content_census [--speed N] [--cq N] [--knobs palette,intrabc] <source> [<source> ...]");
+    assert!(
+        !args.is_empty(),
+        "usage: content_census [--speed N] [--cq N] [--knobs palette,intrabc] <source> [<source> ...]"
+    );
     println!("# config\t{}", opts.tag());
 
     let rows: Vec<Row> = args.iter().map(|s| census_one(s, &opts)).collect();
@@ -169,7 +177,11 @@ fn main() {
     println!();
     let classpx = |c: &Counts, i: usize| -> f64 {
         let t = c.intra_total_px();
-        if t == 0 { 0.0 } else { 100.0 * c.intra_px[i].iter().sum::<u64>() as f64 / t as f64 }
+        if t == 0 {
+            0.0
+        } else {
+            100.0 * c.intra_px[i].iter().sum::<u64>() as f64 / t as f64
+        }
     };
     for (i, name) in INTRA_CLASS.iter().enumerate() {
         print!("intra_class_pct_px\t{name}");
@@ -181,13 +193,27 @@ fn main() {
     print!("intra_dir_pct_px\tz1+z2+z3");
     for r in &rows {
         let t = r.counts.intra_total_px();
-        print!("\t{:.2}", if t == 0 { 0.0 } else { 100.0 * r.counts.directional_px() as f64 / t as f64 });
+        print!(
+            "\t{:.2}",
+            if t == 0 {
+                0.0
+            } else {
+                100.0 * r.counts.directional_px() as f64 / t as f64
+            }
+        );
     }
     println!();
     print!("intra_dir_pct_calls\tz1+z2+z3");
     for r in &rows {
         let t = r.counts.intra_total_calls();
-        print!("\t{:.2}", if t == 0 { 0.0 } else { 100.0 * r.counts.directional_calls() as f64 / t as f64 });
+        print!(
+            "\t{:.2}",
+            if t == 0 {
+                0.0
+            } else {
+                100.0 * r.counts.directional_calls() as f64 / t as f64
+            }
+        );
     }
     println!();
     print!("intra_calls_total\t-");
@@ -231,23 +257,47 @@ fn main() {
     }
     println!();
     let fam: [(&str, &str, fn(&Counts) -> (u64, u64)); 16] = [
-        ("filter_intra", "leaves", |c| (c.filter_intra_leaves(), c.leaves())),
-        ("filter_intra_px", "coded_px", |c| (c.leaf_filter_intra_px, c.leaf_total_px())),
-        ("palette_y", "leaves", |c| (c.palette_y_leaves(), c.leaves())),
-        ("palette_y_px", "coded_px", |c| (c.leaf_palette_y_px, c.leaf_total_px())),
-        ("palette_uv", "leaves", |c| (c.palette_uv_leaves(), c.leaves())),
+        ("filter_intra", "leaves", |c| {
+            (c.filter_intra_leaves(), c.leaves())
+        }),
+        ("filter_intra_px", "coded_px", |c| {
+            (c.leaf_filter_intra_px, c.leaf_total_px())
+        }),
+        ("palette_y", "leaves", |c| {
+            (c.palette_y_leaves(), c.leaves())
+        }),
+        ("palette_y_px", "coded_px", |c| {
+            (c.leaf_palette_y_px, c.leaf_total_px())
+        }),
+        ("palette_uv", "leaves", |c| {
+            (c.palette_uv_leaves(), c.leaves())
+        }),
         ("intrabc", "leaves", |c| (c.leaf_intrabc, c.leaves())),
-        ("intrabc_px", "coded_px", |c| (c.leaf_intrabc_px, c.leaf_total_px())),
-        ("cfl", "chroma_ref_leaves", |c| (c.cfl_leaves(), c.leaf_chroma_ref)),
-        ("cfl_pred_px", "pred_px", |c| (c.cfl_px, c.intra_total_px() + c.cfl_px)),
+        ("intrabc_px", "coded_px", |c| {
+            (c.leaf_intrabc_px, c.leaf_total_px())
+        }),
+        ("cfl", "chroma_ref_leaves", |c| {
+            (c.cfl_leaves(), c.leaf_chroma_ref)
+        }),
+        ("cfl_pred_px", "pred_px", |c| {
+            (c.cfl_px, c.intra_total_px() + c.cfl_px)
+        }),
         ("chroma_pred_calls", "pred_calls", |c| {
             (c.plane_calls[1] + c.plane_calls[2], c.plane_total())
         }),
-        ("directional_px", "pred_px", |c| (c.directional_px(), c.intra_total_px())),
-        ("nonzero_angle_delta", "leaves", |c| (c.nonzero_angle_delta_leaves(), c.leaves())),
+        ("directional_px", "pred_px", |c| {
+            (c.directional_px(), c.intra_total_px())
+        }),
+        ("nonzero_angle_delta", "leaves", |c| {
+            (c.nonzero_angle_delta_leaves(), c.leaves())
+        }),
         ("rect_leaves", "leaves", |c| (c.rect_leaves(), c.leaves())),
-        ("leaves_le_8px", "leaves", |c| (c.small_leaves(), c.leaves())),
-        ("fwd_tx_4pt", "fwd_tx", |c| (c.small_fwd_tx(), c.fwd_tx.iter().flatten().sum())),
+        ("leaves_le_8px", "leaves", |c| {
+            (c.small_leaves(), c.leaves())
+        }),
+        ("fwd_tx_4pt", "fwd_tx", |c| {
+            (c.small_fwd_tx(), c.fwd_tx.iter().flatten().sum())
+        }),
         ("fwd_tx_non_dct", "fwd_tx", |c| {
             (c.non_dct_fwd_tx(), c.fwd_tx.iter().flatten().sum())
         }),
@@ -256,7 +306,14 @@ fn main() {
         print!("{name}\t{den}");
         for r in &rows {
             let (n, d) = f(&r.counts);
-            print!("\t{:.2}", if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 });
+            print!(
+                "\t{:.2}",
+                if d == 0 {
+                    0.0
+                } else {
+                    100.0 * n as f64 / d as f64
+                }
+            );
         }
         println!();
     }
@@ -295,14 +352,22 @@ fn main() {
     // deliberately blunt statistic: the point is to be able to SAY which
     // candidate is closer, not to model anything.
     println!();
-    println!("########## FIT (L1 over intra-class pct_px, vs {})", rows[0].label);
+    println!(
+        "########## FIT (L1 over intra-class pct_px, vs {})",
+        rows[0].label
+    );
     println!("source\tL1_intra_class_pp\tL1_leaf_bsize_pp\tL1_fwd_tx_pp");
     for r in &rows {
-        let l1_class: f64 =
-            (0..INTRA_CLASS.len()).map(|i| (classpx(&r.counts, i) - classpx(&rows[0].counts, i)).abs()).sum();
+        let l1_class: f64 = (0..INTRA_CLASS.len())
+            .map(|i| (classpx(&r.counts, i) - classpx(&rows[0].counts, i)).abs())
+            .sum();
         let l1_bsize = l1_over(
-            &(0..N_BSIZE).map(|b| r.counts.leaf_bsize[b]).collect::<Vec<_>>(),
-            &(0..N_BSIZE).map(|b| rows[0].counts.leaf_bsize[b]).collect::<Vec<_>>(),
+            &(0..N_BSIZE)
+                .map(|b| r.counts.leaf_bsize[b])
+                .collect::<Vec<_>>(),
+            &(0..N_BSIZE)
+                .map(|b| rows[0].counts.leaf_bsize[b])
+                .collect::<Vec<_>>(),
         );
         let l1_tx = l1_over(
             &(0..N_TX_TYPE * N_TX_SIZE)
@@ -312,7 +377,10 @@ fn main() {
                 .map(|i| rows[0].counts.fwd_tx[i / N_TX_SIZE][i % N_TX_SIZE])
                 .collect::<Vec<_>>(),
         );
-        println!("{}\t{:.2}\t{:.2}\t{:.2}", r.label, l1_class, l1_bsize, l1_tx);
+        println!(
+            "{}\t{:.2}\t{:.2}\t{:.2}",
+            r.label, l1_class, l1_bsize, l1_tx
+        );
     }
 }
 
@@ -363,7 +431,10 @@ fn print_source(r: &Row) {
     println!("nd_mode\tcalls\tpixels");
     for m in 0..N_MODE {
         if c.nd_mode_calls[m] > 0 {
-            println!("{}\t{}\t{}", MODE_NAME[m], c.nd_mode_calls[m], c.nd_mode_px[m]);
+            println!(
+                "{}\t{}\t{}",
+                MODE_NAME[m], c.nd_mode_calls[m], c.nd_mode_px[m]
+            );
         }
     }
     println!();
@@ -418,7 +489,11 @@ fn print_source(r: &Row) {
     for ty in 0..N_TX_TYPE {
         let n: u64 = c.fwd_tx[ty].iter().sum();
         if n > 0 {
-            println!("{}\t{n}\t{:.2}", TX_TYPE_NAME[ty], 100.0 * n as f64 / fwd_total as f64);
+            println!(
+                "{}\t{n}\t{:.2}",
+                TX_TYPE_NAME[ty],
+                100.0 * n as f64 / fwd_total as f64
+            );
         }
     }
     println!();
@@ -426,7 +501,11 @@ fn print_source(r: &Row) {
     for t in 0..N_TX_SIZE {
         let n: u64 = (0..N_TX_TYPE).map(|ty| c.fwd_tx[ty][t]).sum();
         if n > 0 {
-            println!("{}\t{n}\t{:.2}", TX_SIZE_NAME[t], 100.0 * n as f64 / fwd_total as f64);
+            println!(
+                "{}\t{n}\t{:.2}",
+                TX_SIZE_NAME[t],
+                100.0 * n as f64 / fwd_total as f64
+            );
         }
     }
     println!();
@@ -438,7 +517,11 @@ fn print_source(r: &Row) {
     for t in 0..N_TX_SIZE {
         let n: u64 = (0..N_TX_TYPE).map(|ty| c.inv_tx[ty][t]).sum();
         if n > 0 {
-            println!("{}\t{n}\t{:.2}", TX_SIZE_NAME[t], 100.0 * n as f64 / inv_total as f64);
+            println!(
+                "{}\t{n}\t{:.2}",
+                TX_SIZE_NAME[t],
+                100.0 * n as f64 / inv_total as f64
+            );
         }
     }
     println!();
@@ -446,7 +529,11 @@ fn print_source(r: &Row) {
     for ty in 0..N_TX_TYPE {
         let n: u64 = c.inv_tx[ty].iter().sum();
         if n > 0 {
-            println!("{}\t{n}\t{:.2}", TX_TYPE_NAME[ty], 100.0 * n as f64 / inv_total as f64);
+            println!(
+                "{}\t{n}\t{:.2}",
+                TX_TYPE_NAME[ty],
+                100.0 * n as f64 / inv_total as f64
+            );
         }
     }
     println!();
@@ -454,14 +541,24 @@ fn print_source(r: &Row) {
     println!("leaf_bsize\tcount\tpct");
     for b in 0..N_BSIZE {
         if c.leaf_bsize[b] > 0 {
-            println!("{}\t{}\t{:.2}", BSIZE_NAME[b], c.leaf_bsize[b], 100.0 * c.leaf_bsize[b] as f64 / leaves as f64);
+            println!(
+                "{}\t{}\t{:.2}",
+                BSIZE_NAME[b],
+                c.leaf_bsize[b],
+                100.0 * c.leaf_bsize[b] as f64 / leaves as f64
+            );
         }
     }
     println!();
     println!("leaf_mode\tcount\tpct");
     for m in 0..N_MODE {
         if c.leaf_mode[m] > 0 {
-            println!("{}\t{}\t{:.2}", MODE_NAME[m], c.leaf_mode[m], 100.0 * c.leaf_mode[m] as f64 / leaves as f64);
+            println!(
+                "{}\t{}\t{:.2}",
+                MODE_NAME[m],
+                c.leaf_mode[m],
+                100.0 * c.leaf_mode[m] as f64 / leaves as f64
+            );
         }
     }
     println!();
@@ -506,7 +603,12 @@ fn print_source(r: &Row) {
     println!("angle_delta\ty_leaves\tuv_leaves");
     for d in 0..N_ANGLE_DELTA {
         if c.leaf_angle_delta_y[d] > 0 || c.leaf_angle_delta_uv[d] > 0 {
-            println!("{}\t{}\t{}", d as i32 - 3, c.leaf_angle_delta_y[d], c.leaf_angle_delta_uv[d]);
+            println!(
+                "{}\t{}\t{}",
+                d as i32 - 3,
+                c.leaf_angle_delta_y[d],
+                c.leaf_angle_delta_uv[d]
+            );
         }
     }
     println!();
@@ -546,7 +648,10 @@ fn census_one(spec: &str, opts: &Opts) -> Row {
     let base = census::snapshot();
     let out = cell.port_encode_with(&bootstrap, &knobs);
     let counts = census::snapshot().since(&base);
-    assert!(!counts.is_empty(), "{spec}: empty census — is the `census` feature on?");
+    assert!(
+        !counts.is_empty(),
+        "{spec}: empty census — is the `census` feature on?"
+    );
     // Non-vacuity for the plane split (playbook §2): the per-plane annotation
     // is a hand-placed hook next to each `predict_intra_high` call, and a call
     // site nobody annotated would silently deflate the chroma share. The DSP
@@ -643,7 +748,10 @@ fn bootstrap_allows_screen_tools(bootstrap: &[u8]) -> bool {
         num_planes: if cc.monochrome { 1 } else { 3 },
         separate_uv_delta_q: cc.separate_uv_delta_q,
         loopfilter: LoopfilterHeader::default(),
-        cdef: CdefHeader { enable_cdef: s.enable_cdef, ..Default::default() },
+        cdef: CdefHeader {
+            enable_cdef: s.enable_cdef,
+            ..Default::default()
+        },
         restoration: RestorationHeader {
             enable_restoration: s.enable_restoration,
             sb_size_128: s.sb_size_128,
@@ -680,7 +788,10 @@ fn build_cell(spec: &str, opts: &Opts) -> (EncodeCell, Vec<u8>) {
         #[cfg(feature = "c-oracle")]
         {
             let boot = cell.c_encode_defaults();
-            assert!(!boot.is_empty(), "{spec}: the C bootstrap encode produced nothing");
+            assert!(
+                !boot.is_empty(),
+                "{spec}: the C bootstrap encode produced nothing"
+            );
             return (cell, boot);
         }
     }
@@ -692,7 +803,9 @@ fn build_cell(spec: &str, opts: &Opts) -> (EncodeCell, Vec<u8>) {
         #[cfg(not(feature = "c-oracle"))]
         {
             let _ = rest;
-            panic!("{spec}: a conformance vector needs the C decoder — rebuild with --features c-oracle,census");
+            panic!(
+                "{spec}: a conformance vector needs the C decoder — rebuild with --features c-oracle,census"
+            );
         }
         #[cfg(feature = "c-oracle")]
         {
@@ -715,16 +828,24 @@ fn build_cell(spec: &str, opts: &Opts) -> (EncodeCell, Vec<u8>) {
             };
             let cell = EncodeCell::real_content(spec, vector, crop, opts.cq, opts.speed);
             let boot = cell.c_encode_defaults();
-            assert!(!boot.is_empty(), "{spec}: the C bootstrap encode produced nothing");
+            assert!(
+                !boot.is_empty(),
+                "{spec}: the C bootstrap encode produced nothing"
+            );
             return (cell, boot);
         }
     }
     let screen = spec.starts_with("scr:");
-    if let Some(rest) = spec.strip_prefix("yuv:").or_else(|| spec.strip_prefix("scr:")) {
+    if let Some(rest) = spec
+        .strip_prefix("yuv:")
+        .or_else(|| spec.strip_prefix("scr:"))
+    {
         #[cfg(not(feature = "c-oracle"))]
         {
             let _ = (rest, screen);
-            panic!("{spec}: a raw .yuv source needs a bootstrap from real aomenc — rebuild with --features c-oracle,census");
+            panic!(
+                "{spec}: a raw .yuv source needs a bootstrap from real aomenc — rebuild with --features c-oracle,census"
+            );
         }
         #[cfg(feature = "c-oracle")]
         {
@@ -733,7 +854,11 @@ fn build_cell(spec: &str, opts: &Opts) -> (EncodeCell, Vec<u8>) {
             let (w, h): (usize, usize) = (w.parse().unwrap(), h.parse().unwrap());
             let buf = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
             let (cw, ch) = (w / 2, h / 2);
-            assert_eq!(buf.len(), w * h + 2 * cw * ch, "{path}: not {w}x{h} 8-bit I420");
+            assert_eq!(
+                buf.len(),
+                w * h + 2 * cw * ch,
+                "{path}: not {w}x{h} 8-bit I420"
+            );
             let up = |s: &[u8]| s.iter().map(|&b| u16::from(b)).collect::<Vec<u16>>();
             let cell = EncodeCell {
                 label: spec.to_string(),
@@ -760,9 +885,14 @@ fn build_cell(spec: &str, opts: &Opts) -> (EncodeCell, Vec<u8>) {
             } else {
                 cell.c_encode_defaults()
             };
-            assert!(!boot.is_empty(), "{spec}: the C bootstrap encode produced nothing");
+            assert!(
+                !boot.is_empty(),
+                "{spec}: the C bootstrap encode produced nothing"
+            );
             return (cell, boot);
         }
     }
-    panic!("unknown source {spec:?}; want winperf:<name>, yuv:<path>:<w>x<h> or scr:<path>:<w>x<h>");
+    panic!(
+        "unknown source {spec:?}; want winperf:<name>, yuv:<path>:<w>x<h> or scr:<path>:<w>x<h>"
+    );
 }

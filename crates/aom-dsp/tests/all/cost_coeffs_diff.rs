@@ -6,10 +6,10 @@
 //! isolating the cost-summation logic from the separate CDF→cost derivation.
 //! `get_tx_type_cost` (plane-0 tx_type) is out of scope on both sides.
 
-use aom_sys_ref as c;
 use aom_dsp::txb::{
     cost_coeffs_txb, cost_coeffs_txb_laplacian, scan, txb_high, txb_wide, CoeffCostTables,
 };
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -46,7 +46,11 @@ fn gen_coeffs(rng: &mut Rng, sc: &[i16], area: usize) -> (Vec<i32>, usize) {
             5..=7 => rng.range(1, 20) as i32,
             _ => rng.range(1, 3000) as i32,
         };
-        if rng.next() & 1 == 1 { -mag } else { mag }
+        if rng.next() & 1 == 1 {
+            -mag
+        } else {
+            mag
+        }
     };
     #[allow(clippy::needless_range_loop)]
     for i in 0..eob {
@@ -83,8 +87,19 @@ fn cost_coeffs_txb_identical() {
                 let dc_sign_ctx = rng.range(0, 3) as usize;
 
                 let want = c::ref_cost_coeffs_txb(
-                    &coeff, eob, tx_size, tx_type, txb_skip_ctx, dc_sign_ctx, &txb_skip,
-                    &base_eob, &base, &eob_extra, &dc_sign, &lps, &eob_c,
+                    &coeff,
+                    eob,
+                    tx_size,
+                    tx_type,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    &txb_skip,
+                    &base_eob,
+                    &base,
+                    &eob_extra,
+                    &dc_sign,
+                    &lps,
+                    &eob_c,
                 );
 
                 let tables = CoeffCostTables {
@@ -96,8 +111,15 @@ fn cost_coeffs_txb_identical() {
                     lps: &lps,
                     eob: &eob_c,
                 };
-                let got =
-                    cost_coeffs_txb(&coeff, eob, tx_size, tx_type, txb_skip_ctx, dc_sign_ctx, &tables);
+                let got = cost_coeffs_txb(
+                    &coeff,
+                    eob,
+                    tx_size,
+                    tx_type,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    &tables,
+                );
 
                 assert_eq!(
                     got, want,
@@ -160,14 +182,8 @@ fn cost_coeffs_txb_laplacian_identical() {
                     lps: &lps,
                     eob: &eob_c,
                 };
-                let got = cost_coeffs_txb_laplacian(
-                    &coeff,
-                    eob,
-                    tx_size,
-                    tx_type,
-                    txb_skip_ctx,
-                    &tables,
-                );
+                let got =
+                    cost_coeffs_txb_laplacian(&coeff, eob, tx_size, tx_type, txb_skip_ctx, &tables);
 
                 assert_eq!(
                     got, want,

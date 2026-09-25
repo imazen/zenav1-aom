@@ -883,7 +883,7 @@ pub fn ref_cdef_filter16(
 extern "C" {
     fn shim_sad(idx: i32, s: *const u8, ss: i32, r: *const u8, rs: i32) -> u32;
     fn shim_variance(idx: i32, a: *const u8, as_: i32, b: *const u8, bs: i32, sse: *mut u32)
-    -> u32;
+        -> u32;
     fn shim_subpel_var(
         idx: i32,
         a: *const u8,
@@ -5469,7 +5469,11 @@ pub fn ref_uleb_decode(buffer: &[u8]) -> Option<(u64, usize)> {
     let mut value = 0u64;
     let mut length = 0usize;
     let rc = unsafe { aom_uleb_decode(buffer.as_ptr(), buffer.len(), &mut value, &mut length) };
-    if rc == 0 { Some((value, length)) } else { None }
+    if rc == 0 {
+        Some((value, length))
+    } else {
+        None
+    }
 }
 
 /// Reference `aom_write_bit_buffer`: apply a sequence of literal ops (kind 0 =
@@ -7245,10 +7249,12 @@ pub fn ref_quantize_fp_avx2(
     // production layout is int16_t[8] rows with ac replicated through lane 7
     // (av1_quantize.h's `// 8: SIMD width` comment). Replicate that layout;
     // a 2-element buffer would leak adjacent memory into lanes 2-7.
-    let round8: [i16; 8] =
-        [round[0], round[1], round[1], round[1], round[1], round[1], round[1], round[1]];
-    let quant8: [i16; 8] =
-        [quant[0], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1]];
+    let round8: [i16; 8] = [
+        round[0], round[1], round[1], round[1], round[1], round[1], round[1], round[1],
+    ];
+    let quant8: [i16; 8] = [
+        quant[0], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1],
+    ];
     let dequant8: [i16; 8] = [
         dequant[0], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1],
         dequant[1],
@@ -7304,10 +7310,12 @@ pub fn ref_quantize_fp_neon(
     let mut dqcoeff = vec![0i32; n];
     let mut eob: u16 = 0;
     let dummy = vec![0i16; n.max(2)];
-    let round8: [i16; 8] =
-        [round[0], round[1], round[1], round[1], round[1], round[1], round[1], round[1]];
-    let quant8: [i16; 8] =
-        [quant[0], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1]];
+    let round8: [i16; 8] = [
+        round[0], round[1], round[1], round[1], round[1], round[1], round[1], round[1],
+    ];
+    let quant8: [i16; 8] = [
+        quant[0], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1], quant[1],
+    ];
     let dequant8: [i16; 8] = [
         dequant[0], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1], dequant[1],
         dequant[1],
@@ -7336,7 +7344,6 @@ pub fn ref_quantize_fp_neon(
     }
     (qcoeff, dqcoeff, eob)
 }
-
 
 // aom_dsp/quantize.c — "b" quantizer helper (dead-zone + quant/quant_shift).
 extern "C" {
@@ -16489,7 +16496,11 @@ pub fn ref_ii_wedge_mask(bsize: usize, index: usize, bw: usize, bh: usize) -> Op
          CONFIG_MULTITHREAD=0, so aom_once does not synchronise — every caller must funnel \
          through aom_sys_ref::ref_init() first (see its docs)."
     );
-    if ok != 0 { Some(out) } else { None }
+    if ok != 0 {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -16800,7 +16811,11 @@ pub fn ref_get_compound_type_mask_wedge(
             out.as_mut_ptr(),
         )
     };
-    if ok == 0 { Some(out) } else { None }
+    if ok == 0 {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Reference libaom `av1_dist_wtd_comp_weight_assign` (reconinter.c:669).
@@ -19433,12 +19448,8 @@ pub fn ref_dropout_qcoeff_num(
 
 extern "C" {
     fn shim_convert_qindex_to_q(qindex: i32, bit_depth: i32) -> f64;
-    fn shim_find_qindex(
-        desired_q: f64,
-        bit_depth: i32,
-        best_qindex: i32,
-        worst_qindex: i32,
-    ) -> i32;
+    fn shim_find_qindex(desired_q: f64, bit_depth: i32, best_qindex: i32, worst_qindex: i32)
+        -> i32;
     fn shim_compute_qdelta(
         qstart: f64,
         qtarget: f64,
@@ -20185,12 +20196,7 @@ unsafe extern "C" {
         rf1: i32,
         this_mode: i32,
     ) -> i32;
-    fn shim_rdopt_match_ref_frame_pair(
-        mbmi_rf0: i32,
-        mbmi_rf1: i32,
-        rf0: i32,
-        rf1: i32,
-    ) -> i32;
+    fn shim_rdopt_match_ref_frame_pair(mbmi_rf0: i32, mbmi_rf1: i32, rf0: i32, rf1: i32) -> i32;
     fn shim_rdopt_ref_match_found_in_nb_blocks(cur0: i32, cur1: i32, nb0: i32, nb1: i32) -> i32;
     fn shim_rdopt_match_ref_frame(
         mbmi_rf0: i32,
@@ -20282,11 +20288,7 @@ pub fn ref_rdopt_default_skip_mask(ref_set: i32) -> ModeSkipMaskFlat {
     ref_init();
     let mut m = ModeSkipMaskFlat::default();
     unsafe {
-        shim_rdopt_default_skip_mask(
-            ref_set,
-            m.pred_modes.as_mut_ptr(),
-            m.ref_combo.as_mut_ptr(),
-        )
+        shim_rdopt_default_skip_mask(ref_set, m.pred_modes.as_mut_ptr(), m.ref_combo.as_mut_ptr())
     };
     m
 }
@@ -21043,12 +21045,7 @@ unsafe extern "C" {
     ) -> i32;
     fn shim_rdopt_init_comp_avg_est_rd(level: i32, out: *mut i64);
     fn shim_rdopt_top_comp_avg_est_rd_count() -> i32;
-    fn shim_rdopt_init_top_tx_no_split_rd(
-        level: i32,
-        out: *mut i64,
-        n_blocks: i32,
-        n_top: i32,
-    );
+    fn shim_rdopt_init_top_tx_no_split_rd(level: i32, out: *mut i64, n_blocks: i32, n_top: i32);
     fn shim_rdopt_max_tx_blocks_in_max_sb() -> i32;
     fn shim_rdopt_top_inter_tx_no_split_count() -> i32;
     fn shim_rdopt_inter_modes_info_push(
@@ -21249,7 +21246,9 @@ pub fn ref_rdopt_inter_modes_info_push(
     ref_init();
     let (mut n, mut mr, mut s, mut e) = (0i32, 0i32, 0i64, 0i64);
     unsafe {
-        shim_rdopt_inter_modes_info_push(num_in, mode_rate, sse, rd, &mut n, &mut mr, &mut s, &mut e)
+        shim_rdopt_inter_modes_info_push(
+            num_in, mode_rate, sse, rd, &mut n, &mut mr, &mut s, &mut e,
+        )
     };
     (n, mr, s, e)
 }
@@ -21994,13 +21993,7 @@ unsafe extern "C" {
         best_pred_rd: *mut i64,
     );
     fn shim_rdopt_reference_modes() -> i32;
-    fn shim_rdopt_init_mbmi(
-        curr_mode: i32,
-        rf0: i32,
-        rf1: i32,
-        interp_filter: i32,
-        out: *mut i32,
-    );
+    fn shim_rdopt_init_mbmi(curr_mode: i32, rf0: i32, rf1: i32, interp_filter: i32, out: *mut i32);
 }
 
 /// Reference `prune_ref_frame` (rdopt.c:4284), with
@@ -22673,12 +22666,7 @@ pub fn ref_get_ref_frames(
 extern "C" {
     fn av1_exponential_entropy(q_step: f64, b: f64) -> f64;
     fn av1_laplace_entropy(q_step: f64, b: f64, zero_bin_ratio: f64) -> f64;
-    fn av1_estimate_coeff_entropy(
-        q_step: f64,
-        b: f64,
-        zero_bin_ratio: f64,
-        qcoeff: i32,
-    ) -> f64;
+    fn av1_estimate_coeff_entropy(q_step: f64, b: f64, zero_bin_ratio: f64, qcoeff: i32) -> f64;
     fn av1_get_overlap_area(
         row_a: i32,
         col_a: i32,
@@ -22688,17 +22676,8 @@ extern "C" {
         height: i32,
     ) -> i32;
     fn av1_tpl_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, right_shift: u8) -> i32;
-    fn av1_delta_rate_cost(
-        delta_rate: i64,
-        recrf_dist: i64,
-        srcrf_dist: i64,
-        pix_num: i32,
-    ) -> i64;
-    fn av1_get_q_index_from_qstep_ratio(
-        leaf_qindex: i32,
-        qstep_ratio: f64,
-        bit_depth: i32,
-    ) -> i32;
+    fn av1_delta_rate_cost(delta_rate: i64, recrf_dist: i64, srcrf_dist: i64, pix_num: i32) -> i64;
+    fn av1_get_q_index_from_qstep_ratio(leaf_qindex: i32, qstep_ratio: f64, bit_depth: i32) -> i32;
 }
 
 /// Reference libaom `av1_exponential_entropy` (tpl_model.c:2347).
@@ -22745,12 +22724,7 @@ pub fn ref_tpl_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, right_shift: u8) -
 
 /// Reference libaom `av1_delta_rate_cost` (tpl_model.c:1175).
 #[must_use]
-pub fn ref_delta_rate_cost(
-    delta_rate: i64,
-    recrf_dist: i64,
-    srcrf_dist: i64,
-    pix_num: i32,
-) -> i64 {
+pub fn ref_delta_rate_cost(delta_rate: i64, recrf_dist: i64, srcrf_dist: i64, pix_num: i32) -> i64 {
     ref_init();
     unsafe { av1_delta_rate_cost(delta_rate, recrf_dist, srcrf_dist, pix_num) }
 }
@@ -23291,7 +23265,10 @@ pub fn ref_tf_estimate_noise_lowbd(
     edge_thresh: i32,
 ) -> f64 {
     ref_init();
-    assert!(src.len() >= height * stride, "plane too short for {height}x{stride}");
+    assert!(
+        src.len() >= height * stride,
+        "plane too short for {height}x{stride}"
+    );
     unsafe {
         shim_tf_estimate_noise_lowbd(
             src.as_ptr(),
@@ -23314,7 +23291,10 @@ pub fn ref_tf_estimate_noise_highbd(
     edge_thresh: i32,
 ) -> f64 {
     ref_init();
-    assert!(src.len() >= height * stride, "plane too short for {height}x{stride}");
+    assert!(
+        src.len() >= height * stride,
+        "plane too short for {height}x{stride}"
+    );
     unsafe {
         shim_tf_estimate_noise_highbd(
             src.as_ptr(),
@@ -23767,7 +23747,10 @@ pub fn ref_rcc_minq_lut(which: i32, bit_depth: u8, mode_idx: i32, res_idx: i32) 
             out.len() as i32,
         )
     };
-    assert_eq!(n, 256, "shim_rcc_minq_lut rejected ({which}, {bit_depth}, {mode_idx}, {res_idx})");
+    assert_eq!(
+        n, 256,
+        "shim_rcc_minq_lut rejected ({which}, {bit_depth}, {mode_idx}, {res_idx})"
+    );
     out
 }
 
@@ -23864,7 +23847,11 @@ pub fn ref_rcc_gf_group_pyramid_level(layer_depth: i32) -> i32 {
 pub fn ref_rcc_get_active_cq_level(p: &RefRcQParams) -> i32 {
     ref_init();
     let r = unsafe { shim_rcc_get_active_cq_level(p) };
-    assert_ne!(r, i32::MIN, "shim_rcc_get_active_cq_level allocation failed");
+    assert_ne!(
+        r,
+        i32::MIN,
+        "shim_rcc_get_active_cq_level allocation failed"
+    );
     r
 }
 
@@ -24007,12 +23994,8 @@ extern "C" {
         w: i32,
         h: i32,
     ) -> i32;
-    fn shim_tplc_drate_cost(
-        delta_rate: i64,
-        recrf_dist: i64,
-        srcrf_dist: i64,
-        pix_num: i32,
-    ) -> i64;
+    fn shim_tplc_drate_cost(delta_rate: i64, recrf_dist: i64, srcrf_dist: i64, pix_num: i32)
+        -> i64;
     fn shim_tplc_ptr_pos(mi_row: i32, mi_col: i32, stride: i32, rs: u8) -> i32;
 }
 
@@ -24077,11 +24060,7 @@ pub fn ref_tpl_skip_tpl_for_frame(
 /// Reference libaom `is_alike_mv` (tpl_model.c:345, static). **Tier 1c.**
 /// `centers` is `[row, col]` pairs.
 #[must_use]
-pub fn ref_tpl_is_alike_mv(
-    cand: (i16, i16),
-    centers: &[i16],
-    skip_alike_starting_mv: i32,
-) -> bool {
+pub fn ref_tpl_is_alike_mv(cand: (i16, i16), centers: &[i16], skip_alike_starting_mv: i32) -> bool {
     ref_init();
     assert!(centers.len() % 2 == 0, "centers must be row/col pairs");
     let r = unsafe {
@@ -24303,8 +24282,16 @@ pub fn ref_rdopt_get_sse(
         planes[1].dst.as_ptr(),
         planes[2].dst.as_ptr(),
     ];
-    let ss_stride = [planes[0].src_stride, planes[1].src_stride, planes[2].src_stride];
-    let ds_stride = [planes[0].dst_stride, planes[1].dst_stride, planes[2].dst_stride];
+    let ss_stride = [
+        planes[0].src_stride,
+        planes[1].src_stride,
+        planes[2].src_stride,
+    ];
+    let ds_stride = [
+        planes[0].dst_stride,
+        planes[1].dst_stride,
+        planes[2].dst_stride,
+    ];
     let mut sse_y = 0i64;
     let total = unsafe {
         shim_rdopt_get_sse(
@@ -25307,23 +25294,15 @@ extern "C" {
     ) -> i32;
 
     // ratectrl_shim.c — the file-statics (tier 1c).
-    fn shim_rcc_resize_rate_factor(
-        cfg_width: i32,
-        cfg_height: i32,
-        width: i32,
-        height: i32,
-    ) -> f64;
+    fn shim_rcc_resize_rate_factor(cfg_width: i32, cfg_height: i32, width: i32, height: i32)
+        -> f64;
     fn shim_rcc_get_rate_factor_level(update_type: i32) -> i32;
     fn shim_rcc_get_rate_correction_factor(
         p: *const RefRcStateParams,
         width: i32,
         height: i32,
     ) -> f64;
-    fn shim_rcc_get_bits_per_mb(
-        p: *const RefRcStateParams,
-        correction_factor: f64,
-        q: i32,
-    ) -> i32;
+    fn shim_rcc_get_bits_per_mb(p: *const RefRcStateParams, correction_factor: f64, q: i32) -> i32;
     fn shim_rcc_find_qindex_by_rate(
         p: *const RefRcStateParams,
         desired_bits_per_mb: i32,
@@ -25379,7 +25358,11 @@ pub fn ref_rcc_probe_estimate_bits_at_q(
 ) -> i32 {
     ref_init();
     let r = unsafe { shim_rcc_probe_estimate_bits_at_q(p, q, correction_factor) };
-    assert_ne!(r, i32::MIN, "shim_rcc_probe_estimate_bits_at_q alloc failed");
+    assert_ne!(
+        r,
+        i32::MIN,
+        "shim_rcc_probe_estimate_bits_at_q alloc failed"
+    );
     r
 }
 
@@ -25471,12 +25454,7 @@ pub fn ref_set_frame_target(
 }
 
 /// Reference libaom `resize_rate_factor` (ratectrl.c:124, static).
-pub fn ref_rcc_resize_rate_factor(
-    cfg_width: i32,
-    cfg_height: i32,
-    width: i32,
-    height: i32,
-) -> f64 {
+pub fn ref_rcc_resize_rate_factor(cfg_width: i32, cfg_height: i32, width: i32, height: i32) -> f64 {
     ref_init();
     unsafe { shim_rcc_resize_rate_factor(cfg_width, cfg_height, width, height) }
 }
@@ -25488,11 +25466,7 @@ pub fn ref_rcc_get_rate_factor_level(update_type: i32) -> i32 {
 }
 
 /// Reference libaom `get_rate_correction_factor` (ratectrl.c:838, static).
-pub fn ref_rcc_get_rate_correction_factor(
-    p: &RefRcStateParams,
-    width: i32,
-    height: i32,
-) -> f64 {
+pub fn ref_rcc_get_rate_correction_factor(p: &RefRcStateParams, width: i32, height: i32) -> f64 {
     ref_init();
     unsafe { shim_rcc_get_rate_correction_factor(p, width, height) }
 }
@@ -25516,7 +25490,13 @@ pub fn ref_rcc_find_qindex_by_rate(
 ) -> i32 {
     ref_init();
     let r = unsafe {
-        shim_rcc_find_qindex_by_rate(p, desired_bits_per_mb, frame_type, best_qindex, worst_qindex)
+        shim_rcc_find_qindex_by_rate(
+            p,
+            desired_bits_per_mb,
+            frame_type,
+            best_qindex,
+            worst_qindex,
+        )
     };
     assert_ne!(r, i32::MIN, "shim_rcc_find_qindex_by_rate alloc failed");
     r
@@ -25697,9 +25677,7 @@ pub fn ref_vbp_force_skip_low_temp_var(
     bsize: i32,
 ) -> i32 {
     ref_init();
-    unsafe {
-        shim_vbp_force_skip_low_temp_var(variance_low.as_ptr(), mi_row, mi_col, bsize)
-    }
+    unsafe { shim_vbp_force_skip_low_temp_var(variance_low.as_ptr(), mi_row, mi_col, bsize) }
 }
 
 /// Reference `av1_get_force_skip_low_temp_var_small_sb` (:852) — the SB64
@@ -26079,7 +26057,12 @@ pub fn ref_primary_rc_init(c: &RefRcInitCfg) -> ([i32; 10], [f64; 6], [i64; 4]) 
     let mut out_d = [0f64; 6];
     let mut out_l = [0i64; 4];
     let r = unsafe {
-        shim_rca_primary_rc_init(c, out_i.as_mut_ptr(), out_d.as_mut_ptr(), out_l.as_mut_ptr())
+        shim_rca_primary_rc_init(
+            c,
+            out_i.as_mut_ptr(),
+            out_d.as_mut_ptr(),
+            out_l.as_mut_ptr(),
+        )
     };
     assert_eq!(r, 0, "shim_rca_primary_rc_init allocation failed");
     (out_i, out_d, out_l)
@@ -26207,16 +26190,10 @@ extern "C" {
         section: *mut RefFirstpassStats,
         frame: *const RefFirstpassStats,
     );
-    fn shim_fp_get_unit_rows_in_tile(
-        mi_row_start: i32,
-        mi_row_end: i32,
-        fp_block_size: i32,
-    ) -> i32;
-    fn shim_fp_get_unit_cols_in_tile(
-        mi_col_start: i32,
-        mi_col_end: i32,
-        fp_block_size: i32,
-    ) -> i32;
+    fn shim_fp_get_unit_rows_in_tile(mi_row_start: i32, mi_row_end: i32, fp_block_size: i32)
+        -> i32;
+    fn shim_fp_get_unit_cols_in_tile(mi_col_start: i32, mi_col_end: i32, fp_block_size: i32)
+        -> i32;
     fn shim_fp_get_unit_rows(fp_block_size: i32, mb_rows: i32) -> i32;
     fn shim_fp_get_unit_cols(fp_block_size: i32, mb_cols: i32) -> i32;
     fn shim_fp_get_num_mbs(fp_block_size: i32, num_mbs_16x16: i32) -> i32;
@@ -26787,12 +26764,7 @@ pub fn ref_ct_prune_mode_by_skip_rd(
 /// `TX_SEARCH_CASES` and `MAX_TX_RD_GATE_LEVEL` as the oracle TU sees them.
 pub fn ref_ct_tx_gate_constants() -> (i32, i32) {
     ref_init();
-    unsafe {
-        (
-            shim_ct_tx_search_cases(),
-            shim_ct_max_tx_rd_gate_level(),
-        )
-    }
+    unsafe { (shim_ct_tx_search_cases(), shim_ct_max_tx_rd_gate_level()) }
 }
 
 // ===========================================================================
@@ -26903,7 +26875,13 @@ pub fn ref_nrd_block_yrd_idtx(
         )
     };
     assert!(skippable >= 0, "the idtx shim failed to allocate");
-    RefIdtxRd { rate, dist, sse, skippable: skippable != 0, blk_skip }
+    RefIdtxRd {
+        rate,
+        dist,
+        sse,
+        skippable: skippable != 0,
+        blk_skip,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -27238,13 +27216,7 @@ extern "C" {
         pre_stride: i32,
         out: *mut i32,
     );
-    fn shim_rie_scale_factors(
-        ref_w: i32,
-        ref_h: i32,
-        this_w: i32,
-        this_h: i32,
-        out: *mut i32,
-    );
+    fn shim_rie_scale_factors(ref_w: i32, ref_h: i32, this_w: i32, this_h: i32, out: *mut i32);
 }
 
 /// Reference `enc_calc_subpel_params` (reconinter_enc.c:32) via
@@ -27495,7 +27467,10 @@ pub fn ref_nrp_skip_mode_by_bsize_and_ref_frame(
 #[must_use]
 pub fn ref_nrp_skip_comp_based_on_var(single_vars: &[u32], bsize: i32) -> bool {
     ref_init();
-    assert_eq!(single_vars.len(), ref_nrp_rtc_inter_modes() * ref_nrp_ref_frames());
+    assert_eq!(
+        single_vars.len(),
+        ref_nrp_rtc_inter_modes() * ref_nrp_ref_frames()
+    );
     unsafe { shim_nrp_skip_comp_based_on_var(single_vars.as_ptr(), bsize) != 0 }
 }
 
@@ -27883,16 +27858,8 @@ unsafe extern "C" {
         sr_accumulator: *mut f64,
         max_boost: f64,
     ) -> f64;
-    fn shim_p2_calculate_boost_bits(
-        frame_count: i32,
-        boost: i32,
-        total_group_bits: i64,
-    ) -> i32;
-    fn shim_p2_calculate_boost_factor(
-        frame_count: i32,
-        bits: i32,
-        total_group_bits: i64,
-    ) -> i32;
+    fn shim_p2_calculate_boost_bits(frame_count: i32, boost: i32, total_group_bits: i64) -> i32;
+    fn shim_p2_calculate_boost_factor(frame_count: i32, bits: i32, total_group_bits: i64) -> i32;
     fn shim_p2_get_projected_gfu_boost(
         baseline_gf_interval: i32,
         gfu_boost: i32,
@@ -28263,11 +28230,7 @@ extern "C" {
 /// `entry_flags[i]` is the `flags` of the lookahead entry at PEEK index `i`;
 /// the shim places it in the ring so `av1_lookahead_peek(ctx, i, ..)` finds
 /// it, whatever `read_idx` is. Returns `-1` for "none pending".
-pub fn ref_is_forced_keyframe_pending(
-    entry_flags: &[i32],
-    read_idx: i32,
-    up_to_index: i32,
-) -> i32 {
+pub fn ref_is_forced_keyframe_pending(entry_flags: &[i32], read_idx: i32, up_to_index: i32) -> i32 {
     ref_init();
     let r = unsafe {
         shim_is_forced_keyframe_pending(
@@ -28488,13 +28451,7 @@ pub fn ref_p2_accumulate_frame_motion_stats(
 ) {
     ref_init();
     unsafe {
-        shim_p2_accumulate_frame_motion_stats(
-            stats.as_ptr(),
-            gf.as_mut_ptr(),
-            nz_count,
-            f_w,
-            f_h,
-        );
+        shim_p2_accumulate_frame_motion_stats(stats.as_ptr(), gf.as_mut_ptr(), nz_count, f_w, f_h);
     }
 }
 
@@ -29406,12 +29363,7 @@ pub fn ref_p2_get_gradient(values: &[f64], start: i32, last: i32, grad: &mut [f6
 }
 
 /// Reference `analyze_region` (:1324), tier 1c. `regions` is in/out.
-pub fn ref_p2_analyze_region(
-    flat: &[f64],
-    is_flash: &[i8],
-    k: i32,
-    regions: &mut [P2Region],
-) {
+pub fn ref_p2_analyze_region(flat: &[f64], is_flash: &[i8], k: i32, regions: &mut [P2Region]) {
     ref_init();
     let (mut s, mut l, mut t, mut d) = split_regions(regions);
     let rc = unsafe {
@@ -29588,11 +29540,7 @@ pub fn ref_p2_remove_short_regions(
 
 /// Reference `find_regions_index` (:1909), tier 1c. `-1` is C's "not found".
 #[must_use]
-pub fn ref_p2_find_regions_index(
-    regions: &[P2Region],
-    num_regions: i32,
-    frame_idx: i32,
-) -> i32 {
+pub fn ref_p2_find_regions_index(regions: &[P2Region], num_regions: i32, frame_idx: i32) -> i32 {
     ref_init();
     let (s, l, t, d) = split_regions(regions);
     unsafe {
@@ -29844,7 +29792,12 @@ pub fn ref_nrd_model_rd_for_sb_uv(
         )
     };
     assert!(tot_sse >= 0, "the uv model shim failed to allocate");
-    RefUvModelRd { rate, dist, skip_txfm: skip != 0, tot_sse }
+    RefUvModelRd {
+        rate,
+        dist,
+        skip_txfm: skip != 0,
+        tot_sse,
+    }
 }
 
 // --- var_based_part.c's two remaining INTER decisions (tier 1c) ------------
@@ -30065,13 +30018,13 @@ pub fn ref_vbps_evaluate_neighbour_mvs(
             i32::from(ctx.above.0),
             ctx.above.1,
             ctx.above.2,
-            ctx.above.3.0,
-            ctx.above.3.1,
+            ctx.above.3 .0,
+            ctx.above.3 .1,
             i32::from(ctx.left.0),
             ctx.left.1,
             ctx.left.2,
-            ctx.left.3.0,
-            ctx.left.3.1,
+            ctx.left.3 .0,
+            ctx.left.3 .1,
             ctx.mv_limits.0,
             ctx.mv_limits.1,
             ctx.mv_limits.2,

@@ -55,7 +55,10 @@ fn gen_buf(rng: &mut Rng, strategy: u32) -> Vec<u8> {
 
 /// One shared body: assert the `u8` kernel `apply` matches the REAL C lowbd
 /// kernel AND the port's u16 bd8 highbd kernel, over the full input space.
-fn kernel_matches(mut apply: impl FnMut(u8, u32, &mut [u8], usize, usize, u8, u8, u8), label: &str) {
+fn kernel_matches(
+    mut apply: impl FnMut(u8, u32, &mut [u8], usize, usize, u8, u8, u8),
+    label: &str,
+) {
     c::ref_init();
     let mut rng = Rng(0x_10fd_ead0_1234_5678);
     let mut checks = 0u64;
@@ -69,22 +72,57 @@ fn kernel_matches(mut apply: impl FnMut(u8, u32, &mut [u8], usize, usize, u8, u8
                 // sum fails — C's own kernels diverge there. The v3 mirror follows
                 // `_sse2` (pinned in lowbd_lpf_sse2_diff); the u16 highbd comparison
                 // below is likewise exact-int.
-                let blimit = if rng.upto(2) == 0 { rng.u8().min(254) } else { (16 + rng.upto(200)) as u8 };
-                let limit = if rng.upto(2) == 0 { rng.upto(255 - blimit as u32) as u8 } else { (1 + rng.upto(64)) as u8 };
+                let blimit = if rng.upto(2) == 0 {
+                    rng.u8().min(254)
+                } else {
+                    (16 + rng.upto(200)) as u8
+                };
+                let limit = if rng.upto(2) == 0 {
+                    rng.upto(255 - blimit as u32) as u8
+                } else {
+                    (1 + rng.upto(64)) as u8
+                };
                 let thresh = rng.u8();
 
                 // u8 lowbd kernel under test.
                 let mut got_u8 = base.clone();
-                apply(dir, width, &mut got_u8, CENTER, PITCH, blimit, limit, thresh);
+                apply(
+                    dir,
+                    width,
+                    &mut got_u8,
+                    CENTER,
+                    PITCH,
+                    blimit,
+                    limit,
+                    thresh,
+                );
 
                 // REAL C lowbd (aom_lpf_*_c).
                 let mut want_c = base.clone();
-                c::ref_lpf(dir, width, &mut want_c, CENTER, PITCH, blimit, limit, thresh);
+                c::ref_lpf(
+                    dir,
+                    width,
+                    &mut want_c,
+                    CENTER,
+                    PITCH,
+                    blimit,
+                    limit,
+                    thresh,
+                );
 
                 // Port's u16 highbd path at bd = 8 (what bd8 frames run today).
                 let mut got_hbd: Vec<u16> = base.iter().map(|&x| x as u16).collect();
                 if dir == b'h' {
-                    highbd::horizontal(width, &mut got_hbd, CENTER, PITCH, blimit, limit, thresh, 8);
+                    highbd::horizontal(
+                        width,
+                        &mut got_hbd,
+                        CENTER,
+                        PITCH,
+                        blimit,
+                        limit,
+                        thresh,
+                        8,
+                    );
                 } else {
                     highbd::vertical(width, &mut got_hbd, CENTER, PITCH, blimit, limit, thresh, 8);
                 }

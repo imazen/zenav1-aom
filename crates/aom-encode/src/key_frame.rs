@@ -120,10 +120,10 @@
 use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame};
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
-    CdefHeader, ColorConfigParams, DecoderModelInfo, DeltaQParams, FrameHeaderObu,
+    CdefHeader, ColorConfigParams, DecoderModelInfo, DeltaQParams, FilmGrainParams, FrameHeaderObu,
     FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader, QuantParamsHeader, RestorationHeader,
     SequenceHeaderObu, SequenceHeaderParams, TileInfoHeader, TimingInfoHeader,
-    write_sequence_header_obu, FilmGrainParams,
+    write_sequence_header_obu,
 };
 use aom_dsp::entropy::leb128::uleb_encode;
 use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
@@ -140,8 +140,7 @@ use crate::encode_intra::TrellisOptType;
 use crate::encode_sb::{LeafWinner, SbEncodeEnv, SbTree};
 use crate::intra_uv_rd::UvLoopPolicy;
 use crate::lf_search::{
-    LfSearchFrame, LoopFilterLevels, pick_filter_level_mt,
-    pick_filter_level_from_q,
+    LfSearchFrame, LoopFilterLevels, pick_filter_level_from_q, pick_filter_level_mt,
 };
 use crate::obu_assemble::{
     OBU_FRAME, assemble_multitile_frame_obu_payload_derived, assemble_obu_frame_single_tile,
@@ -150,10 +149,10 @@ use crate::pack::{CdefPackState, LrPackParams, PackCfg, pack_tile_from_trees_lr}
 use crate::partition_pick::PickFrameCfg;
 use crate::pickcdef::CdefSearchFrame;
 use crate::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
+use crate::real_costs::RealCosts;
 use crate::real_costs::derive_real_costs;
 use crate::screen_detect::ScreenContentDecision;
 use crate::speed_features::SpeedFeatures;
-use crate::real_costs::RealCosts;
 use crate::tx_search::{MI_SIZE_HIGH_B, MI_SIZE_WIDE_B};
 
 /// `OBU_TEMPORAL_DELIMITER` (`av1/common/enums.h` `OBU_TYPE`).
@@ -237,7 +236,9 @@ impl ColorDescription {
     /// `read_color_config`'s mirror at `header.rs:1978`).
     #[must_use]
     pub fn is_srgb(&self) -> bool {
-        self.color_primaries == 1 && self.transfer_characteristics == 13 && self.matrix_coefficients == 0
+        self.color_primaries == 1
+            && self.transfer_characteristics == 13
+            && self.matrix_coefficients == 0
     }
 }
 
@@ -863,7 +864,9 @@ impl KeyFrameConfig {
             }
         }
         if !(0..=7).contains(&cfg.quality.sharpness) {
-            return Err(KeyFrameError::Unsupported("quality.sharpness: must be 0..=7"));
+            return Err(KeyFrameError::Unsupported(
+                "quality.sharpness: must be 0..=7",
+            ));
         }
         if cfg.quality.deltaq_strength > 1000 {
             return Err(KeyFrameError::Unsupported(
@@ -881,7 +884,9 @@ impl KeyFrameConfig {
             ));
         }
         if cfg.tools.cdf_update_mode > 2 {
-            return Err(KeyFrameError::Unsupported("tools.cdf_update_mode: must be 0, 1 or 2"));
+            return Err(KeyFrameError::Unsupported(
+                "tools.cdf_update_mode: must be 0, 1 or 2",
+            ));
         }
         // MEASURED 2026-09-11 (`self_contained_tools`): with `disable_cdf_update = 1`
         // this path emits a stream the REAL libaom decoder REJECTS, while aomenc's
@@ -910,10 +915,21 @@ impl KeyFrameConfig {
                 || !(0..=3).contains(&g.ar_coeff_lag)
                 || !(6..=9).contains(&g.ar_coeff_shift)
                 || !(0..=3).contains(&g.grain_scale_shift)
-                || g.ar_coeffs_y.iter().chain(&g.ar_coeffs_cb).chain(&g.ar_coeffs_cr).any(|&c| !(-128..=127).contains(&c))
-                || [g.cb_mult, g.cb_luma_mult, g.cb_offset, g.cr_mult, g.cr_luma_mult, g.cr_offset]
+                || g.ar_coeffs_y
                     .iter()
-                    .any(|&v| !(0..=511).contains(&v))
+                    .chain(&g.ar_coeffs_cb)
+                    .chain(&g.ar_coeffs_cr)
+                    .any(|&c| !(-128..=127).contains(&c))
+                || [
+                    g.cb_mult,
+                    g.cb_luma_mult,
+                    g.cb_offset,
+                    g.cr_mult,
+                    g.cr_luma_mult,
+                    g.cr_offset,
+                ]
+                .iter()
+                .any(|&v| !(0..=511).contains(&v))
             {
                 return Err(KeyFrameError::Unsupported(
                     "film_grain: a parameter is outside its bitstream field (seed 16 bits, <= 14/10/10                      scaling points of 8-bit values, scaling_shift 8..=11, ar_coeff_lag 0..=3,                      ar_coeff_shift 6..=9, grain_scale_shift 0..=3, AR coeffs -128..=127, multipliers 0..=511)",
@@ -961,7 +977,11 @@ impl KeyFrameConfig {
     /// Shared with [`encode_key_frame`], which allocates from this exact
     /// derivation, so an estimate cannot drift from what is allocated.
     pub fn padded_plane_geometry(&self) -> (usize, usize) {
-        let sb_mi = if self.sb_size_128 { SB_MI_128 } else { SB_MI_64 };
+        let sb_mi = if self.sb_size_128 {
+            SB_MI_128
+        } else {
+            SB_MI_64
+        };
         let sb_px = (sb_mi * 4) as usize;
         let mi_cols = mi_dim(self.width as i32);
         let mi_rows = mi_dim(self.height as i32);
@@ -1315,7 +1335,10 @@ impl core::fmt::Display for KeyFrameError {
                 write!(f, "exceeds the caller's {what} limit: {actual} > {max}")
             }
             KeyFrameError::InternalInvariant(what) => {
-                write!(f, "internal invariant failed: {what} (a bug — please report)")
+                write!(
+                    f,
+                    "internal invariant failed: {what} (a bug — please report)"
+                )
             }
         }
     }
@@ -1373,11 +1396,7 @@ const ESTIMATE_BYTES_PER_PADDED_SAMPLE: u64 = 16;
 /// for >= 6.
 #[allow(non_snake_case)]
 const fn ESTIMATE_LEAF_BYTES_PER_PIXEL(cpu_used: i32) -> u64 {
-    if cpu_used <= 5 {
-        56
-    } else {
-        32
-    }
+    if cpu_used <= 5 { 56 } else { 32 }
 }
 
 /// The chroma share of the per-pixel term, per coded sample-per-pixel
@@ -1708,11 +1727,17 @@ pub fn derive_frame_header(
     let (u_dc, u_ac, v_dc, v_ac) = if cfg.monochrome {
         (0, 0, 0, 0)
     } else {
-        (qs.u_dc_delta_q, qs.u_ac_delta_q, qs.v_dc_delta_q, qs.v_ac_delta_q)
+        (
+            qs.u_dc_delta_q,
+            qs.u_ac_delta_q,
+            qs.v_dc_delta_q,
+            qs.v_ac_delta_q,
+        )
     };
     // `frame_is_coded_lossless`: base_qindex 0 and all five plane deltas 0
     // (a chroma delta at q == 0 is not produced by any ramp).
-    let coded_lossless = base_qindex == 0 && (qs.y_dc_delta_q, u_dc, u_ac, v_dc, v_ac) == (0, 0, 0, 0, 0);
+    let coded_lossless =
+        base_qindex == 0 && (qs.y_dc_delta_q, u_dc, u_ac, v_dc, v_ac) == (0, 0, 0, 0, 0);
     let superres = cfg.superres_denom != 0;
     let coded_w = cfg.coded_width() as i32;
     let grain = cfg.film_grain.map(|mut g| {
@@ -1789,7 +1814,11 @@ pub fn derive_frame_header(
             superres_upscaled_height: s.max_frame_height,
             enable_superres: s.enable_superres,
             // SCALE_NUMERATOR (8) — "no superres scaling" — or the fixed denominator.
-            scale_denominator: if superres { i32::from(cfg.superres_denom) } else { 8 },
+            scale_denominator: if superres {
+                i32::from(cfg.superres_denom)
+            } else {
+                8
+            },
             // `render_and_frame_size_different`: the render size equals the
             // frame size, so nothing is coded.
             scaling_active: false,
@@ -2094,7 +2123,10 @@ fn palette_pixel_tree(
                 if i > 0 && mi_row + (i as i32) * quarter >= mi_rows {
                     break;
                 }
-                palette_leaf(n, w.as_ref().expect("in-frame 4-way strip carries a winner"));
+                palette_leaf(
+                    n,
+                    w.as_ref().expect("in-frame 4-way strip carries a winner"),
+                );
             }
         }
         SbTree::Vert4(subs) => {
@@ -2102,11 +2134,15 @@ fn palette_pixel_tree(
                 if i > 0 && mi_col + (i as i32) * quarter >= mi_cols {
                     break;
                 }
-                palette_leaf(n, w.as_ref().expect("in-frame 4-way strip carries a winner"));
+                palette_leaf(
+                    n,
+                    w.as_ref().expect("in-frame 4-way strip carries a winner"),
+                );
             }
         }
-        SbTree::HorzA(subs) | SbTree::HorzB(subs) | SbTree::VertA(subs)
-        | SbTree::VertB(subs) => subs.iter().for_each(|w| palette_leaf(n, w)),
+        SbTree::HorzA(subs) | SbTree::HorzB(subs) | SbTree::VertA(subs) | SbTree::VertB(subs) => {
+            subs.iter().for_each(|w| palette_leaf(n, w))
+        }
     }
 }
 
@@ -2279,8 +2315,7 @@ fn scm_trial_run_pass(
         fixed_partition_size: Some(crate::var_part::BLOCK_32X32),
         fs_sf: crate::partition_pick::FrameSizeSf {
             vbp: crate::var_part::VbpSf {
-                force_large_partition_blocks_intra: sf_trial
-                    .force_large_partition_blocks_intra
+                force_large_partition_blocks_intra: sf_trial.force_large_partition_blocks_intra
                     != 0,
                 var_part_split_threshold_shift: sf_trial.var_part_split_threshold_shift,
                 allintra: true,
@@ -2332,8 +2367,7 @@ fn scm_trial_run_pass(
         enable_ab_partitions: tools.enable_ab_partitions,
         allow_screen_content_tools: trial_allow_sct,
         qm_levels,
-        palette_costs: (trial_allow_sct && cfg.enable_palette)
-            .then_some(&real.palette_costs),
+        palette_costs: (trial_allow_sct && cfg.enable_palette).then_some(&real.palette_costs),
     };
     let trial_tx_select = !trial_lossless && tools.enable_tx_size_search;
     let pack_cfg = PackCfg {
@@ -2426,7 +2460,11 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
     let quality = &cfg.quality;
     // `is_lossless_requested` keeps the original q; everything else encodes
     // the trial at a high q for speed (encoder_utils.c:1252-1253).
-    let q_trial = if cfg.cq_level == 0 { qindex } else { qindex.max(244) };
+    let q_trial = if cfg.cq_level == 0 {
+        qindex
+    } else {
+        qindex.max(244)
+    };
     // `av1_set_quantizer(cm, qm_minlevel, qm_maxlevel, q_trial, ...)` (:1289)
     // + `av1_init_quantizer` (:1295) — the quant tables at the trial q.
     let (qm_min, qm_max) = cfg.quality.qm.unwrap_or((4, 10));
@@ -2443,9 +2481,13 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
         /*delta_q_present=*/ false,
     );
     let trial_lossless = q_trial == 0
-        && (qs_trial.y_dc_delta_q, qs_trial.u_dc_delta_q, qs_trial.u_ac_delta_q,
-            qs_trial.v_dc_delta_q, qs_trial.v_ac_delta_q)
-            == (0, 0, 0, 0, 0);
+        && (
+            qs_trial.y_dc_delta_q,
+            qs_trial.u_dc_delta_q,
+            qs_trial.u_ac_delta_q,
+            qs_trial.v_dc_delta_q,
+            qs_trial.v_ac_delta_q,
+        ) == (0, 0, 0, 0, 0);
     let mut quants_trial = Quants::zeroed();
     let mut deq_trial = Dequants::zeroed();
     av1_build_quantizer(
@@ -2485,8 +2527,11 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
         0
     };
     // `default_for_qindex` selects the coeff-CDF band — the trial q's.
-    let real_trial =
-        derive_real_costs(&KfFrameContext::default_for_qindex(q_trial), inp.enable_filter_intra, None);
+    let real_trial = derive_real_costs(
+        &KfFrameContext::default_for_qindex(q_trial),
+        inp.enable_filter_intra,
+        None,
+    );
     let tune = crate::TuneKnobs {
         use_qm_dist_metric: quality.qm_dist_metric,
         iq_tuning: quality.tune != Tune::Psnr,
@@ -2569,10 +2614,12 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
             trial_lossless,
             // Each pass is its own `av1_encode_frame` — clone the ctx (all
             // fields are Copy or shared refs).
-            deltaq_trial.as_ref().map(|d| crate::encode_sb::DeltaQFrameCtx {
-                perceptual_ai: d.perceptual_ai,
-                ..*d
-            }),
+            deltaq_trial
+                .as_ref()
+                .map(|d| crate::encode_sb::DeltaQFrameCtx {
+                    perceptual_ai: d.perceptual_ai,
+                    ..*d
+                }),
         );
         // `screen_content_tools_determination` reads `cpi->palette_pixel_num`
         // reset per `av1_encode_frame` (encodeframe.c:2769) — only the LAST
@@ -2583,14 +2630,18 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
     // `screen_content_tools_determination`'s pass-1 decision
     // (encoder_utils.c:1161-1188).
     let psnr_diff = psnr[1] - psnr[0];
-    let palette_ratio =
-        palette_pixel_num as f64 / (inp.h as f64 * inp.enc_w as f64);
-    let win = psnr_diff > 0.9
-        || (palette_ratio >= 0.0001 && psnr_diff / palette_ratio > 4.0);
+    let palette_ratio = palette_pixel_num as f64 / (inp.h as f64 * inp.enc_w as f64);
+    let win = psnr_diff > 0.9 || (palette_ratio >= 0.0001 && psnr_diff / palette_ratio > 4.0);
     if aom_dsp::trace_on!(aom_dsp::trace::Trace::SctTrial) {
         aom_dsp::trace_out!(
             "[sct-trial] q={} psnr0={:.4} psnr1={:.4} diff={:.4} pal_px={} ratio={:.5} win={}",
-            q_trial, psnr[0], psnr[1], psnr_diff, palette_pixel_num, palette_ratio, win
+            q_trial,
+            psnr[0],
+            psnr[1],
+            psnr_diff,
+            palette_pixel_num,
+            palette_ratio,
+            win
         );
     }
     if win {
@@ -2916,7 +2967,11 @@ pub fn encode_key_frame_with(
     // superres with either post-filter on.
     let superres = cfg.superres_denom != 0;
     let enc_w = cfg.coded_width();
-    let enc_cw = if cfg.monochrome { 0 } else { (enc_w + cfg.ss_x) >> cfg.ss_x };
+    let enc_cw = if cfg.monochrome {
+        0
+    } else {
+        (enc_w + cfg.ss_x) >> cfg.ss_x
+    };
     let mi_cols = mi_dim(enc_w as i32);
     let mi_rows = mi_dim(h as i32);
     // The SAME derivation `validate_configuration` ran (and refused on) above.
@@ -2962,7 +3017,12 @@ pub fn encode_key_frame_with(
         let use_opt = bd == 8
             && crate::resize::has_optimized_scaler(w as i32, h as i32, enc_w as i32, h as i32)
             && (cfg.monochrome
-                || crate::resize::has_optimized_scaler(cw as i32, ch as i32, enc_cw as i32, ch as i32));
+                || crate::resize::has_optimized_scaler(
+                    cw as i32,
+                    ch as i32,
+                    enc_cw as i32,
+                    ch as i32,
+                ));
         ds_y = superres_downscale_plane(planes.y, w, h, enc_w, bd, use_opt);
         if cfg.monochrome {
             ds_u = Vec::new();
@@ -2977,7 +3037,8 @@ pub fn encode_key_frame_with(
     };
     let mut src_y = vec![0u16; stride * buf_h];
     for r in 0..h {
-        src_y[r * stride..r * stride + enc_w].copy_from_slice(&tight_y[r * enc_w..r * enc_w + enc_w]);
+        src_y[r * stride..r * stride + enc_w]
+            .copy_from_slice(&tight_y[r * enc_w..r * enc_w + enc_w]);
     }
     extend_plane(&mut src_y, enc_w, h);
     let mut src_u = vec![0u16; stride * buf_h];
@@ -3045,8 +3106,11 @@ pub fn encode_key_frame_with(
     if aom_dsp::trace_on!(aom_dsp::trace::Trace::Sct) {
         aom_dsp::trace_out!(
             "[sct-port] allow={} ibc={} sctype={} palette={} intrabc={} photo={}",
-            sct.allow_screen_content_tools, sct.allow_intrabc,
-            sct.is_screen_content_type, sct.count_palette, sct.count_intrabc,
+            sct.allow_screen_content_tools,
+            sct.allow_intrabc,
+            sct.is_screen_content_type,
+            sct.count_palette,
+            sct.count_intrabc,
             sct.count_photo
         );
     }
@@ -3305,30 +3369,26 @@ pub fn encode_key_frame_with(
                         };
                         crate::allintra_vis::av1_adjust_q_from_delta_q_res(res, qindex, raw)
                     }
-                    DeltaQMode::VarianceBoost => {
-                        crate::allintra_vis::setup_delta_q_variance_boost(
-                            &src_y,
-                            sb_off,
-                            stride,
-                            bd,
-                            qindex,
-                            quality.deltaq_strength,
-                            res,
-                            running,
-                        )
-                    }
-                    DeltaQMode::PerceptualAi => {
-                        crate::allintra_vis::setup_delta_q_perceptual_ai(
-                            weber_map.as_ref().expect("map built for mode 3"),
-                            qindex,
-                            bd,
-                            res,
-                            sb_mi,
-                            mi_row,
-                            mi_col,
-                            running,
-                        )
-                    }
+                    DeltaQMode::VarianceBoost => crate::allintra_vis::setup_delta_q_variance_boost(
+                        &src_y,
+                        sb_off,
+                        stride,
+                        bd,
+                        qindex,
+                        quality.deltaq_strength,
+                        res,
+                        running,
+                    ),
+                    DeltaQMode::PerceptualAi => crate::allintra_vis::setup_delta_q_perceptual_ai(
+                        weber_map.as_ref().expect("map built for mode 3"),
+                        qindex,
+                        bd,
+                        res,
+                        sb_mi,
+                        mi_row,
+                        mi_col,
+                        running,
+                    ),
                     DeltaQMode::Perceptual => crate::allintra_vis::setup_delta_q_perceptual(
                         &src_y,
                         sb_off,
@@ -3347,8 +3407,13 @@ pub fn encode_key_frame_with(
                 if aom_dsp::trace_on!(aom_dsp::trace::Trace::Dq) {
                     aom_dsp::trace_out!(
                         "[dq-port] sb({},{}) mode={:?} adj={} base={} run={} res={}",
-                        mi_row / sb_mi, mi_col / sb_mi, quality.deltaq_mode,
-                        adj, qindex, running, res
+                        mi_row / sb_mi,
+                        mi_col / sb_mi,
+                        quality.deltaq_mode,
+                        adj,
+                        qindex,
+                        running,
+                        res
                     );
                 }
                 adj
@@ -3638,7 +3703,11 @@ pub fn encode_key_frame_with(
     macro_rules! phase_mark {
         ($name:literal) => {
             if phase_timing {
-                aom_dsp::trace_out!("[phase] {:<18} {:>8.1} ms", $name, phase_t.elapsed().as_secs_f64() * 1e3);
+                aom_dsp::trace_out!(
+                    "[phase] {:<18} {:>8.1} ms",
+                    $name,
+                    phase_t.elapsed().as_secs_f64() * 1e3
+                );
                 phase_t = std::time::Instant::now();
             }
         };
@@ -3915,7 +3984,14 @@ pub fn encode_key_frame_with(
             .iter()
             .map(|&adj| ((((adj - qindex) / 4) + 1) & !1).clamp(-63, 63))
             .collect();
-        crate::lf_search::stamp_lf_delta_lf(&mut mi_grid, &dlf_per_sb, mi_rows, mi_cols, n_sb_x, sb_mi);
+        crate::lf_search::stamp_lf_delta_lf(
+            &mut mi_grid,
+            &dlf_per_sb,
+            mi_rows,
+            mi_cols,
+            n_sb_x,
+            sb_mi,
+        );
     }
     let lf_frame = LfSearchFrame {
         recon_y: &recon_y,
@@ -4000,7 +4076,10 @@ pub fn encode_key_frame_with(
     if aom_dsp::trace_on!(aom_dsp::trace::Trace::Sct) {
         aom_dsp::trace_out!(
             "[lf-port] derived={:?} lf_sharpness={} qindex={} quality.sharpness={}",
-            derived_lf, lf_sharpness, qindex, quality.sharpness
+            derived_lf,
+            lf_sharpness,
+            qindex,
+            quality.sharpness
         );
     }
 
@@ -4024,8 +4103,7 @@ pub fn encode_key_frame_with(
     if postfilter {
         // `loop_filter_frame` no-ops per plane on a zero level, exactly like
         // C's apply site (`encoder.c:2887`).
-        let lf_runs =
-            derived_lf.filter_level[0] != 0 || derived_lf.filter_level[1] != 0;
+        let lf_runs = derived_lf.filter_level[0] != 0 || derived_lf.filter_level[1] != 0;
         if bd == 8 && lf_runs {
             let params = LfParams {
                 filter_level: derived_lf.filter_level,
@@ -4138,10 +4216,12 @@ pub fn encode_key_frame_with(
         // (KB-57). `zero_low_cdef_strengths` is the qindex-dependent
         // ALLINTRA/IQ/SSIMULACRA2 arm at `base_qindex <= 140`
         // (speed_features.c:2886-2891).
-        let adaptive = quality.cdef_adaptive.then_some(crate::pickcdef::CdefAdaptive {
-            cq_level: crate::rc::quantizer_to_qindex(cfg.cq_level),
-            zero_low_strengths: qindex <= 140,
-        });
+        let adaptive = quality
+            .cdef_adaptive
+            .then_some(crate::pickcdef::CdefAdaptive {
+                cq_level: crate::rc::quantizer_to_qindex(cfg.cq_level),
+                zero_low_strengths: qindex <= 140,
+            });
         let cdef_res = crate::pickcdef::av1_cdef_search_adaptive(
             &CdefSearchFrame {
                 recon_y: &deblocked_y,
@@ -4478,9 +4558,7 @@ pub fn encode_key_frame_with(
                     let (sb_r0, sb_c0) = (r0 / sb_mi, c0 / sb_mi);
                     let mut tile_trees: Vec<SbTree> = (0..n_tr_s)
                         .flat_map(|r| (0..n_tc_s).map(move |c| (r, c)))
-                        .map(|(r, c)| {
-                            trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone()
-                        })
+                        .map(|(r, c)| trees[((sb_r0 + r) * n_sb_x + sb_c0 + c) as usize].clone())
                         .collect();
                     let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
                     let mut enc = OdEcEnc::new();
@@ -4548,10 +4626,7 @@ pub fn encode_key_frame_with(
 /// non-overlapping (tile rows partition the plane); any padded tail past the
 /// last band is dropped, so a stray below-band write panics instead of
 /// corrupting nothing.
-fn split_row_bands<'a>(
-    plane: &'a mut [u16],
-    bounds: &[(usize, usize)],
-) -> Vec<&'a mut [u16]> {
+fn split_row_bands<'a>(plane: &'a mut [u16], bounds: &[(usize, usize)]) -> Vec<&'a mut [u16]> {
     let mut bands = Vec::with_capacity(bounds.len());
     let mut rest = plane;
     let mut cursor = 0usize;
@@ -4628,7 +4703,10 @@ fn replay_sb_qindex_tile_order(
     base_qindex: i32,
     mut sb_qindex: impl FnMut(i32, i32, i32) -> i32,
 ) -> (Vec<i32>, bool) {
-    let n_sb = tile_grid.iter().map(|t| (t.4 * t.5) as usize).sum::<usize>();
+    let n_sb = tile_grid
+        .iter()
+        .map(|t| (t.4 * t.5) as usize)
+        .sum::<usize>();
     let mut per_sb = vec![base_qindex; n_sb];
     let mut used = false;
     for &(mi_row_start, mi_col_start, _, _, n_sb_rows, n_sb_cols) in tile_grid {

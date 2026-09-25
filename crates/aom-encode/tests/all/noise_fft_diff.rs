@@ -76,7 +76,10 @@ fn fft2d_matches_c() {
             }
         }
     }
-    assert!(nonzero > 1000, "fft2d output suspiciously trivial ({nonzero} nonzero)");
+    assert!(
+        nonzero > 1000,
+        "fft2d output suspiciously trivial ({nonzero} nonzero)"
+    );
     println!("fft2d_diff: all sizes {SIZES:?} x 4 scales x 8 trials bit-identical to C");
 }
 
@@ -100,7 +103,10 @@ fn ifft2d_matches_c() {
             }
         }
     }
-    assert!(nonzero > 1000, "ifft2d output suspiciously trivial ({nonzero} nonzero)");
+    assert!(
+        nonzero > 1000,
+        "ifft2d output suspiciously trivial ({nonzero} nonzero)"
+    );
     println!("ifft2d_diff: all sizes {SIZES:?} x 3 scales x 8 trials bit-identical to C");
 }
 
@@ -132,12 +138,18 @@ fn noise_tx_pipeline_matches_c() {
             let mut denoised = vec![0.0f32; n];
             tx.inverse(&mut denoised);
 
-            let (c_denoised, c_energy) = c::ref_noise_tx_pipeline(bs, &data, &psd).expect("C pipeline");
+            let (c_denoised, c_energy) =
+                c::ref_noise_tx_pipeline(bs, &data, &psd).expect("C pipeline");
             assert_slices(&format!("noise_tx energy bs{bs}"), &energy, &c_energy);
             assert_slices(&format!("noise_tx denoised bs{bs}"), &denoised, &c_denoised);
         }
     }
     // Anti-vacuity: both filter arms were actually taken across the corpus.
-    assert!(filt_else > 20, "filter else-arm under-exercised ({filt_else})");
-    println!("noise_tx_pipeline_diff: all sizes {SIZES:?} x 12 trials bit-identical to C (fwd+add_energy+filter+inverse)");
+    assert!(
+        filt_else > 20,
+        "filter else-arm under-exercised ({filt_else})"
+    );
+    println!(
+        "noise_tx_pipeline_diff: all sizes {SIZES:?} x 12 trials bit-identical to C (fwd+add_energy+filter+inverse)"
+    );
 }

@@ -93,7 +93,7 @@ pub(crate) fn smooth(
     sw_h: &[u8],
 ) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
-    // Four columns fit one fixed-array row; avoid staging a wider vector block.
+                                              // Four columns fit one fixed-array row; avoid staging a wider vector block.
     if bw == 4 {
         let above: &[u16; 4] = above_row[..4].try_into().unwrap();
         let weights: &[u8; 4] = sw_w[..4].try_into().unwrap();
@@ -549,7 +549,10 @@ fn paeth_impl(
     // bw == 8's lane (the only tx width below 16 that reaches here).
     let top8 = if bw & 8 != 0 {
         let t = u16x8::from_slice(token, &above_row[n16 * 16..n16 * 16 + 8]);
-        Some((t, t.max(u16x8::splat(token, tl)) - t.min(u16x8::splat(token, tl))))
+        Some((
+            t,
+            t.max(u16x8::splat(token, tl)) - t.min(u16x8::splat(token, tl)),
+        ))
     } else {
         None
     };
@@ -569,9 +572,11 @@ fn paeth_impl(
             let use_left = pl.simd_le(pt_v) & pl.simd_le(p_tl);
             let use_top = pt_v.simd_le(p_tl);
             let sel = u16x16::blend(use_left, lv, u16x16::blend(use_top, top, tl_v));
-            sel.store((&mut dst[row + k * 16..row + k * 16 + 16])
-                .try_into()
-                .unwrap());
+            sel.store(
+                (&mut dst[row + k * 16..row + k * 16 + 16])
+                    .try_into()
+                    .unwrap(),
+            );
         }
         if let Some((top8, pl8)) = top8 {
             let lv8 = u16x8::splat(token, l);
@@ -581,9 +586,11 @@ fn paeth_impl(
             let use_left = pl8.simd_le(pt8) & pl8.simd_le(p_tl);
             let use_top = pt8.simd_le(p_tl);
             let sel = u16x8::blend(use_left, lv8, u16x8::blend(use_top, top8, tl8_v));
-            sel.store((&mut dst[row + n16 * 16..row + n16 * 16 + 8])
-                .try_into()
-                .unwrap());
+            sel.store(
+                (&mut dst[row + n16 * 16..row + n16 * 16 + 8])
+                    .try_into()
+                    .unwrap(),
+            );
         }
     }
 }

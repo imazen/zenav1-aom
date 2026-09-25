@@ -92,7 +92,8 @@ fn run_case(w: usize, h: usize, csx: i32, csy: i32, bit_depth: i32, use_highbd: 
     let names = ["Y", "U", "V"];
     for cc in 0..3 {
         assert_eq!(
-            port[cc], cout[cc],
+            port[cc],
+            cout[cc],
             "plane {} mismatch ({}x{} cs{}{} bd{}): first diff at {:?}",
             names[cc],
             w,
@@ -120,5 +121,7 @@ fn wiener_denoise_matches_c() {
     for (i, &(w, h, csx, csy, bd, hbd)) in configs.iter().enumerate() {
         run_case(w, h, csx, csy, bd, hbd, 0xD0_1234 ^ (i as u64) << 12);
     }
-    println!("wiener_denoise_diff: 6 configs (8/10-bit x 444/420, incl. partial-block dims) byte-identical to C");
+    println!(
+        "wiener_denoise_diff: 6 configs (8/10-bit x 444/420, incl. partial-block dims) byte-identical to C"
+    );
 }

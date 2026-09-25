@@ -61,7 +61,7 @@
 use archmage::prelude::*;
 use magetypes::simd::generic::i16x16 as I16x16;
 
-use crate::transform::cospi::{NEW_SQRT2, NEW_SQRT2_BITS, cospi_arr};
+use crate::transform::cospi::{cospi_arr, NEW_SQRT2, NEW_SQRT2_BITS};
 
 use super::fwd1d_v3_i16_gen::*;
 use super::prims16::{
@@ -297,8 +297,19 @@ pub(crate) fn fwd_col_pass_i16(
         let mut tout = [i16x16::zero(t); 8];
         incant!(
             fwd_col_pass_i16_core(
-                kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col, ud_flip,
-                lr_flip, &mut tin, &mut tout,
+                kernel,
+                input,
+                buf,
+                stride,
+                col_n,
+                row_n,
+                shift0,
+                shift1_bit,
+                cos_bit_col,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
             ),
             [v3, neon]
         );
@@ -307,8 +318,19 @@ pub(crate) fn fwd_col_pass_i16(
         let mut tout = [i16x16::zero(t); 16];
         incant!(
             fwd_col_pass_i16_core(
-                kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col, ud_flip,
-                lr_flip, &mut tin, &mut tout,
+                kernel,
+                input,
+                buf,
+                stride,
+                col_n,
+                row_n,
+                shift0,
+                shift1_bit,
+                cos_bit_col,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
             ),
             [v3, neon]
         );
@@ -317,8 +339,19 @@ pub(crate) fn fwd_col_pass_i16(
         let mut tout = [i16x16::zero(t); 64];
         incant!(
             fwd_col_pass_i16_core(
-                kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col, ud_flip,
-                lr_flip, &mut tin, &mut tout,
+                kernel,
+                input,
+                buf,
+                stride,
+                col_n,
+                row_n,
+                shift0,
+                shift1_bit,
+                cos_bit_col,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
             ),
             [v3, neon]
         );
@@ -361,10 +394,17 @@ fn fwd_col_pass_i16_core(
                 v
             };
         }
-        incant!(run_fwd1d_i16(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit_col), [v3, neon]);
+        incant!(
+            run_fwd1d_i16(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit_col),
+            [v3, neon]
+        );
         for (r, to) in tout[..row_n].iter_mut().enumerate() {
             // round_shift_array(temp_out, -shift[1]); bit in {0, 1, 2, 4}.
-            let v = if shift1_bit > 0 { mulhrs16(t, *to, rshift_mul(shift1_bit)) } else { *to };
+            let v = if shift1_bit > 0 {
+                mulhrs16(t, *to, rshift_mul(shift1_bit))
+            } else {
+                *to
+            };
             // Scalar: buf[r*col_n + dst_c] = temp_out[r], dst_c lr-flipped.
             let (v, base) = if lr_flip {
                 (rev16(t, v), r * col_n + (col_n - cg - 16))
@@ -430,7 +470,15 @@ pub(crate) fn fwd_row_pass_i16(
         let mut tout = [i16x16::zero(t); 8];
         incant!(
             fwd_row_pass_i16_core(
-                kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1, &mut tin,
+                kernel,
+                buf,
+                output,
+                col_n,
+                row_n,
+                shift2_bit,
+                cos_bit_row,
+                rect1,
+                &mut tin,
                 &mut tout,
             ),
             [v3, neon]
@@ -440,7 +488,15 @@ pub(crate) fn fwd_row_pass_i16(
         let mut tout = [i16x16::zero(t); 16];
         incant!(
             fwd_row_pass_i16_core(
-                kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1, &mut tin,
+                kernel,
+                buf,
+                output,
+                col_n,
+                row_n,
+                shift2_bit,
+                cos_bit_row,
+                rect1,
+                &mut tin,
                 &mut tout,
             ),
             [v3, neon]
@@ -450,7 +506,15 @@ pub(crate) fn fwd_row_pass_i16(
         let mut tout = [i16x16::zero(t); 64];
         incant!(
             fwd_row_pass_i16_core(
-                kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1, &mut tin,
+                kernel,
+                buf,
+                output,
+                col_n,
+                row_n,
+                shift2_bit,
+                cos_bit_row,
+                rect1,
+                &mut tin,
                 &mut tout,
             ),
             [v3, neon]
@@ -497,10 +561,17 @@ fn fwd_row_pass_i16_core(
                 tin[cg + j] = pack_clamp16(t, tlo[j], thi[j]);
             }
         }
-        incant!(run_fwd1d_i16(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit_row), [v3, neon]);
+        incant!(
+            run_fwd1d_i16(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit_row),
+            [v3, neon]
+        );
         for (c, to) in tout[..col_n].iter_mut().enumerate() {
             // round_shift_array(row_buffer, -shift[2]); bit in {0, 2}.
-            let v = if shift2_bit > 0 { mulhrs16(t, *to, rshift_mul(shift2_bit)) } else { *to };
+            let v = if shift2_bit > 0 {
+                mulhrs16(t, *to, rshift_mul(shift2_bit))
+            } else {
+                *to
+            };
             let mut a = widen_lo(t, v);
             let mut b = widen_hi(t, v);
             if rect1 {
@@ -537,7 +608,12 @@ pub(crate) fn fwd_col_i16_applies(
 }
 
 /// Does the i16 forward ROW pass apply? `max|buf| <= M*`.
-pub(crate) fn fwd_row_i16_applies(kernel: Fwd1dI16, buf: &[i32], col_n: usize, row_n: usize) -> bool {
+pub(crate) fn fwd_row_i16_applies(
+    kernel: Fwd1dI16,
+    buf: &[i32],
+    col_n: usize,
+    row_n: usize,
+) -> bool {
     max_abs_i32(&buf[..col_n * row_n]) <= fwd_i16_max_in(kernel)
 }
 
@@ -559,12 +635,12 @@ mod tests {
     //! architectures, with a counter proving a vector tier actually ran.
 
     use super::*;
-    use crate::transform::{
-        av1_fadst8, av1_fadst16, av1_fdct4, av1_fdct8, av1_fdct16, av1_fdct32, av1_fdct64,
-        av1_fidentity4, av1_fidentity8, av1_fidentity16, av1_fidentity32,
-    };
     use crate::transform::fdct::round_shift;
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use crate::transform::{
+        av1_fadst16, av1_fadst8, av1_fdct16, av1_fdct32, av1_fdct4, av1_fdct64, av1_fdct8,
+        av1_fidentity16, av1_fidentity32, av1_fidentity4, av1_fidentity8,
+    };
+    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 
     pub(super) type ScalarKernel = fn(&[i32], &mut [i32], i32, &[i8]);
 
@@ -653,8 +729,9 @@ mod tests {
             for cos_bit in 10..=13i32 {
                 // (a) dense random over the FULL admitted domain.
                 for rep in 0..24 {
-                    let cols: Vec<[i16; 16]> =
-                        (0..n).map(|_| core::array::from_fn(|_| rng.bounded(m))).collect();
+                    let cols: Vec<[i16; 16]> = (0..n)
+                        .map(|_| core::array::from_fn(|_| rng.bounded(m)))
+                        .collect();
                     incant!(
                         assert_batch16(
                             name,
@@ -681,8 +758,9 @@ mod tests {
                     &|r, l| if (r * 3 + l) % 3 == 0 { lo } else { hi },
                 ];
                 for (pi, pat) in pats.iter().enumerate() {
-                    let cols: Vec<[i16; 16]> =
-                        (0..n).map(|r| core::array::from_fn(|l| pat(r, l))).collect();
+                    let cols: Vec<[i16; 16]> = (0..n)
+                        .map(|r| core::array::from_fn(|l| pat(r, l)))
+                        .collect();
                     incant!(
                         assert_batch16(
                             name,
@@ -834,9 +912,8 @@ mod tests {
                             for flips in 0..4 {
                                 let (ud, lr) = (flips & 1 != 0, flips & 2 != 0);
                                 let mm = m >> shift0;
-                                let inp: Vec<i16> = (0..row_n * stride)
-                                    .map(|_| rng.bounded(mm))
-                                    .collect();
+                                let inp: Vec<i16> =
+                                    (0..row_n * stride).map(|_| rng.bounded(mm)).collect();
                                 assert!(fwd_col_i16_applies(
                                     kernel, &inp, stride, col_n, row_n, shift0
                                 ));
@@ -875,8 +952,8 @@ mod tests {
                                 let mut vout = vec![111_i32; col_n * row_n];
                                 assert!(incant!(
                                     fwd_row_pass_i16(
-                                        kernel, &buf, &mut vout, col_n, row_n, shift2_bit,
-                                        cos_bit, rect1
+                                        kernel, &buf, &mut vout, col_n, row_n, shift2_bit, cos_bit,
+                                        rect1
                                     ),
                                     [v3, neon]
                                 ));
@@ -940,9 +1017,15 @@ mod tests {
             // shift0 shrinks the admitted input by the same factor.
             let mut inp2 = vec![0i16; row_n * stride];
             inp2[0] = (m >> 2) as i16;
-            assert!(fwd_col_i16_applies(kernel, &inp2, stride, col_n, row_n, 2), "{name}");
+            assert!(
+                fwd_col_i16_applies(kernel, &inp2, stride, col_n, row_n, 2),
+                "{name}"
+            );
             inp2[0] = (m >> 2) as i16 + 1;
-            assert!(!fwd_col_i16_applies(kernel, &inp2, stride, col_n, row_n, 2), "{name}");
+            assert!(
+                !fwd_col_i16_applies(kernel, &inp2, stride, col_n, row_n, 2),
+                "{name}"
+            );
 
             let mut buf = vec![0i32; n * 16];
             buf[5] = m as i32;
@@ -967,9 +1050,9 @@ mod gate_bite {
     //! printed by this test and quoted in
     //! `benchmarks/encoder_i16_fwd_2026-08-02.md`.
 
-    use super::tests::{Rng, cases};
+    use super::tests::{cases, Rng};
     use super::*;
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 
     fn probe_scalar(_: ScalarToken, _n: &mut usize) -> bool {
         false
@@ -1066,15 +1149,15 @@ mod reach {
 
     use super::tests::Rng;
     use super::*;
+    use crate::transform::fdct::round_shift;
     use crate::transform::txfm2d::{
-        COS_BIT_COL, COS_BIT_ROW, FWD_SHIFT, HTX_TAB, TXFM_TYPE_LS, TX_SIZE_HIGH, TX_SIZE_WIDE,
-        VTX_TAB, fwd_txfm_valid, log2_idx,
+        fwd_txfm_valid, log2_idx, COS_BIT_COL, COS_BIT_ROW, FWD_SHIFT, HTX_TAB, TXFM_TYPE_LS,
+        TX_SIZE_HIGH, TX_SIZE_WIDE, VTX_TAB,
     };
     use crate::transform::{
-        av1_fadst4, av1_fadst8, av1_fadst16, av1_fdct4, av1_fdct8, av1_fdct16, av1_fdct32,
-        av1_fdct64, av1_fidentity4, av1_fidentity8, av1_fidentity16, av1_fidentity32,
+        av1_fadst16, av1_fadst4, av1_fadst8, av1_fdct16, av1_fdct32, av1_fdct4, av1_fdct64,
+        av1_fdct8, av1_fidentity16, av1_fidentity32, av1_fidentity4, av1_fidentity8,
     };
-    use crate::transform::fdct::round_shift;
 
     type K = fn(&[i32], &mut [i32], i32, &[i8]);
 
@@ -1105,9 +1188,21 @@ mod reach {
     #[test]
     fn the_shift_table_stays_inside_the_gated_domains() {
         for (ts, sh) in FWD_SHIFT.iter().enumerate() {
-            assert!(sh[0] == 0 || sh[0] == 2, "tx_size {ts}: shift[0] = {}", sh[0]);
-            assert!((0..=4).contains(&-(sh[1] as i32)), "tx_size {ts}: shift[1] = {}", sh[1]);
-            assert!((0..=4).contains(&-(sh[2] as i32)), "tx_size {ts}: shift[2] = {}", sh[2]);
+            assert!(
+                sh[0] == 0 || sh[0] == 2,
+                "tx_size {ts}: shift[0] = {}",
+                sh[0]
+            );
+            assert!(
+                (0..=4).contains(&-(sh[1] as i32)),
+                "tx_size {ts}: shift[1] = {}",
+                sh[1]
+            );
+            assert!(
+                (0..=4).contains(&-(sh[2] as i32)),
+                "tx_size {ts}: shift[2] = {}",
+                sh[2]
+            );
         }
     }
 

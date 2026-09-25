@@ -50,10 +50,9 @@
 //! `dec_calc_subpel_params`; it is validated end-to-end by the decoder frame-MD5
 //! gate (chunk 1f), while everything downstream of it is differentially locked here.
 
-
 pub mod compound;
-pub mod scale;
 pub mod interintra;
+pub mod scale;
 pub mod warp;
 
 // --- constants (aom_dsp/aom_filter.h, aom_scale/yv12config.h) ---
@@ -508,8 +507,7 @@ pub fn build_inter_predictor(
             let row_base = sy * ref_stride;
             for col in 0..w as i32 {
                 let sx = (x0 + col).clamp(0, ref_w as i32 - 1) as usize;
-                dst[dst_off + row as usize * dst_stride + col as usize] =
-                    ref_plane[row_base + sx];
+                dst[dst_off + row as usize * dst_stride + col as usize] = ref_plane[row_base + sx];
             }
         }
         return;

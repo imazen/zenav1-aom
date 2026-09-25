@@ -500,10 +500,10 @@ mod tests {
                         0
                     }
                 } // max sawtooth
-                2 => (i as u16) % (m + 1),                    // ramp
-                3 => m,                                       // flat (control)
-                4 => (xorshift(s) % 256) as u16,              // bd8 range
-                5 => m - (i as u16 % (m + 1)),                // reverse ramp
+                2 => (i as u16) % (m + 1),                      // ramp
+                3 => m,                                         // flat (control)
+                4 => (xorshift(s) % 256) as u16,                // bd8 range
+                5 => m - (i as u16 % (m + 1)),                  // reverse ramp
                 6 => {
                     if i < 8 {
                         0
@@ -511,7 +511,7 @@ mod tests {
                         m
                     }
                 } // step
-                _ => (xorshift(s) % 2) as u16 * m,            // binary
+                _ => (xorshift(s) % 2) as u16 * m,              // binary
             };
         }
     }
@@ -613,12 +613,24 @@ mod tests {
         let mut over = at.clone();
         over[3] = U16_SMOOTH_MAX + 1;
         assert!(smooth_applies(bw, bh, &at, &at), "255 must be accepted");
-        assert!(!smooth_applies(bw, bh, &over, &at), "256 must be rejected (above)");
-        assert!(!smooth_applies(bw, bh, &at, &over), "256 must be rejected (left)");
+        assert!(
+            !smooth_applies(bw, bh, &over, &at),
+            "256 must be rejected (above)"
+        );
+        assert!(
+            !smooth_applies(bw, bh, &at, &over),
+            "256 must be rejected (left)"
+        );
         assert!(!smooth_v_applies(bw, &over, 0), "256 must be rejected");
-        assert!(!smooth_v_applies(bw, &at, 256), "below=256 must be rejected");
+        assert!(
+            !smooth_v_applies(bw, &at, 256),
+            "below=256 must be rejected"
+        );
         assert!(!smooth_h_applies(bh, &over, 0), "256 must be rejected");
-        assert!(!smooth_h_applies(bh, &at, 256), "right=256 must be rejected");
+        assert!(
+            !smooth_h_applies(bh, &at, 256),
+            "right=256 must be rejected"
+        );
 
         // At exactly the bound every kernel still agrees, at every tier.
         let mut got = vec![0u16; bw * bh];
@@ -670,10 +682,12 @@ mod tests {
                 g != w
             }),
         ] {
-            assert!(hit, "{name}: the u16 bound never bites — the gate is decorative");
+            assert!(
+                hit,
+                "{name}: the u16 bound never bites — the gate is decorative"
+            );
             diverged += 1;
         }
         assert_eq!(diverged, 3);
-
     }
 }

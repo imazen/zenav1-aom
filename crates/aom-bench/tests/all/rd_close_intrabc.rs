@@ -43,8 +43,12 @@ fn intrabc_census(stream: &[u8]) -> (usize, usize, usize, usize) {
     let (t, _, _) = aom_decode::frame::decode_frame_obus_prefilter(stream)
         .expect("decode of the C intrabc stream failed");
     // block_size_wide/high[BLOCK_SIZES_ALL].
-    const BW: [usize; 22] = [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
-    const BH: [usize; 22] = [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+    const BW: [usize; 22] = [
+        4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+    ];
+    const BH: [usize; 22] = [
+        4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+    ];
     let (mut n, mut skip, mut coeff, mut nonsq) = (0, 0, 0, 0);
     for b in t.blocks.iter().filter(|b| b.info.use_intrabc != 0) {
         n += 1;
@@ -125,10 +129,7 @@ fn intrabc_dv_search_pinned() {
                 .iter()
                 .zip(c_frame.iter())
                 .position(|(a, b)| a != b)
-                .map_or_else(
-                    || port_on.len().min(c_frame.len()),
-                    |i| i,
-                );
+                .map_or_else(|| port_on.len().min(c_frame.len()), |i| i);
             eprintln!(
                 "    PINNED: port {}B vs c {}B (delta {:+}), first differing byte {} of {}",
                 port_on.len(),
@@ -185,9 +186,11 @@ fn intrabc_dv_search_pinned() {
                 aom_decode::frame::decode_frame_obus_prefilter(&port_stream)
             });
             std::panic::set_hook(prev_hook);
-            match decoded
-                .unwrap_or_else(|_| Err(aom_decode::DecodeError::Internal("port stream decode panicked")))
-            {
+            match decoded.unwrap_or_else(|_| {
+                Err(aom_decode::DecodeError::Internal(
+                    "port stream decode panicked",
+                ))
+            }) {
                 Ok((tp, _, _)) => {
                     let (tc, _, _) = aom_decode::frame::decode_frame_obus_prefilter(&c_on)
                         .expect("C stream decodes");
@@ -198,17 +201,39 @@ fn intrabc_dv_search_pinned() {
                     );
                     let mut reported = false;
                     for (bp, bc) in tp.blocks.iter().zip(tc.blocks.iter()) {
-                        let key_p = (bp.mi_row, bp.mi_col, bp.bsize, bp.info.use_intrabc,
-                                     bp.info.skip, bp.tx_size);
-                        let key_c = (bc.mi_row, bc.mi_col, bc.bsize, bc.info.use_intrabc,
-                                     bc.info.skip, bc.tx_size);
+                        let key_p = (
+                            bp.mi_row,
+                            bp.mi_col,
+                            bp.bsize,
+                            bp.info.use_intrabc,
+                            bp.info.skip,
+                            bp.tx_size,
+                        );
+                        let key_c = (
+                            bc.mi_row,
+                            bc.mi_col,
+                            bc.bsize,
+                            bc.info.use_intrabc,
+                            bc.info.skip,
+                            bc.tx_size,
+                        );
                         if key_p != key_c {
                             eprintln!(
                                 "    FIRST DIVERGENT BLOCK\n      port (mi {},{}) bsize={} \
                                  intrabc={} skip={} tx={}\n      c    (mi {},{}) bsize={} \
                                  intrabc={} skip={} tx={}",
-                                key_p.0, key_p.1, key_p.2, key_p.3, key_p.4, key_p.5,
-                                key_c.0, key_c.1, key_c.2, key_c.3, key_c.4, key_c.5,
+                                key_p.0,
+                                key_p.1,
+                                key_p.2,
+                                key_p.3,
+                                key_p.4,
+                                key_p.5,
+                                key_c.0,
+                                key_c.1,
+                                key_c.2,
+                                key_c.3,
+                                key_c.4,
+                                key_c.5,
                             );
                             reported = true;
                             break;

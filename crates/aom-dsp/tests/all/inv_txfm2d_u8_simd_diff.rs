@@ -70,12 +70,16 @@
 //! the bytes past the block.
 
 use aom_dsp::transform::inv_txfm2d::{av1_inv_txfm2d_add_u8, inv_input_len, inv_txfm_valid};
-use archmage::X64V3Token;
 use archmage::prelude::*;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
+use archmage::X64V3Token;
 
-const W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 /// `av1_vtx_tab` (`av1/common/av1_txfm.h`) — the VERTICAL (column) 1-D
 /// transform class per TX_TYPE: `0 = DCT, 1 = ADST, 2 = FLIPADST, 3 = IDTX`.
@@ -105,7 +109,11 @@ enum Arm {
 }
 
 fn arm_of(tx_type: usize) -> Arm {
-    if VTX_TAB[tx_type] == 0 { Arm::I16 } else { Arm::I32 }
+    if VTX_TAB[tx_type] == 0 {
+        Arm::I16
+    } else {
+        Arm::I32
+    }
 }
 
 const SEED: u64 = 0x_10bd_c01_5119_d1ff;
@@ -368,10 +376,20 @@ fn run_arm(arm: Arm, min_changed_pct: u32) {
          which is exactly the state the transform differential was in before \
          d3feb5d. On aarch64 this needs archmage's `testable_dispatch` \
          dev-feature, else baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
-    assert!(scalar_perms >= 1, "the all-off (scalar) permutation must run at least once");
-    assert!(report.permutations_run >= 2, "need >=2 permutations to compare SIMD vs scalar");
+    assert!(
+        scalar_perms >= 1,
+        "the all-off (scalar) permutation must run at least once"
+    );
+    assert!(
+        report.permutations_run >= 2,
+        "need >=2 permutations to compare SIMD vs scalar"
+    );
 }
 
 /// The **i16 arm** — `lowbd16::inv_col_pass_u8_i16`, 16 columns per vector,

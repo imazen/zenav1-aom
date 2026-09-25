@@ -82,8 +82,7 @@
 //! so per-thread is exactly the right granularity.
 
 /// Intra classes, in the order [`Counts::intra_calls`] indexes them.
-pub const INTRA_CLASS: [&str; 7] =
-    ["filter", "non-dir", "z1", "z2", "z3", "V(90)", "H(180)"];
+pub const INTRA_CLASS: [&str; 7] = ["filter", "non-dir", "z1", "z2", "z3", "V(90)", "H(180)"];
 
 /// `TX_SIZES_ALL`.
 pub const N_TX_SIZE: usize = 19;
@@ -112,8 +111,20 @@ pub const UV_CFL_PRED: usize = 13;
 
 /// [`Counts::leaf_uv_mode`] names.
 pub const UV_MODE_NAME: [&str; N_UV_MODE] = [
-    "UV_DC", "UV_V", "UV_H", "UV_D45", "UV_D135", "UV_D113", "UV_D157", "UV_D203", "UV_D67",
-    "UV_SMOOTH", "UV_SMOOTH_V", "UV_SMOOTH_H", "UV_PAETH", "UV_CFL",
+    "UV_DC",
+    "UV_V",
+    "UV_H",
+    "UV_D45",
+    "UV_D135",
+    "UV_D113",
+    "UV_D157",
+    "UV_D203",
+    "UV_D67",
+    "UV_SMOOTH",
+    "UV_SMOOTH_V",
+    "UV_SMOOTH_H",
+    "UV_PAETH",
+    "UV_CFL",
 ];
 
 /// `FILTER_INTRA_MODE` names (`filter_intra_mode_kind`, enums.h).
@@ -128,8 +139,8 @@ pub const PLANE_NAME: [&str; N_PLANE] = ["Y", "U", "V"];
 /// Derived from the names so it cannot drift from [`BSIZE_NAME`]
 /// (`the_tables_agree_with_their_own_names` re-derives it).
 pub const BSIZE_IS_RECT: [bool; N_BSIZE] = [
-    false, true, true, false, true, true, false, true, true, false, true, true, false, true,
-    true, false, true, true, true, true, true, true,
+    false, true, true, false, true, true, false, true, true, false, true, true, false, true, true,
+    false, true, true, true, true, true, true,
 ];
 
 /// Width of each `BLOCK_SIZES_ALL` entry, in pixels.
@@ -148,23 +159,38 @@ pub const TX_SIZE_NAME: [&str; N_TX_SIZE] = [
 ];
 
 /// Width of each `TX_SIZES_ALL` entry.
-pub const TX_SIZE_W: [usize; N_TX_SIZE] =
-    [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
+pub const TX_SIZE_W: [usize; N_TX_SIZE] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
 /// Height of each `TX_SIZES_ALL` entry.
-pub const TX_SIZE_H: [usize; N_TX_SIZE] =
-    [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+pub const TX_SIZE_H: [usize; N_TX_SIZE] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 /// `TX_TYPES` names, index-aligned with the port's `tx_type`.
 pub const TX_TYPE_NAME: [&str; N_TX_TYPE] = [
-    "DCT_DCT", "ADST_DCT", "DCT_ADST", "ADST_ADST", "FLIPADST_DCT", "DCT_FLIPADST",
-    "FLIPADST_FLIPADST", "ADST_FLIPADST", "FLIPADST_ADST", "IDTX", "V_DCT", "H_DCT", "V_ADST",
-    "H_ADST", "V_FLIPADST", "H_FLIPADST",
+    "DCT_DCT",
+    "ADST_DCT",
+    "DCT_ADST",
+    "ADST_ADST",
+    "FLIPADST_DCT",
+    "DCT_FLIPADST",
+    "FLIPADST_FLIPADST",
+    "ADST_FLIPADST",
+    "FLIPADST_ADST",
+    "IDTX",
+    "V_DCT",
+    "H_DCT",
+    "V_ADST",
+    "H_ADST",
+    "V_FLIPADST",
+    "H_FLIPADST",
 ];
 
 /// `PREDICTION_MODES` for the intra set, index-aligned with the port's `mode`.
 pub const MODE_NAME: [&str; N_MODE] = [
-    "DC", "V", "H", "D45", "D135", "D113", "D157", "D203", "D67", "SMOOTH", "SMOOTH_V",
-    "SMOOTH_H", "PAETH",
+    "DC", "V", "H", "D45", "D135", "D113", "D157", "D203", "D67", "SMOOTH", "SMOOTH_V", "SMOOTH_H",
+    "PAETH",
 ];
 
 /// `BLOCK_SIZES_ALL` names, index-aligned with the port's `bsize`.
@@ -408,7 +434,9 @@ impl Counts {
 
     /// Calls in classes `z1`/`z2`/`z3`.
     pub fn directional_calls(&self) -> u64 {
-        (2..=4).map(|c| self.intra_calls[c].iter().sum::<u64>()).sum()
+        (2..=4)
+            .map(|c| self.intra_calls[c].iter().sum::<u64>())
+            .sum()
     }
 
     /// Total coded leaves.
@@ -425,7 +453,10 @@ impl Counts {
 
     /// Coded leaves whose width and height differ.
     pub fn rect_leaves(&self) -> u64 {
-        (0..N_BSIZE).filter(|&b| BSIZE_IS_RECT[b]).map(|b| self.leaf_bsize[b]).sum()
+        (0..N_BSIZE)
+            .filter(|&b| BSIZE_IS_RECT[b])
+            .map(|b| self.leaf_bsize[b])
+            .sum()
     }
 
     /// Coded leaves at or below 8x8 in EITHER dimension — the "small leaf"
@@ -489,7 +520,9 @@ impl Counts {
 
     /// Forward transforms that are NOT `DCT_DCT` — what a tx-type lever reaches.
     pub fn non_dct_fwd_tx(&self) -> u64 {
-        (1..N_TX_TYPE).map(|ty| self.fwd_tx[ty].iter().sum::<u64>()).sum()
+        (1..N_TX_TYPE)
+            .map(|ty| self.fwd_tx[ty].iter().sum::<u64>())
+            .sum()
     }
 
     /// Every counter is zero — i.e. either nothing ran or the crate was built
@@ -536,12 +569,7 @@ pub fn snapshot() -> Box<Counts> {
 /// `tx_size` are that function's own arguments, and the classification here is
 /// the same branch it takes.
 #[inline(always)]
-pub fn note_intra_pred(
-    mode: usize,
-    angle_delta: i32,
-    use_filter_intra: bool,
-    tx_size: usize,
-) {
+pub fn note_intra_pred(mode: usize, angle_delta: i32, use_filter_intra: bool, tx_size: usize) {
     #[cfg(feature = "census")]
     {
         let _ = note_intra_pred_impl(mode, angle_delta, use_filter_intra, tx_size);
@@ -749,13 +777,17 @@ fn note_coded_leaf_impl(leaf: &Leaf) {
         is_inter,
         chroma_ref,
     } = leaf;
-    let px = if bsize < N_BSIZE { (BSIZE_W[bsize] * BSIZE_H[bsize]) as u64 } else { 0 };
+    let px = if bsize < N_BSIZE {
+        (BSIZE_W[bsize] * BSIZE_H[bsize]) as u64
+    } else {
+        0
+    };
     // `angle_delta` is only signalled for a directional mode; folding a
     // non-directional leaf's (always 0) delta into the histogram would drown
     // the axis in DC/SMOOTH/PAETH blocks and make the "nonzero delta" share
     // meaningless.
-    let dir_y = (1..=8).contains(&y_mode) && !use_filter_intra && palette_y_size == 0
-        && !use_intrabc;
+    let dir_y =
+        (1..=8).contains(&y_mode) && !use_filter_intra && palette_y_size == 0 && !use_intrabc;
     let dir_uv = (1..=8).contains(&uv_mode) && palette_uv_size == 0;
     COUNTS.with(|c| {
         let mut c = c.borrow_mut();
@@ -823,7 +855,12 @@ mod tests {
             let want = format!("{}x{}", TX_SIZE_W[t], TX_SIZE_H[t]);
             assert_eq!(TX_SIZE_NAME[t], want, "tx_size {t}");
         }
-        for names in [&TX_SIZE_NAME[..], &TX_TYPE_NAME[..], &MODE_NAME[..], &BSIZE_NAME[..]] {
+        for names in [
+            &TX_SIZE_NAME[..],
+            &TX_TYPE_NAME[..],
+            &MODE_NAME[..],
+            &BSIZE_NAME[..],
+        ] {
             let mut seen = names.to_vec();
             seen.sort_unstable();
             let n = seen.len();
@@ -834,14 +871,21 @@ mod tests {
         // table has to place them at exactly 90 and 180 for that to be right.
         assert_eq!(MODE_TO_ANGLE[1], 90);
         assert_eq!(MODE_TO_ANGLE[2], 180);
-        assert!(MODE_TO_ANGLE.iter().filter(|&&a| a == 0).count() == 5, "DC/SMOOTH*/PAETH");
+        assert!(
+            MODE_TO_ANGLE.iter().filter(|&&a| a == 0).count() == 5,
+            "DC/SMOOTH*/PAETH"
+        );
         // The block-size tables carry the same obligation as the tx ones: a
         // typo mis-weights every per-pixel leaf share, and `BSIZE_IS_RECT` is
         // re-derived here rather than trusted.
         for b in 0..N_BSIZE {
             let want = format!("{}x{}", BSIZE_W[b], BSIZE_H[b]);
             assert_eq!(BSIZE_NAME[b], want, "bsize {b}");
-            assert_eq!(BSIZE_IS_RECT[b], BSIZE_W[b] != BSIZE_H[b], "BSIZE_IS_RECT[{b}]");
+            assert_eq!(
+                BSIZE_IS_RECT[b],
+                BSIZE_W[b] != BSIZE_H[b],
+                "BSIZE_IS_RECT[{b}]"
+            );
         }
         assert_eq!(UV_MODE_NAME.len(), N_UV_MODE);
         assert_eq!(UV_MODE_NAME[UV_CFL_PRED], "UV_CFL");
@@ -1055,7 +1099,11 @@ mod tests {
         let s = snapshot();
 
         assert_eq!(s.leaves(), 5);
-        assert_eq!(s.palette_y_leaves(), 1, "palette-Y fired on exactly one leaf");
+        assert_eq!(
+            s.palette_y_leaves(),
+            1,
+            "palette-Y fired on exactly one leaf"
+        );
         assert_eq!(s.leaf_palette_y[4], 1, "and at the right palette size");
         assert_eq!(s.leaf_palette_y_px, 16 * 8);
         assert_eq!(s.palette_uv_leaves(), 1);

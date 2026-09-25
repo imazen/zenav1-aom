@@ -332,7 +332,12 @@ fn fwd_txfm2d_core(
         let mut row_buffer = [0i32; 64];
         for r in 0..row_n {
             let rb = &mut row_buffer[0..col_n];
-            f_row(&buf[r * col_n..r * col_n + col_n], rb, cfg.cos_bit_row as i32, &SR);
+            f_row(
+                &buf[r * col_n..r * col_n + col_n],
+                rb,
+                cfg.cos_bit_row as i32,
+                &SR,
+            );
             round_shift_array(rb, -(shift[2] as i32));
             if rect_type.abs() == 1 {
                 for v in rb.iter_mut() {
@@ -455,7 +460,13 @@ const TX_8X4_IDX: usize = 6;
 /// Public forward 2-D transform. `output` must have length `wide*high` of the
 /// given `tx_size`. Mirrors the C `av1_fwd_txfm2d_<size>_c` entry points,
 /// including the 64-point coefficient zeroing/repacking.
-pub fn av1_fwd_txfm2d(input: &[i16], output: &mut [i32], stride: usize, tx_type: usize, tx_size: usize) {
+pub fn av1_fwd_txfm2d(
+    input: &[i16],
+    output: &mut [i32],
+    stride: usize,
+    tx_type: usize,
+    tx_size: usize,
+) {
     let mut scratch = FwdTxfmScratch::default();
     av1_fwd_txfm2d_into(input, output, stride, tx_type, tx_size, &mut scratch);
 }
@@ -488,7 +499,10 @@ pub fn av1_fwd_txfm2d_into(
         && FWD_SHIFT[TX_8X8_IDX] == [2, -1, 0]
         && get_rect_tx_log_ratio(8, 8) == 0
     {
-        let (tc, tr) = (TXFM_TYPE_LS[1][VTX_TAB[tx_type]], TXFM_TYPE_LS[1][HTX_TAB[tx_type]]);
+        let (tc, tr) = (
+            TXFM_TYPE_LS[1][VTX_TAB[tx_type]],
+            TXFM_TYPE_LS[1][HTX_TAB[tx_type]],
+        );
         if tc >= 0 && tr >= 0 {
             let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
             if crate::transform::simd::try_fwd_txfm2d_8x8_fused(
@@ -514,7 +528,10 @@ pub fn av1_fwd_txfm2d_into(
         && FWD_SHIFT[TX_16X16_IDX] == [2, -2, 0]
         && get_rect_tx_log_ratio(16, 16) == 0
     {
-        let (tc, tr) = (TXFM_TYPE_LS[2][VTX_TAB[tx_type]], TXFM_TYPE_LS[2][HTX_TAB[tx_type]]);
+        let (tc, tr) = (
+            TXFM_TYPE_LS[2][VTX_TAB[tx_type]],
+            TXFM_TYPE_LS[2][HTX_TAB[tx_type]],
+        );
         if tc >= 0 && tr >= 0 {
             let (ud_flip, lr_flip) = FLIP_CFG[tx_type];
             if crate::transform::simd::try_fwd_txfm2d_16x16_fused(
@@ -561,9 +578,7 @@ pub fn av1_fwd_txfm2d_into(
         }
     }
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    if (tx_size == TX_4X8_IDX || tx_size == TX_8X4_IDX)
-        && FWD_SHIFT[tx_size] == [2, -1, 0]
-    {
+    if (tx_size == TX_4X8_IDX || tx_size == TX_8X4_IDX) && FWD_SHIFT[tx_size] == [2, -1, 0] {
         let c = get_fwd_txfm_cfg(tx_type, tx_size);
         let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
         if c.valid && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
@@ -585,7 +600,10 @@ pub fn av1_fwd_txfm2d_into(
         }
     }
     let cfg = get_fwd_txfm_cfg(tx_type, tx_size);
-    assert!(cfg.valid, "unsupported (tx_type={tx_type}, tx_size={tx_size})");
+    assert!(
+        cfg.valid,
+        "unsupported (tx_type={tx_type}, tx_size={tx_size})"
+    );
     fwd_txfm2d_core(input, output, stride, &cfg, scratch);
 
     // Post-process for the transforms whose active area is capped at 32.

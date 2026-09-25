@@ -6,10 +6,10 @@
 //! quantizer dispatch, entropy-ctx deferral) on top of the already bit-exact
 //! sub-modules.
 
-use aom_encode::{QuantKind, QuantParams, xform_quant};
-use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
 use aom_dsp::txb::{txb_high, txb_wide};
+use aom_encode::{QuantKind, QuantParams, xform_quant};
+use aom_sys_ref as c;
 #[cfg(target_arch = "x86_64")]
 use archmage::SimdToken;
 

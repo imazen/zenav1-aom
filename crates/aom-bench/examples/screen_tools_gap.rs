@@ -31,9 +31,9 @@
 //!
 //! Usage: `cargo run --release -p zenav1-aom-bench --example screen_tools_gap`
 
-use aom_bench::winperf::{synth_i420, Content};
 use aom_bench::EncodeCell;
-use aom_encode::key_frame::{encode_key_frame, KeyFrameConfig, KeyFramePlanes};
+use aom_bench::winperf::{Content, synth_i420};
+use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
 
 fn cell(w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
     let i420 = synth_i420(w, h, Content::Screen);
@@ -77,18 +77,14 @@ fn main() {
                 let b = c.c_encode_screen(true, false).len() as f64;
                 let d = c.c_encode_screen(true, true).len() as f64;
                 let port = |pal: bool, ibc: bool| -> usize {
-                    let mut cfg =
-                        KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, cq);
+                    let mut cfg = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, cq);
                     cfg.cpu_used = speed;
                     cfg.enable_restoration = true;
                     cfg.enable_palette = pal;
                     cfg.enable_intrabc = ibc;
-                    encode_key_frame(
-                        KeyFramePlanes::new(&c.y, &c.u, &c.v),
-                        &cfg,
-                    )
-                    .expect("encode_key_frame")
-                    .len()
+                    encode_key_frame(KeyFramePlanes::new(&c.y, &c.u, &c.v), &cfg)
+                        .expect("encode_key_frame")
+                        .len()
                 };
                 let (po, pp, pb) = (port(false, false), port(true, false), port(true, true));
                 println!(

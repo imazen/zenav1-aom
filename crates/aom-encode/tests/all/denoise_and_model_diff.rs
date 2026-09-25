@@ -13,7 +13,7 @@
 //! Covered: 8-bit + 10-bit, 4:4:4 + 4:2:0, 32-aligned dims.
 
 use aom_encode::denoise::estimate_film_grain;
-use aom_encode::grain_table::{write_film_grain_table, GrainTableEntry};
+use aom_encode::grain_table::{GrainTableEntry, write_film_grain_table};
 use aom_sys_ref as c;
 
 struct Rng(u64);
@@ -49,7 +49,11 @@ fn make_plane(rng: &mut Rng, w: usize, h: usize, maxv: i32, base: i32) -> Vec<u1
 
 #[allow(clippy::too_many_arguments)]
 fn run_case(w: usize, h: usize, ss_x: i32, ss_y: i32, bit_depth: i32, seed: u64) -> bool {
-    assert_eq!(w % 32, 0, "dims must be 32-aligned for the YV12 tight-buffer path");
+    assert_eq!(
+        w % 32,
+        0,
+        "dims must be 32-aligned for the YV12 tight-buffer path"
+    );
     let maxv = (1i32 << bit_depth) - 1;
     let block_size = 32usize;
     let noise_level = 2.5f32;
@@ -66,12 +70,32 @@ fn run_case(w: usize, h: usize, ss_x: i32, ss_y: i32, bit_depth: i32, seed: u64)
 
     // ---- Port ----
     let port = estimate_film_grain(
-        data, w, h, w, cw, ch, ss_x, ss_y, false, bit_depth, block_size, noise_level, random_seed,
+        data,
+        w,
+        h,
+        w,
+        cw,
+        ch,
+        ss_x,
+        ss_y,
+        false,
+        bit_depth,
+        block_size,
+        noise_level,
+        random_seed,
     );
 
     // ---- C oracle ----
     let cref = c::ref_denoise_and_model_run(
-        data, w, h, ss_x, ss_y, bit_depth, block_size, noise_level, random_seed,
+        data,
+        w,
+        h,
+        ss_x,
+        ss_y,
+        bit_depth,
+        block_size,
+        noise_level,
+        random_seed,
     );
 
     assert_eq!(
@@ -102,7 +126,10 @@ fn run_case(w: usize, h: usize, ss_x: i32, ss_y: i32, bit_depth: i32, seed: u64)
                 cref.denoised[cc],
                 "denoised {} differs ({w}x{h} ss{ss_x}{ss_y} bd{bit_depth}): first diff {:?}",
                 names[cc],
-                port_den[cc].iter().zip(&cref.denoised[cc]).position(|(a, b)| a != b)
+                port_den[cc]
+                    .iter()
+                    .zip(&cref.denoised[cc])
+                    .position(|(a, b)| a != b)
             );
         }
         true

@@ -18,8 +18,8 @@
 //! fields are exact either way).
 
 use aom_dsp::entropy::header::{
-    read_sequence_header_obu, read_uncompressed_header, FrameHeaderObu, FrameHeaderPrefix,
-    FrameSizeHeader, SequenceHeaderObu, TileInfoHeader,
+    FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, SequenceHeaderObu, TileInfoHeader,
+    read_sequence_header_obu, read_uncompressed_header,
 };
 use aom_dsp::entropy::leb128::uleb_decode;
 use aom_dsp::entropy::obu::read_obu_header;
@@ -229,8 +229,7 @@ fn main() {
                         p.reduced_tx_set_used as u8,
                     );
                     if p.prefix.frame_type == 1 || p.prefix.frame_type == 3 {
-                        let gm: Vec<u8> =
-                            p.global_motion.iter().map(|g| g.wmtype).collect();
+                        let gm: Vec<u8> = p.global_motion.iter().map(|g| g.wmtype).collect();
                         println!(
                             "        INTER: ref_map={:?} hp_mv={} force_int_mv={} interp={} \
                              switchable_mm={} ref_frame_mvs={} ref_mode_select={} skip_mode=[{},{}] \

@@ -13,9 +13,8 @@
 //! Frame 0 (KEY) must stay byte-identical (a regression witness for the
 //! multi-frame path vs the single-frame `decode_frame_obus`).
 
-
-use aom_decode::frame::{FrameDecode, decode_frames};
 use crate::common::md5::Md5;
+use aom_decode::frame::{FrameDecode, decode_frames};
 use std::path::PathBuf;
 
 const VECTOR: &str = "av1-1-b8-01-size-64x64";

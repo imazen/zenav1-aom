@@ -142,9 +142,9 @@ impl<'a> OdEcDec<'a> {
             debug_assert!(s <= 55, "cnt >= -15 at every refill site");
             let raw = u64::from_be_bytes(self.buf[bptr..bptr + 8].try_into().unwrap());
             let k = (s as usize >> 3) + 1; // bytes consumed, 1..=7
-            // Keep the top k bytes of `raw`; byte i (MSB-first) belongs at
-            // shift `s - 8*i`, i.e. the whole masked value shifts down by
-            // `56 - s` (byte 0 sits at bits 56..64 of `raw`).
+                                           // Keep the top k bytes of `raw`; byte i (MSB-first) belongs at
+                                           // shift `s - 8*i`, i.e. the whole masked value shifts down by
+                                           // `56 - s` (byte 0 sits at bits 56..64 of `raw`).
             let masked = raw & (!0u64 << (64 - 8 * k));
             dif ^= masked >> (56 - s) as u32;
             cnt += 8 * k as i32;

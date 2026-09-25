@@ -22,9 +22,9 @@ use aom_encode::key_frame::{
     Deadline, EncodeConfig, KeyFrameConfig, KeyFrameError, KeyFramePlanes, encode_key_frame,
     encode_key_frame_with,
 };
-use std::time::Duration;
 use enough::{Stop, StopReason};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 /// Never stops, but counts how many times it was asked. The count IS the
 /// cadence measurement: a poll that only happened once is not cancellation.
@@ -102,7 +102,10 @@ fn a_never_firing_token_is_byte_inert_and_polled_per_superblock_row() {
         "the token must be polled at least once per superblock row (4 rows \
          here), got {polls} — a single poll is not a cancellation cadence"
     );
-    println!("384x256 cq32 s6: {polls} polls, {} B (inert)", baseline.len());
+    println!(
+        "384x256 cq32 s6: {polls} polls, {} B (inert)",
+        baseline.len()
+    );
 }
 
 /// (2) OBSERVED, and (3) observed PARTWAY THROUGH. Cancelling at the very first
@@ -136,7 +139,10 @@ fn a_firing_token_cancels_the_encode_at_a_bounded_point() {
             ),
         }
     }
-    println!("384x256 cq32 s6: cancelled at poll budgets 0, 1 and {} of {total}", total / 2);
+    println!(
+        "384x256 cq32 s6: cancelled at poll budgets 0, 1 and {} of {total}",
+        total / 2
+    );
 }
 
 /// The refusal must be distinguishable from every other refusal — a router that
@@ -156,11 +162,8 @@ fn cancellation_is_its_own_error_and_does_not_collide_with_unsupported() {
 
     let mut bad = cfg;
     bad.cq_level = 64;
-    let unsupported = encode_key_frame(
-        KeyFramePlanes::new(&[], &[], &[]),
-        &bad,
-    )
-    .expect_err("must refuse");
+    let unsupported =
+        encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &bad).expect_err("must refuse");
 
     assert_ne!(cancelled, unsupported);
     assert!(matches!(cancelled, KeyFrameError::Cancelled(_)));
@@ -192,7 +195,10 @@ fn deadline_token_times_out_the_encode() {
             );
         }
         Err(e) => panic!("wrong error {e}"),
-        Ok(b) => panic!("elapsed Deadline encoded {} B — the token was not observed", b.len()),
+        Ok(b) => panic!(
+            "elapsed Deadline encoded {} B — the token was not observed",
+            b.len()
+        ),
     }
 
     // And the same machinery must not disturb an encode whose deadline is

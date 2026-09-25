@@ -18,20 +18,20 @@
 //! a cell a "3 and 7 everywhere" sweep would never reach.
 
 use aom_dsp::convolve::compound::{
-    CompoundConvolveParams, dist_wtd_convolve_2d, dist_wtd_convolve_2d_copy, dist_wtd_convolve_x,
-    dist_wtd_convolve_y, highbd_dist_wtd_convolve_2d, highbd_dist_wtd_convolve_2d_copy,
-    highbd_dist_wtd_convolve_x, highbd_dist_wtd_convolve_y,
+    dist_wtd_convolve_2d, dist_wtd_convolve_2d_copy, dist_wtd_convolve_x, dist_wtd_convolve_y,
+    highbd_dist_wtd_convolve_2d, highbd_dist_wtd_convolve_2d_copy, highbd_dist_wtd_convolve_x,
+    highbd_dist_wtd_convolve_y, CompoundConvolveParams,
 };
 use aom_dsp::convolve::highbd::{
     highbd_convolve_2d_sr, highbd_convolve_x_sr, highbd_convolve_y_sr,
 };
 use aom_dsp::convolve::{SUB_PEL_FILTERS_8, SUB_PEL_FILTERS_8SHARP, SUB_PEL_FILTERS_8SMOOTH};
 use aom_sys_ref::{
-    RefCompoundConvParams, ref_dist_wtd_convolve_2d, ref_dist_wtd_convolve_2d_copy,
-    ref_dist_wtd_convolve_x, ref_dist_wtd_convolve_y, ref_highbd_convolve_2d_sr,
-    ref_highbd_convolve_x_sr, ref_highbd_convolve_y_sr, ref_highbd_dist_wtd_convolve_2d,
+    ref_dist_wtd_convolve_2d, ref_dist_wtd_convolve_2d_copy, ref_dist_wtd_convolve_x,
+    ref_dist_wtd_convolve_y, ref_highbd_convolve_2d_sr, ref_highbd_convolve_x_sr,
+    ref_highbd_convolve_y_sr, ref_highbd_dist_wtd_convolve_2d,
     ref_highbd_dist_wtd_convolve_2d_copy, ref_highbd_dist_wtd_convolve_x,
-    ref_highbd_dist_wtd_convolve_y,
+    ref_highbd_dist_wtd_convolve_y, RefCompoundConvParams,
 };
 
 struct Rng(u64);

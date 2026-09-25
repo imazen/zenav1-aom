@@ -95,22 +95,44 @@ fn random_config(r: &mut Rng) -> KeyFrameConfig {
         c.apply_tune([Tune::Iq, Tune::Ssimulacra2][r.below(2) as usize]);
     }
     if r.chance(3) {
-        c.quality.qm = Some(if r.chance(16) { (12, 4) } else { let lo = r.below(16) as i32; (lo, lo + r.below((16 - lo) as u64) as i32) });
+        c.quality.qm = Some(if r.chance(16) {
+            (12, 4)
+        } else {
+            let lo = r.below(16) as i32;
+            (lo, lo + r.below((16 - lo) as u64) as i32)
+        });
     }
     c.quality.qm_dist_metric = r.chance(4);
     c.quality.sharpness = if r.chance(16) { 9 } else { r.below(8) as i32 };
     c.quality.adaptive_sharpness = r.chance(3);
     c.quality.chroma_deltaq = r.chance(3);
-    c.quality.deltaq_mode = [DeltaQMode::Off, DeltaQMode::Perceptual, DeltaQMode::PerceptualAi, DeltaQMode::VarianceBoost][r.below(4) as usize];
-    c.quality.deltaq_strength = if r.chance(16) { 2000 } else { r.below(301) as u32 };
+    c.quality.deltaq_mode = [
+        DeltaQMode::Off,
+        DeltaQMode::Perceptual,
+        DeltaQMode::PerceptualAi,
+        DeltaQMode::VarianceBoost,
+    ][r.below(4) as usize];
+    c.quality.deltaq_strength = if r.chance(16) {
+        2000
+    } else {
+        r.below(301) as u32
+    };
     c.quality.delta_lf = r.chance(3);
     c.quality.cdef_adaptive = r.chance(2);
     let t = &mut c.tools;
     t.enable_rect_partitions = !r.chance(6);
     t.enable_ab_partitions = !r.chance(6);
     t.enable_1to4_partitions = !r.chance(6);
-    t.min_partition_size_px = if r.chance(16) { 12 } else { [4u32, 8, 16, 32, 64, 128][r.below(6) as usize] };
-    t.max_partition_size_px = if r.chance(16) { 4 } else { [16u32, 32, 64, 128][r.below(4) as usize] };
+    t.min_partition_size_px = if r.chance(16) {
+        12
+    } else {
+        [4u32, 8, 16, 32, 64, 128][r.below(6) as usize]
+    };
+    t.max_partition_size_px = if r.chance(16) {
+        4
+    } else {
+        [16u32, 32, 64, 128][r.below(4) as usize]
+    };
     t.enable_intra_edge_filter = !r.chance(6);
     t.enable_filter_intra = !r.chance(6);
     t.enable_smooth_intra = !r.chance(6);
@@ -127,8 +149,17 @@ fn random_config(r: &mut Rng) -> KeyFrameConfig {
     t.reduced_tx_type_set = r.chance(6);
     t.enable_tx_size_search = !r.chance(6);
     t.cdf_update_mode = if r.chance(16) { 3 } else { r.below(3) as u32 };
-    t.trellis = [TrellisMode::Full, TrellisMode::Off, TrellisMode::FinalPass, TrellisMode::NoEstimateYrd][r.below(4) as usize];
-    c.superres_denom = if r.chance(4) { [9u8, 12, 16, 17, 5][r.below(5) as usize] } else { 0 };
+    t.trellis = [
+        TrellisMode::Full,
+        TrellisMode::Off,
+        TrellisMode::FinalPass,
+        TrellisMode::NoEstimateYrd,
+    ][r.below(4) as usize];
+    c.superres_denom = if r.chance(4) {
+        [9u8, 12, 16, 17, 5][r.below(5) as usize]
+    } else {
+        0
+    };
     c
 }
 
@@ -205,9 +236,7 @@ fn no_config_or_plane_input_can_panic_the_encoder() {
             encode_key_frame_with(
                 KeyFramePlanes::new(&y, &u, &v),
                 &cfg,
-                &EncodeConfig::new()
-                    .with_limits(limits)
-                    .with_stop(&deadline),
+                &EncodeConfig::new().with_limits(limits).with_stop(&deadline),
             )
         }));
         match res {
@@ -228,10 +257,23 @@ fn no_config_or_plane_input_can_panic_the_encoder() {
                      {}x{} bd{} mono={} ss=({},{}) cq={} cpu={} usage={} sb128={} \
                      tiles=({},{}) cdef={} lr={}\n  planes: y={} u={} v={}\n\
                      Reproduce with AOM_ENC_FUZZ_SEED={seed} and step to iteration {i}.",
-                    cfg.width, cfg.height, cfg.bit_depth, cfg.monochrome, cfg.ss_x,
-                    cfg.ss_y, cfg.cq_level, cfg.cpu_used, cfg.usage, cfg.sb_size_128,
-                    cfg.tile_columns_log2, cfg.tile_rows_log2, cfg.enable_cdef,
-                    cfg.enable_restoration, y.len(), u.len(), v.len()
+                    cfg.width,
+                    cfg.height,
+                    cfg.bit_depth,
+                    cfg.monochrome,
+                    cfg.ss_x,
+                    cfg.ss_y,
+                    cfg.cq_level,
+                    cfg.cpu_used,
+                    cfg.usage,
+                    cfg.sb_size_128,
+                    cfg.tile_columns_log2,
+                    cfg.tile_rows_log2,
+                    cfg.enable_cdef,
+                    cfg.enable_restoration,
+                    y.len(),
+                    u.len(),
+                    v.len()
                 );
             }
         }
@@ -245,9 +287,15 @@ fn no_config_or_plane_input_can_panic_the_encoder() {
     // NON-VACUITY: a sweep that only ever hits the refusal path proves nothing
     // about the encoder. Require that real encodes and every refusal class are
     // all actually reached.
-    assert!(ok > 0, "no input reached a successful encode — the sweep is vacuous");
+    assert!(
+        ok > 0,
+        "no input reached a successful encode — the sweep is vacuous"
+    );
     assert!(unsupported > 0, "no input reached the config-refusal path");
-    assert!(plane_size > 0, "no input reached the plane-size refusal path");
+    assert!(
+        plane_size > 0,
+        "no input reached the plane-size refusal path"
+    );
     // The class this sweep FOUND, on its first run, as an arithmetic-overflow
     // panic in `highbd_variance64_scalar`: a bd8 encode handed 16-bit samples.
     // Keeping it non-vacuous is what stops the refusal being deleted later

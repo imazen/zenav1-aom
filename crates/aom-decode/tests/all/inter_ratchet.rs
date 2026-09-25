@@ -35,9 +35,8 @@
 //! asserts BOTH reproduce the shipped golden per-frame MD5
 //! (`md5_helper.h::Add(aom_image_t*)` exact layout) — a true byte-identity gate.
 
-
-use aom_decode::frame::{FrameDecode, decode_frames};
 use crate::common::md5::Md5;
+use aom_decode::frame::{FrameDecode, decode_frames};
 use std::path::PathBuf;
 
 fn corpus_dir() -> PathBuf {

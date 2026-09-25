@@ -320,7 +320,12 @@ fn fdct4x4_dispatched_matches_the_real_specialised_symbol() {
         }
     }
     assert!(
-        checked >= if c::REF_FDCT4X4_SIMD_IS_DISTINCT { 6_000 } else { 2_000 },
+        checked
+            >= if c::REF_FDCT4X4_SIMD_IS_DISTINCT {
+                6_000
+            } else {
+                2_000
+            },
         "only {checked} blocks compared"
     );
     assert_eq!(

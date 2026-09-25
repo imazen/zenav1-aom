@@ -167,7 +167,11 @@ use crate::sse_neon::__m128i;
 /// and nothing here re-measured them on an AVX2 box.
 #[inline]
 fn half_batch_pays(kernel_points: usize) -> bool {
-    if cfg!(target_arch = "aarch64") { kernel_points >= 8 } else { true }
+    if cfg!(target_arch = "aarch64") {
+        kernel_points >= 8
+    } else {
+        true
+    }
 }
 
 /// Inverse-transform destination: the port's `u16` plane storage, or the bd8
@@ -301,16 +305,46 @@ fn run_inv1d(
     match k {
         Inv1d::Dct4 => incant!(av1_idct4_impl(input, out, cos_bit, stage_range), [v3, neon]),
         Inv1d::Dct8 => incant!(av1_idct8_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Dct16 => incant!(av1_idct16_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Dct32 => incant!(av1_idct32_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Dct64 => incant!(av1_idct64_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Adst4 => incant!(av1_iadst4_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Adst8 => incant!(av1_iadst8_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Adst16 => incant!(av1_iadst16_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Idtx4 => incant!(av1_iidentity4_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Idtx8 => incant!(av1_iidentity8_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Idtx16 => incant!(av1_iidentity16_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Inv1d::Idtx32 => incant!(av1_iidentity32_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Inv1d::Dct16 => incant!(
+            av1_idct16_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Dct32 => incant!(
+            av1_idct32_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Dct64 => incant!(
+            av1_idct64_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Adst4 => incant!(
+            av1_iadst4_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Adst8 => incant!(
+            av1_iadst8_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Adst16 => incant!(
+            av1_iadst16_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Idtx4 => incant!(
+            av1_iidentity4_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Idtx8 => incant!(
+            av1_iidentity8_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Idtx16 => incant!(
+            av1_iidentity16_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Inv1d::Idtx32 => incant!(
+            av1_iidentity32_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
     }
 }
 
@@ -326,16 +360,46 @@ fn run_fwd1d(
     match k {
         Fwd1d::Dct4 => incant!(av1_fdct4_impl(input, out, cos_bit, stage_range), [v3, neon]),
         Fwd1d::Dct8 => incant!(av1_fdct8_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Dct16 => incant!(av1_fdct16_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Dct32 => incant!(av1_fdct32_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Dct64 => incant!(av1_fdct64_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Adst4 => incant!(av1_fadst4_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Adst8 => incant!(av1_fadst8_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Adst16 => incant!(av1_fadst16_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Idtx4 => incant!(av1_fidentity4_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Idtx8 => incant!(av1_fidentity8_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Idtx16 => incant!(av1_fidentity16_impl(input, out, cos_bit, stage_range), [v3, neon]),
-        Fwd1d::Idtx32 => incant!(av1_fidentity32_impl(input, out, cos_bit, stage_range), [v3, neon]),
+        Fwd1d::Dct16 => incant!(
+            av1_fdct16_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Dct32 => incant!(
+            av1_fdct32_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Dct64 => incant!(
+            av1_fdct64_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Adst4 => incant!(
+            av1_fadst4_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Adst8 => incant!(
+            av1_fadst8_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Adst16 => incant!(
+            av1_fadst16_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Idtx4 => incant!(
+            av1_fidentity4_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Idtx8 => incant!(
+            av1_fidentity8_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Idtx16 => incant!(
+            av1_fidentity16_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
+        Fwd1d::Idtx32 => incant!(
+            av1_fidentity32_impl(input, out, cos_bit, stage_range),
+            [v3, neon]
+        ),
     }
 }
 
@@ -438,7 +502,10 @@ fn inv_rect48_fused(
         k[c] = clampv(t, v, row_clamp);
     }
     let mut w = [i32x8::zero(t); 8];
-    incant!(run_inv1d(kr, &k[..col_n], &mut w[..col_n], cos_bit, sr_row), [v3, neon]);
+    incant!(
+        run_inv1d(kr, &k[..col_n], &mut w[..col_n], cos_bit, sr_row),
+        [v3, neon]
+    );
     // shift[0] == 0 -> `round_shift_array` early-returns; nothing to do.
 
     // ---- transpose -> lane = column ----
@@ -482,7 +549,10 @@ fn inv_rect48_fused(
                 revv(t, tr[r])
             } else {
                 let a = tr[r].to_array();
-                i32x8::from_array(t, core::array::from_fn(|j| if j < col_n { a[col_n - 1 - j] } else { 0 }))
+                i32x8::from_array(
+                    t,
+                    core::array::from_fn(|j| if j < col_n { a[col_n - 1 - j] } else { 0 }),
+                )
             }
         } else {
             tr[r]
@@ -490,7 +560,10 @@ fn inv_rect48_fused(
         ci[r] = clampv(t, v, col_clamp);
     }
     let mut co = [i32x8::zero(t); 8];
-    incant!(run_inv1d(kc, &ci[..row_n], &mut co[..row_n], cos_bit, sr_col), [v3, neon]);
+    incant!(
+        run_inv1d(kc, &ci[..row_n], &mut co[..row_n], cos_bit, sr_col),
+        [v3, neon]
+    );
     for x in co[..row_n].iter_mut() {
         *x = rshiftv(t, *x, 4); // -shift[1], shift[1] == -4
     }
@@ -520,7 +593,10 @@ fn inv_rect48_fused(
                 Some(d) => d,
                 None => return false,
             };
-            let dv = i32x8::from_array(t, core::array::from_fn(|j| if j < 4 { d[j] as i32 } else { 0 }));
+            let dv = i32x8::from_array(
+                t,
+                core::array::from_fn(|j| if j < 4 { d[j] as i32 } else { 0 }),
+            );
             let s = (dv + src).clamp(zero, pix_hi).to_array();
             for j in 0..4 {
                 output[idx + j] = s[j] as u16;
@@ -555,11 +631,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
     // is exact under its per-(row, col)-kernel input bound and the bd8 clamp
     // constants; out-of-range or unmapped types take the i32 fused path
     // below, which is always correct.
-    if row_clamp == 16
-        && col_clamp == 16
-        && *sr_row == [16i8; 12]
-        && *sr_col == [16i8; 12]
-    {
+    if row_clamp == 16 && col_clamp == 16 && *sr_row == [16i8; 12] && *sr_col == [16i8; 12] {
         let pick = |t: i32| -> Option<(InvR48, usize)> {
             match t {
                 0 => Some((InvR48::Dct, 4)),
@@ -571,9 +643,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused(
                 _ => None,
             }
         };
-        if let (Some((kr, kn_r)), Some((kc, kn_c))) =
-            (pick(txfm_type_row), pick(txfm_type_col))
-        {
+        if let (Some((kr, kn_r)), Some((kc, kn_c))) = (pick(txfm_type_row), pick(txfm_type_col)) {
             if kn_r == col_n && kn_c == row_n {
                 let bound = if col_n == 4 {
                     INV48_I16_BOUND[kr as usize][kc as usize]
@@ -628,11 +698,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused_u8(
     lr_flip: bool,
 ) -> bool {
     let _ = crate::dispatch::scalar_forced();
-    if !(row_clamp == 16
-        && col_clamp == 16
-        && *sr_row == [16i8; 12]
-        && *sr_col == [16i8; 12])
-    {
+    if !(row_clamp == 16 && col_clamp == 16 && *sr_row == [16i8; 12] && *sr_col == [16i8; 12]) {
         return false;
     }
     let pick = |t: i32| -> Option<(InvR48, usize)> {
@@ -646,9 +712,7 @@ pub(crate) fn try_inv_txfm2d_rect48_fused_u8(
             _ => None,
         }
     };
-    let (Some((kr, kn_r)), Some((kc, kn_c))) =
-        (pick(txfm_type_row), pick(txfm_type_col))
-    else {
+    let (Some((kr, kn_r)), Some((kc, kn_c))) = (pick(txfm_type_row), pick(txfm_type_col)) else {
         return false;
     };
     if kn_r != col_n || kn_c != row_n {
@@ -730,11 +794,8 @@ const INV48_I16_BOUND: [[i32; 3]; 3] = [
 
 /// `INV84_I16_BOUND[row][col]` — 8x4: row kernel 8-pt, col kernel 4-pt.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const INV84_I16_BOUND: [[i32; 3]; 3] = [
-    [6204, 3282, 6204],
-    [6426, 3399, 6426],
-    [16390, 8670, 16388],
-];
+const INV84_I16_BOUND: [[i32; 3]; 3] =
+    [[6204, 3282, 6204], [6426, 3399, 6426], [16390, 8670, 16388]];
 
 /// The `incant!` fallback: decline to the i32 fused path.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -1020,27 +1081,28 @@ fn inv_rect48_i16_core(
     let mut w = [_mm_setzero_si128(); 8];
     for (c, v) in w[..col_n].iter_mut().enumerate() {
         if row_n == 8 {
-            let col: &[i32; 8] =
-                match input.get(c * 8..c * 8 + 8).and_then(|s| s.try_into().ok()) {
-                    Some(a) => a,
-                    None => return None,
-                };
+            let col: &[i32; 8] = match input.get(c * 8..c * 8 + 8).and_then(|s| s.try_into().ok()) {
+                Some(a) => a,
+                None => return None,
+            };
             let lo = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[..4]).unwrap());
             let hi = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[4..]).unwrap());
             mx = _mm_max_epu32(mx, _mm_max_epu32(_mm_abs_epi32(lo), _mm_abs_epi32(hi)));
             *v = _mm_mulhrs_epi16(_mm_packs_epi32(lo, hi), scale);
         } else {
-            let col: &[i32; 4] =
-                match input.get(c * 4..c * 4 + 4).and_then(|s| s.try_into().ok()) {
-                    Some(a) => a,
-                    None => return None,
-                };
+            let col: &[i32; 4] = match input.get(c * 4..c * 4 + 4).and_then(|s| s.try_into().ok()) {
+                Some(a) => a,
+                None => return None,
+            };
             let v32 = _mm_loadu_si128(col);
             mx = _mm_max_epu32(mx, _mm_abs_epi32(v32));
             *v = _mm_mulhrs_epi16(_mm_packs_epi32(v32, v32), scale);
         }
     }
-    let over = _mm_cmpgt_epi32(_mm_sub_epi32(mx, _mm_set1_epi32(bound)), _mm_setzero_si128());
+    let over = _mm_cmpgt_epi32(
+        _mm_sub_epi32(mx, _mm_set1_epi32(bound)),
+        _mm_setzero_si128(),
+    );
     if _mm_testz_si128(over, over) == 0 {
         return None;
     }
@@ -1157,11 +1219,11 @@ fn inv_rect48_fused_i16(
     for r in 0..4usize {
         let src = u[if ud_flip { 3 - r } else { r }];
         let idx = r * stride;
-        let dst: &mut [u16; 8] =
-            match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
-                Some(d) => d,
-                None => return false,
-            };
+        let dst: &mut [u16; 8] = match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok())
+        {
+            Some(d) => d,
+            None => return false,
+        };
         let d = _mm_loadu_si128(dst);
         let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, src), zero), hi);
         _mm_storeu_si128(dst, sum);
@@ -1233,11 +1295,10 @@ fn inv_rect48_fused_i16_u8(
     for r in 0..4usize {
         let src = u[if ud_flip { 3 - r } else { r }];
         let idx = r * stride;
-        let dst: &mut [u8; 8] =
-            match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
-                Some(d) => d,
-                None => return false,
-            };
+        let dst: &mut [u8; 8] = match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+            Some(d) => d,
+            None => return false,
+        };
         let d = _mm_cvtepu8_epi16(_mm_loadu_si64(dst));
         let sum = _mm_packus_epi16(_mm_add_epi16(d, src), _mm_setzero_si128());
         _mm_storeu_si64(dst, sum);
@@ -1364,7 +1425,10 @@ fn inv_rect816_fused(
             k[c] = clampv(t, v, row_clamp);
         }
         let mut o = [i32x8::zero(t); 16];
-        incant!(run_inv1d(kr, &k[..col_n], &mut o[..col_n], cos_bit, sr_row), [v3, neon]);
+        incant!(
+            run_inv1d(kr, &k[..col_n], &mut o[..col_n], cos_bit, sr_row),
+            [v3, neon]
+        );
         for c in 0..col_n {
             w[rg][c] = rshiftv(t, o[c], 1); // -shift[0], shift[0] == -1
         }
@@ -1395,7 +1459,10 @@ fn inv_rect816_fused(
             ci[r] = clampv(t, v, col_clamp);
         }
         let mut o = [i32x8::zero(t); 16];
-        incant!(run_inv1d(kc, &ci[..row_n], &mut o[..row_n], cos_bit, sr_col), [v3, neon]);
+        incant!(
+            run_inv1d(kc, &ci[..row_n], &mut o[..row_n], cos_bit, sr_col),
+            [v3, neon]
+        );
         for r in 0..row_n {
             co[cg][r] = rshiftv(t, o[r], 4); // -shift[1], shift[1] == -4
         }
@@ -1478,11 +1545,7 @@ pub(crate) fn try_inv_txfm2d_rect816_fused(
     // shape — is exact under its per-(row, col)-kernel input bound and the bd8
     // clamp constants; out-of-range or unmapped types take the i32 fused path
     // below, which is always correct.
-    if row_clamp == 16
-        && col_clamp == 16
-        && *sr_row == [16i8; 12]
-        && *sr_col == [16i8; 12]
-    {
+    if row_clamp == 16 && col_clamp == 16 && *sr_row == [16i8; 12] && *sr_col == [16i8; 12] {
         if let (Some(kr16), Some(kc16)) = (inv16_kind(kr), inv16_kind(kc)) {
             let bound = match (col_n, row_n) {
                 (8, 16) => INV816_I16_BOUND[kr16 as usize][kc16 as usize],
@@ -1632,8 +1695,16 @@ fn inv_16x16_fused(
     let mut cilo = [i32x8::zero(t); 16];
     let mut cihi = [i32x8::zero(t); 16];
     for r in 0..16usize {
-        let (l, h) = if r < 8 { (pa[r], pb[r]) } else { (pc[r - 8], pd[r - 8]) };
-        let (l, h) = if lr_flip { (revv(t, h), revv(t, l)) } else { (l, h) };
+        let (l, h) = if r < 8 {
+            (pa[r], pb[r])
+        } else {
+            (pc[r - 8], pd[r - 8])
+        };
+        let (l, h) = if lr_flip {
+            (revv(t, h), revv(t, l))
+        } else {
+            (l, h)
+        };
         cilo[r] = clampv(t, l, col_clamp);
         cihi[r] = clampv(t, h, col_clamp);
     }
@@ -1720,11 +1791,7 @@ pub(crate) fn try_inv_txfm2d_16x16_fused(
     // The i16 whole-block kernel — C's `lowbd_inv_txfm2d_add_16x16` shape —
     // exact under `INV16_I16_BOUND`; out-of-range or unmapped types take the
     // i32 fused path below, which is always correct.
-    if row_clamp == 16
-        && col_clamp == 16
-        && *sr_row == [16i8; 12]
-        && *sr_col == [16i8; 12]
-    {
+    if row_clamp == 16 && col_clamp == 16 && *sr_row == [16i8; 12] && *sr_col == [16i8; 12] {
         if let (Some(kr16), Some(kc16)) = (inv16_kind(kr), inv16_kind(kc)) {
             let bound = INV16_I16_BOUND[kr16 as usize][kc16 as usize];
             // ymm first — identical gate to the xmm twin, which it obsoletes
@@ -1941,11 +2008,7 @@ pub(crate) fn try_inv_txfm2d_8x8_fused(
     // is exact under its per-(row, col)-kernel input bound and the bd8 clamp
     // constants; out-of-range or unmapped types take the i32 fused path
     // below, which is always correct.
-    if row_clamp == 16
-        && col_clamp == 16
-        && *sr_row == [16i8; 12]
-        && *sr_col == [16i8; 12]
-    {
+    if row_clamp == 16 && col_clamp == 16 && *sr_row == [16i8; 12] && *sr_col == [16i8; 12] {
         if let (Some(kr), Some(kc)) = (inv8_kernel(txfm_type_row), inv8_kernel(txfm_type_col)) {
             if incant!(
                 inv_8x8_fused_i16(
@@ -2001,11 +2064,7 @@ pub(crate) fn try_inv_txfm2d_8x8_fused_u8(
     lr_flip: bool,
 ) -> bool {
     let _ = crate::dispatch::scalar_forced();
-    if row_clamp == 16
-        && col_clamp == 16
-        && *sr_row == [16i8; 12]
-        && *sr_col == [16i8; 12]
-    {
+    if row_clamp == 16 && col_clamp == 16 && *sr_row == [16i8; 12] && *sr_col == [16i8; 12] {
         if let (Some(kr), Some(kc)) = (inv8_kernel(txfm_type_row), inv8_kernel(txfm_type_col)) {
             return incant!(
                 inv_8x8_fused_i16_u8(
@@ -2077,11 +2136,7 @@ fn inv8_kernel(txfm_type: i32) -> Option<Inv8> {
 /// `INV8_BOUND[row][col]` — max `|input[i32]|` for exact i16 lanes (see the
 /// block comment above for the derivation).
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const INV8_I16_BOUND: [[i32; 3]; 3] = [
-    [2347, 2431, 6201],
-    [2432, 2518, 6423],
-    [6202, 6423, 16383],
-];
+const INV8_I16_BOUND: [[i32; 3]; 3] = [[2347, 2431, 6201], [2432, 2518, 6423], [6202, 6423, 16383]];
 
 /// The `incant!` fallback: decline to the i32 fused path.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -2376,7 +2431,8 @@ fn inv_8x8_fused_i16(
     for r in 0..8usize {
         let src = u[if ud_flip { 7 - r } else { r }];
         let idx = r * stride;
-        let dst: &mut [u16; 8] = match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+        let dst: &mut [u16; 8] = match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok())
+        {
             Some(d) => d,
             None => return false,
         };
@@ -2474,29 +2530,20 @@ fn inv16_kind(k: Inv1d) -> Option<Inv16> {
 /// chained bound also requires `round_shift(pass1_out_max, 2)` to stay inside
 /// the col kernel's proven input box.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const INV16_I16_BOUND: [[i32; 3]; 3] = [
-    [2474, 1238, 6424],
-    [2521, 1261, 3215],
-    [9084, 4546, 11584],
-];
+const INV16_I16_BOUND: [[i32; 3]; 3] =
+    [[2474, 1238, 6424], [2521, 1261, 3215], [9084, 4546, 11584]];
 
 /// `INV816_I16_BOUND[row][col]` — 8x16: row kernel 8-pt, col kernel 16-pt, with
 /// the rect `NEW_INV_SQRT2` prescale before the row kernel (the bound is on the
 /// RAW input; the prescale shrinks |v| by ~0.707 before the gate propagates).
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const INV816_I16_BOUND: [[i32; 3]; 3] = [
-    [3439, 1721, 6201],
-    [3562, 1782, 6424],
-    [9086, 4547, 16384],
-];
+const INV816_I16_BOUND: [[i32; 3]; 3] =
+    [[3439, 1721, 6201], [3562, 1782, 6424], [9086, 4547, 16384]];
 
 /// `INV168_I16_BOUND[row][col]` — 16x8: row kernel 16-pt, col kernel 8-pt.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const INV168_I16_BOUND: [[i32; 3]; 3] = [
-    [3482, 1750, 4463],
-    [3549, 1782, 4547],
-    [12786, 6423, 16383],
-];
+const INV168_I16_BOUND: [[i32; 3]; 3] =
+    [[3482, 1750, 4463], [3549, 1782, 4547], [12786, 6423, 16383]];
 
 /// The `incant!` fallback: decline to the i32 fused path.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -2573,8 +2620,8 @@ fn inv_w16_fused_i16(
     let idct16 = |i: &[__m128i; 16]| -> [__m128i; 16] {
         let c = crate::transform::cospi::cospi_arr(cos_bit);
         let mut x = [
-            i[0], i[8], i[4], i[12], i[2], i[10], i[6], i[14], i[1], i[9], i[5], i[13], i[3], i[11],
-            i[7], i[15],
+            i[0], i[8], i[4], i[12], i[2], i[10], i[6], i[14], i[1], i[9], i[5], i[13], i[3],
+            i[11], i[7], i[15],
         ];
         // stage 2
         let (x8, x15) = btf(pair(c[60], -c[4]), pair(c[4], c[60]), x[8], x[15]);
@@ -2682,8 +2729,8 @@ fn inv_w16_fused_i16(
     let iadst16 = |i: &[__m128i; 16]| -> [__m128i; 16] {
         let c = crate::transform::cospi::cospi_arr(cos_bit);
         let mut x = [
-            i[15], i[0], i[13], i[2], i[11], i[4], i[9], i[6], i[7], i[8], i[5], i[10], i[3], i[12],
-            i[1], i[14],
+            i[15], i[0], i[13], i[2], i[11], i[4], i[9], i[6], i[7], i[8], i[5], i[10], i[3],
+            i[12], i[1], i[14],
         ];
         // stage 2
         let (x0, x1) = btf(pair(c[2], c[62]), pair(c[62], -c[2]), x[0], x[1]);
@@ -2930,18 +2977,17 @@ fn inv_w16_fused_i16(
     let pair_y = |a: i32, b: i32| -> __m256i {
         _mm256_set1_epi32((a as u16 as u32 | ((b as u16 as u32) << 16)) as i32)
     };
-    let btf_y =
-        |w0: __m256i, w1: __m256i, i0: __m256i, i1: __m256i| -> (__m256i, __m256i) {
-            let rnd = _mm256_set1_epi32(1 << (cos_bit - 1));
-            let cnt = _mm_cvtsi32_si128(cos_bit);
-            let t0 = _mm256_unpacklo_epi16(i0, i1);
-            let t1 = _mm256_unpackhi_epi16(i0, i1);
-            let c0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w0), rnd), cnt);
-            let c1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w0), rnd), cnt);
-            let d0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w1), rnd), cnt);
-            let d1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w1), rnd), cnt);
-            (_mm256_packs_epi32(c0, c1), _mm256_packs_epi32(d0, d1))
-        };
+    let btf_y = |w0: __m256i, w1: __m256i, i0: __m256i, i1: __m256i| -> (__m256i, __m256i) {
+        let rnd = _mm256_set1_epi32(1 << (cos_bit - 1));
+        let cnt = _mm_cvtsi32_si128(cos_bit);
+        let t0 = _mm256_unpacklo_epi16(i0, i1);
+        let t1 = _mm256_unpackhi_epi16(i0, i1);
+        let c0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w0), rnd), cnt);
+        let c1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w0), rnd), cnt);
+        let d0 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t0, w1), rnd), cnt);
+        let d1 = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(t1, w1), rnd), cnt);
+        (_mm256_packs_epi32(c0, c1), _mm256_packs_epi32(d0, d1))
+    };
     let adds_subs_y = |a: __m256i, b: __m256i| -> (__m256i, __m256i) {
         (_mm256_adds_epi16(a, b), _mm256_subs_epi16(a, b))
     };
@@ -3192,9 +3238,9 @@ fn inv_w16_fused_i16(
         }
         if lr_flip {
             for v in ci.iter_mut() {
-                *v = _mm_shuffle_epi32::<0x4E>(_mm_shufflehi_epi16::<0x1B>(
-                    _mm_shufflelo_epi16::<0x1B>(*v),
-                ));
+                *v = _mm_shuffle_epi32::<0x4E>(_mm_shufflehi_epi16::<0x1B>(_mm_shufflelo_epi16::<
+                    0x1B,
+                >(*v)));
             }
         }
         let o = run(kc, &ci[..16]);
@@ -3210,16 +3256,13 @@ fn inv_w16_fused_i16(
                 for r in 0..16usize {
                     let src_i = if ud_flip { 15 - r } else { r };
                     let idx = r * stride;
-                    let dst: &mut [u16; 8] = match output
-                        .get_mut(idx..idx + 8)
-                        .and_then(|s| s.try_into().ok())
-                    {
-                        Some(d) => d,
-                        None => return false,
-                    };
+                    let dst: &mut [u16; 8] =
+                        match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+                            Some(d) => d,
+                            None => return false,
+                        };
                     let d = _mm_loadu_si128(dst);
-                    let sum =
-                        _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, co[src_i]), zero), hi);
+                    let sum = _mm_min_epi16(_mm_max_epi16(_mm_add_epi16(d, co[src_i]), zero), hi);
                     _mm_storeu_si128(dst, sum);
                 }
                 true
@@ -3228,13 +3271,11 @@ fn inv_w16_fused_i16(
                 for r in 0..16usize {
                     let src_i = if ud_flip { 15 - r } else { r };
                     let idx = r * stride;
-                    let dst: &mut [u8; 8] = match output
-                        .get_mut(idx..idx + 8)
-                        .and_then(|s| s.try_into().ok())
-                    {
-                        Some(d) => d,
-                        None => return false,
-                    };
+                    let dst: &mut [u8; 8] =
+                        match output.get_mut(idx..idx + 8).and_then(|s| s.try_into().ok()) {
+                            Some(d) => d,
+                            None => return false,
+                        };
                     let d = _mm_cvtepu8_epi16(_mm_loadu_si64(dst));
                     let sum = _mm_packus_epi16(_mm_add_epi16(d, co[src_i]), zero);
                     _mm_storeu_si64(dst, sum);
@@ -3288,10 +3329,10 @@ fn inv_w16_fused_i16(
                         None => return false,
                     };
                     let d = _mm256_loadu_si256(dst);
-                    let sum = _mm256_min_epi16(_mm256_max_epi16(
-                        _mm256_add_epi16(d, co[src_i]),
-                        zeroy,
-                    ), hi);
+                    let sum = _mm256_min_epi16(
+                        _mm256_max_epi16(_mm256_add_epi16(d, co[src_i]), zeroy),
+                        hi,
+                    );
                     _mm256_storeu_si256(dst, sum);
                 }
                 true
@@ -3346,9 +3387,9 @@ fn inv_w16_fused_i16(
         for r in 0..row_n {
             let mut v = tt[r / 8][sg][r % 8];
             if lr_flip {
-                v = _mm_shuffle_epi32::<0x4E>(_mm_shufflehi_epi16::<0x1B>(
-                    _mm_shufflelo_epi16::<0x1B>(v),
-                ));
+                v = _mm_shuffle_epi32::<0x4E>(_mm_shufflehi_epi16::<0x1B>(_mm_shufflelo_epi16::<
+                    0x1B,
+                >(v)));
             }
             ci[r] = v;
         }
@@ -3474,8 +3515,8 @@ fn inv_16x16_fused_i16_w16(
     let idct16 = |i: &[__m256i; 16]| -> [__m256i; 16] {
         let c = crate::transform::cospi::cospi_arr(cos_bit);
         let mut x = [
-            i[0], i[8], i[4], i[12], i[2], i[10], i[6], i[14], i[1], i[9], i[5], i[13], i[3], i[11],
-            i[7], i[15],
+            i[0], i[8], i[4], i[12], i[2], i[10], i[6], i[14], i[1], i[9], i[5], i[13], i[3],
+            i[11], i[7], i[15],
         ];
         // stage 2
         let (x8, x15) = btf(pair(c[60], -c[4]), pair(c[4], c[60]), x[8], x[15]);
@@ -3583,8 +3624,8 @@ fn inv_16x16_fused_i16_w16(
     let iadst16 = |i: &[__m256i; 16]| -> [__m256i; 16] {
         let c = crate::transform::cospi::cospi_arr(cos_bit);
         let mut x = [
-            i[15], i[0], i[13], i[2], i[11], i[4], i[9], i[6], i[7], i[8], i[5], i[10], i[3], i[12],
-            i[1], i[14],
+            i[15], i[0], i[13], i[2], i[11], i[4], i[9], i[6], i[7], i[8], i[5], i[10], i[3],
+            i[12], i[1], i[14],
         ];
         // stage 2
         let (x0, x1) = btf(pair(c[2], c[62]), pair(c[62], -c[2]), x[0], x[1]);
@@ -3733,7 +3774,9 @@ fn inv_16x16_fused_i16_w16(
     for (c, v) in w.iter_mut().enumerate() {
         let base = c * 16;
         let (a, b) = match (
-            input.get(base..base + 8).and_then(|s| <&[i32; 8]>::try_from(s).ok()),
+            input
+                .get(base..base + 8)
+                .and_then(|s| <&[i32; 8]>::try_from(s).ok()),
             input
                 .get(base + 8..base + 16)
                 .and_then(|s| <&[i32; 8]>::try_from(s).ok()),
@@ -3743,7 +3786,10 @@ fn inv_16x16_fused_i16_w16(
         };
         let va = _mm256_loadu_si256(a);
         let vb = _mm256_loadu_si256(b);
-        mx = _mm256_max_epu32(mx, _mm256_max_epu32(_mm256_abs_epi32(va), _mm256_abs_epi32(vb)));
+        mx = _mm256_max_epu32(
+            mx,
+            _mm256_max_epu32(_mm256_abs_epi32(va), _mm256_abs_epi32(vb)),
+        );
         *v = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(va, vb));
     }
     let over = _mm256_cmpgt_epi32(
@@ -3837,7 +3883,8 @@ fn inv_16x16_fused_i16_w16(
                     None => return false,
                 };
                 let d = _mm256_loadu_si256(dst);
-                let sum = _mm256_min_epi16(_mm256_max_epi16(_mm256_add_epi16(d, co[src_i]), zero), hi);
+                let sum =
+                    _mm256_min_epi16(_mm256_max_epi16(_mm256_add_epi16(d, co[src_i]), zero), hi);
                 _mm256_storeu_si256(dst, sum);
             }
         }
@@ -3889,8 +3936,18 @@ pub(crate) fn try_inv_col_pass(
     debug_assert_eq!(inv_kernel_n(kernel), row_n);
     incant!(
         inv_col_pass(
-            kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range, ud_flip,
-            lr_flip, bd
+            kernel,
+            buf,
+            output,
+            stride,
+            col_n,
+            row_n,
+            shift1_bit,
+            col_clamp,
+            stage_range,
+            ud_flip,
+            lr_flip,
+            bd
         ),
         [v3, neon, scalar]
     )
@@ -3936,9 +3993,7 @@ pub(crate) fn try_inv_row_pass(
             debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), col_n);
             debug_assert!((0..=2).contains(&shift0_bit));
             if incant!(
-                lowbd16::inv_row_pass_i16(
-                    k16, mod_input, buf, col_n, row_n, rect1, shift0_bit
-                ),
+                lowbd16::inv_row_pass_i16(k16, mod_input, buf, col_n, row_n, rect1, shift0_bit),
                 [v3, neon, scalar]
             ) {
                 return true;
@@ -3951,7 +4006,15 @@ pub(crate) fn try_inv_row_pass(
     debug_assert_eq!(inv_kernel_n(kernel), col_n);
     incant!(
         inv_row_pass(
-            kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range
+            kernel,
+            mod_input,
+            buf,
+            col_n,
+            row_n,
+            rect1,
+            shift0_bit,
+            row_clamp,
+            stage_range
         ),
         [v3, neon, scalar]
     )
@@ -3985,21 +4048,60 @@ fn inv_row_pass(
     if col_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        incant!(inv_row_pass_core(kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
-            &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_row_pass_core(
+                kernel,
+                mod_input,
+                buf,
+                col_n,
+                row_n,
+                rect1,
+                shift0_bit,
+                row_clamp,
+                stage_range,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else if col_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        incant!(inv_row_pass_core(kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
-            &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_row_pass_core(
+                kernel,
+                mod_input,
+                buf,
+                col_n,
+                row_n,
+                rect1,
+                shift0_bit,
+                row_clamp,
+                stage_range,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        incant!(inv_row_pass_core(kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, row_clamp, stage_range,
-            &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_row_pass_core(
+                kernel,
+                mod_input,
+                buf,
+                col_n,
+                row_n,
+                rect1,
+                shift0_bit,
+                row_clamp,
+                stage_range,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     }
     true
 }
@@ -4052,8 +4154,9 @@ fn inv_row_pass_core(
             let mut v = if active == 8 {
                 i32x8::from_slice(t, &mod_input[c * row_n + rg..c * row_n + rg + 8])
             } else {
-                let a: [i32; 4] =
-                    mod_input[c * row_n + rg..c * row_n + rg + 4].try_into().unwrap();
+                let a: [i32; 4] = mod_input[c * row_n + rg..c * row_n + rg + 4]
+                    .try_into()
+                    .unwrap();
                 i32x8::from_array(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
             };
             if rect1 {
@@ -4062,7 +4165,16 @@ fn inv_row_pass_core(
             }
             *ti = clampv(t, v, row_clamp); // the driver's clamp_buf(bd+8)
         }
-        incant!(run_inv1d(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit, stage_range), [v3, neon]);
+        incant!(
+            run_inv1d(
+                kernel,
+                &tin[..col_n],
+                &mut tout[..col_n],
+                cos_bit,
+                stage_range
+            ),
+            [v3, neon]
+        );
         if shift0_bit > 0 {
             // round_shift_array(buf_row, -shift[0]); shift[0] in {0,-1,-2}.
             for to in tout[..col_n].iter_mut() {
@@ -4204,7 +4316,10 @@ fn fwd_rect816_fused(
             v[r] = shl_clamp64v(t, x, 2);
         }
         let mut o = [i32x8::zero(t); 16];
-        incant!(run_fwd1d(kc, &v[..row_n], &mut o[..row_n], cos_bit_col, &sr), [v3, neon]);
+        incant!(
+            run_fwd1d(kc, &v[..row_n], &mut o[..row_n], cos_bit_col, &sr),
+            [v3, neon]
+        );
         for r in 0..row_n {
             w[cg][r] = rshiftv(t, o[r], 2); // -shift[1], shift[1] == -2
         }
@@ -4225,15 +4340,25 @@ fn fwd_rect816_fused(
     for rg in 0..rg_n {
         let mut ri = [i32x8::zero(t); 16];
         for p in 0..col_n {
-            ri[p] = if lr_flip { tt[rg][col_n - 1 - p] } else { tt[rg][p] };
+            ri[p] = if lr_flip {
+                tt[rg][col_n - 1 - p]
+            } else {
+                tt[rg][p]
+            };
         }
         let mut u = [i32x8::zero(t); 16];
-        incant!(run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr), [v3, neon]);
+        incant!(
+            run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr),
+            [v3, neon]
+        );
         // shift[2] == 0; rect_type == +-1 so the NEW_SQRT2 scaling applies.
         for c in 0..col_n {
             let val = mul_rshiftv(t, u[c], NEW_SQRT2, NEW_SQRT2_BITS);
             let base = c * row_n + rg * 8;
-            let o: &mut [i32; 8] = match output.get_mut(base..base + 8).and_then(|s| s.try_into().ok()) {
+            let o: &mut [i32; 8] = match output
+                .get_mut(base..base + 8)
+                .and_then(|s| s.try_into().ok())
+            {
                 Some(o) => o,
                 None => return false,
             };
@@ -4270,7 +4395,16 @@ pub(crate) fn try_fwd_txfm2d_rect816_fused(
     if let (Some(ic), Some(ir)) = (fwdrb_kernel(txfm_type_col), fwdrb_kernel(txfm_type_row)) {
         if incant!(
             fwd_rect816_fused_i16(
-                ic, ir, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip,
+                ic,
+                ir,
+                input,
+                output,
+                stride,
+                col_n,
+                row_n,
+                cos_bit_col,
+                cos_bit_row,
+                ud_flip,
                 lr_flip
             ),
             [v3, neon, scalar]
@@ -4280,7 +4414,17 @@ pub(crate) fn try_fwd_txfm2d_rect816_fused(
     }
     incant!(
         fwd_rect816_fused(
-            kc, kr, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip, lr_flip
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            col_n,
+            row_n,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip
         ),
         [v3, neon, scalar]
     )
@@ -4371,7 +4515,10 @@ fn fwd_rect48_fused(
     }
 
     let mut w = [i32x8::zero(t); 8];
-    incant!(run_fwd1d(kc, &v[..row_n], &mut w[..row_n], cos_bit_col, &sr), [v3, neon]);
+    incant!(
+        run_fwd1d(kc, &v[..row_n], &mut w[..row_n], cos_bit_col, &sr),
+        [v3, neon]
+    );
     for x in w[..row_n].iter_mut() {
         *x = rshiftv(t, *x, 1); // -shift[1], shift[1] == -1
     }
@@ -4412,7 +4559,10 @@ fn fwd_rect48_fused(
     }
 
     let mut u = [i32x8::zero(t); 8];
-    incant!(run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr), [v3, neon]);
+    incant!(
+        run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr),
+        [v3, neon]
+    );
 
     // shift[2] == 0; `rect_type == +-1` so the NEW_SQRT2 scaling applies.
     for c in 0..col_n {
@@ -4451,7 +4601,16 @@ pub(crate) fn try_fwd_txfm2d_rect48_fused(
     if let (Some(kc), Some(kr)) = (fwd_r_kernel(txfm_type_col), fwd_r_kernel(txfm_type_row)) {
         if incant!(
             fwd_rect48_fused_i16(
-                kc, kr, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip,
+                kc,
+                kr,
+                input,
+                output,
+                stride,
+                col_n,
+                row_n,
+                cos_bit_col,
+                cos_bit_row,
+                ud_flip,
                 lr_flip
             ),
             [v3, neon, scalar]
@@ -4467,7 +4626,17 @@ pub(crate) fn try_fwd_txfm2d_rect48_fused(
     }
     incant!(
         fwd_rect48_fused(
-            kc, kr, input, output, stride, col_n, row_n, cos_bit_col, cos_bit_row, ud_flip, lr_flip
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            col_n,
+            row_n,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip
         ),
         [v3, neon, scalar]
     )
@@ -4654,7 +4823,15 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if incant!(
             fwd_16x16_fused_i16_w16(
-                kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
+                kc,
+                kr,
+                input,
+                output,
+                stride,
+                cos_bit_col,
+                cos_bit_row,
+                ud_flip,
+                lr_flip
             ),
             [v3, neon, scalar]
         ) {
@@ -4662,7 +4839,15 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
         }
         if incant!(
             fwd_16x16_fused_i16(
-                kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
+                kc,
+                kr,
+                input,
+                output,
+                stride,
+                cos_bit_col,
+                cos_bit_row,
+                ud_flip,
+                lr_flip
             ),
             [v3, neon, scalar]
         ) {
@@ -4676,7 +4861,17 @@ pub(crate) fn try_fwd_txfm2d_16x16_fused(
         return false;
     }
     incant!(
-        fwd_16x16_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
+        fwd_16x16_fused(
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip
+        ),
         [v3, neon, scalar]
     )
 }
@@ -4932,7 +5127,17 @@ pub(crate) fn try_fwd_txfm2d_4x4_fused(
     // row loads (vector `max_epu16` over the same four rows) — a decline
     // returns false to the same fallback either way.
     incant!(
-        fwd_4x4_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
+        fwd_4x4_fused(
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip
+        ),
         [v3, neon, scalar]
     )
 }
@@ -5059,10 +5264,7 @@ fn inv_4x4_fused_u8(
     lr_flip: bool,
 ) -> bool {
     use archmage::intrinsics::x86_64::*;
-    let Some(u) = incant!(
-        inv_4x4_i16_core(kr, kc, input, ud_flip, lr_flip),
-        [v3]
-    ) else {
+    let Some(u) = incant!(inv_4x4_i16_core(kr, kc, input, ud_flip, lr_flip), [v3]) else {
         return false;
     };
     for r in 0..4usize {
@@ -5122,10 +5324,7 @@ fn inv_4x4_i16_core(
             <&[i32; 8]>::try_from(&input[8..16]).unwrap(),
         )),
     );
-    let m = _mm_max_epu32(
-        _mm256_castsi256_si128(m),
-        _mm256_extracti128_si256::<1>(m),
-    );
+    let m = _mm_max_epu32(_mm256_castsi256_si128(m), _mm256_extracti128_si256::<1>(m));
     let m = _mm_max_epu32(m, _mm_srli_si128::<8>(m));
     let m = _mm_max_epu32(m, _mm_srli_si128::<4>(m));
     if _mm_cvtsi128_si32(m) as u32 > 4096 {
@@ -5179,7 +5378,10 @@ fn inv_4x4_i16_core(
         let rnd = _mm_set1_epi32(1 << (cos_bit - 1));
         let cnt = _mm_cvtsi32_si128(cos_bit);
         let srai = |v: __m128i| {
-            _mm_packs_epi32(_mm_sra_epi32(_mm_add_epi32(v, rnd), cnt), _mm_setzero_si128())
+            _mm_packs_epi32(
+                _mm_sra_epi32(_mm_add_epi32(v, rnd), cnt),
+                _mm_setzero_si128(),
+            )
         };
         [
             srai(_mm_add_epi32(x[0], x[2])),
@@ -5413,8 +5615,14 @@ fn fwd_8x8_fused(
         let w = i32x8::from_array(
             t,
             [
-                a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32,
-                a[4] as i32, a[5] as i32, a[6] as i32, a[7] as i32,
+                a[0] as i32,
+                a[1] as i32,
+                a[2] as i32,
+                a[3] as i32,
+                a[4] as i32,
+                a[5] as i32,
+                a[6] as i32,
+                a[7] as i32,
             ],
         );
         *vr = shl_clamp64v(t, w, 2);
@@ -5467,7 +5675,10 @@ fn fwd_8x8_fused(
     // shift[2] == 0 and rect_type == 0, so no tail. `output[k*8 + r]` is
     // lane `r` of `u[k]` — one contiguous vector store per k.
     for (k, uk) in u.iter().enumerate() {
-        let o: &mut [i32; 8] = match output.get_mut(k * 8..k * 8 + 8).and_then(|s| s.try_into().ok()) {
+        let o: &mut [i32; 8] = match output
+            .get_mut(k * 8..k * 8 + 8)
+            .and_then(|s| s.try_into().ok())
+        {
             Some(o) => o,
             None => return false,
         };
@@ -5498,7 +5709,15 @@ pub(crate) fn try_fwd_txfm2d_8x8_fused(
     if let (Some(kc), Some(kr)) = (fwd8_kernel(txfm_type_col), fwd8_kernel(txfm_type_row)) {
         if incant!(
             fwd_8x8_fused_i16(
-                kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip
+                kc,
+                kr,
+                input,
+                output,
+                stride,
+                cos_bit_col,
+                cos_bit_row,
+                ud_flip,
+                lr_flip
             ),
             [v3, neon, scalar]
         ) {
@@ -5512,7 +5731,17 @@ pub(crate) fn try_fwd_txfm2d_8x8_fused(
         return false;
     }
     incant!(
-        fwd_8x8_fused(kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip),
+        fwd_8x8_fused(
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip
+        ),
         [v3, neon, scalar]
     )
 }
@@ -5605,19 +5834,21 @@ fn fwd_8x8_fused_i16(
     // pairs, round, pack. `rnd`/`cnt` are the caller's per-kernel constants —
     // C derives them once per kernel body, so the port does the same rather
     // than re-splatting inside every butterfly.
-    let btf =
-        |w0: __m128i, w1: __m128i, i0: __m128i, i1: __m128i, rnd: __m128i, cnt: __m128i| -> (
-            __m128i,
-            __m128i,
-        ) {
-            let t0 = _mm_unpacklo_epi16(i0, i1);
-            let t1 = _mm_unpackhi_epi16(i0, i1);
-            let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
-            let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
-            let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
-            let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
-            (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
-        };
+    let btf = |w0: __m128i,
+               w1: __m128i,
+               i0: __m128i,
+               i1: __m128i,
+               rnd: __m128i,
+               cnt: __m128i|
+     -> (__m128i, __m128i) {
+        let t0 = _mm_unpacklo_epi16(i0, i1);
+        let t1 = _mm_unpackhi_epi16(i0, i1);
+        let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
+        let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
+        let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
+        let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
+        (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
+    };
 
     // `fdct8x8_new_sse2` verbatim.
     let fdct8 = |i: &[__m128i; 8], cos_bit: i32| -> [__m128i; 8] {
@@ -5634,7 +5865,14 @@ fn fwd_8x8_fused_i16(
             _mm_subs_epi16(i[1], i[6]),
             _mm_subs_epi16(i[0], i[7]),
         ];
-        let (x2_5, x2_6) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x1[5], x1[6], rnd, cnt);
+        let (x2_5, x2_6) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x1[5],
+            x1[6],
+            rnd,
+            cnt,
+        );
         let x2 = [
             _mm_adds_epi16(x1[0], x1[3]),
             _mm_adds_epi16(x1[1], x1[2]),
@@ -5645,8 +5883,22 @@ fn fwd_8x8_fused_i16(
             x2_6,
             x1[7],
         ];
-        let (x3_0, x3_1) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x2[0], x2[1], rnd, cnt);
-        let (x3_2, x3_3) = btf(pair(c[48], c[16]), pair(-c[16], c[48]), x2[2], x2[3], rnd, cnt);
+        let (x3_0, x3_1) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x2[0],
+            x2[1],
+            rnd,
+            cnt,
+        );
+        let (x3_2, x3_3) = btf(
+            pair(c[48], c[16]),
+            pair(-c[16], c[48]),
+            x2[2],
+            x2[3],
+            rnd,
+            cnt,
+        );
         let x3 = [
             x3_0,
             x3_1,
@@ -5657,8 +5909,22 @@ fn fwd_8x8_fused_i16(
             _mm_subs_epi16(x2[7], x2[6]),
             _mm_adds_epi16(x2[7], x2[6]),
         ];
-        let (o1, o7) = btf(pair(c[56], c[8]), pair(-c[8], c[56]), x3[4], x3[7], rnd, cnt);
-        let (o5, o3) = btf(pair(c[24], c[40]), pair(-c[40], c[24]), x3[5], x3[6], rnd, cnt);
+        let (o1, o7) = btf(
+            pair(c[56], c[8]),
+            pair(-c[8], c[56]),
+            x3[4],
+            x3[7],
+            rnd,
+            cnt,
+        );
+        let (o5, o3) = btf(
+            pair(c[24], c[40]),
+            pair(-c[40], c[24]),
+            x3[5],
+            x3[6],
+            rnd,
+            cnt,
+        );
         [x3[0], o1, x3[2], o3, x3[1], o5, x3[3], o7]
     };
 
@@ -5678,8 +5944,22 @@ fn fwd_8x8_fused_i16(
             i[2],
             _mm_subs_epi16(z, i[5]),
         ];
-        let (x2_2, x2_3) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[2], x1[3], rnd, cnt);
-        let (x2_6, x2_7) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[6], x1[7], rnd, cnt);
+        let (x2_2, x2_3) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[2],
+            x1[3],
+            rnd,
+            cnt,
+        );
+        let (x2_6, x2_7) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[6],
+            x1[7],
+            rnd,
+            cnt,
+        );
         let x2 = [x1[0], x1[1], x2_2, x2_3, x1[4], x1[5], x2_6, x2_7];
         let x3 = [
             _mm_adds_epi16(x2[0], x2[2]),
@@ -5691,8 +5971,22 @@ fn fwd_8x8_fused_i16(
             _mm_subs_epi16(x2[4], x2[6]),
             _mm_subs_epi16(x2[5], x2[7]),
         ];
-        let (x4_4, x4_5) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x3[4], x3[5], rnd, cnt);
-        let (x4_6, x4_7) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x3[6], x3[7], rnd, cnt);
+        let (x4_4, x4_5) = btf(
+            pair(c[16], c[48]),
+            pair(c[48], -c[16]),
+            x3[4],
+            x3[5],
+            rnd,
+            cnt,
+        );
+        let (x4_6, x4_7) = btf(
+            pair(-c[48], c[16]),
+            pair(c[16], c[48]),
+            x3[6],
+            x3[7],
+            rnd,
+            cnt,
+        );
         let x4 = [x3[0], x3[1], x3[2], x3[3], x4_4, x4_5, x4_6, x4_7];
         let x5 = [
             _mm_adds_epi16(x4[1], x4[5]),
@@ -5704,10 +5998,38 @@ fn fwd_8x8_fused_i16(
             _mm_subs_epi16(x4[3], x4[7]),
             _mm_adds_epi16(x4[0], x4[4]),
         ];
-        let (o7, o0) = btf(pair(c[4], c[60]), pair(c[60], -c[4]), x5[7], x5[0], rnd, cnt);
-        let (o5, o2) = btf(pair(c[20], c[44]), pair(c[44], -c[20]), x5[5], x5[2], rnd, cnt);
-        let (o3, o4) = btf(pair(c[36], c[28]), pair(c[28], -c[36]), x5[3], x5[4], rnd, cnt);
-        let (o1, o6) = btf(pair(c[52], c[12]), pair(c[12], -c[52]), x5[1], x5[6], rnd, cnt);
+        let (o7, o0) = btf(
+            pair(c[4], c[60]),
+            pair(c[60], -c[4]),
+            x5[7],
+            x5[0],
+            rnd,
+            cnt,
+        );
+        let (o5, o2) = btf(
+            pair(c[20], c[44]),
+            pair(c[44], -c[20]),
+            x5[5],
+            x5[2],
+            rnd,
+            cnt,
+        );
+        let (o3, o4) = btf(
+            pair(c[36], c[28]),
+            pair(c[28], -c[36]),
+            x5[3],
+            x5[4],
+            rnd,
+            cnt,
+        );
+        let (o1, o6) = btf(
+            pair(c[52], c[12]),
+            pair(c[12], -c[52]),
+            x5[1],
+            x5[6],
+            rnd,
+            cnt,
+        );
         [o0, o1, o2, o3, o4, o5, o6, o7]
     };
 
@@ -5913,32 +6235,36 @@ fn fwd_rect48_fused_i16(
     };
 
     // `btf_16_sse2` — full 8-lane butterfly.
-    let btf =
-        |w0: __m128i, w1: __m128i, i0: __m128i, i1: __m128i, rnd: __m128i, cnt: __m128i| -> (
-            __m128i,
-            __m128i,
-        ) {
-            let t0 = _mm_unpacklo_epi16(i0, i1);
-            let t1 = _mm_unpackhi_epi16(i0, i1);
-            let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
-            let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
-            let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
-            let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
-            (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
-        };
+    let btf = |w0: __m128i,
+               w1: __m128i,
+               i0: __m128i,
+               i1: __m128i,
+               rnd: __m128i,
+               cnt: __m128i|
+     -> (__m128i, __m128i) {
+        let t0 = _mm_unpacklo_epi16(i0, i1);
+        let t1 = _mm_unpackhi_epi16(i0, i1);
+        let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
+        let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
+        let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
+        let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
+        (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
+    };
 
     // `btf_16_w4_sse2` — 4-lane butterfly; note `out1`'s high half is `c0`,
     // verbatim (those lanes are never stored).
-    let btf4 =
-        |w0: __m128i, w1: __m128i, i0: __m128i, i1: __m128i, rnd: __m128i, cnt: __m128i| -> (
-            __m128i,
-            __m128i,
-        ) {
-            let t0 = _mm_unpacklo_epi16(i0, i1);
-            let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
-            let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
-            (_mm_packs_epi32(c0, c0), _mm_packs_epi32(d0, c0))
-        };
+    let btf4 = |w0: __m128i,
+                w1: __m128i,
+                i0: __m128i,
+                i1: __m128i,
+                rnd: __m128i,
+                cnt: __m128i|
+     -> (__m128i, __m128i) {
+        let t0 = _mm_unpacklo_epi16(i0, i1);
+        let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
+        let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
+        (_mm_packs_epi32(c0, c0), _mm_packs_epi32(d0, c0))
+    };
 
     // `fdct4x8_new_sse2` — 8-pt DCT on eight 4-lane registers.
     let fdct8w4 = |i: &[__m128i; 8], cos_bit: i32| -> [__m128i; 8] {
@@ -5955,7 +6281,14 @@ fn fwd_rect48_fused_i16(
             _mm_subs_epi16(i[1], i[6]),
             _mm_subs_epi16(i[0], i[7]),
         ];
-        let (x2_5, x2_6) = btf4(pair(-c[32], c[32]), pair(c[32], c[32]), x1[5], x1[6], rnd, cnt);
+        let (x2_5, x2_6) = btf4(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x1[5],
+            x1[6],
+            rnd,
+            cnt,
+        );
         let x2 = [
             _mm_adds_epi16(x1[0], x1[3]),
             _mm_adds_epi16(x1[1], x1[2]),
@@ -5966,8 +6299,22 @@ fn fwd_rect48_fused_i16(
             x2_6,
             x1[7],
         ];
-        let (x3_0, x3_1) = btf4(pair(c[32], c[32]), pair(c[32], -c[32]), x2[0], x2[1], rnd, cnt);
-        let (x3_2, x3_3) = btf4(pair(c[48], c[16]), pair(-c[16], c[48]), x2[2], x2[3], rnd, cnt);
+        let (x3_0, x3_1) = btf4(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x2[0],
+            x2[1],
+            rnd,
+            cnt,
+        );
+        let (x3_2, x3_3) = btf4(
+            pair(c[48], c[16]),
+            pair(-c[16], c[48]),
+            x2[2],
+            x2[3],
+            rnd,
+            cnt,
+        );
         let x3 = [
             x3_0,
             x3_1,
@@ -5978,8 +6325,22 @@ fn fwd_rect48_fused_i16(
             _mm_subs_epi16(x2[7], x2[6]),
             _mm_adds_epi16(x2[7], x2[6]),
         ];
-        let (x4_4, x4_7) = btf4(pair(c[56], c[8]), pair(-c[8], c[56]), x3[4], x3[7], rnd, cnt);
-        let (x4_5, x4_6) = btf4(pair(c[24], c[40]), pair(-c[40], c[24]), x3[5], x3[6], rnd, cnt);
+        let (x4_4, x4_7) = btf4(
+            pair(c[56], c[8]),
+            pair(-c[8], c[56]),
+            x3[4],
+            x3[7],
+            rnd,
+            cnt,
+        );
+        let (x4_5, x4_6) = btf4(
+            pair(c[24], c[40]),
+            pair(-c[40], c[24]),
+            x3[5],
+            x3[6],
+            rnd,
+            cnt,
+        );
         [x3[0], x4_4, x3[2], x4_6, x3[1], x4_5, x3[3], x4_7]
     };
 
@@ -5999,8 +6360,22 @@ fn fwd_rect48_fused_i16(
             i[2],
             _mm_subs_epi16(z, i[5]),
         ];
-        let (x2_2, x2_3) = btf4(pair(c[32], c[32]), pair(c[32], -c[32]), x1[2], x1[3], rnd, cnt);
-        let (x2_6, x2_7) = btf4(pair(c[32], c[32]), pair(c[32], -c[32]), x1[6], x1[7], rnd, cnt);
+        let (x2_2, x2_3) = btf4(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[2],
+            x1[3],
+            rnd,
+            cnt,
+        );
+        let (x2_6, x2_7) = btf4(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[6],
+            x1[7],
+            rnd,
+            cnt,
+        );
         let x2 = [x1[0], x1[1], x2_2, x2_3, x1[4], x1[5], x2_6, x2_7];
         let x3 = [
             _mm_adds_epi16(x2[0], x2[2]),
@@ -6012,8 +6387,22 @@ fn fwd_rect48_fused_i16(
             _mm_subs_epi16(x2[4], x2[6]),
             _mm_subs_epi16(x2[5], x2[7]),
         ];
-        let (x4_4, x4_5) = btf4(pair(c[16], c[48]), pair(c[48], -c[16]), x3[4], x3[5], rnd, cnt);
-        let (x4_6, x4_7) = btf4(pair(-c[48], c[16]), pair(c[16], c[48]), x3[6], x3[7], rnd, cnt);
+        let (x4_4, x4_5) = btf4(
+            pair(c[16], c[48]),
+            pair(c[48], -c[16]),
+            x3[4],
+            x3[5],
+            rnd,
+            cnt,
+        );
+        let (x4_6, x4_7) = btf4(
+            pair(-c[48], c[16]),
+            pair(c[16], c[48]),
+            x3[6],
+            x3[7],
+            rnd,
+            cnt,
+        );
         let x4 = [x3[0], x3[1], x3[2], x3[3], x4_4, x4_5, x4_6, x4_7];
         let x5 = [
             _mm_adds_epi16(x4[0], x4[4]),
@@ -6025,10 +6414,38 @@ fn fwd_rect48_fused_i16(
             _mm_subs_epi16(x4[2], x4[6]),
             _mm_subs_epi16(x4[3], x4[7]),
         ];
-        let (x6_0, x6_1) = btf4(pair(c[4], c[60]), pair(c[60], -c[4]), x5[0], x5[1], rnd, cnt);
-        let (x6_2, x6_3) = btf4(pair(c[20], c[44]), pair(c[44], -c[20]), x5[2], x5[3], rnd, cnt);
-        let (x6_4, x6_5) = btf4(pair(c[36], c[28]), pair(c[28], -c[36]), x5[4], x5[5], rnd, cnt);
-        let (x6_6, x6_7) = btf4(pair(c[52], c[12]), pair(c[12], -c[52]), x5[6], x5[7], rnd, cnt);
+        let (x6_0, x6_1) = btf4(
+            pair(c[4], c[60]),
+            pair(c[60], -c[4]),
+            x5[0],
+            x5[1],
+            rnd,
+            cnt,
+        );
+        let (x6_2, x6_3) = btf4(
+            pair(c[20], c[44]),
+            pair(c[44], -c[20]),
+            x5[2],
+            x5[3],
+            rnd,
+            cnt,
+        );
+        let (x6_4, x6_5) = btf4(
+            pair(c[36], c[28]),
+            pair(c[28], -c[36]),
+            x5[4],
+            x5[5],
+            rnd,
+            cnt,
+        );
+        let (x6_6, x6_7) = btf4(
+            pair(c[52], c[12]),
+            pair(c[12], -c[52]),
+            x5[6],
+            x5[7],
+            rnd,
+            cnt,
+        );
         [x6_1, x6_6, x6_3, x6_4, x6_5, x6_2, x6_7, x6_0]
     };
 
@@ -6057,8 +6474,22 @@ fn fwd_rect48_fused_i16(
             _mm_subs_epi16(i[1], i[2]),
             _mm_subs_epi16(i[0], i[3]),
         ];
-        let (x2_0, x2_1) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[0], x1[1], rnd, cnt);
-        let (x2_2, x2_3) = btf(pair(c[48], c[16]), pair(-c[16], c[48]), x1[2], x1[3], rnd, cnt);
+        let (x2_0, x2_1) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[0],
+            x1[1],
+            rnd,
+            cnt,
+        );
+        let (x2_2, x2_3) = btf(
+            pair(c[48], c[16]),
+            pair(-c[16], c[48]),
+            x1[2],
+            x1[3],
+            rnd,
+            cnt,
+        );
         [x2_0, x2_2, x2_1, x2_3]
     };
 
@@ -6397,19 +6828,21 @@ fn fwd_16x16_fused_i16(
     };
 
     // `btf_16_sse2` — full 8-lane butterfly.
-    let btf =
-        |w0: __m128i, w1: __m128i, i0: __m128i, i1: __m128i, rnd: __m128i, cnt: __m128i| -> (
-            __m128i,
-            __m128i,
-        ) {
-            let t0 = _mm_unpacklo_epi16(i0, i1);
-            let t1 = _mm_unpackhi_epi16(i0, i1);
-            let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
-            let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
-            let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
-            let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
-            (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
-        };
+    let btf = |w0: __m128i,
+               w1: __m128i,
+               i0: __m128i,
+               i1: __m128i,
+               rnd: __m128i,
+               cnt: __m128i|
+     -> (__m128i, __m128i) {
+        let t0 = _mm_unpacklo_epi16(i0, i1);
+        let t1 = _mm_unpackhi_epi16(i0, i1);
+        let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
+        let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
+        let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
+        let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
+        (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
+    };
 
     // `fdct8x16_new_sse2` verbatim.
     let fdct16 = |i: &[__m128i; 16], cos_bit: i32| -> [__m128i; 16] {
@@ -6428,10 +6861,24 @@ fn fwd_16x16_fused_i16(
         }
         x2[8] = x1[8];
         x2[9] = x1[9];
-        let (x2_10, x2_13) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x1[10], x1[13], rnd, cnt);
+        let (x2_10, x2_13) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x1[10],
+            x1[13],
+            rnd,
+            cnt,
+        );
         x2[10] = x2_10;
         x2[13] = x2_13;
-        let (x2_11, x2_12) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x1[11], x1[12], rnd, cnt);
+        let (x2_11, x2_12) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x1[11],
+            x1[12],
+            rnd,
+            cnt,
+        );
         x2[11] = x2_11;
         x2[12] = x2_12;
         x2[14] = x1[14];
@@ -6442,7 +6889,14 @@ fn fwd_16x16_fused_i16(
             x3[3 - k] = _mm_subs_epi16(x2[k], x2[3 - k]);
         }
         x3[4] = x2[4];
-        let (x3_5, x3_6) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x2[5], x2[6], rnd, cnt);
+        let (x3_5, x3_6) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x2[5],
+            x2[6],
+            rnd,
+            cnt,
+        );
         x3[5] = x3_5;
         x3[6] = x3_6;
         x3[7] = x2[7];
@@ -6455,10 +6909,24 @@ fn fwd_16x16_fused_i16(
         x3[13] = _mm_subs_epi16(x2[14], x2[13]);
         x3[14] = _mm_adds_epi16(x2[14], x2[13]);
         let mut x4 = [_mm_setzero_si128(); 16];
-        let (x4_0, x4_1) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x3[0], x3[1], rnd, cnt);
+        let (x4_0, x4_1) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x3[0],
+            x3[1],
+            rnd,
+            cnt,
+        );
         x4[0] = x4_0;
         x4[1] = x4_1;
-        let (x4_2, x4_3) = btf(pair(c[48], c[16]), pair(-c[16], c[48]), x3[2], x3[3], rnd, cnt);
+        let (x4_2, x4_3) = btf(
+            pair(c[48], c[16]),
+            pair(-c[16], c[48]),
+            x3[2],
+            x3[3],
+            rnd,
+            cnt,
+        );
         x4[2] = x4_2;
         x4[3] = x4_3;
         x4[4] = _mm_adds_epi16(x3[4], x3[5]);
@@ -6466,10 +6934,24 @@ fn fwd_16x16_fused_i16(
         x4[6] = _mm_subs_epi16(x3[7], x3[6]);
         x4[7] = _mm_adds_epi16(x3[7], x3[6]);
         x4[8] = x3[8];
-        let (x4_9, x4_14) = btf(pair(-c[16], c[48]), pair(c[48], c[16]), x3[9], x3[14], rnd, cnt);
+        let (x4_9, x4_14) = btf(
+            pair(-c[16], c[48]),
+            pair(c[48], c[16]),
+            x3[9],
+            x3[14],
+            rnd,
+            cnt,
+        );
         x4[9] = x4_9;
         x4[14] = x4_14;
-        let (x4_10, x4_13) = btf(pair(-c[48], -c[16]), pair(-c[16], c[48]), x3[10], x3[13], rnd, cnt);
+        let (x4_10, x4_13) = btf(
+            pair(-c[48], -c[16]),
+            pair(-c[16], c[48]),
+            x3[10],
+            x3[13],
+            rnd,
+            cnt,
+        );
         x4[10] = x4_10;
         x4[13] = x4_13;
         x4[11] = x3[11];
@@ -6479,10 +6961,24 @@ fn fwd_16x16_fused_i16(
         for k in 0..4usize {
             x5[k] = x4[k];
         }
-        let (x5_4, x5_7) = btf(pair(c[56], c[8]), pair(-c[8], c[56]), x4[4], x4[7], rnd, cnt);
+        let (x5_4, x5_7) = btf(
+            pair(c[56], c[8]),
+            pair(-c[8], c[56]),
+            x4[4],
+            x4[7],
+            rnd,
+            cnt,
+        );
         x5[4] = x5_4;
         x5[7] = x5_7;
-        let (x5_5, x5_6) = btf(pair(c[24], c[40]), pair(-c[40], c[24]), x4[5], x4[6], rnd, cnt);
+        let (x5_5, x5_6) = btf(
+            pair(c[24], c[40]),
+            pair(-c[40], c[24]),
+            x4[5],
+            x4[6],
+            rnd,
+            cnt,
+        );
         x5[5] = x5_5;
         x5[6] = x5_6;
         x5[8] = _mm_adds_epi16(x4[8], x4[9]);
@@ -6497,16 +6993,44 @@ fn fwd_16x16_fused_i16(
         for k in 0..8usize {
             x6[k] = x5[k];
         }
-        let (x6_8, x6_15) = btf(pair(c[60], c[4]), pair(-c[4], c[60]), x5[8], x5[15], rnd, cnt);
+        let (x6_8, x6_15) = btf(
+            pair(c[60], c[4]),
+            pair(-c[4], c[60]),
+            x5[8],
+            x5[15],
+            rnd,
+            cnt,
+        );
         x6[8] = x6_8;
         x6[15] = x6_15;
-        let (x6_9, x6_14) = btf(pair(c[28], c[36]), pair(-c[36], c[28]), x5[9], x5[14], rnd, cnt);
+        let (x6_9, x6_14) = btf(
+            pair(c[28], c[36]),
+            pair(-c[36], c[28]),
+            x5[9],
+            x5[14],
+            rnd,
+            cnt,
+        );
         x6[9] = x6_9;
         x6[14] = x6_14;
-        let (x6_10, x6_13) = btf(pair(c[44], c[20]), pair(-c[20], c[44]), x5[10], x5[13], rnd, cnt);
+        let (x6_10, x6_13) = btf(
+            pair(c[44], c[20]),
+            pair(-c[20], c[44]),
+            x5[10],
+            x5[13],
+            rnd,
+            cnt,
+        );
         x6[10] = x6_10;
         x6[13] = x6_13;
-        let (x6_11, x6_12) = btf(pair(c[12], c[52]), pair(-c[52], c[12]), x5[11], x5[12], rnd, cnt);
+        let (x6_11, x6_12) = btf(
+            pair(c[12], c[52]),
+            pair(-c[52], c[12]),
+            x5[11],
+            x5[12],
+            rnd,
+            cnt,
+        );
         x6[11] = x6_11;
         x6[12] = x6_12;
         [
@@ -6542,22 +7066,50 @@ fn fwd_16x16_fused_i16(
         let mut x2 = [_mm_setzero_si128(); 16];
         x2[0] = x1[0];
         x2[1] = x1[1];
-        let (x2_2, x2_3) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[2], x1[3], rnd, cnt);
+        let (x2_2, x2_3) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[2],
+            x1[3],
+            rnd,
+            cnt,
+        );
         x2[2] = x2_2;
         x2[3] = x2_3;
         x2[4] = x1[4];
         x2[5] = x1[5];
-        let (x2_6, x2_7) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[6], x1[7], rnd, cnt);
+        let (x2_6, x2_7) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[6],
+            x1[7],
+            rnd,
+            cnt,
+        );
         x2[6] = x2_6;
         x2[7] = x2_7;
         x2[8] = x1[8];
         x2[9] = x1[9];
-        let (x2_10, x2_11) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[10], x1[11], rnd, cnt);
+        let (x2_10, x2_11) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[10],
+            x1[11],
+            rnd,
+            cnt,
+        );
         x2[10] = x2_10;
         x2[11] = x2_11;
         x2[12] = x1[12];
         x2[13] = x1[13];
-        let (x2_14, x2_15) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[14], x1[15], rnd, cnt);
+        let (x2_14, x2_15) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[14],
+            x1[15],
+            rnd,
+            cnt,
+        );
         x2[14] = x2_14;
         x2[15] = x2_15;
         let mut x3 = [_mm_setzero_si128(); 16];
@@ -6569,19 +7121,47 @@ fn fwd_16x16_fused_i16(
         for k in 0..4usize {
             x4[k] = x3[k];
         }
-        let (x4_4, x4_5) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x3[4], x3[5], rnd, cnt);
+        let (x4_4, x4_5) = btf(
+            pair(c[16], c[48]),
+            pair(c[48], -c[16]),
+            x3[4],
+            x3[5],
+            rnd,
+            cnt,
+        );
         x4[4] = x4_4;
         x4[5] = x4_5;
-        let (x4_6, x4_7) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x3[6], x3[7], rnd, cnt);
+        let (x4_6, x4_7) = btf(
+            pair(-c[48], c[16]),
+            pair(c[16], c[48]),
+            x3[6],
+            x3[7],
+            rnd,
+            cnt,
+        );
         x4[6] = x4_6;
         x4[7] = x4_7;
         for k in 8..12usize {
             x4[k] = x3[k];
         }
-        let (x4_12, x4_13) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x3[12], x3[13], rnd, cnt);
+        let (x4_12, x4_13) = btf(
+            pair(c[16], c[48]),
+            pair(c[48], -c[16]),
+            x3[12],
+            x3[13],
+            rnd,
+            cnt,
+        );
         x4[12] = x4_12;
         x4[13] = x4_13;
-        let (x4_14, x4_15) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x3[14], x3[15], rnd, cnt);
+        let (x4_14, x4_15) = btf(
+            pair(-c[48], c[16]),
+            pair(c[16], c[48]),
+            x3[14],
+            x3[15],
+            rnd,
+            cnt,
+        );
         x4[14] = x4_14;
         x4[15] = x4_15;
         let mut x5 = [_mm_setzero_si128(); 16];
@@ -6593,16 +7173,44 @@ fn fwd_16x16_fused_i16(
         for k in 0..8usize {
             x6[k] = x5[k];
         }
-        let (x6_8, x6_9) = btf(pair(c[8], c[56]), pair(c[56], -c[8]), x5[8], x5[9], rnd, cnt);
+        let (x6_8, x6_9) = btf(
+            pair(c[8], c[56]),
+            pair(c[56], -c[8]),
+            x5[8],
+            x5[9],
+            rnd,
+            cnt,
+        );
         x6[8] = x6_8;
         x6[9] = x6_9;
-        let (x6_10, x6_11) = btf(pair(c[40], c[24]), pair(c[24], -c[40]), x5[10], x5[11], rnd, cnt);
+        let (x6_10, x6_11) = btf(
+            pair(c[40], c[24]),
+            pair(c[24], -c[40]),
+            x5[10],
+            x5[11],
+            rnd,
+            cnt,
+        );
         x6[10] = x6_10;
         x6[11] = x6_11;
-        let (x6_12, x6_13) = btf(pair(-c[56], c[8]), pair(c[8], c[56]), x5[12], x5[13], rnd, cnt);
+        let (x6_12, x6_13) = btf(
+            pair(-c[56], c[8]),
+            pair(c[8], c[56]),
+            x5[12],
+            x5[13],
+            rnd,
+            cnt,
+        );
         x6[12] = x6_12;
         x6[13] = x6_13;
-        let (x6_14, x6_15) = btf(pair(-c[24], c[40]), pair(c[40], c[24]), x5[14], x5[15], rnd, cnt);
+        let (x6_14, x6_15) = btf(
+            pair(-c[24], c[40]),
+            pair(c[40], c[24]),
+            x5[14],
+            x5[15],
+            rnd,
+            cnt,
+        );
         x6[14] = x6_14;
         x6[15] = x6_15;
         let mut x7 = [_mm_setzero_si128(); 16];
@@ -6611,28 +7219,84 @@ fn fwd_16x16_fused_i16(
             x7[k + 8] = _mm_subs_epi16(x6[k], x6[k + 8]);
         }
         let mut x8 = [_mm_setzero_si128(); 16];
-        let (x8_0, x8_1) = btf(pair(c[2], c[62]), pair(c[62], -c[2]), x7[0], x7[1], rnd, cnt);
+        let (x8_0, x8_1) = btf(
+            pair(c[2], c[62]),
+            pair(c[62], -c[2]),
+            x7[0],
+            x7[1],
+            rnd,
+            cnt,
+        );
         x8[0] = x8_0;
         x8[1] = x8_1;
-        let (x8_2, x8_3) = btf(pair(c[10], c[54]), pair(c[54], -c[10]), x7[2], x7[3], rnd, cnt);
+        let (x8_2, x8_3) = btf(
+            pair(c[10], c[54]),
+            pair(c[54], -c[10]),
+            x7[2],
+            x7[3],
+            rnd,
+            cnt,
+        );
         x8[2] = x8_2;
         x8[3] = x8_3;
-        let (x8_4, x8_5) = btf(pair(c[18], c[46]), pair(c[46], -c[18]), x7[4], x7[5], rnd, cnt);
+        let (x8_4, x8_5) = btf(
+            pair(c[18], c[46]),
+            pair(c[46], -c[18]),
+            x7[4],
+            x7[5],
+            rnd,
+            cnt,
+        );
         x8[4] = x8_4;
         x8[5] = x8_5;
-        let (x8_6, x8_7) = btf(pair(c[26], c[38]), pair(c[38], -c[26]), x7[6], x7[7], rnd, cnt);
+        let (x8_6, x8_7) = btf(
+            pair(c[26], c[38]),
+            pair(c[38], -c[26]),
+            x7[6],
+            x7[7],
+            rnd,
+            cnt,
+        );
         x8[6] = x8_6;
         x8[7] = x8_7;
-        let (x8_8, x8_9) = btf(pair(c[34], c[30]), pair(c[30], -c[34]), x7[8], x7[9], rnd, cnt);
+        let (x8_8, x8_9) = btf(
+            pair(c[34], c[30]),
+            pair(c[30], -c[34]),
+            x7[8],
+            x7[9],
+            rnd,
+            cnt,
+        );
         x8[8] = x8_8;
         x8[9] = x8_9;
-        let (x8_10, x8_11) = btf(pair(c[42], c[22]), pair(c[22], -c[42]), x7[10], x7[11], rnd, cnt);
+        let (x8_10, x8_11) = btf(
+            pair(c[42], c[22]),
+            pair(c[22], -c[42]),
+            x7[10],
+            x7[11],
+            rnd,
+            cnt,
+        );
         x8[10] = x8_10;
         x8[11] = x8_11;
-        let (x8_12, x8_13) = btf(pair(c[50], c[14]), pair(c[14], -c[50]), x7[12], x7[13], rnd, cnt);
+        let (x8_12, x8_13) = btf(
+            pair(c[50], c[14]),
+            pair(c[14], -c[50]),
+            x7[12],
+            x7[13],
+            rnd,
+            cnt,
+        );
         x8[12] = x8_12;
         x8[13] = x8_13;
-        let (x8_14, x8_15) = btf(pair(c[58], c[6]), pair(c[6], -c[58]), x7[14], x7[15], rnd, cnt);
+        let (x8_14, x8_15) = btf(
+            pair(c[58], c[6]),
+            pair(c[6], -c[58]),
+            x7[14],
+            x7[15],
+            rnd,
+            cnt,
+        );
         x8[14] = x8_14;
         x8[15] = x8_15;
         [
@@ -6815,10 +7479,10 @@ fn fwd_16x16_fused_i16_w16(
     lr_flip: bool,
 ) -> bool {
     use crate::sse_neon::*;
-    #[cfg(target_arch = "x86_64")]
-    use lowbd16_fwd::run_fwd1d_i16_v3;
     #[cfg(target_arch = "aarch64")]
     use lowbd16_fwd::run_fwd1d_i16_neon;
+    #[cfg(target_arch = "x86_64")]
+    use lowbd16_fwd::run_fwd1d_i16_v3;
     use lowbd16_fwd::Fwd1dI16;
     use prims16::{mulhrs16, widen_hi, widen_lo};
     let _ = t;
@@ -7031,19 +7695,21 @@ fn fwd_rect816_fused_i16(
     };
 
     // `btf_16_sse2` — full 8-lane butterfly.
-    let btf =
-        |w0: __m128i, w1: __m128i, i0: __m128i, i1: __m128i, rnd: __m128i, cnt: __m128i| -> (
-            __m128i,
-            __m128i,
-        ) {
-            let t0 = _mm_unpacklo_epi16(i0, i1);
-            let t1 = _mm_unpackhi_epi16(i0, i1);
-            let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
-            let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
-            let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
-            let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
-            (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
-        };
+    let btf = |w0: __m128i,
+               w1: __m128i,
+               i0: __m128i,
+               i1: __m128i,
+               rnd: __m128i,
+               cnt: __m128i|
+     -> (__m128i, __m128i) {
+        let t0 = _mm_unpacklo_epi16(i0, i1);
+        let t1 = _mm_unpackhi_epi16(i0, i1);
+        let c0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w0), rnd), cnt);
+        let c1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w0), rnd), cnt);
+        let d0 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t0, w1), rnd), cnt);
+        let d1 = _mm_sra_epi32(_mm_add_epi32(_mm_madd_epi16(t1, w1), rnd), cnt);
+        (_mm_packs_epi32(c0, c1), _mm_packs_epi32(d0, d1))
+    };
 
     // `fdct8x8_new_sse2` verbatim.
     let fdct8 = |i: &[__m128i; 8], cos_bit: i32| -> [__m128i; 8] {
@@ -7060,7 +7726,14 @@ fn fwd_rect816_fused_i16(
             _mm_subs_epi16(i[1], i[6]),
             _mm_subs_epi16(i[0], i[7]),
         ];
-        let (x2_5, x2_6) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x1[5], x1[6], rnd, cnt);
+        let (x2_5, x2_6) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x1[5],
+            x1[6],
+            rnd,
+            cnt,
+        );
         let x2 = [
             _mm_adds_epi16(x1[0], x1[3]),
             _mm_adds_epi16(x1[1], x1[2]),
@@ -7071,8 +7744,22 @@ fn fwd_rect816_fused_i16(
             x2_6,
             x1[7],
         ];
-        let (x3_0, x3_1) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x2[0], x2[1], rnd, cnt);
-        let (x3_2, x3_3) = btf(pair(c[48], c[16]), pair(-c[16], c[48]), x2[2], x2[3], rnd, cnt);
+        let (x3_0, x3_1) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x2[0],
+            x2[1],
+            rnd,
+            cnt,
+        );
+        let (x3_2, x3_3) = btf(
+            pair(c[48], c[16]),
+            pair(-c[16], c[48]),
+            x2[2],
+            x2[3],
+            rnd,
+            cnt,
+        );
         let x3 = [
             x3_0,
             x3_1,
@@ -7083,8 +7770,22 @@ fn fwd_rect816_fused_i16(
             _mm_subs_epi16(x2[7], x2[6]),
             _mm_adds_epi16(x2[7], x2[6]),
         ];
-        let (o1, o7) = btf(pair(c[56], c[8]), pair(-c[8], c[56]), x3[4], x3[7], rnd, cnt);
-        let (o5, o3) = btf(pair(c[24], c[40]), pair(-c[40], c[24]), x3[5], x3[6], rnd, cnt);
+        let (o1, o7) = btf(
+            pair(c[56], c[8]),
+            pair(-c[8], c[56]),
+            x3[4],
+            x3[7],
+            rnd,
+            cnt,
+        );
+        let (o5, o3) = btf(
+            pair(c[24], c[40]),
+            pair(-c[40], c[24]),
+            x3[5],
+            x3[6],
+            rnd,
+            cnt,
+        );
         [x3[0], o1, x3[2], o3, x3[1], o5, x3[3], o7]
     };
 
@@ -7104,8 +7805,22 @@ fn fwd_rect816_fused_i16(
             i[2],
             _mm_subs_epi16(z, i[5]),
         ];
-        let (x2_2, x2_3) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[2], x1[3], rnd, cnt);
-        let (x2_6, x2_7) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[6], x1[7], rnd, cnt);
+        let (x2_2, x2_3) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[2],
+            x1[3],
+            rnd,
+            cnt,
+        );
+        let (x2_6, x2_7) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[6],
+            x1[7],
+            rnd,
+            cnt,
+        );
         let x2 = [x1[0], x1[1], x2_2, x2_3, x1[4], x1[5], x2_6, x2_7];
         let x3 = [
             _mm_adds_epi16(x2[0], x2[2]),
@@ -7117,8 +7832,22 @@ fn fwd_rect816_fused_i16(
             _mm_subs_epi16(x2[4], x2[6]),
             _mm_subs_epi16(x2[5], x2[7]),
         ];
-        let (x4_4, x4_5) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x3[4], x3[5], rnd, cnt);
-        let (x4_6, x4_7) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x3[6], x3[7], rnd, cnt);
+        let (x4_4, x4_5) = btf(
+            pair(c[16], c[48]),
+            pair(c[48], -c[16]),
+            x3[4],
+            x3[5],
+            rnd,
+            cnt,
+        );
+        let (x4_6, x4_7) = btf(
+            pair(-c[48], c[16]),
+            pair(c[16], c[48]),
+            x3[6],
+            x3[7],
+            rnd,
+            cnt,
+        );
         let x4 = [x3[0], x3[1], x3[2], x3[3], x4_4, x4_5, x4_6, x4_7];
         let x5 = [
             _mm_adds_epi16(x4[1], x4[5]),
@@ -7130,10 +7859,38 @@ fn fwd_rect816_fused_i16(
             _mm_subs_epi16(x4[3], x4[7]),
             _mm_adds_epi16(x4[0], x4[4]),
         ];
-        let (o7, o0) = btf(pair(c[4], c[60]), pair(c[60], -c[4]), x5[7], x5[0], rnd, cnt);
-        let (o5, o2) = btf(pair(c[20], c[44]), pair(c[44], -c[20]), x5[5], x5[2], rnd, cnt);
-        let (o3, o4) = btf(pair(c[36], c[28]), pair(c[28], -c[36]), x5[3], x5[4], rnd, cnt);
-        let (o1, o6) = btf(pair(c[52], c[12]), pair(c[12], -c[52]), x5[1], x5[6], rnd, cnt);
+        let (o7, o0) = btf(
+            pair(c[4], c[60]),
+            pair(c[60], -c[4]),
+            x5[7],
+            x5[0],
+            rnd,
+            cnt,
+        );
+        let (o5, o2) = btf(
+            pair(c[20], c[44]),
+            pair(c[44], -c[20]),
+            x5[5],
+            x5[2],
+            rnd,
+            cnt,
+        );
+        let (o3, o4) = btf(
+            pair(c[36], c[28]),
+            pair(c[28], -c[36]),
+            x5[3],
+            x5[4],
+            rnd,
+            cnt,
+        );
+        let (o1, o6) = btf(
+            pair(c[52], c[12]),
+            pair(c[12], -c[52]),
+            x5[1],
+            x5[6],
+            rnd,
+            cnt,
+        );
         [o0, o1, o2, o3, o4, o5, o6, o7]
     };
 
@@ -7168,10 +7925,24 @@ fn fwd_rect816_fused_i16(
         }
         x2[8] = x1[8];
         x2[9] = x1[9];
-        let (x2_10, x2_13) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x1[10], x1[13], rnd, cnt);
+        let (x2_10, x2_13) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x1[10],
+            x1[13],
+            rnd,
+            cnt,
+        );
         x2[10] = x2_10;
         x2[13] = x2_13;
-        let (x2_11, x2_12) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x1[11], x1[12], rnd, cnt);
+        let (x2_11, x2_12) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x1[11],
+            x1[12],
+            rnd,
+            cnt,
+        );
         x2[11] = x2_11;
         x2[12] = x2_12;
         x2[14] = x1[14];
@@ -7182,7 +7953,14 @@ fn fwd_rect816_fused_i16(
             x3[3 - k] = _mm_subs_epi16(x2[k], x2[3 - k]);
         }
         x3[4] = x2[4];
-        let (x3_5, x3_6) = btf(pair(-c[32], c[32]), pair(c[32], c[32]), x2[5], x2[6], rnd, cnt);
+        let (x3_5, x3_6) = btf(
+            pair(-c[32], c[32]),
+            pair(c[32], c[32]),
+            x2[5],
+            x2[6],
+            rnd,
+            cnt,
+        );
         x3[5] = x3_5;
         x3[6] = x3_6;
         x3[7] = x2[7];
@@ -7195,10 +7973,24 @@ fn fwd_rect816_fused_i16(
         x3[13] = _mm_subs_epi16(x2[14], x2[13]);
         x3[14] = _mm_adds_epi16(x2[14], x2[13]);
         let mut x4 = [_mm_setzero_si128(); 16];
-        let (x4_0, x4_1) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x3[0], x3[1], rnd, cnt);
+        let (x4_0, x4_1) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x3[0],
+            x3[1],
+            rnd,
+            cnt,
+        );
         x4[0] = x4_0;
         x4[1] = x4_1;
-        let (x4_2, x4_3) = btf(pair(c[48], c[16]), pair(-c[16], c[48]), x3[2], x3[3], rnd, cnt);
+        let (x4_2, x4_3) = btf(
+            pair(c[48], c[16]),
+            pair(-c[16], c[48]),
+            x3[2],
+            x3[3],
+            rnd,
+            cnt,
+        );
         x4[2] = x4_2;
         x4[3] = x4_3;
         x4[4] = _mm_adds_epi16(x3[4], x3[5]);
@@ -7206,10 +7998,24 @@ fn fwd_rect816_fused_i16(
         x4[6] = _mm_subs_epi16(x3[7], x3[6]);
         x4[7] = _mm_adds_epi16(x3[7], x3[6]);
         x4[8] = x3[8];
-        let (x4_9, x4_14) = btf(pair(-c[16], c[48]), pair(c[48], c[16]), x3[9], x3[14], rnd, cnt);
+        let (x4_9, x4_14) = btf(
+            pair(-c[16], c[48]),
+            pair(c[48], c[16]),
+            x3[9],
+            x3[14],
+            rnd,
+            cnt,
+        );
         x4[9] = x4_9;
         x4[14] = x4_14;
-        let (x4_10, x4_13) = btf(pair(-c[48], -c[16]), pair(-c[16], c[48]), x3[10], x3[13], rnd, cnt);
+        let (x4_10, x4_13) = btf(
+            pair(-c[48], -c[16]),
+            pair(-c[16], c[48]),
+            x3[10],
+            x3[13],
+            rnd,
+            cnt,
+        );
         x4[10] = x4_10;
         x4[13] = x4_13;
         x4[11] = x3[11];
@@ -7219,10 +8025,24 @@ fn fwd_rect816_fused_i16(
         for k in 0..4usize {
             x5[k] = x4[k];
         }
-        let (x5_4, x5_7) = btf(pair(c[56], c[8]), pair(-c[8], c[56]), x4[4], x4[7], rnd, cnt);
+        let (x5_4, x5_7) = btf(
+            pair(c[56], c[8]),
+            pair(-c[8], c[56]),
+            x4[4],
+            x4[7],
+            rnd,
+            cnt,
+        );
         x5[4] = x5_4;
         x5[7] = x5_7;
-        let (x5_5, x5_6) = btf(pair(c[24], c[40]), pair(-c[40], c[24]), x4[5], x4[6], rnd, cnt);
+        let (x5_5, x5_6) = btf(
+            pair(c[24], c[40]),
+            pair(-c[40], c[24]),
+            x4[5],
+            x4[6],
+            rnd,
+            cnt,
+        );
         x5[5] = x5_5;
         x5[6] = x5_6;
         x5[8] = _mm_adds_epi16(x4[8], x4[9]);
@@ -7237,16 +8057,44 @@ fn fwd_rect816_fused_i16(
         for k in 0..8usize {
             x6[k] = x5[k];
         }
-        let (x6_8, x6_15) = btf(pair(c[60], c[4]), pair(-c[4], c[60]), x5[8], x5[15], rnd, cnt);
+        let (x6_8, x6_15) = btf(
+            pair(c[60], c[4]),
+            pair(-c[4], c[60]),
+            x5[8],
+            x5[15],
+            rnd,
+            cnt,
+        );
         x6[8] = x6_8;
         x6[15] = x6_15;
-        let (x6_9, x6_14) = btf(pair(c[28], c[36]), pair(-c[36], c[28]), x5[9], x5[14], rnd, cnt);
+        let (x6_9, x6_14) = btf(
+            pair(c[28], c[36]),
+            pair(-c[36], c[28]),
+            x5[9],
+            x5[14],
+            rnd,
+            cnt,
+        );
         x6[9] = x6_9;
         x6[14] = x6_14;
-        let (x6_10, x6_13) = btf(pair(c[44], c[20]), pair(-c[20], c[44]), x5[10], x5[13], rnd, cnt);
+        let (x6_10, x6_13) = btf(
+            pair(c[44], c[20]),
+            pair(-c[20], c[44]),
+            x5[10],
+            x5[13],
+            rnd,
+            cnt,
+        );
         x6[10] = x6_10;
         x6[13] = x6_13;
-        let (x6_11, x6_12) = btf(pair(c[12], c[52]), pair(-c[52], c[12]), x5[11], x5[12], rnd, cnt);
+        let (x6_11, x6_12) = btf(
+            pair(c[12], c[52]),
+            pair(-c[52], c[12]),
+            x5[11],
+            x5[12],
+            rnd,
+            cnt,
+        );
         x6[11] = x6_11;
         x6[12] = x6_12;
         [
@@ -7282,22 +8130,50 @@ fn fwd_rect816_fused_i16(
         let mut x2 = [_mm_setzero_si128(); 16];
         x2[0] = x1[0];
         x2[1] = x1[1];
-        let (x2_2, x2_3) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[2], x1[3], rnd, cnt);
+        let (x2_2, x2_3) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[2],
+            x1[3],
+            rnd,
+            cnt,
+        );
         x2[2] = x2_2;
         x2[3] = x2_3;
         x2[4] = x1[4];
         x2[5] = x1[5];
-        let (x2_6, x2_7) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[6], x1[7], rnd, cnt);
+        let (x2_6, x2_7) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[6],
+            x1[7],
+            rnd,
+            cnt,
+        );
         x2[6] = x2_6;
         x2[7] = x2_7;
         x2[8] = x1[8];
         x2[9] = x1[9];
-        let (x2_10, x2_11) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[10], x1[11], rnd, cnt);
+        let (x2_10, x2_11) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[10],
+            x1[11],
+            rnd,
+            cnt,
+        );
         x2[10] = x2_10;
         x2[11] = x2_11;
         x2[12] = x1[12];
         x2[13] = x1[13];
-        let (x2_14, x2_15) = btf(pair(c[32], c[32]), pair(c[32], -c[32]), x1[14], x1[15], rnd, cnt);
+        let (x2_14, x2_15) = btf(
+            pair(c[32], c[32]),
+            pair(c[32], -c[32]),
+            x1[14],
+            x1[15],
+            rnd,
+            cnt,
+        );
         x2[14] = x2_14;
         x2[15] = x2_15;
         let mut x3 = [_mm_setzero_si128(); 16];
@@ -7309,19 +8185,47 @@ fn fwd_rect816_fused_i16(
         for k in 0..4usize {
             x4[k] = x3[k];
         }
-        let (x4_4, x4_5) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x3[4], x3[5], rnd, cnt);
+        let (x4_4, x4_5) = btf(
+            pair(c[16], c[48]),
+            pair(c[48], -c[16]),
+            x3[4],
+            x3[5],
+            rnd,
+            cnt,
+        );
         x4[4] = x4_4;
         x4[5] = x4_5;
-        let (x4_6, x4_7) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x3[6], x3[7], rnd, cnt);
+        let (x4_6, x4_7) = btf(
+            pair(-c[48], c[16]),
+            pair(c[16], c[48]),
+            x3[6],
+            x3[7],
+            rnd,
+            cnt,
+        );
         x4[6] = x4_6;
         x4[7] = x4_7;
         for k in 8..12usize {
             x4[k] = x3[k];
         }
-        let (x4_12, x4_13) = btf(pair(c[16], c[48]), pair(c[48], -c[16]), x3[12], x3[13], rnd, cnt);
+        let (x4_12, x4_13) = btf(
+            pair(c[16], c[48]),
+            pair(c[48], -c[16]),
+            x3[12],
+            x3[13],
+            rnd,
+            cnt,
+        );
         x4[12] = x4_12;
         x4[13] = x4_13;
-        let (x4_14, x4_15) = btf(pair(-c[48], c[16]), pair(c[16], c[48]), x3[14], x3[15], rnd, cnt);
+        let (x4_14, x4_15) = btf(
+            pair(-c[48], c[16]),
+            pair(c[16], c[48]),
+            x3[14],
+            x3[15],
+            rnd,
+            cnt,
+        );
         x4[14] = x4_14;
         x4[15] = x4_15;
         let mut x5 = [_mm_setzero_si128(); 16];
@@ -7333,16 +8237,44 @@ fn fwd_rect816_fused_i16(
         for k in 0..8usize {
             x6[k] = x5[k];
         }
-        let (x6_8, x6_9) = btf(pair(c[8], c[56]), pair(c[56], -c[8]), x5[8], x5[9], rnd, cnt);
+        let (x6_8, x6_9) = btf(
+            pair(c[8], c[56]),
+            pair(c[56], -c[8]),
+            x5[8],
+            x5[9],
+            rnd,
+            cnt,
+        );
         x6[8] = x6_8;
         x6[9] = x6_9;
-        let (x6_10, x6_11) = btf(pair(c[40], c[24]), pair(c[24], -c[40]), x5[10], x5[11], rnd, cnt);
+        let (x6_10, x6_11) = btf(
+            pair(c[40], c[24]),
+            pair(c[24], -c[40]),
+            x5[10],
+            x5[11],
+            rnd,
+            cnt,
+        );
         x6[10] = x6_10;
         x6[11] = x6_11;
-        let (x6_12, x6_13) = btf(pair(-c[56], c[8]), pair(c[8], c[56]), x5[12], x5[13], rnd, cnt);
+        let (x6_12, x6_13) = btf(
+            pair(-c[56], c[8]),
+            pair(c[8], c[56]),
+            x5[12],
+            x5[13],
+            rnd,
+            cnt,
+        );
         x6[12] = x6_12;
         x6[13] = x6_13;
-        let (x6_14, x6_15) = btf(pair(-c[24], c[40]), pair(c[40], c[24]), x5[14], x5[15], rnd, cnt);
+        let (x6_14, x6_15) = btf(
+            pair(-c[24], c[40]),
+            pair(c[40], c[24]),
+            x5[14],
+            x5[15],
+            rnd,
+            cnt,
+        );
         x6[14] = x6_14;
         x6[15] = x6_15;
         let mut x7 = [_mm_setzero_si128(); 16];
@@ -7351,28 +8283,84 @@ fn fwd_rect816_fused_i16(
             x7[k + 8] = _mm_subs_epi16(x6[k], x6[k + 8]);
         }
         let mut x8 = [_mm_setzero_si128(); 16];
-        let (x8_0, x8_1) = btf(pair(c[2], c[62]), pair(c[62], -c[2]), x7[0], x7[1], rnd, cnt);
+        let (x8_0, x8_1) = btf(
+            pair(c[2], c[62]),
+            pair(c[62], -c[2]),
+            x7[0],
+            x7[1],
+            rnd,
+            cnt,
+        );
         x8[0] = x8_0;
         x8[1] = x8_1;
-        let (x8_2, x8_3) = btf(pair(c[10], c[54]), pair(c[54], -c[10]), x7[2], x7[3], rnd, cnt);
+        let (x8_2, x8_3) = btf(
+            pair(c[10], c[54]),
+            pair(c[54], -c[10]),
+            x7[2],
+            x7[3],
+            rnd,
+            cnt,
+        );
         x8[2] = x8_2;
         x8[3] = x8_3;
-        let (x8_4, x8_5) = btf(pair(c[18], c[46]), pair(c[46], -c[18]), x7[4], x7[5], rnd, cnt);
+        let (x8_4, x8_5) = btf(
+            pair(c[18], c[46]),
+            pair(c[46], -c[18]),
+            x7[4],
+            x7[5],
+            rnd,
+            cnt,
+        );
         x8[4] = x8_4;
         x8[5] = x8_5;
-        let (x8_6, x8_7) = btf(pair(c[26], c[38]), pair(c[38], -c[26]), x7[6], x7[7], rnd, cnt);
+        let (x8_6, x8_7) = btf(
+            pair(c[26], c[38]),
+            pair(c[38], -c[26]),
+            x7[6],
+            x7[7],
+            rnd,
+            cnt,
+        );
         x8[6] = x8_6;
         x8[7] = x8_7;
-        let (x8_8, x8_9) = btf(pair(c[34], c[30]), pair(c[30], -c[34]), x7[8], x7[9], rnd, cnt);
+        let (x8_8, x8_9) = btf(
+            pair(c[34], c[30]),
+            pair(c[30], -c[34]),
+            x7[8],
+            x7[9],
+            rnd,
+            cnt,
+        );
         x8[8] = x8_8;
         x8[9] = x8_9;
-        let (x8_10, x8_11) = btf(pair(c[42], c[22]), pair(c[22], -c[42]), x7[10], x7[11], rnd, cnt);
+        let (x8_10, x8_11) = btf(
+            pair(c[42], c[22]),
+            pair(c[22], -c[42]),
+            x7[10],
+            x7[11],
+            rnd,
+            cnt,
+        );
         x8[10] = x8_10;
         x8[11] = x8_11;
-        let (x8_12, x8_13) = btf(pair(c[50], c[14]), pair(c[14], -c[50]), x7[12], x7[13], rnd, cnt);
+        let (x8_12, x8_13) = btf(
+            pair(c[50], c[14]),
+            pair(c[14], -c[50]),
+            x7[12],
+            x7[13],
+            rnd,
+            cnt,
+        );
         x8[12] = x8_12;
         x8[13] = x8_13;
-        let (x8_14, x8_15) = btf(pair(c[58], c[6]), pair(c[6], -c[58]), x7[14], x7[15], rnd, cnt);
+        let (x8_14, x8_15) = btf(
+            pair(c[58], c[6]),
+            pair(c[6], -c[58]),
+            x7[14],
+            x7[15],
+            rnd,
+            cnt,
+        );
         x8[14] = x8_14;
         x8[15] = x8_15;
         [
@@ -7614,8 +8602,17 @@ pub(crate) fn try_fwd_col_pass(
             if lowbd16_fwd::fwd_col_i16_applies(k16, input, stride, col_n, row_n, shift0)
                 && incant!(
                     lowbd16_fwd::fwd_col_pass_i16(
-                        k16, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
-                        ud_flip, lr_flip
+                        k16,
+                        input,
+                        buf,
+                        stride,
+                        col_n,
+                        row_n,
+                        shift0,
+                        shift1_bit,
+                        cos_bit_col,
+                        ud_flip,
+                        lr_flip
                     ),
                     [v3, neon, scalar]
                 )
@@ -7630,7 +8627,16 @@ pub(crate) fn try_fwd_col_pass(
     debug_assert_eq!(fwd_kernel_n(kernel), row_n); // col kernel spans the H points
     incant!(
         fwd_col_pass(
-            kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col, ud_flip,
+            kernel,
+            input,
+            buf,
+            stride,
+            col_n,
+            row_n,
+            shift0,
+            shift1_bit,
+            cos_bit_col,
+            ud_flip,
             lr_flip
         ),
         [v3, neon, scalar]
@@ -7667,21 +8673,66 @@ fn fwd_col_pass(
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        incant!(fwd_col_pass_core(kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
-            ud_flip, lr_flip, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            fwd_col_pass_core(
+                kernel,
+                input,
+                buf,
+                stride,
+                col_n,
+                row_n,
+                shift0,
+                shift1_bit,
+                cos_bit_col,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else if row_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        incant!(fwd_col_pass_core(kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
-            ud_flip, lr_flip, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            fwd_col_pass_core(
+                kernel,
+                input,
+                buf,
+                stride,
+                col_n,
+                row_n,
+                shift0,
+                shift1_bit,
+                cos_bit_col,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        incant!(fwd_col_pass_core(kernel, input, buf, stride, col_n, row_n, shift0, shift1_bit, cos_bit_col,
-            ud_flip, lr_flip, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            fwd_col_pass_core(
+                kernel,
+                input,
+                buf,
+                stride,
+                col_n,
+                row_n,
+                shift0,
+                shift1_bit,
+                cos_bit_col,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     }
     true
 }
@@ -7722,7 +8773,16 @@ fn fwd_col_pass_core(
                 let a: [i16; 4] = input[off..off + 4].try_into().unwrap();
                 i32x8::from_array(
                     t,
-                    [a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32, 0, 0, 0, 0],
+                    [
+                        a[0] as i32,
+                        a[1] as i32,
+                        a[2] as i32,
+                        a[3] as i32,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
                 )
             };
             if shift0 > 0 {
@@ -7732,9 +8792,16 @@ fn fwd_col_pass_core(
             }
             *ti = v;
         }
-        incant!(run_fwd1d(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit_col, &sr), [v3, neon]);
+        incant!(
+            run_fwd1d(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit_col, &sr),
+            [v3, neon]
+        );
         for (r, to) in tout[..row_n].iter_mut().enumerate() {
-            let v = if shift1_bit > 0 { rshiftv(t, *to, shift1_bit) } else { *to };
+            let v = if shift1_bit > 0 {
+                rshiftv(t, *to, shift1_bit)
+            } else {
+                *to
+            };
             // Scalar: buf[r*col_n + dst_c] = temp_out[r], dst_c lr-flipped.
             // Lane j holds source column `cg + j`, so under lr_flip it lands at
             // `col_n - 1 - (cg + j)` — a descending run based at
@@ -7828,7 +8895,14 @@ pub(crate) fn try_fwd_row_pass(
             if lowbd16_fwd::fwd_row_i16_applies(k16, buf, col_n, row_n)
                 && incant!(
                     lowbd16_fwd::fwd_row_pass_i16(
-                        k16, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1
+                        k16,
+                        buf,
+                        output,
+                        col_n,
+                        row_n,
+                        shift2_bit,
+                        cos_bit_row,
+                        rect1
                     ),
                     [v3, neon, scalar]
                 )
@@ -7842,7 +8916,16 @@ pub(crate) fn try_fwd_row_pass(
     };
     debug_assert_eq!(fwd_kernel_n(kernel), col_n); // row kernel spans the W points
     incant!(
-        fwd_row_pass(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1),
+        fwd_row_pass(
+            kernel,
+            buf,
+            output,
+            col_n,
+            row_n,
+            shift2_bit,
+            cos_bit_row,
+            rect1
+        ),
         [v3, neon, scalar]
     )
 }
@@ -7868,21 +8951,57 @@ fn fwd_row_pass(
     if col_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        incant!(fwd_row_pass_core(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1,
-            &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            fwd_row_pass_core(
+                kernel,
+                buf,
+                output,
+                col_n,
+                row_n,
+                shift2_bit,
+                cos_bit_row,
+                rect1,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else if col_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        incant!(fwd_row_pass_core(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1,
-            &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            fwd_row_pass_core(
+                kernel,
+                buf,
+                output,
+                col_n,
+                row_n,
+                shift2_bit,
+                cos_bit_row,
+                rect1,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        incant!(fwd_row_pass_core(kernel, buf, output, col_n, row_n, shift2_bit, cos_bit_row, rect1,
-            &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            fwd_row_pass_core(
+                kernel,
+                buf,
+                output,
+                col_n,
+                row_n,
+                shift2_bit,
+                cos_bit_row,
+                rect1,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     }
     true
 }
@@ -7920,7 +9039,10 @@ fn fwd_row_pass_core(
         for c in full..col_n {
             tin[c] = i32x8::from_array(t, core::array::from_fn(|k| buf[(rg + k) * col_n + c]));
         }
-        incant!(run_fwd1d(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit_row, &sr), [v3, neon]);
+        incant!(
+            run_fwd1d(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit_row, &sr),
+            [v3, neon]
+        );
         for (c, to) in tout[..col_n].iter_mut().enumerate() {
             let mut v = *to;
             if shift2_bit > 0 {
@@ -7983,21 +9105,69 @@ fn inv_col_pass(
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        incant!(inv_col_pass_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
-            ud_flip, lr_flip, bd, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_col_pass_core(
+                kernel,
+                buf,
+                output,
+                stride,
+                col_n,
+                row_n,
+                shift1_bit,
+                col_clamp,
+                stage_range,
+                ud_flip,
+                lr_flip,
+                bd,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else if row_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        incant!(inv_col_pass_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
-            ud_flip, lr_flip, bd, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_col_pass_core(
+                kernel,
+                buf,
+                output,
+                stride,
+                col_n,
+                row_n,
+                shift1_bit,
+                col_clamp,
+                stage_range,
+                ud_flip,
+                lr_flip,
+                bd,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        incant!(inv_col_pass_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
-            ud_flip, lr_flip, bd, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_col_pass_core(
+                kernel,
+                buf,
+                output,
+                stride,
+                col_n,
+                row_n,
+                shift1_bit,
+                col_clamp,
+                stage_range,
+                ud_flip,
+                lr_flip,
+                bd,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     }
     true
 }
@@ -8054,10 +9224,10 @@ fn inv_col_pass_core(
     let mut c = 0usize;
     while c < col_n {
         let active = (col_n - c).min(8); // 8, or 4 (col_n == 4)
-        // Gather the column group: under lr_flip, scalar output column `c+j`
-        // reads buf column `col_n-1-(c+j)` — for a full group that is the
-        // ascending 8-column load at `col_n-c-8`, lanes reversed; for the
-        // 4-active group it is the row's 4 entries reversed into lanes 0..4.
+                                         // Gather the column group: under lr_flip, scalar output column `c+j`
+                                         // reads buf column `col_n-1-(c+j)` — for a full group that is the
+                                         // ascending 8-column load at `col_n-c-8`, lanes reversed; for the
+                                         // 4-active group it is the row's 4 entries reversed into lanes 0..4.
         for (r, ti) in tin[..row_n].iter_mut().enumerate() {
             let v = if active == 8 {
                 if lr_flip {
@@ -8078,7 +9248,16 @@ fn inv_col_pass_core(
             *ti = clampv(t, v, col_clamp); // the driver's clamp_buf
         }
         let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
-        incant!(run_inv1d(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit, stage_range), [v3, neon]);
+        incant!(
+            run_inv1d(
+                kernel,
+                &tin[..row_n],
+                &mut tout[..row_n],
+                cos_bit,
+                stage_range
+            ),
+            [v3, neon]
+        );
         // round_shift_array(to, -shift[1]) — shift[1] is always negative for
         // the inverse sizes, so this is the positive-bit arm.
         for to in tout[..row_n].iter_mut() {
@@ -8093,7 +9272,19 @@ fn inv_col_pass_core(
                 i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32))
             } else {
                 let d: [u16; 4] = output[idx..idx + 4].try_into().unwrap();
-                i32x8::from_array(t, [d[0] as i32, d[1] as i32, d[2] as i32, d[3] as i32, 0, 0, 0, 0])
+                i32x8::from_array(
+                    t,
+                    [
+                        d[0] as i32,
+                        d[1] as i32,
+                        d[2] as i32,
+                        d[3] as i32,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                )
             };
             // (dest + trans) wraps i32 like the scalar wrapping_add, then
             // clamps to the pixel range — `as u16` is exact after the clamp.
@@ -8142,10 +9333,10 @@ pub(crate) fn try_inv_col_pass_u8(
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
-    // Phase C: the audited DCT column kernels run on i16 lanes (16 columns per
-    // vector). Preconditions are the bd8 structural constants — asserted, not
-    // assumed: every caller of the u8 entry passes exactly these. Both vector
-    // tiers run it (see `try_inv_row_pass`); the `scalar` arm declines.
+                                              // Phase C: the audited DCT column kernels run on i16 lanes (16 columns per
+                                              // vector). Preconditions are the bd8 structural constants — asserted, not
+                                              // assumed: every caller of the u8 entry passes exactly these. Both vector
+                                              // tiers run it (see `try_inv_row_pass`); the `scalar` arm declines.
     if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_col) {
         debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), row_n);
         debug_assert!(stage_range.iter().all(|&b| b == 16));
@@ -8167,7 +9358,16 @@ pub(crate) fn try_inv_col_pass_u8(
     debug_assert_eq!(inv_kernel_n(kernel), row_n);
     incant!(
         inv_col_pass_u8(
-            kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range, ud_flip,
+            kernel,
+            buf,
+            output,
+            stride,
+            col_n,
+            row_n,
+            shift1_bit,
+            col_clamp,
+            stage_range,
+            ud_flip,
             lr_flip
         ),
         [v3, neon, scalar]
@@ -8194,21 +9394,66 @@ fn inv_col_pass_u8(
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
-        incant!(inv_col_pass_u8_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
-            ud_flip, lr_flip, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_col_pass_u8_core(
+                kernel,
+                buf,
+                output,
+                stride,
+                col_n,
+                row_n,
+                shift1_bit,
+                col_clamp,
+                stage_range,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else if row_n <= 16 {
         let mut tin = [i32x8::zero(t); 16];
         let mut tout = [i32x8::zero(t); 16];
-        incant!(inv_col_pass_u8_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
-            ud_flip, lr_flip, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_col_pass_u8_core(
+                kernel,
+                buf,
+                output,
+                stride,
+                col_n,
+                row_n,
+                shift1_bit,
+                col_clamp,
+                stage_range,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     } else {
         let mut tin = [i32x8::zero(t); 64];
         let mut tout = [i32x8::zero(t); 64];
-        incant!(inv_col_pass_u8_core(kernel, buf, output, stride, col_n, row_n, shift1_bit, col_clamp, stage_range,
-            ud_flip, lr_flip, &mut tin, &mut tout,
-        ), [v3, neon]);
+        incant!(
+            inv_col_pass_u8_core(
+                kernel,
+                buf,
+                output,
+                stride,
+                col_n,
+                row_n,
+                shift1_bit,
+                col_clamp,
+                stage_range,
+                ud_flip,
+                lr_flip,
+                &mut tin,
+                &mut tout,
+            ),
+            [v3, neon]
+        );
     }
     true
 }
@@ -8281,7 +9526,16 @@ fn inv_col_pass_u8_core(
             *ti = clampv(t, v, col_clamp);
         }
         let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
-        incant!(run_inv1d(kernel, &tin[..row_n], &mut tout[..row_n], cos_bit, stage_range), [v3, neon]);
+        incant!(
+            run_inv1d(
+                kernel,
+                &tin[..row_n],
+                &mut tout[..row_n],
+                cos_bit,
+                stage_range
+            ),
+            [v3, neon]
+        );
         for to in tout[..row_n].iter_mut() {
             *to = rshiftv(t, *to, shift1_bit);
         }
@@ -8293,7 +9547,19 @@ fn inv_col_pass_u8_core(
                 i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32))
             } else {
                 let d: [u8; 4] = output[idx..idx + 4].try_into().unwrap();
-                i32x8::from_array(t, [d[0] as i32, d[1] as i32, d[2] as i32, d[3] as i32, 0, 0, 0, 0])
+                i32x8::from_array(
+                    t,
+                    [
+                        d[0] as i32,
+                        d[1] as i32,
+                        d[2] as i32,
+                        d[3] as i32,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                )
             };
             // (dest + trans) wraps i32 like the scalar wrapping_add, then clamps
             // to [0, 255] — `as u8` is exact after the clamp.
@@ -8321,7 +9587,7 @@ mod tests {
     //! AOM_FORCE_SCALAR — the permutation harness owns token state).
 
     use super::*;
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 
     type ScalarKernel = fn(&[i32], &mut [i32], i32, &[i8]);
 
@@ -8342,16 +9608,66 @@ mod tests {
     fn cases() -> Vec<Case> {
         use K::{F, I};
         vec![
-            Case { name: "idct4", size: 4, scalar: crate::transform::av1_idct4, simd: I(Inv1d::Dct4) },
-            Case { name: "idct8", size: 8, scalar: crate::transform::av1_idct8, simd: I(Inv1d::Dct8) },
-            Case { name: "idct16", size: 16, scalar: crate::transform::av1_idct16, simd: I(Inv1d::Dct16) },
-            Case { name: "idct32", size: 32, scalar: crate::transform::av1_idct32, simd: I(Inv1d::Dct32) },
-            Case { name: "idct64", size: 64, scalar: crate::transform::av1_idct64, simd: I(Inv1d::Dct64) },
-            Case { name: "iadst4", size: 4, scalar: crate::transform::av1_iadst4, simd: I(Inv1d::Adst4) },
-            Case { name: "iadst8", size: 8, scalar: crate::transform::av1_iadst8, simd: I(Inv1d::Adst8) },
-            Case { name: "iadst16", size: 16, scalar: crate::transform::av1_iadst16, simd: I(Inv1d::Adst16) },
-            Case { name: "iidentity4", size: 4, scalar: crate::transform::av1_iidentity4, simd: I(Inv1d::Idtx4) },
-            Case { name: "iidentity8", size: 8, scalar: crate::transform::av1_iidentity8, simd: I(Inv1d::Idtx8) },
+            Case {
+                name: "idct4",
+                size: 4,
+                scalar: crate::transform::av1_idct4,
+                simd: I(Inv1d::Dct4),
+            },
+            Case {
+                name: "idct8",
+                size: 8,
+                scalar: crate::transform::av1_idct8,
+                simd: I(Inv1d::Dct8),
+            },
+            Case {
+                name: "idct16",
+                size: 16,
+                scalar: crate::transform::av1_idct16,
+                simd: I(Inv1d::Dct16),
+            },
+            Case {
+                name: "idct32",
+                size: 32,
+                scalar: crate::transform::av1_idct32,
+                simd: I(Inv1d::Dct32),
+            },
+            Case {
+                name: "idct64",
+                size: 64,
+                scalar: crate::transform::av1_idct64,
+                simd: I(Inv1d::Dct64),
+            },
+            Case {
+                name: "iadst4",
+                size: 4,
+                scalar: crate::transform::av1_iadst4,
+                simd: I(Inv1d::Adst4),
+            },
+            Case {
+                name: "iadst8",
+                size: 8,
+                scalar: crate::transform::av1_iadst8,
+                simd: I(Inv1d::Adst8),
+            },
+            Case {
+                name: "iadst16",
+                size: 16,
+                scalar: crate::transform::av1_iadst16,
+                simd: I(Inv1d::Adst16),
+            },
+            Case {
+                name: "iidentity4",
+                size: 4,
+                scalar: crate::transform::av1_iidentity4,
+                simd: I(Inv1d::Idtx4),
+            },
+            Case {
+                name: "iidentity8",
+                size: 8,
+                scalar: crate::transform::av1_iidentity8,
+                simd: I(Inv1d::Idtx8),
+            },
             Case {
                 name: "iidentity16",
                 size: 16,
@@ -8364,16 +9680,66 @@ mod tests {
                 scalar: crate::transform::av1_iidentity32,
                 simd: I(Inv1d::Idtx32),
             },
-            Case { name: "fdct4", size: 4, scalar: crate::transform::av1_fdct4, simd: F(Fwd1d::Dct4) },
-            Case { name: "fdct8", size: 8, scalar: crate::transform::av1_fdct8, simd: F(Fwd1d::Dct8) },
-            Case { name: "fdct16", size: 16, scalar: crate::transform::av1_fdct16, simd: F(Fwd1d::Dct16) },
-            Case { name: "fdct32", size: 32, scalar: crate::transform::av1_fdct32, simd: F(Fwd1d::Dct32) },
-            Case { name: "fdct64", size: 64, scalar: crate::transform::av1_fdct64, simd: F(Fwd1d::Dct64) },
-            Case { name: "fadst4", size: 4, scalar: crate::transform::av1_fadst4, simd: F(Fwd1d::Adst4) },
-            Case { name: "fadst8", size: 8, scalar: crate::transform::av1_fadst8, simd: F(Fwd1d::Adst8) },
-            Case { name: "fadst16", size: 16, scalar: crate::transform::av1_fadst16, simd: F(Fwd1d::Adst16) },
-            Case { name: "fidentity4", size: 4, scalar: crate::transform::av1_fidentity4, simd: F(Fwd1d::Idtx4) },
-            Case { name: "fidentity8", size: 8, scalar: crate::transform::av1_fidentity8, simd: F(Fwd1d::Idtx8) },
+            Case {
+                name: "fdct4",
+                size: 4,
+                scalar: crate::transform::av1_fdct4,
+                simd: F(Fwd1d::Dct4),
+            },
+            Case {
+                name: "fdct8",
+                size: 8,
+                scalar: crate::transform::av1_fdct8,
+                simd: F(Fwd1d::Dct8),
+            },
+            Case {
+                name: "fdct16",
+                size: 16,
+                scalar: crate::transform::av1_fdct16,
+                simd: F(Fwd1d::Dct16),
+            },
+            Case {
+                name: "fdct32",
+                size: 32,
+                scalar: crate::transform::av1_fdct32,
+                simd: F(Fwd1d::Dct32),
+            },
+            Case {
+                name: "fdct64",
+                size: 64,
+                scalar: crate::transform::av1_fdct64,
+                simd: F(Fwd1d::Dct64),
+            },
+            Case {
+                name: "fadst4",
+                size: 4,
+                scalar: crate::transform::av1_fadst4,
+                simd: F(Fwd1d::Adst4),
+            },
+            Case {
+                name: "fadst8",
+                size: 8,
+                scalar: crate::transform::av1_fadst8,
+                simd: F(Fwd1d::Adst8),
+            },
+            Case {
+                name: "fadst16",
+                size: 16,
+                scalar: crate::transform::av1_fadst16,
+                simd: F(Fwd1d::Adst16),
+            },
+            Case {
+                name: "fidentity4",
+                size: 4,
+                scalar: crate::transform::av1_fidentity4,
+                simd: F(Fwd1d::Idtx4),
+            },
+            Case {
+                name: "fidentity8",
+                size: 8,
+                scalar: crate::transform::av1_fidentity8,
+                simd: F(Fwd1d::Idtx8),
+            },
             Case {
                 name: "fidentity16",
                 size: 16,
@@ -8442,7 +9808,10 @@ mod tests {
             vin[r] = i32x8::from_array(t, *c);
         }
         let mut vout = vec![i32x8::zero(t); n];
-        incant!(run_kernel(case.simd, &vin, &mut vout, cos_bit, stage_range), [v3, neon]);
+        incant!(
+            run_kernel(case.simd, &vin, &mut vout, cos_bit, stage_range),
+            [v3, neon]
+        );
 
         let mut sin = vec![0i32; n];
         let mut sout = vec![0i32; n];
@@ -8497,95 +9866,105 @@ mod tests {
     /// The whole case sweep at ONE tier. Returns true (a vector tier ran).
     #[magetypes(define(i32x8), v3, neon, -scalar)]
     fn sweep_all_cases(t: Token, tier: &str) -> bool {
-            let mut rng = Rng(0x_7ab5_11fe_c0de_0001);
-            // Driver stage_range values (opt_range 16/18/20) + the 1-D
-            // harness's 17; the drivers pass INV_COS_BIT=12, sweep 10..=13.
-            for &sr in &[16i8, 17, 18, 20] {
-                let stage_range = [sr; 12];
-                for cos_bit in 10..=13 {
-                    for case in cases() {
-                        let n = case.size;
-                        for &bits in &[15u32, 17, 19] {
-                            // (a) driver-clamp-domain dense random: the col
-                            // pass clamps input to max(bd+6,16) bits, the
-                            // row pass to bd+8 — sweep ±2^15/2^17/2^19.
-                            for rep in 0..24 {
-                                let cols: Vec<[i32; 8]> = (0..n)
-                                    .map(|_| core::array::from_fn(|_| rng.bounded(bits)))
-                                    .collect();
-                                incant!(assert_batch(
+        let mut rng = Rng(0x_7ab5_11fe_c0de_0001);
+        // Driver stage_range values (opt_range 16/18/20) + the 1-D
+        // harness's 17; the drivers pass INV_COS_BIT=12, sweep 10..=13.
+        for &sr in &[16i8, 17, 18, 20] {
+            let stage_range = [sr; 12];
+            for cos_bit in 10..=13 {
+                for case in cases() {
+                    let n = case.size;
+                    for &bits in &[15u32, 17, 19] {
+                        // (a) driver-clamp-domain dense random: the col
+                        // pass clamps input to max(bd+6,16) bits, the
+                        // row pass to bd+8 — sweep ±2^15/2^17/2^19.
+                        for rep in 0..24 {
+                            let cols: Vec<[i32; 8]> = (0..n)
+                                .map(|_| core::array::from_fn(|_| rng.bounded(bits)))
+                                .collect();
+                            incant!(
+                                assert_batch(
                                     &case,
                                     &cols,
                                     cos_bit,
                                     &stage_range,
                                     &format!("[{tier}] rand b{bits} rep{rep}"),
-                                ), [v3, neon]);
-                            }
-                            // (b) exact clamp-bound sign patterns — the
-                            // half_btf |p0 + p1| maximizers: all +B, all -B,
-                            // alternating ±B (both phases), random-ish ±B.
-                            let b = 1i32 << bits;
-                            let pats: [&dyn Fn(usize, usize) -> i32; 5] = [
-                                &|_, _| b,
-                                &|_, _| -b,
-                                &|r, l| if (r + l) % 2 == 0 { b } else { -b },
-                                &|r, l| if (r + l) % 2 == 0 { -b } else { b },
-                                &|r, l| if (r * 7 + l * 3) % 5 < 2 { b } else { -b },
-                            ];
-                            for (pi, pat) in pats.iter().enumerate() {
-                                let cols: Vec<[i32; 8]> =
-                                    (0..n).map(|r| core::array::from_fn(|l| pat(r, l))).collect();
-                                incant!(assert_batch(
+                                ),
+                                [v3, neon]
+                            );
+                        }
+                        // (b) exact clamp-bound sign patterns — the
+                        // half_btf |p0 + p1| maximizers: all +B, all -B,
+                        // alternating ±B (both phases), random-ish ±B.
+                        let b = 1i32 << bits;
+                        let pats: [&dyn Fn(usize, usize) -> i32; 5] = [
+                            &|_, _| b,
+                            &|_, _| -b,
+                            &|r, l| if (r + l) % 2 == 0 { b } else { -b },
+                            &|r, l| if (r + l) % 2 == 0 { -b } else { b },
+                            &|r, l| if (r * 7 + l * 3) % 5 < 2 { b } else { -b },
+                        ];
+                        for (pi, pat) in pats.iter().enumerate() {
+                            let cols: Vec<[i32; 8]> = (0..n)
+                                .map(|r| core::array::from_fn(|l| pat(r, l)))
+                                .collect();
+                            incant!(
+                                assert_batch(
                                     &case,
                                     &cols,
                                     cos_bit,
                                     &stage_range,
                                     &format!("[{tier}] bound b{bits} pat{pi}"),
-                                ), [v3, neon]);
-                            }
+                                ),
+                                [v3, neon]
+                            );
                         }
-                        // (c) FULL-i32 random (the lane ops are exact on the
-                        // whole domain — assert it there) + extreme lanes
-                        // mixed with all-zero columns.
-                        for rep in 0..24 {
-                            let cols: Vec<[i32; 8]> = (0..n)
-                                .map(|_| core::array::from_fn(|_| rng.next() as i32))
-                                .collect();
-                            incant!(assert_batch(
+                    }
+                    // (c) FULL-i32 random (the lane ops are exact on the
+                    // whole domain — assert it there) + extreme lanes
+                    // mixed with all-zero columns.
+                    for rep in 0..24 {
+                        let cols: Vec<[i32; 8]> = (0..n)
+                            .map(|_| core::array::from_fn(|_| rng.next() as i32))
+                            .collect();
+                        incant!(
+                            assert_batch(
                                 &case,
                                 &cols,
                                 cos_bit,
                                 &stage_range,
                                 &format!("[{tier}] full-i32 rep{rep}"),
-                            ), [v3, neon]);
-                        }
-                        let mut cols = vec![[0i32; 8]; n];
-                        cols[0] = [
-                            i32::MIN,
-                            i32::MAX,
-                            0,
-                            -1,
-                            1 << 19,
-                            -(1 << 19),
-                            i32::MIN + 1,
-                            i32::MAX - 1,
-                        ];
-                        cols[n - 1] = [i32::MAX, i32::MIN, 1, 0, -(1 << 19), 1 << 19, -2, 2];
-                        incant!(assert_batch(
+                            ),
+                            [v3, neon]
+                        );
+                    }
+                    let mut cols = vec![[0i32; 8]; n];
+                    cols[0] = [
+                        i32::MIN,
+                        i32::MAX,
+                        0,
+                        -1,
+                        1 << 19,
+                        -(1 << 19),
+                        i32::MIN + 1,
+                        i32::MAX - 1,
+                    ];
+                    cols[n - 1] = [i32::MAX, i32::MIN, 1, 0, -(1 << 19), 1 << 19, -2, 2];
+                    incant!(
+                        assert_batch(
                             &case,
                             &cols,
                             cos_bit,
                             &stage_range,
                             &format!("[{tier}] extremes+zero-cols"),
-                        ), [v3, neon]);
-                    }
+                        ),
+                        [v3, neon]
+                    );
                 }
             }
+        }
         true
     }
-
-
-
 }
 
 /// The aarch64 NEON tier for [`try_fwd_txfm2d_4x4_fused`] — a verbatim
@@ -8608,7 +9987,16 @@ fn fwd_4x4_fused_neon(
     lr_flip: bool,
 ) -> bool {
     fwd_neon::fwd_4x4_fused(
-        t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+        t,
+        kc,
+        kr,
+        input,
+        output,
+        stride,
+        cos_bit_col,
+        cos_bit_row,
+        ud_flip,
+        lr_flip,
     )
 }
 
@@ -8630,7 +10018,16 @@ fn fwd_8x8_fused_i16_neon(
     lr_flip: bool,
 ) -> bool {
     fwd_neon::fwd_8x8_fused(
-        t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+        t,
+        kc,
+        kr,
+        input,
+        output,
+        stride,
+        cos_bit_col,
+        cos_bit_row,
+        ud_flip,
+        lr_flip,
     )
 }
 
@@ -8655,11 +10052,29 @@ fn fwd_rect48_fused_i16_neon(
 ) -> bool {
     if col_n == 4 && row_n == 8 {
         fwd_neon::fwd_4x8_fused(
-            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+            t,
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip,
         )
     } else if col_n == 8 && row_n == 4 {
         fwd_neon::fwd_8x4_fused(
-            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+            t,
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip,
         )
     } else {
         false
@@ -8687,11 +10102,29 @@ fn fwd_rect816_fused_i16_neon(
 ) -> bool {
     if col_n == 8 && row_n == 16 {
         fwd_neon::fwd_8x16_fused(
-            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+            t,
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip,
         )
     } else if col_n == 16 && row_n == 8 {
         fwd_neon::fwd_16x8_fused(
-            t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+            t,
+            kc,
+            kr,
+            input,
+            output,
+            stride,
+            cos_bit_col,
+            cos_bit_row,
+            ud_flip,
+            lr_flip,
         )
     } else {
         false
@@ -8716,6 +10149,15 @@ fn fwd_16x16_fused_i16_neon(
     lr_flip: bool,
 ) -> bool {
     fwd_neon::fwd_16x16_fused(
-        t, kc, kr, input, output, stride, cos_bit_col, cos_bit_row, ud_flip, lr_flip,
+        t,
+        kc,
+        kr,
+        input,
+        output,
+        stride,
+        cos_bit_col,
+        cos_bit_row,
+        ud_flip,
+        lr_flip,
     )
 }

@@ -1302,7 +1302,9 @@ fn write_frame_header_prefix_matches_c() {
 
 #[test]
 fn write_frame_size_with_refs_matches_c() {
-    use aom_dsp::entropy::header::{write_frame_size_with_refs, FrameSizeHeader, FrameSizeWithRefs};
+    use aom_dsp::entropy::header::{
+        write_frame_size_with_refs, FrameSizeHeader, FrameSizeWithRefs,
+    };
     let mut rng = Rng(0xf526_c0de_a11a_0009);
     for _ in 0..300_000 {
         let num_bits_w = rng.range(4, 17) as u32;
@@ -1453,7 +1455,9 @@ fn write_inter_ref_signaling_matches_c() {
 
 #[test]
 fn frame_header_connective_flags_match_c() {
-    use aom_dsp::entropy::header::{write_frame_header_trailing_flags, write_refresh_frame_context};
+    use aom_dsp::entropy::header::{
+        write_frame_header_trailing_flags, write_refresh_frame_context,
+    };
     let mut rng = Rng(0xf1a6_c0de_a11a_0009);
     for _ in 0..200_000 {
         let reduced = rng.next().is_multiple_of(2);

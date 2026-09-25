@@ -36,8 +36,8 @@
 //! too, since the facade always pulls `aom-dsp` — a `restore-search` cargo
 //! feature would fix that and is the obvious follow-up.
 
-use crate::restore::sgr::SGR_PARAMS;
 use crate::entropy::lr::{WIENER_HALFWIN, WIENER_WIN};
+use crate::restore::sgr::SGR_PARAMS;
 
 /// `WIENER_WIN2` / `WIENER_HALFWIN1` (restoration.h).
 pub const WIENER_WIN2: usize = WIENER_WIN * WIENER_WIN;
@@ -87,22 +87,13 @@ pub trait LrPixel: Copy {
     /// Widen 16 pixels to the `i16x16` lanes both carriers produce (u8
     /// through `cvtepu8`, u16 as the direct load).
     #[cfg(target_arch = "x86_64")]
-    const LD16: fn(
-        archmage::X64V3Token,
-        &[Self; 16],
-    ) -> archmage::intrinsics::x86_64::__m256i;
+    const LD16: fn(archmage::X64V3Token, &[Self; 16]) -> archmage::intrinsics::x86_64::__m256i;
     /// Widen 8 pixels to the `i32x8` lanes both carriers produce.
     #[cfg(target_arch = "x86_64")]
-    const LD8: fn(
-        archmage::X64V3Token,
-        &[Self; 8],
-    ) -> archmage::intrinsics::x86_64::__m256i;
+    const LD8: fn(archmage::X64V3Token, &[Self; 8]) -> archmage::intrinsics::x86_64::__m256i;
     /// Widen 8 pixels to the `s16x8` lanes both carriers produce.
     #[cfg(target_arch = "aarch64")]
-    const LD8_S16: fn(
-        archmage::NeonToken,
-        &[Self; 8],
-    ) -> archmage::intrinsics::aarch64::int16x8_t;
+    const LD8_S16: fn(archmage::NeonToken, &[Self; 8]) -> archmage::intrinsics::aarch64::int16x8_t;
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -131,10 +122,7 @@ fn lr_ld8_u16(_t: archmage::X64V3Token, c: &[u16; 8]) -> archmage::intrinsics::x
 }
 #[cfg(target_arch = "aarch64")]
 #[archmage::arcane]
-fn lr_ld8_s16_u8(
-    _t: archmage::NeonToken,
-    c: &[u8; 8],
-) -> archmage::intrinsics::aarch64::int16x8_t {
+fn lr_ld8_s16_u8(_t: archmage::NeonToken, c: &[u8; 8]) -> archmage::intrinsics::aarch64::int16x8_t {
     use archmage::intrinsics::aarch64::*;
     vreinterpretq_s16_u16(vmovl_u8(vld1_u8(c)))
 }
@@ -167,20 +155,14 @@ impl LrPixel for u8 {
         self as u64
     }
     #[cfg(target_arch = "x86_64")]
-    const LD16: fn(
-        archmage::X64V3Token,
-        &[u8; 16],
-    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld16_u8;
+    const LD16: fn(archmage::X64V3Token, &[u8; 16]) -> archmage::intrinsics::x86_64::__m256i =
+        lr_ld16_u8;
     #[cfg(target_arch = "x86_64")]
-    const LD8: fn(
-        archmage::X64V3Token,
-        &[u8; 8],
-    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld8_u8;
+    const LD8: fn(archmage::X64V3Token, &[u8; 8]) -> archmage::intrinsics::x86_64::__m256i =
+        lr_ld8_u8;
     #[cfg(target_arch = "aarch64")]
-    const LD8_S16: fn(
-        archmage::NeonToken,
-        &[u8; 8],
-    ) -> archmage::intrinsics::aarch64::int16x8_t = lr_ld8_s16_u8;
+    const LD8_S16: fn(archmage::NeonToken, &[u8; 8]) -> archmage::intrinsics::aarch64::int16x8_t =
+        lr_ld8_s16_u8;
 }
 
 impl LrPixel for u16 {
@@ -202,20 +184,14 @@ impl LrPixel for u16 {
         self as u64
     }
     #[cfg(target_arch = "x86_64")]
-    const LD16: fn(
-        archmage::X64V3Token,
-        &[u16; 16],
-    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld16_u16;
+    const LD16: fn(archmage::X64V3Token, &[u16; 16]) -> archmage::intrinsics::x86_64::__m256i =
+        lr_ld16_u16;
     #[cfg(target_arch = "x86_64")]
-    const LD8: fn(
-        archmage::X64V3Token,
-        &[u16; 8],
-    ) -> archmage::intrinsics::x86_64::__m256i = lr_ld8_u16;
+    const LD8: fn(archmage::X64V3Token, &[u16; 8]) -> archmage::intrinsics::x86_64::__m256i =
+        lr_ld8_u16;
     #[cfg(target_arch = "aarch64")]
-    const LD8_S16: fn(
-        archmage::NeonToken,
-        &[u16; 8],
-    ) -> archmage::intrinsics::aarch64::int16x8_t = lr_ld8_s16_u16;
+    const LD8_S16: fn(archmage::NeonToken, &[u16; 8]) -> archmage::intrinsics::aarch64::int16x8_t =
+        lr_ld8_s16_u16;
 }
 
 /// `find_average` (pickrst.h): the u8-truncating mean of the lowbd window.
@@ -439,7 +415,16 @@ fn acc_stat_line_recipe<P: LrPixel>(
     let mut y = [0i32; WIENER_H_STRIDE];
     for j in h_start..h_end {
         let x = i32::from(src_row[j as usize].to_i16() - avg as i16);
-        let idx = gather_window(dgd, dgd_origin, dgd_stride, avg, wiener_halfwin, j, count, &mut y);
+        let idx = gather_window(
+            dgd,
+            dgd_origin,
+            dgd_stride,
+            avg,
+            wiener_halfwin,
+            j,
+            count,
+            &mut y,
+        );
         debug_assert_eq!(idx, wiener_win2);
         for k in 0..wiener_win2 {
             m_row[k] += y[k] * x;
@@ -599,7 +584,10 @@ fn acc_stat_line_impl<P: LrPixel>(
         );
         debug_assert_eq!(idx, wiener_win2);
         let xv = [0usize, 1, 2, 3].map(|p| {
-            i32x8::splat(token, i32::from(src_row[j as usize + p].to_i16() - avg as i16))
+            i32x8::splat(
+                token,
+                i32::from(src_row[j as usize + p].to_i16() - avg as i16),
+            )
         });
 
         // M: lanes are k. Runs off the end into the padding, which stays zero.
@@ -712,12 +700,36 @@ fn acc_stat_line_impl_v3<P: LrPixel>(
 ) {
     match wiener_halfwin {
         2 => acc_stat_line_v3_x86::<5, P>(
-            t, dgd, dgd_origin, src_row, dgd_stride, h_start, h_end, avg, wiener_halfwin,
-            wiener_win2, m_row, h_row, hstride, count,
+            t,
+            dgd,
+            dgd_origin,
+            src_row,
+            dgd_stride,
+            h_start,
+            h_end,
+            avg,
+            wiener_halfwin,
+            wiener_win2,
+            m_row,
+            h_row,
+            hstride,
+            count,
         ),
         3 => acc_stat_line_v3_x86::<7, P>(
-            t, dgd, dgd_origin, src_row, dgd_stride, h_start, h_end, avg, wiener_halfwin,
-            wiener_win2, m_row, h_row, hstride, count,
+            t,
+            dgd,
+            dgd_origin,
+            src_row,
+            dgd_stride,
+            h_start,
+            h_end,
+            avg,
+            wiener_halfwin,
+            wiener_win2,
+            m_row,
+            h_row,
+            hstride,
+            count,
         ),
         _ => acc_stat_line_recipe(
             dgd,
@@ -804,10 +816,8 @@ fn acc_stat_line_v3_x86<const WIN: usize, P: LrPixel>(
             count,
         );
     }
-    let m: &mut [i32; WIENER_H_STRIDE] =
-        (&mut m_row[..WIENER_H_STRIDE]).try_into().unwrap();
-    let h: &mut [i32; WIENER_H_ROW_LEN] =
-        (&mut h_row[..WIENER_H_ROW_LEN]).try_into().unwrap();
+    let m: &mut [i32; WIENER_H_STRIDE] = (&mut m_row[..WIENER_H_STRIDE]).try_into().unwrap();
+    let h: &mut [i32; WIENER_H_ROW_LEN] = (&mut h_row[..WIENER_H_ROW_LEN]).try_into().unwrap();
 
     // `y01`/`y23` hold the four windows as PACKED i16 pairs in i32 lanes:
     // `y01[k] = y0[k] | y1[k]<<16`. A `vpmaddwd` against a broadcast pair then
@@ -926,10 +936,7 @@ fn acc_stat_line_v3_x86<const WIN: usize, P: LrPixel>(
                 st8!(
                     h,
                     base + l,
-                    _mm256_add_epi32(
-                        ld8!(h, base + l),
-                        _mm256_mullo_epi32(ld8!(&y_tail, l), yk),
-                    )
+                    _mm256_add_epi32(ld8!(h, base + l), _mm256_mullo_epi32(ld8!(&y_tail, l), yk),)
                 );
                 l += 8;
             }
@@ -1000,8 +1007,7 @@ pub fn compute_stats<P: LrPixel>(
             // Scale by the downsampling factor (1 when not downsampling).
             m[k] += m_row[k] as i64 * downsample_factor as i64;
             for l in k..wiener_win2 {
-                h[k * wiener_win2 + l] +=
-                    h_row[k * hstride + l] as i64 * downsample_factor as i64;
+                h[k * wiener_win2 + l] += h_row[k * hstride + l] as i64 * downsample_factor as i64;
             }
         }
         i += downsample_factor;
@@ -1104,7 +1110,10 @@ fn split_wiener_filter_coefficients(wiener_win: usize, w: &[i32], w1: &mut [i32]
     for i in 0..wiener_win {
         w1[i] = w[i] / WIENER_TAP_SCALE_FACTOR as i32;
         w2[i] = w[i] - w1[i] * WIENER_TAP_SCALE_FACTOR as i32;
-        debug_assert_eq!(w[i] as i64, w1[i] as i64 * WIENER_TAP_SCALE_FACTOR + w2[i] as i64);
+        debug_assert_eq!(
+            w[i] as i64,
+            w1[i] as i64 * WIENER_TAP_SCALE_FACTOR + w2[i] as i64
+        );
     }
 }
 
@@ -1138,8 +1147,16 @@ fn linsolve_wiener(n: usize, a: &mut [i64], stride: usize, b: &mut [i64], x: &mu
             }
         }
         let scale_threshold: i64 = 1 << 22;
-        let scaler_a: i64 = if max_abs_akj < scale_threshold { 1 } else { 1 << 6 };
-        let scaler_c: i64 = if max_abs_akj < scale_threshold { 1 } else { 1 << 7 };
+        let scaler_a: i64 = if max_abs_akj < scale_threshold {
+            1
+        } else {
+            1 << 6
+        };
+        let scaler_c: i64 = if max_abs_akj < scale_threshold {
+            1
+        } else {
+            1 << 7
+        };
         let scaler = scaler_c * scaler_a;
 
         // Forward elimination (row-echelon form).
@@ -1173,7 +1190,14 @@ fn linsolve_wiener(n: usize, a: &mut [i64], stride: usize, b: &mut [i64], x: &mu
 /// taps, re-solve the other. `dir == 0` updates `a` (vertical) from fixed
 /// `b`; `dir == 1` updates `b` from fixed `a`. `m`/`h` are the win2 /
 /// win2*win2 stats.
-fn update_sep_sym(dir: usize, wiener_win: usize, m: &[i64], h: &[i64], a: &mut [i32], b: &mut [i32]) {
+fn update_sep_sym(
+    dir: usize,
+    wiener_win: usize,
+    m: &[i64],
+    h: &[i64],
+    a: &mut [i32],
+    b: &mut [i32],
+) {
     let wiener_win2 = wiener_win * wiener_win;
     let wiener_halfwin1 = (wiener_win >> 1) + 1;
     let mut s = [0i64; WIENER_WIN];
@@ -1203,8 +1227,8 @@ fn update_sep_sym(dir: usize, wiener_win: usize, m: &[i64], h: &[i64], a: &mut [
                         let ll = wrap_index(l, wiener_win);
                         // Hc[j * win + i][k * win2 + l] * b[i] / SCALE, then
                         // * b[j] / SCALE via multiply_and_scale.
-                        let x = hc(j, i, k * wiener_win2 + l) * b[i] as i64
-                            / WIENER_TAP_SCALE_FACTOR;
+                        let x =
+                            hc(j, i, k * wiener_win2 + l) * b[i] as i64 / WIENER_TAP_SCALE_FACTOR;
                         bb[ll * wiener_halfwin1 + kk] += multiply_and_scale(x, f1[j], f2[j]);
                     }
                 }
@@ -1225,8 +1249,8 @@ fn update_sep_sym(dir: usize, wiener_win: usize, m: &[i64], h: &[i64], a: &mut [
                 let jj = wrap_index(j, wiener_win);
                 for k in 0..wiener_win {
                     for l in 0..wiener_win {
-                        let x = hc(i, j, k * wiener_win2 + l) * a[k] as i64
-                            / WIENER_TAP_SCALE_FACTOR;
+                        let x =
+                            hc(i, j, k * wiener_win2 + l) * a[k] as i64 / WIENER_TAP_SCALE_FACTOR;
                         bb[jj * wiener_halfwin1 + ii] += multiply_and_scale(x, f1[l], f2[l]);
                     }
                 }
@@ -1247,7 +1271,13 @@ fn update_sep_sym(dir: usize, wiener_win: usize, m: &[i64], h: &[i64], a: &mut [
                     - 2 * bb[(wiener_halfwin1 - 1) * wiener_halfwin1 + (wiener_halfwin1 - 1)]);
         }
     }
-    if linsolve_wiener(wiener_halfwin1 - 1, &mut bb, wiener_halfwin1, &mut aa, &mut s) {
+    if linsolve_wiener(
+        wiener_halfwin1 - 1,
+        &mut bb,
+        wiener_halfwin1,
+        &mut aa,
+        &mut s,
+    ) {
         s[wiener_halfwin1 - 1] = WIENER_TAP_SCALE_FACTOR;
         for i in wiener_halfwin1..wiener_win {
             s[i] = s[wiener_win - 1 - i];
@@ -1255,8 +1285,10 @@ fn update_sep_sym(dir: usize, wiener_win: usize, m: &[i64], h: &[i64], a: &mut [
         }
         let out = if dir == 0 { a } else { b };
         for i in 0..wiener_win {
-            out[i] = s[i].clamp(-(1 << (WIENER_FILT_BITS - 1)), (1 << (WIENER_FILT_BITS - 1)) - 1)
-                as i32;
+            out[i] = s[i].clamp(
+                -(1 << (WIENER_FILT_BITS - 1)),
+                (1 << (WIENER_FILT_BITS - 1)) - 1,
+            ) as i32;
         }
     }
 }
@@ -1508,15 +1540,41 @@ pub fn pixel_proj_error<P: LrPixel>(
 ) -> i64 {
     if width < 8 {
         return pixel_proj_error_scalar(
-            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
-            flt1, flt1_stride, xq, ep, highbd,
+            src,
+            src_off,
+            width,
+            height,
+            src_stride,
+            dat,
+            dat_off,
+            dat_stride,
+            flt0,
+            flt0_stride,
+            flt1,
+            flt1_stride,
+            xq,
+            ep,
+            highbd,
         );
     }
     let _ = crate::dispatch::scalar_forced();
     archmage::incant!(
         pixel_proj_error_impl(
-            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
-            flt1, flt1_stride, xq, ep, highbd
+            src,
+            src_off,
+            width,
+            height,
+            src_stride,
+            dat,
+            dat_off,
+            dat_stride,
+            flt0,
+            flt0_stride,
+            flt1,
+            flt1_stride,
+            xq,
+            ep,
+            highbd
         ),
         [v3, neon, wasm128, scalar]
     )
@@ -1542,8 +1600,21 @@ fn pixel_proj_error_impl_scalar<P: LrPixel>(
     highbd: bool,
 ) -> i64 {
     pixel_proj_error_scalar(
-        src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride, flt1,
-        flt1_stride, xq, ep, highbd,
+        src,
+        src_off,
+        width,
+        height,
+        src_stride,
+        dat,
+        dat_off,
+        dat_stride,
+        flt0,
+        flt0_stride,
+        flt1,
+        flt1_stride,
+        xq,
+        ep,
+        highbd,
     )
 }
 
@@ -1647,8 +1718,8 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
     // whole documented domain: `|flt| < 2^15` (C's own assert) and
     // `|vr| < 2^14` (`|xq| <= 96`, `|f - u| < 2^17` -> `|v| < 2^25`).
     let tpack_mask = _mm256_setr_epi8(
-        0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1,
-        0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1,
+        0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 4, 5, 8, 9, 12, 13, -1, -1,
+        -1, -1, -1, -1, -1, -1,
     );
     macro_rules! tpack {
         ($a:expr, $b:expr) => {{
@@ -1734,8 +1805,7 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
                     let d0 = P::LD16(_t, dc);
                     let u0 = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0);
                     let u0l = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(u0));
-                    let u0h =
-                        _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(u0));
+                    let u0h = _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(u0));
                     let f0l = _mm256_sub_epi32(half8!(f0c, lo), u0l);
                     let f0h = _mm256_sub_epi32(half8!(f0c, hi), u0h);
                     let f1l = _mm256_sub_epi32(half8!(f1c, lo), u0l);
@@ -1755,8 +1825,7 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
                     let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
                     let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
                     let vr = tpack!(vrl, vrh);
-                    let e0 =
-                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0p), s0p);
+                    let e0 = _mm256_sub_epi16(_mm256_add_epi16(vr, d0p), s0p);
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
                 tail!(i, width & !15);
@@ -1789,24 +1858,13 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
                     let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
                     let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
                     let u0p = _mm256_slli_epi16::<{ SGRPROJ_RST_BITS }>(d0p);
-                    let f0sub = _mm256_sub_epi16(
-                        tpack!(half8!(f0c, lo), half8!(f0c, hi)),
-                        u0p,
-                    );
-                    let f1sub = _mm256_sub_epi16(
-                        tpack!(half8!(f1c, lo), half8!(f1c, hi)),
-                        u0p,
-                    );
-                    let v0 =
-                        _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(f0sub, f1sub));
-                    let v1 =
-                        _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(f0sub, f1sub));
+                    let f0sub = _mm256_sub_epi16(tpack!(half8!(f0c, lo), half8!(f0c, hi)), u0p);
+                    let f1sub = _mm256_sub_epi16(tpack!(half8!(f1c, lo), half8!(f1c, hi)), u0p);
+                    let v0 = _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(f0sub, f1sub));
+                    let v1 = _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(f0sub, f1sub));
                     let vr0 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v0, rounding));
                     let vr1 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v1, rounding));
-                    let e0 = _mm256_sub_epi16(
-                        _mm256_add_epi16(tpack!(vr0, vr1), d0p),
-                        s0p,
-                    );
+                    let e0 = _mm256_sub_epi16(_mm256_add_epi16(tpack!(vr0, vr1), d0p), s0p);
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
                 tail!(i, width & !15);
@@ -1815,7 +1873,11 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
         }
     } else if r0 || r1 {
         let xq_on = if r0 { xq[0] } else { xq[1] };
-        let (flt, flt_stride) = if r0 { (flt0, flt0_stride) } else { (flt1, flt1_stride) };
+        let (flt, flt_stride) = if r0 {
+            (flt0, flt0_stride)
+        } else {
+            (flt1, flt1_stride)
+        };
         if highbd {
             let xq_active = _mm256_set1_epi32(xq_on);
             let xq_inactive = _mm256_set1_epi32(-xq_on * (1 << SGRPROJ_RST_BITS));
@@ -1830,8 +1892,7 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
                     let s0 = P::LD16(_t, sc);
                     let d0 = P::LD16(_t, dc);
                     let d0l = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(d0));
-                    let d0h =
-                        _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(d0));
+                    let d0h = _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(d0));
                     let vl = _mm256_add_epi32(
                         _mm256_mullo_epi32(half8!(fc, lo), xq_active),
                         _mm256_mullo_epi32(d0l, xq_inactive),
@@ -1847,8 +1908,7 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
                     let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
                     let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
                     let vr = tpack!(vrl, vrh);
-                    let e0 =
-                        _mm256_sub_epi16(_mm256_add_epi16(vr, d0p), s0p);
+                    let e0 = _mm256_sub_epi16(_mm256_add_epi16(vr, d0p), s0p);
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
                 tail!(i, width & !15);
@@ -1879,18 +1939,12 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
                     let s0 = P::LD16(_t, sc);
                     let d0p = _mm256_permute4x64_epi64::<0xd8>(d0);
                     let s0p = _mm256_permute4x64_epi64::<0xd8>(s0);
-                    let flt_16b =
-                        tpack!(half8!(fc, lo), half8!(fc, hi));
-                    let v0 =
-                        _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(flt_16b, d0p));
-                    let v1 =
-                        _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(flt_16b, d0p));
+                    let flt_16b = tpack!(half8!(fc, lo), half8!(fc, hi));
+                    let v0 = _mm256_madd_epi16(xq_coeff, _mm256_unpacklo_epi16(flt_16b, d0p));
+                    let v1 = _mm256_madd_epi16(xq_coeff, _mm256_unpackhi_epi16(flt_16b, d0p));
                     let vr0 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v0, rounding));
                     let vr1 = _mm256_srai_epi32::<SHIFT>(_mm256_add_epi32(v1, rounding));
-                    let e0 = _mm256_sub_epi16(
-                        _mm256_add_epi16(tpack!(vr0, vr1), d0p),
-                        s0p,
-                    );
+                    let e0 = _mm256_sub_epi16(_mm256_add_epi16(tpack!(vr0, vr1), d0p), s0p);
                     sum32 = _mm256_add_epi32(sum32, _mm256_madd_epi16(e0, e0));
                 }
                 tail!(i, width & !15);
@@ -1923,7 +1977,10 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
             }
         }
     }
-    let s128 = _mm_add_epi64(_mm256_castsi256_si128(sum64), _mm256_extracti128_si256::<1>(sum64));
+    let s128 = _mm_add_epi64(
+        _mm256_castsi256_si128(sum64),
+        _mm256_extracti128_si256::<1>(sum64),
+    );
     let s64 = _mm_add_epi64(s128, _mm_unpackhi_epi64(s128, s128));
     err + _mm_cvtsi128_si64(s64)
 }
@@ -1963,8 +2020,14 @@ fn pixel_proj_error_impl<P: LrPixel>(
         i32x8::from_array(
             token,
             [
-                a[0].to_i32(), a[1].to_i32(), a[2].to_i32(), a[3].to_i32(),
-                a[4].to_i32(), a[5].to_i32(), a[6].to_i32(), a[7].to_i32(),
+                a[0].to_i32(),
+                a[1].to_i32(),
+                a[2].to_i32(),
+                a[3].to_i32(),
+                a[4].to_i32(),
+                a[5].to_i32(),
+                a[6].to_i32(),
+                a[7].to_i32(),
             ],
         )
     };
@@ -1988,7 +2051,11 @@ fn pixel_proj_error_impl<P: LrPixel>(
                 // lowbd starts from `u << PRJ_BITS`; highbd starts from the
                 // rounding constant and adds `d` after the shift. Both are the
                 // scalar tier's own expressions, lane for lane.
-                let mut v = if highbd { half } else { u.shl_const::<{ SGRPROJ_PRJ_BITS as i32 }>() };
+                let mut v = if highbd {
+                    half
+                } else {
+                    u.shl_const::<{ SGRPROJ_PRJ_BITS as i32 }>()
+                };
                 if r0 {
                     v = v + xq0 * (ld32(&flt0[f0r + j..]) - u);
                 }
@@ -1996,8 +2063,7 @@ fn pixel_proj_error_impl<P: LrPixel>(
                     v = v + xq1 * (ld32(&flt1[f1r + j..]) - u);
                 }
                 if highbd {
-                    v.shr_arithmetic_const::<{ (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS) as i32 }>()
-                        + d
+                    v.shr_arithmetic_const::<{ (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS) as i32 }>() + d
                         - sv
                 } else {
                     (v + half)
@@ -2070,14 +2136,36 @@ pub fn calc_proj_params<P: LrPixel>(
     if width < 8 {
         return calc_proj_params_impl_scalar(
             archmage::ScalarToken,
-            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
-            flt1, flt1_stride, ep,
+            src,
+            src_off,
+            width,
+            height,
+            src_stride,
+            dat,
+            dat_off,
+            dat_stride,
+            flt0,
+            flt0_stride,
+            flt1,
+            flt1_stride,
+            ep,
         );
     }
     archmage::incant!(
         calc_proj_params_impl(
-            src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
-            flt1, flt1_stride, ep
+            src,
+            src_off,
+            width,
+            height,
+            src_stride,
+            dat,
+            dat_off,
+            dat_stride,
+            flt0,
+            flt0_stride,
+            flt1,
+            flt1_stride,
+            ep
         ),
         [v3, scalar]
     )
@@ -2142,10 +2230,7 @@ fn calc_proj_params_impl_v3<P: LrPixel>(
             let dw: &[P; 8] = dat[dr + j..dr + j + 8].try_into().unwrap();
             let sw: &[P; 8] = src[sr + j..sr + j + 8].try_into().unwrap();
             let d = _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(P::LD8(_t, dw));
-            let s = _mm256_sub_epi32(
-                _mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(P::LD8(_t, sw)),
-                d,
-            );
+            let s = _mm256_sub_epi32(_mm256_slli_epi32::<{ SGRPROJ_RST_BITS }>(P::LD8(_t, sw)), d);
             // Signed low-i32 x low-i32 -> i64 per 64-bit lane, even lanes plus
             // the odd lanes shifted down — the scalar `f1 as i64 * f2 as i64`,
             // exactly.
@@ -2153,10 +2238,7 @@ fn calc_proj_params_impl_v3<P: LrPixel>(
                 ($a:expr, $b:expr) => {
                     _mm256_add_epi64(
                         _mm256_mul_epi32($a, $b),
-                        _mm256_mul_epi32(
-                            _mm256_srli_epi64::<32>($a),
-                            _mm256_srli_epi64::<32>($b),
-                        ),
+                        _mm256_mul_epi32(_mm256_srli_epi64::<32>($a), _mm256_srli_epi64::<32>($b)),
                     )
                 };
             }
@@ -2326,8 +2408,19 @@ pub fn get_proj_subspace<P: LrPixel>(
     let (rads, _) = SGR_PARAMS[ep];
     let mut xq = [0i32; 2];
     let (hh, cc) = calc_proj_params(
-        src, src_off, width, height, src_stride, dat, dat_off, dat_stride, flt0, flt0_stride,
-        flt1, flt1_stride, ep,
+        src,
+        src_off,
+        width,
+        height,
+        src_stride,
+        dat,
+        dat_off,
+        dat_stride,
+        flt0,
+        flt0_stride,
+        flt1,
+        flt1_stride,
+        ep,
     );
     let h = [hh[0][0], hh[0][1], hh[1][0], hh[1][1]];
     let c = cc;
@@ -2370,7 +2463,9 @@ pub fn get_proj_subspace<P: LrPixel>(
 /// `encode_xq` (pickrst.c): projection weights to the coded `xqd` domain
 /// with the per-radius clamps.
 pub fn encode_xq(xq: [i32; 2], ep: usize) -> [i32; 2] {
-    use crate::entropy::lr::{SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1};
+    use crate::entropy::lr::{
+        SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1,
+    };
     let (rads, _) = SGR_PARAMS[ep];
     let mut xqd = [0i32; 2];
     if rads[0] == 0 {
@@ -2381,7 +2476,8 @@ pub fn encode_xq(xq: [i32; 2], ep: usize) -> [i32; 2] {
         xqd[1] = ((1 << SGRPROJ_PRJ_BITS) - xqd[0]).clamp(SGRPROJ_PRJ_MIN1, SGRPROJ_PRJ_MAX1);
     } else {
         xqd[0] = xq[0].clamp(SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MAX0);
-        xqd[1] = ((1 << SGRPROJ_PRJ_BITS) - xqd[0] - xq[1]).clamp(SGRPROJ_PRJ_MIN1, SGRPROJ_PRJ_MAX1);
+        xqd[1] =
+            ((1 << SGRPROJ_PRJ_BITS) - xqd[0] - xq[1]).clamp(SGRPROJ_PRJ_MIN1, SGRPROJ_PRJ_MAX1);
     }
     xqd
 }
@@ -2391,16 +2487,16 @@ pub fn encode_xq(xq: [i32; 2], ep: usize) -> [i32; 2] {
 // (`restoration_search` / `av1_pick_filter_restoration`, pickrst.c).
 // ---------------------------------------------------------------------------
 
+use crate::entropy::lr::{
+    count_sgrproj_bits, count_wiener_bits, lr_corners_in_sb, LrFrameConfig, LrUnitInfo,
+    SgrprojInfoLr, WienerInfoLr, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNITSIZE_MAX,
+    RESTORATION_UNIT_OFFSET, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER,
+    SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1, WIENER_WIN_CHROMA,
+};
 use crate::restore::frame::{
     at, extend_frame, filter_unit, save_boundary_lines, StripeBoundaries, MARGIN_H, MARGIN_V,
 };
 use crate::restore::sgr::{decode_xq, selfguided_restoration};
-use crate::entropy::lr::{
-    count_sgrproj_bits, count_wiener_bits, lr_corners_in_sb, LrFrameConfig,
-    LrUnitInfo, SgrprojInfoLr, WienerInfoLr, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNITSIZE_MAX,
-    RESTORATION_UNIT_OFFSET, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE, RESTORE_WIENER,
-    SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1, WIENER_WIN_CHROMA,
-};
 
 /// `RESTORE_TYPES` / `RESTORE_SWITCHABLE_TYPES` (enums.h).
 const RESTORE_TYPES: usize = 4;
@@ -2411,9 +2507,8 @@ const AV1_PROB_COST_SHIFT: i64 = 9;
 const DUAL_SGR_PENALTY_MULT: f64 = 0.01;
 const WIENER_SGR_PENALTY_MULT: f64 = 0.005;
 /// `RESTORATION_UNITPELS_MAX` (restoration.h): flt scratch sizing.
-const RESTORATION_UNITPELS_MAX: usize =
-    (RESTORATION_UNITSIZE_MAX as usize * 3 / 2 + 2 * 3 + 16)
-        * (RESTORATION_UNITSIZE_MAX as usize * 3 / 2 + 2 * 3 + 8);
+const RESTORATION_UNITPELS_MAX: usize = (RESTORATION_UNITSIZE_MAX as usize * 3 / 2 + 2 * 3 + 16)
+    * (RESTORATION_UNITSIZE_MAX as usize * 3 / 2 + 2 * 3 + 8);
 
 /// `sgproj_ep_grp1_seed` / `sgproj_ep_grp2_3` (pickrst.c): the pruned-ep
 /// search ladder.
@@ -2642,15 +2737,9 @@ impl<'a> PlaneCtx<'a> {
         // is skipped entirely — the kernels all read the u8 twin.
         let w_stride = pwu + 2 * MARGIN_H;
         let (mut dgd_pad, mut dgd_pad8) = if input.highbd {
-            (
-                vec![0u16; w_stride * (phu + 2 * MARGIN_V)],
-                Vec::new(),
-            )
+            (vec![0u16; w_stride * (phu + 2 * MARGIN_V)], Vec::new())
         } else {
-            (
-                Vec::new(),
-                vec![0u8; w_stride * (phu + 2 * MARGIN_V)],
-            )
+            (Vec::new(), vec![0u8; w_stride * (phu + 2 * MARGIN_V)])
         };
         if input.highbd {
             for r in 0..phu {
@@ -2662,7 +2751,8 @@ impl<'a> PlaneCtx<'a> {
             for r in 0..phu {
                 crate::lowbd::narrow_u16_to_u8_into(
                     &p.cur[r * p.stride..][..pwu],
-                    &mut dgd_pad8[at(w_stride, r as isize, 0)..at(w_stride, r as isize, pw as isize)],
+                    &mut dgd_pad8
+                        [at(w_stride, r as isize, 0)..at(w_stride, r as isize, pw as isize)],
                 );
             }
             extend_frame(&mut dgd_pad8, pwu, phu, w_stride);
@@ -3248,8 +3338,9 @@ fn finer_search_pixel_proj_error(
     xqd: &mut [i32; 2],
     ep: usize,
 ) -> i64 {
-    let mut err =
-        get_pixel_proj_error_xqd(ctx, input, src_off, dgd_off, width, height, flt_stride, *xqd, ep);
+    let mut err = get_pixel_proj_error_xqd(
+        ctx, input, src_off, dgd_off, width, height, flt_stride, *xqd, ep,
+    );
     let (rads, _) = SGR_PARAMS[ep];
     let tap_min = [SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1];
     let tap_max = [SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1];
@@ -3386,12 +3477,20 @@ fn search_selfguided_restoration(
     let mut besterr: i64 = -1;
     let mut bestxqd = [0i32; 2];
     let consider = |ctx: &mut PlaneCtx<'_>,
-                        ep: i32,
-                        bestep: &mut i32,
-                        besterr: &mut i64,
-                        bestxqd: &mut [i32; 2]| {
+                    ep: i32,
+                    bestep: &mut i32,
+                    besterr: &mut i64,
+                    bestxqd: &mut [i32; 2]| {
         let (exqd, err) = compute_sgrproj_err(
-            ctx, input, src_off, dgd_off, width, height, pu_width, pu_height, ep as usize,
+            ctx,
+            input,
+            src_off,
+            dgd_off,
+            width,
+            height,
+            pu_width,
+            pu_height,
+            ep as usize,
             flt_stride,
         );
         if *besterr == -1 || err < *besterr {
@@ -3689,8 +3788,12 @@ fn restoration_search_rows(
                                 }
                                 match r {
                                     0 => search_norestore(ctx, limits, rsc),
-                                    1 => search_wiener(ctx, input, limits, rsc, &mut rusi[unit_idx]),
-                                    2 => search_sgrproj(ctx, input, limits, rsc, &mut rusi[unit_idx]),
+                                    1 => {
+                                        search_wiener(ctx, input, limits, rsc, &mut rusi[unit_idx])
+                                    }
+                                    2 => {
+                                        search_sgrproj(ctx, input, limits, rsc, &mut rusi[unit_idx])
+                                    }
                                     _ => search_switchable(ctx, input, rsc, &mut rusi[unit_idx]),
                                 }
                             }
@@ -3818,8 +3921,7 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
                     let mut ctx_w = ctx_template.clone();
                     let mut rsc_w = RscState::new();
                     rsc_w.reset();
-                    let mut rusi_w =
-                        vec![RestUnitSearchInfo::default(); plane_num_units];
+                    let mut rusi_w = vec![RestUnitSearchInfo::default(); plane_num_units];
                     let mut mask_w = vec![false; plane_num_units];
                     let tile_rows: Vec<(i32, i32)> =
                         rows.iter().map(|&i| tile_sb_rows[i]).collect();
@@ -3847,7 +3949,14 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
                     }
                 }
             } else {
-                restoration_search(ctx, input, &lr_geom, &mut rsc, &mut rusi, &disable_lr_filter);
+                restoration_search(
+                    ctx,
+                    input,
+                    &lr_geom,
+                    &mut rsc,
+                    &mut rusi,
+                    &disable_lr_filter,
+                );
             }
 
             let num_rtypes = if plane_num_units > 1 {

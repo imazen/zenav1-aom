@@ -1534,7 +1534,9 @@ fn read_refresh_and_film_grain_invert_write() {
 
 #[test]
 fn read_sequence_header_inverts_write() {
-    use aom_dsp::entropy::header::{read_sequence_header, write_sequence_header, SequenceHeaderParams};
+    use aom_dsp::entropy::header::{
+        read_sequence_header, write_sequence_header, SequenceHeaderParams,
+    };
     let mut rng = Rng(0x1e_5e90_c0de_01f0);
     for _ in 0..100_000 {
         let nbw = 1 + (rng.next() % 16) as u32;

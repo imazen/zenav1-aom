@@ -18,7 +18,14 @@
 use aom_bench::EncodeCell;
 use aom_sys_ref as c;
 
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -63,7 +70,10 @@ fn main() {
         eprintln!("usage: dump_cell_yuv <w> <h> <out.yuv>");
         std::process::exit(2);
     }
-    let (w, h) = (a[1].parse::<usize>().unwrap(), a[2].parse::<usize>().unwrap());
+    let (w, h) = (
+        a[1].parse::<usize>().unwrap(),
+        a[2].parse::<usize>().unwrap(),
+    );
     c::ref_init();
     let base = EncodeCell::real_content("dump_base_196", "av1-1-b8-01-size-196x196", None, 27, 3);
     assert_eq!(base.bd, 8, "this dumper writes 8-bit I420 only");

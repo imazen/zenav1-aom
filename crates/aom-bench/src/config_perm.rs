@@ -259,9 +259,7 @@ impl Axis {
             Axis::FilterIntra | Axis::EdgeFilter => AxisKind::BootstrapSeq,
             // Frame-header bits: `reduced_tx_set_used` (encodeframe.c:2712),
             // `tx_mode` SELECT/LARGEST, `disable_cdf_update` (encoder.c:4375).
-            Axis::ReducedTxSet | Axis::TxSizeSearch | Axis::CdfUpdate => {
-                AxisKind::BootstrapFrame
-            }
+            Axis::ReducedTxSet | Axis::TxSizeSearch | Axis::CdfUpdate => AxisKind::BootstrapFrame,
         }
     }
 
@@ -603,8 +601,7 @@ pub fn sq_only_threshold_allintra(ctx: &CellCtx, speed: i32) -> u8 {
 /// magnitude (a 480x480 speed-0 cell already costs ~12.6 s), so the gap is
 /// DOCUMENTED, not gated. Reaching it needs a tiered deep gate, not a default
 /// cell.
-pub const PORT_GAP_DEFAULT_MIN_PARTITION_SIZE: &str =
-    "default_min_partition_size = BLOCK_8X8 at is_4k_or_larger \
+pub const PORT_GAP_DEFAULT_MIN_PARTITION_SIZE: &str = "default_min_partition_size = BLOCK_8X8 at is_4k_or_larger \
      (speed_features.c:187-189) is unmodelled by aom-encode/src/speed_features.rs:471";
 
 /// Resolve the size-derived encoder state for one context at one speed.
@@ -873,8 +870,7 @@ impl Effective {
         // A 64-point transform needs a block with a 64px dimension, which needs
         // a BLOCK_64X64 root that is not force-split: both a max-partition cap
         // below 64 and a frame smaller than one SB kill it.
-        let can_reach_64 =
-            max_part_bsize >= CellCtx::dim_to_bsize(64) && ctx.has_full_sb_block();
+        let can_reach_64 = max_part_bsize >= CellCtx::dim_to_bsize(64) && ctx.has_full_sb_block();
         let tx64 = if can_reach_64 { k.enable_tx64 } else { true };
         let txtype_policy = if k.use_intra_dct_only {
             TxTypePolicy::DctOnly
@@ -1178,7 +1174,10 @@ pub fn covering_array(t: usize) -> Vec<Row> {
     let all = required_tuples(t);
     let mut count: BTreeMap<&Tuple, usize> = BTreeMap::new();
     for tp in &all {
-        let n = rows.iter().filter(|r| tp.iter().all(|&(a, l)| r[a] == l)).count();
+        let n = rows
+            .iter()
+            .filter(|r| tp.iter().all(|&(a, l)| r[a] == l))
+            .count();
         count.insert(tp, n);
     }
     let mut drop = vec![false; rows.len()];
@@ -1381,9 +1380,17 @@ mod tests {
         // differs only in the inter-only estimate_yrd_for_sb.
         assert_eq!(with(Axis::Trellis, 3), base, "trellis 0 must collapse to 3");
         // --cdf-update-mode=2 is identical to 1 on a lone KEY frame.
-        assert_eq!(with(Axis::CdfUpdate, 2), base, "cdf mode 2 must collapse to 1");
+        assert_eq!(
+            with(Axis::CdfUpdate, 2),
+            base,
+            "cdf mode 2 must collapse to 1"
+        );
         // --max-partition-size=64 == the 128 default at SB64.
-        assert_eq!(with(Axis::MaxPart, 1), base, "maxpart 64 must collapse at SB64");
+        assert_eq!(
+            with(Axis::MaxPart, 1),
+            base,
+            "maxpart 64 must collapse at SB64"
+        );
         // These three must NOT collapse (sanity: the engine is not degenerate).
         assert_ne!(with(Axis::Trellis, 1), base);
         assert_ne!(with(Axis::CdfUpdate, 1), base);
@@ -1560,8 +1567,7 @@ pub fn speed_sf_classes(speeds: &[i32], screen: bool, hbd: bool) -> Vec<(i32, Ve
 /// frame payload differs at `--cpu-used` 7 vs 8 vs 9 on the same cell, which
 /// `speed_class_inventory_is_pinned` asserts against the oracle. A collapse the
 /// oracle contradicts is not a collapse.
-pub const SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE: &str =
-    "SpeedFeatures equality collapses ALLINTRA {7,9}, but the encoder also \
+pub const SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE: &str = "SpeedFeatures equality collapses ALLINTRA {7,9}, but the encoder also \
      branches on the raw cfg.speed (pack.rs:1474/1685/1791, \
      partition_pick.rs:4569/4772/4854-4856) and real aomenc's payload differs \
      at cpu-used 7/8/9 — every speed keeps its own context";

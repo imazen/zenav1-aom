@@ -42,7 +42,14 @@ pub fn sad_simd(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, 
 /// 4095 over at most 128*128 elements is under 2^24), and reassociation of an
 /// unsigned sum is exact.
 #[autoversion]
-pub fn sad_u16_simd(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> u32 {
+pub fn sad_u16_simd(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
     let mut sum = 0u32;
     for y in 0..h {
         let arow = &a[y * a_stride..y * a_stride + w];
@@ -167,11 +174,7 @@ fn block_error_impl(_t: Token, coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
 /// `dqcoeff` takes the scalar transcription — same values, same panic.
 #[cfg(target_arch = "x86_64")]
 #[archmage::arcane]
-fn block_error_impl_v3(
-    _t: archmage::X64V3Token,
-    coeff: &[i32],
-    dqcoeff: &[i32],
-) -> (i64, i64) {
+fn block_error_impl_v3(_t: archmage::X64V3Token, coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
     use archmage::intrinsics::x86_64::*;
 
     let n = coeff.len();
@@ -313,10 +316,7 @@ fn sum_squares_2d_i16_impl_v3(
     // Contract preflight: degenerate dims or a short `src` take the scalar
     // path, which returns 0 / panics on the same inputs — and the chunked
     // views below are then guaranteed total.
-    if height == 0
-        || width == 0
-        || src.len() < (height - 1).wrapping_mul(src_stride) + width
-    {
+    if height == 0 || width == 0 || src.len() < (height - 1).wrapping_mul(src_stride) + width {
         return crate::dist::sum_squares_2d_i16_scalar_ref(src, src_stride, width, height);
     }
 
@@ -404,21 +404,14 @@ fn sum_squares_2d_i16_impl_v3(
         for _ in 0..height / 4 {
             let (c0, _) = src[off..off + width].as_chunks::<16>();
             let (c1, _) = src[off + src_stride..off + src_stride + width].as_chunks::<16>();
-            let (c2, _) = src[off + 2 * src_stride..off + 2 * src_stride + width]
-                .as_chunks::<16>();
-            let (c3, _) = src[off + 3 * src_stride..off + 3 * src_stride + width]
-                .as_chunks::<16>();
+            let (c2, _) = src[off + 2 * src_stride..off + 2 * src_stride + width].as_chunks::<16>();
+            let (c3, _) = src[off + 3 * src_stride..off + 3 * src_stride + width].as_chunks::<16>();
             let mut acc_d = _mm256_setzero_si256();
             let sq = |a: &[i16; 16]| -> __m256i {
                 let v = _mm256_loadu_si256(a);
                 _mm256_madd_epi16(v, v)
             };
-            for (((a, b), c), d) in c0
-                .iter()
-                .zip(c1.iter())
-                .zip(c2.iter())
-                .zip(c3.iter())
-            {
+            for (((a, b), c), d) in c0.iter().zip(c1.iter()).zip(c2.iter()).zip(c3.iter()) {
                 let s01 = _mm256_add_epi32(sq(a), sq(b));
                 let s23 = _mm256_add_epi32(sq(c), sq(d));
                 acc_d = _mm256_add_epi32(acc_d, _mm256_add_epi32(s01, s23));

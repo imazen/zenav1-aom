@@ -30,7 +30,11 @@ fn vector_var_differential() {
         for _ in 0..20000 {
             let reff: Vec<i16> = (0..width).map(|_| rng.resid()).collect();
             let src: Vec<i16> = (0..width).map(|_| rng.resid()).collect();
-            assert_eq!(vector_var(&reff, &src, bwl), c::ref_vector_var(&reff, &src, bwl), "bwl={bwl}");
+            assert_eq!(
+                vector_var(&reff, &src, bwl),
+                c::ref_vector_var(&reff, &src, bwl),
+                "bwl={bwl}"
+            );
         }
     }
 }

@@ -137,7 +137,9 @@ fn predict_intra_lowbd_matches_c_and_highbd() {
     let mut rng = Rng(0x9ec7_00d1_5a7c_4000);
     // A single 8-bit reconstruction plane; the u16 mirror is the exact widening
     // (`u8 as u16`), so the two oracles see identical sample values.
-    let recon_u8: Vec<u8> = (0..STRIDE * ROWS).map(|_| (rng.next() & 0xff) as u8).collect();
+    let recon_u8: Vec<u8> = (0..STRIDE * ROWS)
+        .map(|_| (rng.next() & 0xff) as u8)
+        .collect();
     let recon_u16: Vec<u16> = recon_u8.iter().map(|&p| p as u16).collect();
 
     for tx_size in 0..19usize {

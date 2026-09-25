@@ -43,7 +43,14 @@ use aom_bench::{EncodeCell, ToggleKnobs};
 use aom_sys_ref as c;
 
 /// Mirror-tile (same recipe as `kb22_hd_arms::mirror_tile`).
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -199,7 +206,14 @@ fn hd_speed_axis_byte_matches() {
         );
         for &cq in &CQS {
             for speed in 1..=7 {
-                let cell = mirror_tile(&base, &format!("hd_{w}x{h}_cq{cq}_s{speed}"), w, h, cq, speed);
+                let cell = mirror_tile(
+                    &base,
+                    &format!("hd_{w}x{h}_cq{cq}_s{speed}"),
+                    w,
+                    h,
+                    cq,
+                    speed,
+                );
                 let t0 = std::time::Instant::now();
                 let (v, delta, note) = measure(&cell);
                 let ms = t0.elapsed().as_millis();

@@ -2,14 +2,20 @@
 //! multiple-of-16 width. (2) A coarse perf ratio vs C's own (AVX2-dispatched)
 //! aom_sad — the performance-gate methodology in miniature.
 
-use aom_dsp::dist::simd::sad_simd;
 use aom_dsp::dist::sad;
+use aom_dsp::dist::simd::sad_simd;
 use aom_sys_ref as c;
 
 const SIZES: [(usize, usize, usize); 8] = [
     // (w, h, size_idx in aom-sys-ref SIZES table)
-    (16, 16, 9), (16, 32, 10), (32, 32, 14), (32, 64, 15),
-    (64, 64, 18), (64, 128, 19), (128, 64, 20), (128, 128, 21),
+    (16, 16, 9),
+    (16, 32, 10),
+    (32, 32, 14),
+    (32, 64, 15),
+    (64, 64, 18),
+    (64, 128, 19),
+    (128, 64, 20),
+    (128, 128, 21),
 ];
 
 struct Rng(u64);

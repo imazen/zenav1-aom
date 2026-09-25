@@ -1,13 +1,34 @@
 //! Differential harness for SAD / variance / sub-pixel variance vs C libaom
 //! v3.14.1 across all 22 block sizes.
 
-use aom_dsp::dist::{highbd_sse, masked_sad, obmc_sad, sad, sad_avg, sse, sub_pixel_variance, variance};
+use aom_dsp::dist::{
+    highbd_sse, masked_sad, obmc_sad, sad, sad_avg, sse, sub_pixel_variance, variance,
+};
 use aom_sys_ref as c;
 
 const SIZES: [(usize, usize); 22] = [
-    (4, 4), (4, 8), (4, 16), (8, 4), (8, 8), (8, 16), (8, 32), (16, 4), (16, 8), (16, 16), (16, 32),
-    (16, 64), (32, 8), (32, 16), (32, 32), (32, 64), (64, 16), (64, 32), (64, 64), (64, 128),
-    (128, 64), (128, 128),
+    (4, 4),
+    (4, 8),
+    (4, 16),
+    (8, 4),
+    (8, 8),
+    (8, 16),
+    (8, 32),
+    (16, 4),
+    (16, 8),
+    (16, 16),
+    (16, 32),
+    (16, 64),
+    (32, 8),
+    (32, 16),
+    (32, 32),
+    (32, 64),
+    (64, 16),
+    (64, 32),
+    (64, 64),
+    (64, 128),
+    (128, 64),
+    (128, 128),
 ];
 
 struct Rng(u64);
@@ -59,15 +80,20 @@ fn sad_variance_subpel_byte_identical() {
             // masked SAD (all 22 sizes): mask values 0..=64, both mask polarities.
             let sp2: Vec<u8> = (0..w * h).map(|_| rng.u8()).collect();
             let m_stride = w + 8;
-            let msk: Vec<u8> = (0..m_stride * (h + 2)).map(|_| (rng.next() % 65) as u8).collect();
+            let msk: Vec<u8> = (0..m_stride * (h + 2))
+                .map(|_| (rng.next() % 65) as u8)
+                .collect();
             for inv in [false, true] {
                 let gm = masked_sad(&a, a_stride, &b, b_stride, &sp2, &msk, m_stride, inv, w, h);
-                let wm = c::ref_masked_sad(idx, &a, a_stride, &b, b_stride, &sp2, &msk, m_stride, inv);
+                let wm =
+                    c::ref_masked_sad(idx, &a, a_stride, &b, b_stride, &sp2, &msk, m_stride, inv);
                 assert_eq!(gm, wm, "masked_sad {w}x{h} inv={inv}");
             }
 
             // OBMC SAD: wsrc/mask contiguous i32 (mask in [0,4096], wsrc weighted).
-            let wsrc: Vec<i32> = (0..w * h).map(|_| (rng.next() % (256 * 4096)) as i32).collect();
+            let wsrc: Vec<i32> = (0..w * h)
+                .map(|_| (rng.next() % (256 * 4096)) as i32)
+                .collect();
             let obmc_mask: Vec<i32> = (0..w * h).map(|_| (rng.next() % 4097) as i32).collect();
             let go = obmc_sad(&a, a_stride, &wsrc, &obmc_mask, w, h);
             let wo = c::ref_obmc_sad(idx, &a, a_stride, &wsrc, &obmc_mask);

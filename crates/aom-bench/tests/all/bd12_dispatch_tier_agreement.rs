@@ -73,7 +73,17 @@ fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32) -> E
             v[r * cw + col] = base.v[mir(r, bch) * bcw + mir(col, bcw)];
         }
     }
-    EncodeCell { label: label.to_string(), w, h, cq_level: cq, speed: 0, y, u, v, ..base.clone() }
+    EncodeCell {
+        label: label.to_string(),
+        w,
+        h,
+        cq_level: cq,
+        speed: 0,
+        y,
+        u,
+        v,
+        ..base.clone()
+    }
 }
 
 fn bd12_cell(w: usize, h: usize, cq: i32) -> EncodeCell {
@@ -111,8 +121,14 @@ fn delta(cell: &EncodeCell) -> Option<i64> {
 #[test]
 fn bd12_small_grid_byte_matches_real_aomenc() {
     let mut bad: Vec<String> = Vec::new();
-    for &(w, h) in &[(64usize, 64usize), (100, 100), (128, 128), (196, 196), (192, 192), (256, 256)]
-    {
+    for &(w, h) in &[
+        (64usize, 64usize),
+        (100, 100),
+        (128, 128),
+        (196, 196),
+        (192, 192),
+        (256, 256),
+    ] {
         for cq in [24i32, 32, 48] {
             let cell = bd12_cell(w, h, cq);
             match delta(&cell) {
@@ -165,7 +181,10 @@ fn bd12_1080p_band_map_is_pinned() {
         }
         let cell = bd12_cell(w, h, cq);
         let d = delta(&cell).unwrap_or_else(|| {
-            panic!("{} PANICKED — an unported arm, never a pinnable divergence", cell.label)
+            panic!(
+                "{} PANICKED — an unported arm, never a pinnable divergence",
+                cell.label
+            )
         });
         println!("  {} delta {d:+}", cell.label);
         observed.push((w, h, cq, d));

@@ -73,7 +73,10 @@ fn filter_table_selection_matches_c() {
             }
         }
     }
-    assert!(narrow > 0 && wide > 0, "both sides of the w<=4 switch must run");
+    assert!(
+        narrow > 0 && wide > 0,
+        "both sides of the w<=4 switch must run"
+    );
     assert!(sharp_collapses > 0, "the SHARP collapse was never checked");
 }
 

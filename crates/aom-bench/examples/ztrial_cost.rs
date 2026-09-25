@@ -7,7 +7,7 @@
 //! search, so a fire costs a small fraction of an encode, not 2x.
 //!
 //! Usage: `cargo run --release -p zenav1-aom-bench --example ztrial_cost`
-use aom_encode::key_frame::{encode_key_frame, KeyFrameConfig, KeyFrameMode, KeyFramePlanes};
+use aom_encode::key_frame::{KeyFrameConfig, KeyFrameMode, KeyFramePlanes, encode_key_frame};
 use std::time::Instant;
 
 fn photo_sample(r: usize, col: usize) -> i32 {
@@ -23,8 +23,14 @@ fn ui_sample(r: usize, col: usize) -> i32 {
     let band = (r / 12) % 4;
     let cell = ((r / 8) + (col / 8)) % 2;
     match (band, cell) {
-        (0, 0) => 16, (0, _) => 235, (1, 0) => 60, (1, _) => 200,
-        (2, 0) => 120, (2, _) => 16, (_, 0) => 235, (_, _) => 60,
+        (0, 0) => 16,
+        (0, _) => 235,
+        (1, 0) => 60,
+        (1, _) => 200,
+        (2, 0) => 120,
+        (2, _) => 16,
+        (_, 0) => 235,
+        (_, _) => 60,
     }
 }
 fn patched(w: usize, h: usize, pw: usize, ph: usize) -> impl Fn(usize, usize) -> i32 {
@@ -44,7 +50,11 @@ fn planes(w: usize, h: usize, f: impl Fn(usize, usize) -> i32) -> (Vec<u16>, Vec
             y[r * w + c] = f(r, c).clamp(0, 255) as u16;
         }
     }
-    (y, vec![128u16; (w / 2) * (h / 2)], vec![128u16; (w / 2) * (h / 2)])
+    (
+        y,
+        vec![128u16; (w / 2) * (h / 2)],
+        vec![128u16; (w / 2) * (h / 2)],
+    )
 }
 fn cfg(w: usize, h: usize, cq: i32, speed: i32, mode: KeyFrameMode) -> KeyFrameConfig {
     let mut c = KeyFrameConfig::allintra_speed0(w, h, 8, false, 1, 1, cq);
@@ -73,13 +83,19 @@ fn main() {
         let (y, u, v) = planes(w, h, patched(w, h, pw, ph));
         let t_e = timeit(&y, &u, &v, &cfg(w, h, 32, 3, KeyFrameMode::LibaomExact), 3);
         let t_z = timeit(&y, &u, &v, &cfg(w, h, 32, 3, KeyFrameMode::Zenaom), 3);
-        println!("{name} {w}x{h}: exact={t_e:.1}ms zen={t_z:.1}ms ratio={:.2}x", t_z / t_e);
+        println!(
+            "{name} {w}x{h}: exact={t_e:.1}ms zen={t_z:.1}ms ratio={:.2}x",
+            t_z / t_e
+        );
     }
     // photo control — gate should keep this at 1.00x
     for &(w, h) in &[(256usize, 128usize), (512, 256)] {
         let (y, u, v) = planes(w, h, photo_sample);
         let t_e = timeit(&y, &u, &v, &cfg(w, h, 32, 3, KeyFrameMode::LibaomExact), 3);
         let t_z = timeit(&y, &u, &v, &cfg(w, h, 32, 3, KeyFrameMode::Zenaom), 3);
-        println!("PHOTO {w}x{h}: exact={t_e:.1}ms zen={t_z:.1}ms ratio={:.2}x", t_z / t_e);
+        println!(
+            "PHOTO {w}x{h}: exact={t_e:.1}ms zen={t_z:.1}ms ratio={:.2}x",
+            t_z / t_e
+        );
     }
 }

@@ -364,8 +364,7 @@ fn cfl_store_tx_any(
 use aom_dsp::entropy::dec::OdEcDec;
 use aom_dsp::entropy::dv_ref::{
     DV_NBR_SLOTS, DvGrid, DvNbr, DvNbrPacked, DvTileBounds, assign_and_validate_dv,
-    find_dv_ref_mvs, find_inter_mv_refs,
-    find_samples, select_samples,
+    find_dv_ref_mvs, find_inter_mv_refs, find_samples, select_samples,
 };
 use aom_dsp::entropy::partition::{
     KfBlockState, KfFrameContext, MbModeInfoKf, MiNbrKf, PaletteNbrKf, TXFM_CTX_INIT, TxMode,
@@ -3082,7 +3081,10 @@ impl<'c> TileKf<'c> {
         let left_available = mi_col > self.tile.mi_col_start;
 
         if dbg_blocks() {
-            aom_dsp::trace_out!("ENTER mi({mi_row},{mi_col}) bs={bsize} tellq={}", dec.tell_frac() as i32);
+            aom_dsp::trace_out!(
+                "ENTER mi({mi_row},{mi_col}) bs={bsize} tellq={}",
+                dec.tell_frac() as i32
+            );
         }
 
         // Envelope invariants (STEP-0 census): these pre-mode reads are inert.
@@ -3252,7 +3254,8 @@ impl<'c> TileKf<'c> {
             if dbg_blocks() {
                 aom_dsp::trace_out!(
                     "BLK mi({mi_row},{mi_col}) bs={bsize} intra skip={skip} y_mode={} fi={}",
-                    info.y_mode, info.use_filter_intra
+                    info.y_mode,
+                    info.use_filter_intra
                 );
             }
             self.decode_intra_block_body(
@@ -3350,11 +3353,13 @@ impl<'c> TileKf<'c> {
             mi_row,
             mi_col,
         };
-        let tpl_field = inter.tpl_cells.map(|cells| aom_dsp::entropy::dv_ref::TplField {
-            cells,
-            stride: inter.tpl_stride,
-            cur_offset: inter.tpl_cur_offset,
-        });
+        let tpl_field = inter
+            .tpl_cells
+            .map(|cells| aom_dsp::entropy::dv_ref::TplField {
+                cells,
+                stride: inter.tpl_stride,
+                cur_offset: inter.tpl_cur_offset,
+            });
         let imv = find_inter_mv_refs(
             ref0,
             mi_row,
@@ -4779,7 +4784,8 @@ impl<'c> TileKf<'c> {
                 aom_dsp::trace_out!(
                     "[dv] mi({mi_col},{mi_row}) bsize={bsize} part={partition:?} \
                      diff=({},{}) ref=({nearest_r},{nearest_c})/({near_r},{near_c})",
-                    info.dv_row, info.dv_col
+                    info.dv_row,
+                    info.dv_col
                 );
             }
             let Some((dv_row, dv_col)) = assign_and_validate_dv(
@@ -4803,7 +4809,9 @@ impl<'c> TileKf<'c> {
                     "[dvbad] mi({mi_col},{mi_row}) bsize={bsize} part={partition:?} \
                      dv=({},{}) ref=({nearest_r},{nearest_c})/({near_r},{near_c}) \
                      tile_row_start={}",
-                    info.dv_row, info.dv_col, self.tile.mi_row_start
+                    info.dv_row,
+                    info.dv_col,
+                    self.tile.mi_row_start
                 );
                 self.mark_corrupt(
                     "corrupt frame: intrabc DV failed validity (non-conformant stream)",
@@ -5096,9 +5104,7 @@ impl<'c> TileKf<'c> {
                     .map(|d| d.bsize);
                 let left_inter_bsize = left_available
                     .then(|| {
-                        DvNbr::from_packed(
-                            self.mi_dv[(mi_row * cfg.mi_cols + mi_col - 1) as usize],
-                        )
+                        DvNbr::from_packed(self.mi_dv[(mi_row * cfg.mi_cols + mi_col - 1) as usize])
                     })
                     .filter(is_inter_nbr)
                     .map(|d| d.bsize);

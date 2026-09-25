@@ -1,8 +1,8 @@
 //! Differential harness for `av1_cost_tokens_from_cdf` / `av1_cost_symbol`
 //! (CDF → per-symbol RD cost tables) vs C libaom v3.14.1.
 
-use aom_sys_ref as c;
 use aom_dsp::txb::{cost_symbol, cost_tokens_from_cdf};
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {

@@ -17,9 +17,9 @@
 //! could pass by having each cell agree with itself.
 
 use aom_dsp::inter::warp::{
-    WarpConvolveParams, WarpedMotionParams, get_shear_params, highbd_warp_affine,
+    get_shear_params, highbd_warp_affine, WarpConvolveParams, WarpedMotionParams,
 };
-use aom_sys_ref::{RefWarpConvParams, ref_highbd_warp_affine};
+use aom_sys_ref::{ref_highbd_warp_affine, RefWarpConvParams};
 
 struct Rng(u64);
 impl Rng {

@@ -2,7 +2,9 @@
 //! libaom: distinct from lowbd (i16 first pass, i32 second pass, no column swap).
 //! 13-bit residual inputs (highbd dynamic range).
 
-use aom_dsp::dist::hadamard::{highbd_hadamard_16x16, highbd_hadamard_32x32, highbd_hadamard_8x8, satd};
+use aom_dsp::dist::hadamard::{
+    highbd_hadamard_16x16, highbd_hadamard_32x32, highbd_hadamard_8x8, satd,
+};
 use aom_sys_ref as c;
 
 struct Rng(u64);

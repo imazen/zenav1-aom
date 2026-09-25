@@ -237,8 +237,7 @@ fn conv_valid_impl(
                         for (r, l) in ls.iter_mut().enumerate() {
                             *l = _mm_mul_ps(*l, _mm256_castps256_ps128(sw[r]));
                         }
-                        let l13 =
-                            _mm_add_ps(_mm_add_ps(ls[1], ls[2]), _mm_add_ps(ls[3], ls[4]));
+                        let l13 = _mm_add_ps(_mm_add_ps(ls[1], ls[2]), _mm_add_ps(ls[3], ls[4]));
                         let acc = _mm_hadd_ps(_mm_add_ps(ls[0], l13), _mm_add_ps(ls[0], l13));
                         let mut a4 = [0f32; 4];
                         _mm_storeu_ps(&mut a4, acc);

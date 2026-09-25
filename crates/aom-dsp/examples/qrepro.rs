@@ -6,21 +6,24 @@
 //! not, which is why `gate-encode` never saw it).
 #[cfg(target_arch = "aarch64")]
 mod bench {
+    use aom_dsp::quant::simd::av1_quantize_lp_dispatch;
     use aom_dsp::quant::{av1_quantize_fp_no_qmatrix, simd::av1_quantize_fp_no_qmatrix_dispatch};
     use aom_sys_ref::{ref_quantize_fp_neon, ref_quantize_lp_simd};
-    use aom_dsp::quant::simd::av1_quantize_lp_dispatch;
     use std::time::Instant;
-
 
     pub fn main() {
         let n = 256usize;
         let quant = [1500i16, 1600];
         let dequant = [40i16, 48];
         let round = [700i16, 750];
-        let coeff: Vec<i32> = (0..n).map(|i| ((i * 2654435761usize) % 30000) as i32 - 15000).collect();
+        let coeff: Vec<i32> = (0..n)
+            .map(|i| ((i * 2654435761usize) % 30000) as i32 - 15000)
+            .collect();
         let scan: Vec<i16> = (0..n as i16).collect();
         let mut iscan = vec![0i16; n];
-        for (k, &p) in scan.iter().enumerate() { iscan[p as usize] = k as i16; }
+        for (k, &p) in scan.iter().enumerate() {
+            iscan[p as usize] = k as i16;
+        }
         let mut q = vec![0i32; n];
         let mut d = vec![0i32; n];
         let iters = 20000;
@@ -29,20 +32,28 @@ mod bench {
             let t = Instant::now();
             let mut acc = 0u64;
             for _ in 0..iters {
-                acc += av1_quantize_fp_no_qmatrix_dispatch(&quant, &dequant, &round, ls, &scan, &iscan, &coeff, &mut q, &mut d) as u64;
+                acc += av1_quantize_fp_no_qmatrix_dispatch(
+                    &quant, &dequant, &round, ls, &scan, &iscan, &coeff, &mut q, &mut d,
+                ) as u64;
             }
             let port = t.elapsed();
             let t = Instant::now();
             for _ in 0..iters {
-                acc += ref_quantize_fp_neon(ls, &coeff, &round, &quant, &dequant, &scan, &iscan).2 as u64;
+                acc += ref_quantize_fp_neon(ls, &coeff, &round, &quant, &dequant, &scan, &iscan).2
+                    as u64;
             }
             let cneon = t.elapsed();
             let t = Instant::now();
             for _ in 0..iters {
-                acc += av1_quantize_fp_no_qmatrix(&quant, &dequant, &round, ls, &scan, &coeff, &mut q, &mut d) as u64;
+                acc += av1_quantize_fp_no_qmatrix(
+                    &quant, &dequant, &round, ls, &scan, &coeff, &mut q, &mut d,
+                ) as u64;
             }
             let pscalar = t.elapsed();
-            eprintln!("fp ls={ls}: port-neon {:?} | c-neon {:?} | port-scalar {:?} (acc {acc})", port, cneon, pscalar);
+            eprintln!(
+                "fp ls={ls}: port-neon {:?} | c-neon {:?} | port-scalar {:?} (acc {acc})",
+                port, cneon, pscalar
+            );
         }
 
         // lp
@@ -55,15 +66,21 @@ mod bench {
         let t = Instant::now();
         let mut acc = 0u64;
         for _ in 0..iters {
-            acc += av1_quantize_lp_dispatch(&round8, &quant8, &dequant8, &scan, &iscan, &coeff16, n, &mut q16, &mut d16) as u64;
+            acc += av1_quantize_lp_dispatch(
+                &round8, &quant8, &dequant8, &scan, &iscan, &coeff16, n, &mut q16, &mut d16,
+            ) as u64;
         }
         let port = t.elapsed();
         let t = Instant::now();
         for _ in 0..iters {
-            acc += ref_quantize_lp_simd(&coeff16, &round8, &quant8, &dequant8, &scan, &iscan).2 as u64;
+            acc +=
+                ref_quantize_lp_simd(&coeff16, &round8, &quant8, &dequant8, &scan, &iscan).2 as u64;
         }
         let cneon = t.elapsed();
-        eprintln!("lp:      port-neon {:?} | c-neon {:?} (acc {acc})", port, cneon);
+        eprintln!(
+            "lp:      port-neon {:?} | c-neon {:?} (acc {acc})",
+            port, cneon
+        );
     }
 }
 

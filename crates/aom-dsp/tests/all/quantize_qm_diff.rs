@@ -46,7 +46,9 @@ fn quantize_b_qm_differential() {
             for _ in 0..2000 {
                 let scan = perm(&mut rng, n);
                 // Lowbd transform magnitudes (8-bit depth): ±(1<<18).
-                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 19)) as i32 - (1 << 18)).collect();
+                let coeff: Vec<i32> = (0..n)
+                    .map(|_| (rng.next() % (1 << 19)) as i32 - (1 << 18))
+                    .collect();
                 let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let zbin = [rng.i16r(1, 1500), rng.i16r(1, 1500)];
@@ -57,11 +59,29 @@ fn quantize_b_qm_differential() {
                 let mut q = vec![0i32; n];
                 let mut dq = vec![0i32; n];
                 let eob = aom_quantize_b_qm(
-                    &zbin, &round, &quant, &quant_shift, &dequant, log_scale, &qm, &iqm, &scan,
-                    &coeff, &mut q, &mut dq,
+                    &zbin,
+                    &round,
+                    &quant,
+                    &quant_shift,
+                    &dequant,
+                    log_scale,
+                    &qm,
+                    &iqm,
+                    &scan,
+                    &coeff,
+                    &mut q,
+                    &mut dq,
                 );
                 let (qw, dqw, ew) = c::ref_quantize_b_qm(
-                    log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, &qm, &iqm,
+                    log_scale,
+                    &coeff,
+                    &zbin,
+                    &round,
+                    &quant,
+                    &quant_shift,
+                    &dequant,
+                    &qm,
+                    &iqm,
                     &scan,
                 );
                 assert_eq!(eob, ew, "b-qm eob n={n} ls={log_scale}");
@@ -81,7 +101,9 @@ fn highbd_quantize_b_qm_differential() {
                 let scan = perm(&mut rng, n);
                 // Highbd (10/12-bit) transform magnitudes: ±(1<<22). coeff*wt stays
                 // < 2^31 for wt <= 255.
-                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 23)) as i32 - (1 << 22)).collect();
+                let coeff: Vec<i32> = (0..n)
+                    .map(|_| (rng.next() % (1 << 23)) as i32 - (1 << 22))
+                    .collect();
                 let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let zbin = [rng.i16r(1, 1500), rng.i16r(1, 1500)];
@@ -92,11 +114,29 @@ fn highbd_quantize_b_qm_differential() {
                 let mut q = vec![0i32; n];
                 let mut dq = vec![0i32; n];
                 let eob = aom_highbd_quantize_b_qm(
-                    &zbin, &round, &quant, &quant_shift, &dequant, log_scale, &qm, &iqm, &scan,
-                    &coeff, &mut q, &mut dq,
+                    &zbin,
+                    &round,
+                    &quant,
+                    &quant_shift,
+                    &dequant,
+                    log_scale,
+                    &qm,
+                    &iqm,
+                    &scan,
+                    &coeff,
+                    &mut q,
+                    &mut dq,
                 );
                 let (qw, dqw, ew) = c::ref_highbd_quantize_b_qm(
-                    log_scale, &coeff, &zbin, &round, &quant, &quant_shift, &dequant, &qm, &iqm,
+                    log_scale,
+                    &coeff,
+                    &zbin,
+                    &round,
+                    &quant,
+                    &quant_shift,
+                    &dequant,
+                    &qm,
+                    &iqm,
                     &scan,
                 );
                 assert_eq!(eob, ew, "hbd b-qm eob n={n} ls={log_scale}");
@@ -115,7 +155,9 @@ fn quantize_fp_qm_differential() {
             for _ in 0..2000 {
                 let scan = perm(&mut rng, n);
                 let iscan = vec![0i16; n]; // (void)-cast inside the helper
-                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 19)) as i32 - (1 << 18)).collect();
+                let coeff: Vec<i32> = (0..n)
+                    .map(|_| (rng.next() % (1 << 19)) as i32 - (1 << 18))
+                    .collect();
                 let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let round = [rng.i16r(1, 2000), rng.i16r(1, 2000)];
@@ -145,7 +187,9 @@ fn highbd_quantize_fp_qm_differential() {
             for _ in 0..2000 {
                 let scan = perm(&mut rng, n);
                 let iscan = vec![0i16; n];
-                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 23)) as i32 - (1 << 22)).collect();
+                let coeff: Vec<i32> = (0..n)
+                    .map(|_| (rng.next() % (1 << 23)) as i32 - (1 << 22))
+                    .collect();
                 let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let round = [rng.i16r(1, 2000), rng.i16r(1, 2000)];

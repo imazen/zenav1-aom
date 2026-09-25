@@ -62,7 +62,11 @@ fn inverse_qmatrix_matches_c_av1_qm_init() {
         15 * 3 * TX_SIZES_ALL,
         "expected 855 real-matrix cells"
     );
-    assert_eq!(none_cells, 3 * TX_SIZES_ALL, "expected 57 flat (None) cells");
+    assert_eq!(
+        none_cells,
+        3 * TX_SIZES_ALL,
+        "expected 57 flat (None) cells"
+    );
     assert_eq!(max_len, 1024, "largest matrix must be a full 32x32 (1024)");
 }
 

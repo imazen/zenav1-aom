@@ -30,15 +30,6 @@
 //! trellis diverges on steep content at higher quality; the matching subset
 //! here is chosen to isolate the multi-tile machinery from that separate gap.
 
-use aom_encode::encode_intra::TrellisOptType;
-use aom_encode::encode_sb::SbEncodeEnv;
-use aom_encode::intra_uv_rd::UvLoopPolicy;
-use aom_encode::obu_assemble::assemble_multitile_frame_obu_payload;
-use aom_encode::pack::pack_tile;
-use aom_encode::partition_pick::PickFrameCfg;
-use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
-use aom_encode::real_costs::derive_real_costs;
-use aom_encode::tx_search::TxTypeSearchPolicy;
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
@@ -48,6 +39,15 @@ use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::partition::KfFrameContext;
 use aom_dsp::entropy::rb::ReadBitBuffer;
 use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_encode::encode_intra::TrellisOptType;
+use aom_encode::encode_sb::SbEncodeEnv;
+use aom_encode::intra_uv_rd::UvLoopPolicy;
+use aom_encode::obu_assemble::assemble_multitile_frame_obu_payload;
+use aom_encode::pack::pack_tile;
+use aom_encode::partition_pick::PickFrameCfg;
+use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
+use aom_encode::real_costs::derive_real_costs;
+use aom_encode::tx_search::TxTypeSearchPolicy;
 use aom_sys_ref as c;
 
 const OBU_SEQUENCE_HEADER: u32 = 1;
@@ -62,8 +62,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
     while pos < bytes.len() {
         let hdr = read_obu_header(&bytes[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));
@@ -373,7 +373,7 @@ fn attempt_multitile_case(
             let n_sb_cols = ti.col_start_sb[tcol + 1] - ti.col_start_sb[tcol];
 
             let env = SbEncodeEnv {
-            ref_frame: None,
+                ref_frame: None,
                 sb_size: SB,
                 mi_rows,
                 mi_cols,
@@ -423,10 +423,10 @@ fn attempt_multitile_case(
             };
             let pick_cfg = PickFrameCfg {
                 fixed_partition_size: None,
-            fs_sf: Default::default(),
-            inter: None,
+                fs_sf: Default::default(),
+                inter: None,
                 intrabc: None,
-            search_allow_intrabc: false,
+                search_allow_intrabc: false,
                 intra_tools: Default::default(),
                 mode_costs: &real.mode_costs,
                 tx_size_costs: &real.tx_size_costs,
@@ -675,21 +675,16 @@ fn encoder_threaded_row_bands_match_serial() {
         base.tile_columns_log2 = *tcl;
         base.tile_rows_log2 = *trl;
         base.cpu_used = 3;
-        let serial = encode_key_frame(
-            KeyFramePlanes::new(&y, &u, &v),
-            &base,
-        )
-        .unwrap_or_else(|e| panic!("{name}: serial encode refused: {e}"));
+        let serial = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &base)
+            .unwrap_or_else(|e| panic!("{name}: serial encode refused: {e}"));
         for threads in [2usize, 4] {
             let mut cfg = base.clone();
             cfg.threads = threads;
-            let got = encode_key_frame(
-                KeyFramePlanes::new(&y, &u, &v),
-                &cfg,
-            )
-            .unwrap_or_else(|e| panic!("{name}: threads={threads} refused: {e}"));
+            let got = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
+                .unwrap_or_else(|e| panic!("{name}: threads={threads} refused: {e}"));
             assert_eq!(
-                got, serial,
+                got,
+                serial,
                 "{name}: threads={threads} diverged from the serial walk \
                  ({}B vs {}B) — a read escaped its row band or a worker \
                  carried cross-tile state",

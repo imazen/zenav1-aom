@@ -364,8 +364,16 @@ fn add_tpl_ref_mv(
     weight_arr: &mut [u32; MAX_REF_MV_STACK_SIZE],
     mode_context: &mut i32,
 ) -> i32 {
-    let pos_row = if mi_row & 1 != 0 { blk_row } else { blk_row + 1 };
-    let pos_col = if mi_col & 1 != 0 { blk_col } else { blk_col + 1 };
+    let pos_row = if mi_row & 1 != 0 {
+        blk_row
+    } else {
+        blk_row + 1
+    };
+    let pos_col = if mi_col & 1 != 0 {
+        blk_col
+    } else {
+        blk_col + 1
+    };
     if !is_inside(tile, mi_col, mi_row, pos_row, pos_col) {
         return 0;
     }
@@ -1333,8 +1341,7 @@ pub fn find_inter_mv_refs(
                 let blk_col_end = width_mi.min(16);
                 let tpl_sample_pos: [(i32, i32); 3] =
                     [(voffset, -2), (voffset, hoffset), (voffset - 2, hoffset)];
-                let allow_extension =
-                    (2..16).contains(&height_mi) && (2..16).contains(&width_mi);
+                let allow_extension = (2..16).contains(&height_mi) && (2..16).contains(&width_mi);
                 let step_h = if height_mi >= 16 { 4 } else { 2 };
                 let step_w = if width_mi >= 16 { 4 } else { 2 };
                 let mut blk_row = 0;
@@ -1787,7 +1794,11 @@ pub fn assign_and_validate_dv(
             subsampling_y,
         );
 
-    if valid { Some((mv_row, mv_col)) } else { None }
+    if valid {
+        Some((mv_row, mv_col))
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2131,7 +2142,7 @@ mod packed_repr {
     //!   semantics, so this is not hypothetical), `calloc` would silently hand
     //!   the decoder a grid of the WRONG default.
 
-    use super::{DV_NBR_SLOTS, DvNbr};
+    use super::{DvNbr, DV_NBR_SLOTS};
 
     /// THE correctness argument for `calloc`: zeroed memory decodes to exactly
     /// the value the old `vec![DvNbr::default(); n]` wrote.

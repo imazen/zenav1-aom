@@ -7,14 +7,14 @@
 //!      tt1/2/3/9 eob=0     rate=380  dist=896 rd=119454  (C picks eob=0)
 //! The port codes eob=1 there (localizer). This isolates which quantity flips.
 
+use aom_dsp::entropy::partition::KfFrameContext;
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::get_txb_ctx;
 use aom_encode::BlockContext;
 use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
 use aom_encode::real_costs::derive_real_costs;
 use aom_encode::speed_features::SpeedFeatures;
 use aom_encode::tx_search::{TxTypeSearchInputs, search_tx_type_intra};
-use aom_dsp::entropy::partition::KfFrameContext;
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
-use aom_dsp::txb::get_txb_ctx;
 
 #[test]
 fn kb4_txb_tie_probe_bd10_cq12() {

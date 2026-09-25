@@ -6,8 +6,8 @@
 //! that only happens for non-conformant inputs, where "bit-identical" would be
 //! comparing against C undefined behaviour rather than a real divergence).
 
-use aom_sys_ref::ref_fdct4;
 use aom_dsp::transform::av1_fdct4;
+use aom_sys_ref::ref_fdct4;
 
 /// Deterministic xorshift64* — reproducible, no external crates.
 struct Rng(u64);

@@ -57,7 +57,13 @@ struct Pin {
 /// The share of `family` on a census, as a percent of that family's natural
 /// denominator. Kept in one place so the gate and the census tool cannot drift.
 fn share(c: &Counts, family: &str) -> f64 {
-    let p = |n: u64, d: u64| if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 };
+    let p = |n: u64, d: u64| {
+        if d == 0 {
+            0.0
+        } else {
+            100.0 * n as f64 / d as f64
+        }
+    };
     match family {
         "directional_px" => p(c.directional_px(), c.intra_total_px()),
         "chroma_pred_calls" => p(c.plane_calls[1] + c.plane_calls[2], c.plane_total()),
@@ -121,16 +127,64 @@ fn census(content: Content, screen_knobs: bool) -> Box<Counts> {
 /// a judgement call.
 const PINS: &[Pin] = &[
     // ---- photo: the mode-scoped content ---------------------------------
-    Pin { content: Content::Photo, screen_knobs: false, family: "directional_px", floor: 15.0, ceiling: 21.0 },
-    Pin { content: Content::Photo, screen_knobs: false, family: "nonzero_angle_delta", floor: 9.0, ceiling: 14.0 },
-    Pin { content: Content::Photo, screen_knobs: false, family: "rect_leaves", floor: 4.0, ceiling: 9.0 },
-    Pin { content: Content::Photo, screen_knobs: false, family: "fwd_tx_4pt", floor: 5.0, ceiling: 10.0 },
-    Pin { content: Content::Photo, screen_knobs: false, family: "chroma_pred_calls", floor: 33.0, ceiling: 40.0 },
+    Pin {
+        content: Content::Photo,
+        screen_knobs: false,
+        family: "directional_px",
+        floor: 15.0,
+        ceiling: 21.0,
+    },
+    Pin {
+        content: Content::Photo,
+        screen_knobs: false,
+        family: "nonzero_angle_delta",
+        floor: 9.0,
+        ceiling: 14.0,
+    },
+    Pin {
+        content: Content::Photo,
+        screen_knobs: false,
+        family: "rect_leaves",
+        floor: 4.0,
+        ceiling: 9.0,
+    },
+    Pin {
+        content: Content::Photo,
+        screen_knobs: false,
+        family: "fwd_tx_4pt",
+        floor: 5.0,
+        ceiling: 10.0,
+    },
+    Pin {
+        content: Content::Photo,
+        screen_knobs: false,
+        family: "chroma_pred_calls",
+        floor: 33.0,
+        ceiling: 40.0,
+    },
     // ---- detail: the allocation content ---------------------------------
-    Pin { content: Content::Detail, screen_knobs: false, family: "fwd_tx_non_dct", floor: 40.0, ceiling: 49.0 },
-    Pin { content: Content::Detail, screen_knobs: false, family: "chroma_pred_calls", floor: 27.0, ceiling: 35.0 },
+    Pin {
+        content: Content::Detail,
+        screen_knobs: false,
+        family: "fwd_tx_non_dct",
+        floor: 40.0,
+        ceiling: 49.0,
+    },
+    Pin {
+        content: Content::Detail,
+        screen_knobs: false,
+        family: "chroma_pred_calls",
+        floor: 27.0,
+        ceiling: 35.0,
+    },
     // ---- smooth: the low-work end ---------------------------------------
-    Pin { content: Content::Smooth, screen_knobs: false, family: "directional_px", floor: 10.0, ceiling: 17.0 },
+    Pin {
+        content: Content::Smooth,
+        screen_knobs: false,
+        family: "directional_px",
+        floor: 10.0,
+        ceiling: 17.0,
+    },
     // ---- screen: the ONLY content that reaches the screen tools ----------
     // Measured 21.61 / 24.04 / 75.19 at `winperf::SCREEN_GATE_CELL` on
     // 2026-08-03; RE-PINNED 2026-08-30 (KB-42) to 22.75 / 33.63 / 80.84 after
@@ -145,9 +199,27 @@ const PINS: &[Pin] = &[
     // (intrabc 0.75x/1.25x, leaves_le_8px 0.90x/1.09x of the measurement).
     // `palette_y` moved 21.61 -> 22.75, still well inside its band, so its
     // bounds are left alone and only the measurement is recorded.
-    Pin { content: Content::Screen, screen_knobs: true, family: "palette_y", floor: 16.0, ceiling: 28.0 },
-    Pin { content: Content::Screen, screen_knobs: true, family: "intrabc", floor: 25.0, ceiling: 42.0 },
-    Pin { content: Content::Screen, screen_knobs: true, family: "leaves_le_8px", floor: 73.0, ceiling: 88.0 },
+    Pin {
+        content: Content::Screen,
+        screen_knobs: true,
+        family: "palette_y",
+        floor: 16.0,
+        ceiling: 28.0,
+    },
+    Pin {
+        content: Content::Screen,
+        screen_knobs: true,
+        family: "intrabc",
+        floor: 25.0,
+        ceiling: 42.0,
+    },
+    Pin {
+        content: Content::Screen,
+        screen_knobs: true,
+        family: "leaves_le_8px",
+        floor: 73.0,
+        ceiling: 88.0,
+    },
 ];
 
 /// Every pinned family is still reached, and none has moved so far that the pin
@@ -169,7 +241,11 @@ fn every_pinned_family_is_still_reached() {
         println!(
             "{:?}{}\t{}\t{got:.2}\t[{:.2}, {:.2})",
             pin.content,
-            if pin.screen_knobs { "+screen-knobs" } else { "" },
+            if pin.screen_knobs {
+                "+screen-knobs"
+            } else {
+                ""
+            },
             pin.family,
             pin.floor,
             pin.ceiling,
@@ -179,7 +255,11 @@ fn every_pinned_family_is_still_reached() {
                 "{:?}{} {}: {got:.2} % < pinned floor {:.2} % — this family is no \
                  longer reached; a band read against it would be a structural zero",
                 pin.content,
-                if pin.screen_knobs { "+screen-knobs" } else { "" },
+                if pin.screen_knobs {
+                    "+screen-knobs"
+                } else {
+                    ""
+                },
                 pin.family,
                 pin.floor,
             ));
@@ -189,7 +269,11 @@ fn every_pinned_family_is_still_reached() {
                  MORE reachable; RE-PIN this row (floor {:.2} -> ~{:.2}) and update \
                  benchmarks/winperf_family_census_2026-08-03.md",
                 pin.content,
-                if pin.screen_knobs { "+screen-knobs" } else { "" },
+                if pin.screen_knobs {
+                    "+screen-knobs"
+                } else {
+                    ""
+                },
                 pin.family,
                 pin.ceiling,
                 pin.floor,
@@ -197,7 +281,11 @@ fn every_pinned_family_is_still_reached() {
             ));
         }
     }
-    assert!(fails.is_empty(), "content family coverage moved:\n  {}", fails.join("\n  "));
+    assert!(
+        fails.is_empty(),
+        "content family coverage moved:\n  {}",
+        fails.join("\n  ")
+    );
 }
 
 /// The census must be able to tell a family that is UNREACHED from one that is

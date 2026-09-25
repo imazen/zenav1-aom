@@ -6,11 +6,15 @@
 //! conformant range the encoder produces, where bit-identity is the real
 //! contract and the C reference stays within defined behaviour.
 
-use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::{av1_fwd_txfm2d, fwd_txfm_valid};
+use aom_sys_ref as c;
 
-const W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 struct Rng(u64);
 impl Rng {

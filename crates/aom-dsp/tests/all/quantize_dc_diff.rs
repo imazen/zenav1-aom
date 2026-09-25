@@ -31,19 +31,28 @@ fn quantize_dc_differential() {
         for log_scale in 0..=2 {
             for _ in 0..3000 {
                 // Lowbd magnitudes.
-                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 19)) as i32 - (1 << 18)).collect();
+                let coeff: Vec<i32> = (0..n)
+                    .map(|_| (rng.next() % (1 << 19)) as i32 - (1 << 18))
+                    .collect();
                 let round = [rng.i16r(1, 2000), rng.i16r(1, 2000)];
                 let quant = rng.i16r(1, 32767);
                 let dequant = rng.i16r(1, 8000);
                 let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let use_qm = rng.next() & 1 == 1;
-                let (q, iq) = if use_qm { (Some(&qm[..]), Some(&iqm[..])) } else { (None, None) };
+                let (q, iq) = if use_qm {
+                    (Some(&qm[..]), Some(&iqm[..]))
+                } else {
+                    (None, None)
+                };
 
                 let mut qc = vec![0i32; n];
                 let mut dqc = vec![0i32; n];
-                let eob = av1_quantize_dc(&round, quant, dequant, log_scale, q, iq, &coeff, &mut qc, &mut dqc);
-                let (qw, dqw, ew) = c::ref_quantize_dc(log_scale, &coeff, &round, quant, dequant, q, iq);
+                let eob = av1_quantize_dc(
+                    &round, quant, dequant, log_scale, q, iq, &coeff, &mut qc, &mut dqc,
+                );
+                let (qw, dqw, ew) =
+                    c::ref_quantize_dc(log_scale, &coeff, &round, quant, dequant, q, iq);
                 assert_eq!(eob, ew, "dc eob n={n} ls={log_scale} qm={use_qm}");
                 assert_eq!(qc, qw, "dc qcoeff n={n} ls={log_scale} qm={use_qm}");
                 assert_eq!(dqc, dqw, "dc dqcoeff n={n} ls={log_scale} qm={use_qm}");
@@ -59,19 +68,28 @@ fn highbd_quantize_dc_differential() {
         for log_scale in 0..=2 {
             for _ in 0..3000 {
                 // Highbd (12-bit) magnitudes.
-                let coeff: Vec<i32> = (0..n).map(|_| (rng.next() % (1 << 23)) as i32 - (1 << 22)).collect();
+                let coeff: Vec<i32> = (0..n)
+                    .map(|_| (rng.next() % (1 << 23)) as i32 - (1 << 22))
+                    .collect();
                 let round = [rng.i16r(1, 2000), rng.i16r(1, 2000)];
                 let quant = rng.i16r(1, 32767);
                 let dequant = rng.i16r(1, 8000);
                 let qm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let iqm: Vec<u8> = (0..n).map(|_| rng.qm()).collect();
                 let use_qm = rng.next() & 1 == 1;
-                let (q, iq) = if use_qm { (Some(&qm[..]), Some(&iqm[..])) } else { (None, None) };
+                let (q, iq) = if use_qm {
+                    (Some(&qm[..]), Some(&iqm[..]))
+                } else {
+                    (None, None)
+                };
 
                 let mut qc = vec![0i32; n];
                 let mut dqc = vec![0i32; n];
-                let eob = av1_highbd_quantize_dc(&round, quant, dequant, log_scale, q, iq, &coeff, &mut qc, &mut dqc);
-                let (qw, dqw, ew) = c::ref_highbd_quantize_dc(log_scale, &coeff, &round, quant, dequant, q, iq);
+                let eob = av1_highbd_quantize_dc(
+                    &round, quant, dequant, log_scale, q, iq, &coeff, &mut qc, &mut dqc,
+                );
+                let (qw, dqw, ew) =
+                    c::ref_highbd_quantize_dc(log_scale, &coeff, &round, quant, dequant, q, iq);
                 assert_eq!(eob, ew, "hbd dc eob n={n} ls={log_scale} qm={use_qm}");
                 assert_eq!(qc, qw, "hbd dc qcoeff n={n} ls={log_scale} qm={use_qm}");
                 assert_eq!(dqc, dqw, "hbd dc dqcoeff n={n} ls={log_scale} qm={use_qm}");

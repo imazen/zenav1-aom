@@ -5,9 +5,9 @@
 //! quantizer at qindex 0 is dropping/altering coefficients that lossless must
 //! preserve.
 
-use aom_encode::{QuantKind, QuantParams, xform_quant};
 use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_dsp::transform::inv_txfm2d::av1_highbd_iwht4x4_add;
+use aom_encode::{QuantKind, QuantParams, xform_quant};
 
 struct Rng(u64);
 impl Rng {

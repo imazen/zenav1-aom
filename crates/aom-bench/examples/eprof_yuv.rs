@@ -16,13 +16,20 @@ fn load_i420(path: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell 
     let raw = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let need = w * h + 2 * cw * ch;
-    assert_eq!(raw.len(), need, "{path}: expected {need} bytes for {w}x{h} i420");
+    assert_eq!(
+        raw.len(),
+        need,
+        "{path}: expected {need} bytes for {w}x{h} i420"
+    );
     let y: Vec<u16> = raw[..w * h].iter().map(|&b| u16::from(b)).collect();
     let u: Vec<u16> = raw[w * h..w * h + cw * ch]
         .iter()
         .map(|&b| u16::from(b))
         .collect();
-    let v: Vec<u16> = raw[w * h + cw * ch..].iter().map(|&b| u16::from(b)).collect();
+    let v: Vec<u16> = raw[w * h + cw * ch..]
+        .iter()
+        .map(|&b| u16::from(b))
+        .collect();
     EncodeCell {
         label: path.to_string(),
         w,
@@ -60,7 +67,13 @@ fn main() {
     let cell = load_i420(&yuv, w, h, cq, speed);
 
     let mut cfg = KeyFrameConfig::allintra_speed0(
-        cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
+        cell.w,
+        cell.h,
+        cell.bd,
+        cell.mono,
+        cell.ss_x,
+        cell.ss_y,
+        cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
     // Optional 8th arg: tile grid `C,R` log2s (same spelling as eprof_x86).
@@ -84,11 +97,8 @@ fn main() {
 
     let run = |arm: &str| -> Vec<u8> {
         match arm {
-            "port" => encode_key_frame(
-                KeyFramePlanes::new(&cell.y, &cell.u, &cell.v),
-                &cfg,
-            )
-            .expect("the port must encode this cell"),
+            "port" => encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), &cfg)
+                .expect("the port must encode this cell"),
             "c" => c::ref_encode_av1_kf_screen_content(
                 &cell.y,
                 &cell.u,

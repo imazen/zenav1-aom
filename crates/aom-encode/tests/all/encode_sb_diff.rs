@@ -32,14 +32,14 @@
 //! 420+444, bd 8/12, q sweep, CfL winners with signalled alphas, and BOTH
 //! usage arms of the chroma trellis table (ALLINTRA 13 / GOOD 20).
 
+use aom_dsp::intra::cfl::{CFL_BUF_SQUARE, CflCtx};
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{TxTypeCosts, ext_tx_set_type};
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::encode_sb::{LeafWinner, SbEncodeEnv, SbTree, TileCtxState, encode_sb_dry};
 use aom_encode::intra_uv_rd::chroma_plane_offset;
 use aom_encode::tx_search::AV1_EXT_TX_USED_FLAG;
-use aom_dsp::intra::cfl::{CFL_BUF_SQUARE, CflCtx};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{TxTypeCosts, ext_tx_set_type};
 
 use crate::common::*;
 

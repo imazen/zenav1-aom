@@ -14,9 +14,9 @@
 //! 4:2:0 subsampling, and 8-bit (lowbd read) + 10-bit (highbd). The noise is
 //! spatially correlated so the fitted coefficients are non-trivial (anti-vacuous).
 
-use aom_encode::grain_table::{write_film_grain_table, GrainTableEntry};
-use aom_encode::noise_model::{NoiseModel, NoiseModelParams, NoiseShape, NoiseStatus};
 use aom_dsp::entropy::header::FilmGrainParams;
+use aom_encode::grain_table::{GrainTableEntry, write_film_grain_table};
+use aom_encode::noise_model::{NoiseModel, NoiseModelParams, NoiseShape, NoiseStatus};
 use aom_sys_ref as c;
 
 struct Rng(u64);
@@ -64,7 +64,11 @@ fn make_plane(rng: &mut Rng, w: usize, h: usize, maxv: i32, base: i32) -> Plane 
     let data: Vec<u16> = (0..w * h)
         .map(|i| (denoised[i] as i32 + noise[i]).clamp(0, maxv) as u16)
         .collect();
-    Plane { data, denoised, stride: w }
+    Plane {
+        data,
+        denoised,
+        stride: w,
+    }
 }
 
 fn bit_eq(a: f64, b: f64) -> bool {
@@ -108,7 +112,11 @@ fn run_case(
         .collect();
     let n_flat = flat.iter().filter(|&&v| v != 0).count();
 
-    let data = [&planes[0].data[..], &planes[1].data[..], &planes[2].data[..]];
+    let data = [
+        &planes[0].data[..],
+        &planes[1].data[..],
+        &planes[2].data[..],
+    ];
     let denoised = [
         &planes[0].denoised[..],
         &planes[1].denoised[..],
@@ -118,10 +126,18 @@ fn run_case(
     let seed16 = 0x51_23i32;
 
     // ---- Port ----
-    let params = NoiseModelParams { shape, lag, bit_depth, use_highbd };
+    let params = NoiseModelParams {
+        shape,
+        lag,
+        bit_depth,
+        use_highbd,
+    };
     let mut model = NoiseModel::new(params).expect("NoiseModel::new");
     let status = model.update(data, denoised, w, h, strides, [csx, csy], &flat, block_size);
-    let mut fg = FilmGrainParams { random_seed: seed16, ..Default::default() };
+    let mut fg = FilmGrainParams {
+        random_seed: seed16,
+        ..Default::default()
+    };
     let got_grain = model.get_grain_parameters(&mut fg);
 
     // ---- C oracle ----
@@ -149,7 +165,11 @@ fn run_case(
         let nc = cfit.n[cc];
         let port_x = model.combined_ar_coeffs(cc);
         assert_eq!(port_x.len(), nc, "chan {cc}: eqns.n mismatch");
-        assert_f64(&format!("ar_x c{cc}"), port_x, &cfit.ar_x[cc * 32..cc * 32 + nc]);
+        assert_f64(
+            &format!("ar_x c{cc}"),
+            port_x,
+            &cfit.ar_x[cc * 32..cc * 32 + nc],
+        );
         assert!(
             bit_eq(model.combined_ar_gain(cc), cfit.ar_gain[cc]),
             "ar_gain c{cc}: port={} vs C={}",
@@ -218,6 +238,11 @@ fn noise_model_fit_matches_c() {
         }
     }
     // Anti-vacuity: the fit path (status OK) actually ran on most cases.
-    assert!(ok_cases >= cases - 2, "too many non-OK fits ({ok_cases}/{cases})");
-    println!("noise_model_diff: {cases} configs (lag 1/2/3 x DIAMOND/SQUARE x 8/10-bit x 444/420) bit-identical to C ({ok_cases} OK fits)");
+    assert!(
+        ok_cases >= cases - 2,
+        "too many non-OK fits ({ok_cases}/{cases})"
+    );
+    println!(
+        "noise_model_diff: {cases} configs (lag 1/2/3 x DIAMOND/SQUARE x 8/10-bit x 444/420) bit-identical to C ({ok_cases} OK fits)"
+    );
 }

@@ -999,7 +999,11 @@ pub fn get_pred_context_switchable_interp(
     let ref_filter_type = |nbr: (i32, i32, usize, usize)| -> i32 {
         let (r0, r1, yf, xf) = nbr;
         if r0 == cur_ref0 || r1 == cur_ref0 {
-            if dir & 1 == 1 { xf as i32 } else { yf as i32 }
+            if dir & 1 == 1 {
+                xf as i32
+            } else {
+                yf as i32
+            }
         } else {
             SWITCHABLE_FILTERS
         }

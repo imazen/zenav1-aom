@@ -53,9 +53,8 @@
 //! walk exactly. All prior inter ratchet gates (16x16/18/34/66, 64x66) stay
 //! byte-exact.
 
-
-use aom_decode::frame::{FrameDecode, decode_frames};
 use crate::common::md5::Md5;
+use aom_decode::frame::{FrameDecode, decode_frames};
 use std::path::PathBuf;
 
 fn corpus_dir() -> PathBuf {

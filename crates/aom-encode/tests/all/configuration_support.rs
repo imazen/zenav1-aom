@@ -10,7 +10,7 @@
 //! `KeyFrameError::PlaneSize`, which needs the planes) nor that the allocation
 //! will succeed.
 
-use aom_encode::key_frame::{encode_key_frame, KeyFrameConfig, KeyFramePlanes, MAX_FRAME_DIM};
+use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, MAX_FRAME_DIM, encode_key_frame};
 
 /// Every chroma format x bit depth x speed the standalone shell gates must be
 /// accepted by the query — otherwise the query under-reports and a caller
@@ -20,9 +20,12 @@ fn query_accepts_native_still_formats() {
     for depth in [8, 10, 12] {
         for (mono, ss_x, ss_y) in [(true, 1, 1), (false, 1, 1), (false, 1, 0), (false, 0, 0)] {
             for speed in [0, 5, 9] {
-                let mut config = KeyFrameConfig::allintra_speed0(65, 67, depth, mono, ss_x, ss_y, 0);
+                let mut config =
+                    KeyFrameConfig::allintra_speed0(65, 67, depth, mono, ss_x, ss_y, 0);
                 config.cpu_used = speed;
-                config.validate_configuration().expect("gated native format");
+                config
+                    .validate_configuration()
+                    .expect("gated native format");
             }
         }
     }
@@ -87,11 +90,8 @@ fn query_and_encoder_reject_invalid_config_before_reading_planes() {
         let query = config
             .validate_configuration()
             .expect_err(&format!("case {i} must be refused by the query"));
-        let actual = encode_key_frame(
-            KeyFramePlanes::new(&[], &[], &[]),
-            &config,
-        )
-        .expect_err(&format!("case {i} must be refused by the encoder"));
+        let actual = encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &config)
+            .expect_err(&format!("case {i} must be refused by the encoder"));
         assert_eq!(query, actual, "case {i}: query and encoder must agree");
     }
 }

@@ -11,10 +11,10 @@
 //! up as a mismatch. Oracle chain: ref_fwd_txfm2d -> ref_highbd_quantize_* ->
 //! ref_get_txb_ctx -> ref_optimize_txb[_qm] -> ref_txb_entropy_context.
 
-use aom_encode::{BlockContext, OptimizeInputs, QuantKind, QuantParams, xform_quant_optimize};
-use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
 use aom_dsp::txb::{CoeffCostTables, scan, txb_high, txb_wide};
+use aom_encode::{BlockContext, OptimizeInputs, QuantKind, QuantParams, xform_quant_optimize};
+use aom_sys_ref as c;
 
 const TX_W: [usize; 19] = [
     4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,

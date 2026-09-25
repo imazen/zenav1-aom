@@ -14,27 +14,51 @@ use aom_sys_ref as c;
 struct Lcg(u64);
 impl Lcg {
     fn next_u8(&mut self) -> u8 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u8
     }
 }
 
 /// Build a `w*h` u8 image with the given `stride` under a pattern, returning
 /// the tightly-referenced u8 buffer and a u16 copy (the port's pixel type).
-fn make_image(w: usize, h: usize, stride: usize, pattern: usize, rng: &mut Lcg) -> (Vec<u8>, Vec<u16>) {
+fn make_image(
+    w: usize,
+    h: usize,
+    stride: usize,
+    pattern: usize,
+    rng: &mut Lcg,
+) -> (Vec<u8>, Vec<u16>) {
     assert!(stride >= w);
     let mut u8buf = vec![0u8; stride * h];
     for r in 0..h {
         for col in 0..w {
             let v = match pattern {
-                0 => rng.next_u8(),                                  // random
-                1 => 0,                                              // flat black
-                2 => 255,                                            // flat white
-                3 => ((r + col) & 1) as u8 * 255,                    // checkerboard
-                4 => ((r * 8 + col * 8) & 0xff) as u8,                // gradient
-                5 => if col < w / 2 { 0 } else { 255 },              // vertical edge
-                6 => if r < h / 2 { 20 } else { 235 },               // horizontal edge
-                _ => (r as u8).wrapping_mul(31).wrapping_add(col as u8).wrapping_mul(17),
+                0 => rng.next_u8(),                    // random
+                1 => 0,                                // flat black
+                2 => 255,                              // flat white
+                3 => ((r + col) & 1) as u8 * 255,      // checkerboard
+                4 => ((r * 8 + col * 8) & 0xff) as u8, // gradient
+                5 => {
+                    if col < w / 2 {
+                        0
+                    } else {
+                        255
+                    }
+                } // vertical edge
+                6 => {
+                    if r < h / 2 {
+                        20
+                    } else {
+                        235
+                    }
+                } // horizontal edge
+                _ => (r as u8)
+                    .wrapping_mul(31)
+                    .wrapping_add(col as u8)
+                    .wrapping_mul(17),
             };
             u8buf[r * stride + col] = v;
         }
@@ -50,7 +74,18 @@ fn haar_ac_sad_mxn_matches_c() {
     let mut mismatches = 0usize;
     // Grid sizes covering the 64x64 SB (8x8 grid) and the sub-blocks the deeper
     // wavelet levels operate on, plus non-square shapes.
-    let grids = [(1, 1), (2, 2), (4, 4), (8, 8), (1, 8), (8, 1), (3, 5), (5, 3), (2, 4), (4, 2)];
+    let grids = [
+        (1, 1),
+        (2, 2),
+        (4, 4),
+        (8, 8),
+        (1, 8),
+        (8, 1),
+        (3, 5),
+        (5, 3),
+        (2, 4),
+        (4, 2),
+    ];
     for &(rows, cols) in &grids {
         let w = cols * 8;
         let h = rows * 8;

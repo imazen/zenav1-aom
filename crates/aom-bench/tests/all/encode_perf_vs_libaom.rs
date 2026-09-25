@@ -83,11 +83,8 @@ fn c_encode(cell: &EncodeCell) -> Vec<u8> {
 }
 
 fn port_encode(cell: &EncodeCell, cfg: &KeyFrameConfig) -> Vec<u8> {
-    encode_key_frame(
-        KeyFramePlanes::new(&cell.y, &cell.u, &cell.v),
-        cfg,
-    )
-    .expect("the port must encode this cell")
+    encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), cfg)
+        .expect("the port must encode this cell")
 }
 
 struct Row {

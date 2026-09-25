@@ -50,7 +50,7 @@ fn get_deltaq_offset_matches_c() {
 /// gated e2e vs `aomenc --deltaq-mode=3`; this only catches gross regressions.
 #[test]
 fn sbq_perceptual_ai_bounds_and_direction() {
-    use aom_encode::allintra_vis::{WeberStats, WeberVarMap, DELTA_Q_RES_PERCEPTUAL};
+    use aom_encode::allintra_vis::{DELTA_Q_RES_PERCEPTUAL, WeberStats, WeberVarMap};
     let mi = 16; // one BLOCK_64X64 SB
     let blk = WeberStats {
         src_variance: 4000,
@@ -71,7 +71,10 @@ fn sbq_perceptual_ai_bounds_and_direction() {
     let mut prev = i32::MAX;
     for &norm in &[1i64, 100, 1_000, 10_000, 100_000, 1_000_000] {
         let q = mk(norm).av1_get_sbq_perceptual_ai(base, 8, DELTA_Q_RES_PERCEPTUAL, mi, mi, 0, 0);
-        assert!((1..=255).contains(&q), "qindex {q} out of range for norm {norm}");
+        assert!(
+            (1..=255).contains(&q),
+            "qindex {q} out of range for norm {norm}"
+        );
         // Monotone non-increasing in norm (higher norm => higher beta => finer q).
         assert!(
             q <= prev,

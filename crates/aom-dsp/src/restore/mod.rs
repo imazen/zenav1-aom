@@ -13,7 +13,6 @@
 //! aom-loopfilter and aom-cdef. Parameter types (`LrUnitInfo` etc.) come from
 //! `crate::entropy::lr` (the tile-parse side).
 
-
 pub mod frame;
 pub mod pick;
 pub mod sgr;

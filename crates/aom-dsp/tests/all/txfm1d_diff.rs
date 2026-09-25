@@ -7,8 +7,8 @@
 //! only occurs for non-conformant inputs, where equivalence would be measured
 //! against C undefined behaviour rather than a real divergence).
 
-use aom_sys_ref as c;
 use aom_dsp::transform as r;
+use aom_sys_ref as c;
 
 type RFn = fn(&[i32], &mut [i32], i32, &[i8]);
 type CFn = unsafe extern "C" fn(*const i32, *mut i32, i8, *const i8);
@@ -23,18 +23,90 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
-        Case { name: "fdct4",  size: 4,  bits: 14, rf: r::av1_fdct4,  cf: c::av1_fdct4 },
-        Case { name: "fdct8",  size: 8,  bits: 13, rf: r::av1_fdct8,  cf: c::av1_fdct8 },
-        Case { name: "fdct16", size: 16, bits: 12, rf: r::av1_fdct16, cf: c::av1_fdct16 },
-        Case { name: "fdct32", size: 32, bits: 11, rf: r::av1_fdct32, cf: c::av1_fdct32 },
-        Case { name: "fdct64", size: 64, bits: 10, rf: r::av1_fdct64, cf: c::av1_fdct64 },
-        Case { name: "fadst4",  size: 4,  bits: 14, rf: r::av1_fadst4,  cf: c::av1_fadst4 },
-        Case { name: "fadst8",  size: 8,  bits: 13, rf: r::av1_fadst8,  cf: c::av1_fadst8 },
-        Case { name: "fadst16", size: 16, bits: 12, rf: r::av1_fadst16, cf: c::av1_fadst16 },
-        Case { name: "fidentity4",  size: 4,  bits: 20, rf: r::av1_fidentity4,  cf: c::av1_fidentity4_c },
-        Case { name: "fidentity8",  size: 8,  bits: 20, rf: r::av1_fidentity8,  cf: c::av1_fidentity8_c },
-        Case { name: "fidentity16", size: 16, bits: 20, rf: r::av1_fidentity16, cf: c::av1_fidentity16_c },
-        Case { name: "fidentity32", size: 32, bits: 20, rf: r::av1_fidentity32, cf: c::av1_fidentity32_c },
+        Case {
+            name: "fdct4",
+            size: 4,
+            bits: 14,
+            rf: r::av1_fdct4,
+            cf: c::av1_fdct4,
+        },
+        Case {
+            name: "fdct8",
+            size: 8,
+            bits: 13,
+            rf: r::av1_fdct8,
+            cf: c::av1_fdct8,
+        },
+        Case {
+            name: "fdct16",
+            size: 16,
+            bits: 12,
+            rf: r::av1_fdct16,
+            cf: c::av1_fdct16,
+        },
+        Case {
+            name: "fdct32",
+            size: 32,
+            bits: 11,
+            rf: r::av1_fdct32,
+            cf: c::av1_fdct32,
+        },
+        Case {
+            name: "fdct64",
+            size: 64,
+            bits: 10,
+            rf: r::av1_fdct64,
+            cf: c::av1_fdct64,
+        },
+        Case {
+            name: "fadst4",
+            size: 4,
+            bits: 14,
+            rf: r::av1_fadst4,
+            cf: c::av1_fadst4,
+        },
+        Case {
+            name: "fadst8",
+            size: 8,
+            bits: 13,
+            rf: r::av1_fadst8,
+            cf: c::av1_fadst8,
+        },
+        Case {
+            name: "fadst16",
+            size: 16,
+            bits: 12,
+            rf: r::av1_fadst16,
+            cf: c::av1_fadst16,
+        },
+        Case {
+            name: "fidentity4",
+            size: 4,
+            bits: 20,
+            rf: r::av1_fidentity4,
+            cf: c::av1_fidentity4_c,
+        },
+        Case {
+            name: "fidentity8",
+            size: 8,
+            bits: 20,
+            rf: r::av1_fidentity8,
+            cf: c::av1_fidentity8_c,
+        },
+        Case {
+            name: "fidentity16",
+            size: 16,
+            bits: 20,
+            rf: r::av1_fidentity16,
+            cf: c::av1_fidentity16_c,
+        },
+        Case {
+            name: "fidentity32",
+            size: 32,
+            bits: 20,
+            rf: r::av1_fidentity32,
+            cf: c::av1_fidentity32_c,
+        },
     ]
 }
 

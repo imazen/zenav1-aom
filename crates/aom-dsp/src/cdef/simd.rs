@@ -50,7 +50,9 @@
 
 use archmage::prelude::*;
 
-use crate::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS, cdef_dir, constrain, get_msb};
+use crate::cdef::{
+    cdef_dir, constrain, get_msb, CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS,
+};
 
 /// Dispatch entry used by [`crate::cdef::cdef_filter_block_16`] for width-8 blocks.
 #[allow(clippy::too_many_arguments)]
@@ -866,7 +868,6 @@ fn cdef_filter_8_w8_impl(
     }
 }
 
-
 // ===== cdef_find_dir — the 8x8 direction search partial sums =====
 //
 // `cdef_find_dir` is ~4.7 % of the q32 decode Ir and had no SIMD tier at all
@@ -1063,4 +1064,3 @@ fn cdef_find_dir_partials_impl(
     a6.store((&mut pa[6][..8]).try_into().unwrap());
     true
 }
-

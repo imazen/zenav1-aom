@@ -4,9 +4,9 @@
 //! `(MAX_TX_SCALE - av1_get_tx_scale(tx_size)) * 2`. Sweeps every tx_size so all
 //! three shift magnitudes (right by 2, none, left by 2 for 64-wide) are hit.
 
+use aom_dsp::txb::{txb_high, txb_wide};
 use aom_encode::dist_block_tx_domain;
 use aom_sys_ref as c;
-use aom_dsp::txb::{txb_high, txb_wide};
 
 struct Rng(u64);
 impl Rng {

@@ -39,7 +39,14 @@ use aom_sys_ref as c;
 /// photographic instead of acquiring a synthetic edge grid every tile period.
 /// Same recipe as `kb19_min_partition_4k` and the size axis of the
 /// config-permutation gate.
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -370,7 +377,13 @@ fn lr_unit_size_hd_speed1_e2e() {
         let cell = mirror_tile(&base, &format!("lr720_s1_cq{cq}"), 1280, 720, cq, 1);
         assert!(cell.w.min(cell.h) >= 720);
         assert!(cell.w.min(cell.h) < 1440);
-        let sf = lr_search_sf_allintra(cell.speed, if cq == 24 { 96 } else { 100 }, cell.w, cell.h, false);
+        let sf = lr_search_sf_allintra(
+            cell.speed,
+            if cq == 24 { 96 } else { 100 },
+            cell.w,
+            cell.h,
+            false,
+        );
         assert_eq!(
             (sf.min_lr_unit_size, sf.max_lr_unit_size),
             (expect_bound, expect_bound),
@@ -481,8 +494,7 @@ fn lr_unit_size_hd_speed1_e2e() {
         // qindex-96 threshold — so the bound is not merely equal by accident of
         // the search landing on the same answer from a wider range.
         assert_eq!(
-            *c_us,
-            [*bound; 3],
+            *c_us, [*bound; 3],
             "cq{cq}: real aomenc coded a unit size other than the bound the C block derives"
         );
     }
@@ -572,16 +584,16 @@ fn kb23_partial_sb_size_and_speed_axis() {
         // interleaved across both framesize predicates so the two explanations
         // — "a framesize bucket" and "frame-edge partial superblocks" — are
         // separable by the result pattern alone.
-        (132, 132), // 2.06 SB  partial   sub-480p
-        (192, 192), // 3    SB  exact     sub-480p
-        (196, 196), // 3.06 SB  partial   sub-480p
-        (256, 256), // 4    SB  exact     sub-480p
-        (448, 448), // 7    SB  exact     sub-480p
-        (480, 480), // 7.5  SB  partial   is_480p_or_larger boundary
-        (512, 512), // 8    SB  exact     >=480p
-        (640, 640), // 10   SB  exact     >=480p (largest any other gate reaches)
-        (704, 704), // 11   SB  exact     >=480p
-        (720, 720), // 11.25 SB partial   is_720p_or_larger boundary
+        (132, 132),  // 2.06 SB  partial   sub-480p
+        (192, 192),  // 3    SB  exact     sub-480p
+        (196, 196),  // 3.06 SB  partial   sub-480p
+        (256, 256),  // 4    SB  exact     sub-480p
+        (448, 448),  // 7    SB  exact     sub-480p
+        (480, 480),  // 7.5  SB  partial   is_480p_or_larger boundary
+        (512, 512),  // 8    SB  exact     >=480p
+        (640, 640),  // 10   SB  exact     >=480p (largest any other gate reaches)
+        (704, 704),  // 11   SB  exact     >=480p
+        (720, 720),  // 11.25 SB partial   is_720p_or_larger boundary
         (1280, 720), // partial rows      >=720p
         // A size where the MI-ALIGNED dims and the TRUE crop disagree ACROSS a
         // 64-px superblock boundary: mi_dim(250) * 4 = 256, so the mi extent
@@ -713,7 +725,10 @@ fn kb23_partial_sb_size_and_speed_axis() {
         "a partial-SB size diverged at SPEED 0 — that is a KB-6 partial-SB regression, \
          not KB-23 (which is speed >= 1 only)"
     );
-    let sle3_div = matrix.iter().filter(|(_, _, s, ok, _)| *s <= 3 && !ok).count();
+    let sle3_div = matrix
+        .iter()
+        .filter(|(_, _, s, ok, _)| *s <= 3 && !ok)
+        .count();
     assert_eq!(
         sle3_div, 0,
         "a speed 0..=3 cell diverged in the speed sweep — KB-23 covers the partial-SB \

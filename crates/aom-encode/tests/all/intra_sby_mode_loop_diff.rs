@@ -19,6 +19,8 @@
 //! intra_modes_rd_cost table, the final recon planes (the cross-candidate
 //! prediction/reconstruction state), and the variance-factor caches.
 
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{TxTypeCosts, fill_tx_type_costs};
 use aom_encode::hog::prune_intra_mode_with_hog_y;
 use aom_encode::intra_rd::{
     Block4x4VarInfo, INTRA_MODES, IntraSbyGates, IntraSbySearchCfg, TOP_INTRA_MODEL_COUNT,
@@ -26,9 +28,7 @@ use aom_encode::intra_rd::{
 };
 use aom_encode::mode_costs::{TxSizeCosts, fill_tx_size_costs};
 use aom_encode::tx_search::{TxTypeSearchPolicy, TxfmYrdEnv};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{TxTypeCosts, fill_tx_type_costs};
 
 use crate::common::*;
 
@@ -355,7 +355,7 @@ fn rd_pick_intra_sby_mode_matches_c_loop() {
                 allintra,
                 &mut cvar,
                 &mut clog,
-            use_intra_dct_only,
+                use_intra_dct_only,
             );
 
             factor_fired_total += want.factor_fired;

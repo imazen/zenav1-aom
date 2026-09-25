@@ -401,7 +401,9 @@ mod tests {
             TraceConfig::new()
                 .with(Trace::Pack)
                 .with_focus(Focus::Tx, 12, 34)
-                .with_sink(Box::new(move |l| sink_lines.lock().unwrap().push(l.to_string()))),
+                .with_sink(Box::new(move |l| {
+                    sink_lines.lock().unwrap().push(l.to_string())
+                })),
         );
         assert!(enabled(Trace::Pack));
         assert!(!enabled(Trace::Sym));
@@ -429,7 +431,13 @@ mod tests {
         assert_eq!(cfg.flags & Trace::Cdef.bit(), 0);
         assert_eq!(cfg.focus[Focus::Tx as usize], Some((7, 9)));
         assert_eq!(cfg.focus[Focus::Uv as usize], None);
-        for n in ["AOM_PACK_TRACE", "AOM_SYM_TRACE", "AOM_CDEF_DBG", "AOM_TX_DBG", "AOM_UV_DBG"] {
+        for n in [
+            "AOM_PACK_TRACE",
+            "AOM_SYM_TRACE",
+            "AOM_CDEF_DBG",
+            "AOM_TX_DBG",
+            "AOM_UV_DBG",
+        ] {
             std::env::remove_var(n);
         }
     }
@@ -450,7 +458,12 @@ mod tests {
 
     #[test]
     fn node_packing_round_trips_negatives() {
-        for n in [Some((0, 0)), Some((-1, 5)), Some((i32::MAX, i32::MIN)), None] {
+        for n in [
+            Some((0, 0)),
+            Some((-1, 5)),
+            Some((i32::MAX, i32::MIN)),
+            None,
+        ] {
             assert_eq!(unpack_node(pack_node(n)), n);
         }
     }

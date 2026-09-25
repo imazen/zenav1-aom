@@ -76,8 +76,14 @@ pub fn calc_indices(
 ) -> i64 {
     let _ = crate::dispatch::scalar_forced();
     match dim {
-        1 => archmage::incant!(calc_indices_dim1(data, centroids, indices, n, k), [v3, scalar]),
-        2 => archmage::incant!(calc_indices_dim2(data, centroids, indices, n, k), [v3, scalar]),
+        1 => archmage::incant!(
+            calc_indices_dim1(data, centroids, indices, n, k),
+            [v3, scalar]
+        ),
+        2 => archmage::incant!(
+            calc_indices_dim2(data, centroids, indices, n, k),
+            [v3, scalar]
+        ),
         _ => calc_indices_c(data, centroids, indices, n, k, dim),
     }
 }
@@ -139,10 +145,7 @@ fn calc_indices_dim1_v3(
             let cmp = _mm256_cmpgt_epi16(dist_min, dist);
             dist_min = _mm256_min_epi16(dist_min, dist);
             let ind1 = _mm256_set1_epi16(j as i16);
-            ind = _mm256_or_si256(
-                _mm256_andnot_si256(cmp, ind),
-                _mm256_and_si256(cmp, ind1),
-            );
+            ind = _mm256_or_si256(_mm256_andnot_si256(cmp, ind), _mm256_and_si256(cmp, ind1));
         }
         let p1 = _mm256_packus_epi16(ind, zero);
         let px = _mm256_permute4x64_epi64(p1, 0x58);

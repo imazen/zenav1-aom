@@ -65,7 +65,11 @@ fn gen_coeffs(rng: &mut Rng, scan: &[i16], area: usize) -> (Vec<i32>, usize) {
             5..=7 => rng.range(1, 20) as i32,
             _ => rng.range(1, 3000) as i32,
         };
-        if rng.next() & 1 == 1 { -mag } else { mag }
+        if rng.next() & 1 == 1 {
+            -mag
+        } else {
+            mag
+        }
     };
     #[allow(clippy::needless_range_loop)]
     for i in 0..eob {
@@ -102,16 +106,31 @@ fn read_coeffs_txb_roundtrips_write() {
 
                         let mut enc = OdEcEnc::new();
                         write_coeffs_txb(
-                            &mut enc, &mut arena_e, &coeff, eob, tx_size, tx_type,
-                            plane_type, txb_skip_ctx, dc_sign_ctx, upd,
+                            &mut enc,
+                            &mut arena_e,
+                            &coeff,
+                            eob,
+                            tx_size,
+                            tx_type,
+                            plane_type,
+                            txb_skip_ctx,
+                            dc_sign_ctx,
+                            upd,
                         );
                         let bytes = enc.done().to_vec();
 
                         let mut dec = OdEcDec::new(&bytes);
                         let mut tcoeff = vec![0i32; area];
                         let eob_d = read_coeffs_txb(
-                            &mut dec, &mut arena_d, &mut tcoeff, tx_size, tx_type,
-                            plane_type, txb_skip_ctx, dc_sign_ctx, upd,
+                            &mut dec,
+                            &mut arena_d,
+                            &mut tcoeff,
+                            tx_size,
+                            tx_type,
+                            plane_type,
+                            txb_skip_ctx,
+                            dc_sign_ctx,
+                            upd,
                         );
 
                         assert_eq!(

@@ -231,7 +231,11 @@ fn cmd_score(args: &[String]) {
     let drgb = yuv420_to_rgb(&dy, &du, &dv, w, h);
 
     let to_ss = |b: &[u8]| -> imgref::ImgVec<[u8; 3]> {
-        imgref::ImgVec::new(b.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(), w, h)
+        imgref::ImgVec::new(
+            b.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+            w,
+            h,
+        )
     };
     let a = to_ss(&rrgb);
     let b = to_ss(&drgb);
@@ -309,10 +313,11 @@ fn av1_payload(bytes: Vec<u8>) -> Vec<u8> {
     }
     let mut i = 0usize;
     while i + 8 <= bytes.len() {
-        let size = u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+        let size =
+            u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
         let kind = &bytes[i + 4..i + 8];
         let (body, next) = match size {
-            0 => (i + 8, bytes.len()),              // to end of file
+            0 => (i + 8, bytes.len()), // to end of file
             1 => die("64-bit box sizes are not handled"),
             n if n < 8 => die("corrupt box size"),
             n => (i + 8, i + n),
@@ -338,15 +343,17 @@ fn frame_to_rgb(f: &aom_decode::frame::FrameDecode) -> Vec<u8> {
     // `xtool score`'s own reference conversion is BT.709 limited-range, so an
     // unspecified stream is read that way and the two agree by construction.
     let (kr, kb) = match f.matrix_coefficients {
-        5 | 6 => (0.299_f64, 0.114_f64),  // BT.601
-        _ => (0.212_6_f64, 0.072_2_f64),  // BT.709 / unspecified
+        5 | 6 => (0.299_f64, 0.114_f64), // BT.601
+        _ => (0.212_6_f64, 0.072_2_f64), // BT.709 / unspecified
     };
     let identity = f.matrix_coefficients == 0;
     for r in 0..h {
         for c in 0..w {
             let o = (r * w + c) * 3;
             if f.monochrome {
-                let g = (f64::from(f.y[r * w + c]) * scale).round().clamp(0.0, 255.0) as u8;
+                let g = (f64::from(f.y[r * w + c]) * scale)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
                 out[o] = g;
                 out[o + 1] = g;
                 out[o + 2] = g;
@@ -362,7 +369,11 @@ fn frame_to_rgb(f: &aom_decode::frame::FrameDecode) -> Vec<u8> {
                 // GBR: plane order is G, B, R (AV1's identity matrix).
                 (vv, yv, uv)
             } else {
-                let yy = if f.full_range { yv } else { (yv - 16.0) * 255.0 / 219.0 };
+                let yy = if f.full_range {
+                    yv
+                } else {
+                    (yv - 16.0) * 255.0 / 219.0
+                };
                 let (cb, cr) = if f.full_range {
                     (uv - 128.0, vv - 128.0)
                 } else {
@@ -432,14 +443,22 @@ fn cmd_score_rgb(args: &[String]) {
         ));
     }
     let to_ss = |b: &[u8]| -> imgref::ImgVec<[u8; 3]> {
-        imgref::ImgVec::new(b.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(), w, h)
+        imgref::ImgVec::new(
+            b.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+            w,
+            h,
+        )
     };
     let ss2 = fast_ssim2::compute_ssimulacra2(to_ss(&rd).as_ref(), to_ss(&dd).as_ref())
         .unwrap_or_else(|e| die(&format!("ssimulacra2: {e:?}")));
     let to_ba = |b: &[u8]| -> butteraugli::ImgVec<butteraugli::RGB8> {
         butteraugli::ImgVec::new(
             b.chunks_exact(3)
-                .map(|c| butteraugli::RGB8 { r: c[0], g: c[1], b: c[2] })
+                .map(|c| butteraugli::RGB8 {
+                    r: c[0],
+                    g: c[1],
+                    b: c[2],
+                })
                 .collect(),
             w,
             h,
@@ -451,5 +470,8 @@ fn cmd_score_rgb(args: &[String]) {
         &butteraugli::ButteraugliParams::default(),
     )
     .unwrap_or_else(|e| die(&format!("butteraugli: {e:?}")));
-    println!("SSIM2={ss2:.6} BA_MAX={:.6} BA_3N={:.6}", bar.score, bar.pnorm_3);
+    println!(
+        "SSIM2={ss2:.6} BA_MAX={:.6} BA_3N={:.6}",
+        bar.score, bar.pnorm_3
+    );
 }

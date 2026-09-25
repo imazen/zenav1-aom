@@ -11,11 +11,16 @@
 //! (u16 side) across the two runs.
 
 use aom_dsp::transform::inv_txfm2d::{
-    av1_inv_txfm2d_add_into, av1_inv_txfm2d_add_u8_into, inv_input_len, inv_txfm_valid, InvTxfmScratch,
+    InvTxfmScratch, av1_inv_txfm2d_add_into, av1_inv_txfm2d_add_u8_into, inv_input_len,
+    inv_txfm_valid,
 };
 
-const W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 struct Rng(u64);
 impl Rng {
@@ -58,7 +63,14 @@ fn workload() -> Vec<Cell> {
                     .map(|_| (rng.next() % (1 << 17)) as i32 - (1 << 16))
                     .collect();
                 let pred: Vec<u8> = (0..w * h).map(|_| (rng.next() & 0xff) as u8).collect();
-                cells.push(Cell { tx_size, tx_type, input, pred, w, h });
+                cells.push(Cell {
+                    tx_size,
+                    tx_type,
+                    input,
+                    pred,
+                    w,
+                    h,
+                });
             }
         }
     }
@@ -81,7 +93,15 @@ fn main() {
         let mut got_u8 = c.pred.clone();
         av1_inv_txfm2d_add_u8_into(&c.input, &mut got_u8, c.w, c.tx_type, c.tx_size, &mut txfm);
         let mut got_hi: Vec<u16> = c.pred.iter().map(|&p| p as u16).collect();
-        av1_inv_txfm2d_add_into(&c.input, &mut got_hi, c.w, c.tx_type, c.tx_size, 8, &mut txfm);
+        av1_inv_txfm2d_add_into(
+            &c.input,
+            &mut got_hi,
+            c.w,
+            c.tx_type,
+            c.tx_size,
+            8,
+            &mut txfm,
+        );
         for i in 0..c.w * c.h {
             assert_eq!(
                 got_u8[i] as u16, got_hi[i],

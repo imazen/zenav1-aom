@@ -38,7 +38,11 @@ fn main() {
             continue;
         }
         let f: Vec<&str> = line.split('\t').collect();
-        assert_eq!(f.len(), 4, "manifest row must be name\\tw\\th\\tpath: {line}");
+        assert_eq!(
+            f.len(),
+            4,
+            "manifest row must be name\\tw\\th\\tpath: {line}"
+        );
         let (name, path) = (f[0], f[3]);
         let w: usize = f[1].parse().expect("w");
         let h: usize = f[2].parse().expect("h");

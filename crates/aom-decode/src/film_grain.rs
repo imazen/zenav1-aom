@@ -1101,7 +1101,18 @@ pub fn add_film_grain(
     src_v: &[u16],
 ) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     match add_film_grain_stop(
-        p, bit_depth, mono, ss_x, ss_y, mc_identity, d_w, d_h, src_y, src_u, src_v, None,
+        p,
+        bit_depth,
+        mono,
+        ss_x,
+        ss_y,
+        mc_identity,
+        d_w,
+        d_h,
+        src_y,
+        src_u,
+        src_v,
+        None,
     ) {
         Ok(planes) => planes,
         // Unreachable: the token is the `None` literal one line above, and

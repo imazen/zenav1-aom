@@ -62,10 +62,17 @@ fn noise_strength_solve_matches_c() {
 
         let (port_ok, port_x) = port_solve(&means, &stds, num_bins, bd);
         let cref = c::ref_noise_strength_solve(&means, &stds, num_bins, bd);
-        assert_eq!(port_ok, cref.is_some(), "trial {t}: solve success flag differs");
+        assert_eq!(
+            port_ok,
+            cref.is_some(),
+            "trial {t}: solve success flag differs"
+        );
         if let Some(cx) = cref {
             solved_ok += 1;
-            assert_eq!(port_x, cx, "trial {t}: solved curve mismatch (bd{bd}, {num_bins} bins, {nobs} obs)");
+            assert_eq!(
+                port_x, cx,
+                "trial {t}: solved curve mismatch (bd{bd}, {num_bins} bins, {nobs} obs)"
+            );
 
             // fit_piecewise across a few max-point caps incl. the unbounded (-1) case.
             for &max_points in &[-1i32, 2, 4, num_bins as i32] {
@@ -75,8 +82,9 @@ fn noise_strength_solve_matches_c() {
                 }
                 assert!(s.solve());
                 let port_lut = s.fit_piecewise(max_points).points;
-                let c_lut = c::ref_noise_strength_fit_piecewise(&means, &stds, num_bins, bd, max_points)
-                    .expect("C fit_piecewise");
+                let c_lut =
+                    c::ref_noise_strength_fit_piecewise(&means, &stds, num_bins, bd, max_points)
+                        .expect("C fit_piecewise");
                 assert_eq!(
                     port_lut, c_lut,
                     "trial {t}: fit_piecewise LUT mismatch (max_points={max_points})"
@@ -93,13 +101,20 @@ fn noise_strength_solve_matches_c() {
         let stds = vec![maxv * 0.02; 50];
         let (port_ok, port_x) = port_solve(&means, &stds, 20, bd);
         let cref = c::ref_noise_strength_solve(&means, &stds, 20, bd);
-        assert_eq!(port_ok, cref.is_some(), "degenerate bd{bd}: solve flag differs");
+        assert_eq!(
+            port_ok,
+            cref.is_some(),
+            "degenerate bd{bd}: solve flag differs"
+        );
         if let Some(cx) = cref {
             assert_eq!(port_x, cx, "degenerate bd{bd}: solved curve mismatch");
         }
     }
     println!("noise_strength_solver_diff: {trials} trials ({solved_ok} solved) bit-identical to C");
-    assert!(solved_ok > 200, "too few non-singular solves ({solved_ok}) — vacuous");
+    assert!(
+        solved_ok > 200,
+        "too few non-singular solves ({solved_ok}) — vacuous"
+    );
 }
 
 #[test]
@@ -127,5 +142,8 @@ fn lut_eval_matches_c_interpolation() {
         let y = lut.eval(x);
         assert!(y.is_finite(), "eval({x}) not finite");
     }
-    println!("lut_eval: {} points, eval finite over [-20,280]", lut.points.len());
+    println!(
+        "lut_eval: {} points, eval finite over [-20,280]",
+        lut.points.len()
+    );
 }

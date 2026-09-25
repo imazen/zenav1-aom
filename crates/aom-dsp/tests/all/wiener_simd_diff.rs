@@ -12,8 +12,8 @@
 use aom_dsp::restore::wiener::{wiener_convolve_add_src, wiener_convolve_add_src_scalar};
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -88,10 +88,12 @@ fn wiener_simd_bit_identical_to_scalar_at_every_tier() {
                 for case in 0..4 {
                     let (buf_w, buf_h) = (w + 2 * M, h + 2 * M);
                     let mask = (1u64 << bd) - 1;
-                    let src: Vec<u16> =
-                        (0..buf_w * buf_h).map(|_| (rng.next() & mask) as u16).collect();
-                    let dst0: Vec<u16> =
-                        (0..buf_w * buf_h).map(|_| (rng.next() & mask) as u16).collect();
+                    let src: Vec<u16> = (0..buf_w * buf_h)
+                        .map(|_| (rng.next() & mask) as u16)
+                        .collect();
+                    let dst0: Vec<u16> = (0..buf_w * buf_h)
+                        .map(|_| (rng.next() & mask) as u16)
+                        .collect();
                     let chroma = case % 4 == 3;
                     let mut hf = [0i16; 8];
                     let mut vf = [0i16; 8];
@@ -128,7 +130,11 @@ fn wiener_simd_bit_identical_to_scalar_at_every_tier() {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(report.permutations_run >= 2);
 }

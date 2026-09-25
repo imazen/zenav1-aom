@@ -13,11 +13,11 @@
 //! genuinely non-1:1 step, so a port that ignored the stepping — which is the
 //! only thing separating this kernel from the fixed-phase one — cannot pass.
 
-use aom_dsp::convolve::scaled::{ScaleConvolveParams, convolve_2d_scale, highbd_convolve_2d_scale};
+use aom_dsp::convolve::scaled::{convolve_2d_scale, highbd_convolve_2d_scale, ScaleConvolveParams};
 use aom_dsp::convolve::{SUB_PEL_FILTERS_8, SUB_PEL_FILTERS_8SHARP, SUB_PEL_FILTERS_8SMOOTH};
 use aom_dsp::inter::scale::ScaleFactors;
 use aom_sys_ref::{
-    RefScaleConvParams, RefScaleSteps, ref_convolve_2d_scale, ref_highbd_convolve_2d_scale,
+    ref_convolve_2d_scale, ref_highbd_convolve_2d_scale, RefScaleConvParams, RefScaleSteps,
 };
 
 struct Rng(u64);

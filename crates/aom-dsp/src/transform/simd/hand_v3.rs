@@ -13,7 +13,7 @@
 use archmage::prelude::*;
 use magetypes::simd::generic::i32x8 as I32x8;
 
-use crate::transform::cospi::{NEW_INV_SQRT2, NEW_SQRT2, NEW_SQRT2_BITS, cospi_arr, sinpi_arr};
+use crate::transform::cospi::{cospi_arr, sinpi_arr, NEW_INV_SQRT2, NEW_SQRT2, NEW_SQRT2_BITS};
 
 use super::prims::{add64, hb, mul_rshiftv, mulc64, rshift64, rshiftv, sub64, widen64};
 

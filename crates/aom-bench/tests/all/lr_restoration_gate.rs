@@ -36,7 +36,13 @@ fn cells() -> Vec<EncodeCell> {
         EncodeCell::real_content("lr_quant00_cq32", "av1-1-b8-00-quantizer-00", None, 32, 0),
         EncodeCell::real_content("lr_quant00_cq55", "av1-1-b8-00-quantizer-00", None, 55, 0),
         // 10-bit arm (the highbd search paths).
-        EncodeCell::real_content("lr_b10_quant00_cq32", "av1-1-b10-00-quantizer-00", None, 32, 0),
+        EncodeCell::real_content(
+            "lr_b10_quant00_cq32",
+            "av1-1-b10-00-quantizer-00",
+            None,
+            32,
+            0,
+        ),
     ]
 }
 

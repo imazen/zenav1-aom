@@ -25,13 +25,6 @@
 //! synthetic-but-valid, matching `partition_pick_diff.rs`'s established
 //! pattern).
 
-use aom_encode::encode_intra::TrellisOptType;
-use aom_encode::encode_sb::SbEncodeEnv;
-use aom_encode::intra_uv_rd::UvLoopPolicy;
-use aom_encode::mode_costs::{CflCosts, IntraModeCosts, TxSizeCosts, fill_cfl_costs};
-use aom_encode::pack::{PackCfg, pack_tile};
-use aom_encode::partition_pick::PickFrameCfg;
-use aom_encode::tx_search::TxTypeSearchPolicy;
 use aom_dsp::entropy::dec::OdEcDec;
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::partition::{
@@ -41,6 +34,13 @@ use aom_dsp::entropy::partition::{
 };
 use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_dsp::txb::{TxTypeCosts, ext_tx_derive, read_coeffs_txb_full};
+use aom_encode::encode_intra::TrellisOptType;
+use aom_encode::encode_sb::SbEncodeEnv;
+use aom_encode::intra_uv_rd::UvLoopPolicy;
+use aom_encode::mode_costs::{CflCosts, IntraModeCosts, TxSizeCosts, fill_cfl_costs};
+use aom_encode::pack::{PackCfg, pack_tile};
+use aom_encode::partition_pick::PickFrameCfg;
+use aom_encode::tx_search::TxTypeSearchPolicy;
 
 use crate::common::{Rng, TX_H, TX_W, coeff_cost_set_from_tables, tbl};
 
@@ -326,7 +326,8 @@ fn read_leaf(
         dec, kf, pack_cfg, env, &info, above_ectx, left_ectx, mi_row, mi_col, bsize, tx_size, 0,
     );
     if !env.monochrome && is_chroma_ref {
-        let plane_bsize = aom_dsp::entropy::partition::get_plane_block_size(bsize, env.ss_x, env.ss_y);
+        let plane_bsize =
+            aom_dsp::entropy::partition::get_plane_block_size(bsize, env.ss_x, env.ss_y);
         let uv_tx =
             aom_encode::intra_uv_rd::av1_get_tx_size_uv(bsize, env.lossless, env.ss_x, env.ss_y);
         let (au, lu) = ((mi_col >> env.ss_x), ((mi_row & 31) >> env.ss_y));
@@ -421,7 +422,8 @@ fn read_plane_coeffs(
                 2 => &mut kf.ext_tx_dtt4[d.square as usize][d.intra_dir as usize],
                 _ => &mut dummy[..],
             };
-            let mut tcoeff = vec![0i32; aom_dsp::txb::txb_wide(tx_size) * aom_dsp::txb::txb_high(tx_size)];
+            let mut tcoeff =
+                vec![0i32; aom_dsp::txb::txb_wide(tx_size) * aom_dsp::txb::txb_high(tx_size)];
             let (eob, _tx_type) = read_coeffs_txb_full(
                 dec,
                 &mut kf.coeff,
@@ -480,7 +482,8 @@ fn read_plane_coeffs_uv(
             let (txb_skip_ctx, dc_sign_ctx) =
                 aom_dsp::txb::get_txb_ctx(plane_bsize, tx_size, plane, &above, &left);
             let mut dummy = [0u16; 8];
-            let mut tcoeff = vec![0i32; aom_dsp::txb::txb_wide(tx_size) * aom_dsp::txb::txb_high(tx_size)];
+            let mut tcoeff =
+                vec![0i32; aom_dsp::txb::txb_wide(tx_size) * aom_dsp::txb::txb_high(tx_size)];
             let (eob, tx_type) = read_coeffs_txb_full(
                 dec,
                 &mut kf.coeff,

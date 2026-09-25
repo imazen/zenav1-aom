@@ -41,12 +41,24 @@ fn y4m_to_rgb(path: &str) -> (Vec<u8>, usize, usize) {
     let mut w = 0usize;
     let mut h = 0usize;
     for tok in hdr.split_whitespace() {
-        if let Some(v) = tok.strip_prefix('W') { w = v.parse().unwrap_or(0); }
-        if let Some(v) = tok.strip_prefix('H') { h = v.parse().unwrap_or(0); }
+        if let Some(v) = tok.strip_prefix('W') {
+            w = v.parse().unwrap_or(0);
+        }
+        if let Some(v) = tok.strip_prefix('H') {
+            h = v.parse().unwrap_or(0);
+        }
     }
     assert!(w > 0 && h > 0, "y4m dims");
-    assert!(hdr.contains("C444"), "expected C444 y4m from aomdec, got: {hdr}");
-    let frame_hdr = data[hdr_end + 1..].iter().position(|&b| b == b'\n').expect("FRAME") + hdr_end + 2;
+    assert!(
+        hdr.contains("C444"),
+        "expected C444 y4m from aomdec, got: {hdr}"
+    );
+    let frame_hdr = data[hdr_end + 1..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .expect("FRAME")
+        + hdr_end
+        + 2;
     let n = w * h;
     let (yp, up, vp) = (
         &data[frame_hdr..frame_hdr + n],
@@ -66,7 +78,9 @@ fn y4m_to_rgb(path: &str) -> (Vec<u8>, usize, usize) {
 }
 
 fn read_png(path: &str) -> (Vec<u8>, usize, usize) {
-    let dec = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).expect("png open")));
+    let dec = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(path).expect("png open"),
+    ));
     let mut reader = dec.read_info().expect("png info");
     let mut buf = vec![0u8; reader.output_buffer_size().expect("size")];
     let info = reader.next_frame(&mut buf).expect("png frame");
@@ -75,7 +89,9 @@ fn read_png(path: &str) -> (Vec<u8>, usize, usize) {
         png::ColorType::Rgb => buf[..w * h * 3].to_vec(),
         png::ColorType::Rgba => {
             let mut o = Vec::with_capacity(w * h * 3);
-            for c in buf[..w * h * 4].chunks_exact(4) { o.extend_from_slice(&c[..3]); }
+            for c in buf[..w * h * 4].chunks_exact(4) {
+                o.extend_from_slice(&c[..3]);
+            }
             o
         }
         other => panic!("unsupported png color type {other:?}"),
@@ -90,17 +106,23 @@ fn bytemuck_cast(v: &[u8]) -> &[[u8; 3]] {
 }
 
 static BAKE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-fn bake_bytes() -> &'static [u8] { BAKE.get().expect("bake").as_slice() }
+fn bake_bytes() -> &'static [u8] {
+    BAKE.get().expect("bake").as_slice()
+}
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (corpus, targets_s, k_s, out_path) = (&a[1], &a[2], &a[3], &a[4]);
     let k: u8 = k_s.parse().expect("max_encodes");
-    let targets: Vec<f64> = targets_s.split(',').map(|t| t.parse().expect("target")).collect();
+    let targets: Vec<f64> = targets_s
+        .split(',')
+        .map(|t| t.parse().expect("target"))
+        .collect();
     let bake_path = std::env::var("ZQ_BAKE").unwrap_or_else(|_| {
         "/mnt/v/output/zensim/bakes/sdr-pure-2026-08-28/W10L9PH_s4004_packed.bin".into()
     });
-    BAKE.set(std::fs::read(&bake_path).expect("bake read")).unwrap();
+    BAKE.set(std::fs::read(&bake_path).expect("bake read"))
+        .unwrap();
     let params = zensim::profile::ProfileParams::builder()
         .mlp(bake_bytes)
         .skip_score_mapping(true)
@@ -109,12 +131,19 @@ fn main() {
         .compute_iw_features(true)
         .build();
     let params: &'static zensim::profile::ProfileParams = Box::leak(Box::new(params));
-    let profile = ZensimProfile::Custom { params, name: "aom-zq-census" };
+    let profile = ZensimProfile::Custom {
+        params,
+        name: "aom-zq-census",
+    };
     let z = Zensim::new(profile);
     let tmp = std::env::var("ZQ_TMP").unwrap_or_else(|_| "/home/lilith/tmp/aomzq".into());
     std::fs::create_dir_all(&tmp).expect("tmp dir");
     let mut out = std::fs::File::create(out_path).expect("out tsv");
-    writeln!(out, "image\tclass\ttarget\tqindex\tachieved\tencodes\tbytes").unwrap();
+    writeln!(
+        out,
+        "image\tclass\ttarget\tqindex\tachieved\tencodes\tbytes"
+    )
+    .unwrap();
 
     for line in std::fs::read_to_string(corpus).expect("corpus").lines() {
         let mut f = line.split('\t');
@@ -128,12 +157,26 @@ fn main() {
         // Roundtrip matrix gate at min-q (near-lossless): fails loud on drift.
         let (rt, gate_bytes) = trial_encode(&src_y4m, 0, &tmp, name);
         assert!(gate_bytes > 0, "gate encode produced no bytes");
-        let maxd = px.iter().zip(rt.0.iter()).map(|(a, b)| (*a as i16 - *b as i16).unsigned_abs()).max().unwrap();
-        assert!(maxd <= 12, "{name}: roundtrip max diff {maxd} > 12 — matrix drift or encode fault");
+        let maxd = px
+            .iter()
+            .zip(rt.0.iter())
+            .map(|(a, b)| (*a as i16 - *b as i16).unsigned_abs())
+            .max()
+            .unwrap();
+        assert!(
+            maxd <= 12,
+            "{name}: roundtrip max diff {maxd} > 12 — matrix drift or encode fault"
+        );
 
         for &t in &targets {
             let mut last_bytes = 0u64;
-            let opts = TargetOptions { min_qindex: 0, max_qindex: 63, tolerance: 0.0, max_encodes: k, qindex_start: None };
+            let opts = TargetOptions {
+                min_qindex: 0,
+                max_qindex: 63,
+                tolerance: 0.0,
+                max_encodes: k,
+                qindex_start: None,
+            };
             let mut best_seen: Option<(f64, u8, u64)> = None;
             let r = search_target_qindex::<_, String>(t, &opts, |qi| {
                 let (dec, nbytes) = trial_encode(&src_y4m, qi, &tmp, name);
@@ -146,8 +189,12 @@ fn main() {
                 let feats = v2.features();
                 let sc = zensim::score_features_with_profile(profile, feats, w as u32, h as u32)
                     .map_err(|e| format!("forward failed: {e:?}"))?;
-                let better = best_seen.map(|(bs, _, _)| (sc - t).abs() < (bs - t).abs()).unwrap_or(true);
-                if better { best_seen = Some((sc, qi, nbytes)); }
+                let better = best_seen
+                    .map(|(bs, _, _)| (sc - t).abs() < (bs - t).abs())
+                    .unwrap_or(true);
+                if better {
+                    best_seen = Some((sc, qi, nbytes));
+                }
                 Ok(sc)
             })
             .expect("search failed");
@@ -167,19 +214,34 @@ fn trial_encode(src_y4m: &str, q: u8, tmp: &str, name: &str) -> ((Vec<u8>, usize
         .args([
             // cq-level alone pins the operating point (min/max-q equal is
             // refused by aomenc); the knob only needs monotonicity.
-            "--passes=1", "--end-usage=q", &format!("--cq-level={q}"),
-            "--cpu-used=6", "--threads=1", "--limit=1", "--ivf",
-            "-o", &ivf, src_y4m,
+            "--passes=1",
+            "--end-usage=q",
+            &format!("--cq-level={q}"),
+            "--cpu-used=6",
+            "--threads=1",
+            "--limit=1",
+            "--ivf",
+            "-o",
+            &ivf,
+            src_y4m,
         ])
         .output()
         .expect("aomenc spawn");
-    assert!(st.status.success(), "aomenc failed: {}", String::from_utf8_lossy(&st.stderr));
+    assert!(
+        st.status.success(),
+        "aomenc failed: {}",
+        String::from_utf8_lossy(&st.stderr)
+    );
     let nbytes = std::fs::metadata(&ivf).expect("ivf meta").len();
     let st = Command::new("aomdec")
         .args(["-o", &dec_y4m, &ivf])
         .output()
         .expect("aomdec spawn");
-    assert!(st.status.success(), "aomdec failed: {}", String::from_utf8_lossy(&st.stderr));
+    assert!(
+        st.status.success(),
+        "aomdec failed: {}",
+        String::from_utf8_lossy(&st.stderr)
+    );
     let dec = y4m_to_rgb(&dec_y4m);
     let _ = std::fs::remove_file(&ivf);
     let _ = std::fs::remove_file(&dec_y4m);

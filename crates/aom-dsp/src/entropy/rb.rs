@@ -45,7 +45,6 @@ impl<'a> ReadBitBuffer<'a> {
         }
     }
 
-
     /// `aom_rb_read_bit`: one bit at the current MSB-first position.
     pub fn read_bit(&mut self) -> u32 {
         let off = self.bit_offset;

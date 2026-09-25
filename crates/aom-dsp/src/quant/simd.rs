@@ -427,8 +427,7 @@ fn quantize_fp_v3_ls<const LS: i32>(
                     let tmp_rnd = _mm256_adds_epi16(abs, $r_v);
                     let abs_q = _mm256_mulhi_epu16(tmp_rnd, $q_v);
                     q16 = _mm256_sign_epi16(abs_q, c);
-                    let abs_dq =
-                        _mm256_srli_epi16::<1>(_mm256_mullo_epi16(abs_q, $d_v));
+                    let abs_dq = _mm256_srli_epi16::<1>(_mm256_mullo_epi16(abs_q, $d_v));
                     dq16 = _mm256_sign_epi16(abs_dq, c);
                     nz = _mm256_cmpgt_epi16(abs_q, zero);
                 } else {
@@ -806,14 +805,8 @@ fn quantize_fp_impl_neon(
             let c = load8(&coeff[i * 8..]);
             let sign = vshrq_n_s16::<15>(c);
             let abs = vabsq_s16(c);
-            let mask = vcgeq_s16(
-                abs,
-                vshlq_s16(v_dequant, vdupq_n_s16((-(1 + $ls)) as i16)),
-            );
-            let tmp = vandq_s16(
-                vqaddq_s16(abs, v_round),
-                vreinterpretq_s16_u16(mask),
-            );
+            let mask = vcgeq_s16(abs, vshlq_s16(v_dequant, vdupq_n_s16((-(1 + $ls)) as i16)));
+            let tmp = vandq_s16(vqaddq_s16(abs, v_round), vreinterpretq_s16_u16(mask));
             let tmp2 = vqdmulhq_s16(vshlq_s16(tmp, vdupq_n_s16(($ls - 1) as i16)), v_quant);
             let nz = vcgtq_s16(tmp2, zero);
             let qc = vsubq_s16(veorq_s16(tmp2, sign), sign);
@@ -821,10 +814,7 @@ fn quantize_fp_impl_neon(
                 vreinterpretq_u16_s16(vmulq_s16(tmp2, v_dequant)),
                 vdupq_n_s16((-$ls) as i16),
             );
-            let dqc = vsubq_s16(
-                veorq_s16(vreinterpretq_s16_u16(abs_dq), sign),
-                sign,
-            );
+            let dqc = vsubq_s16(veorq_s16(vreinterpretq_s16_u16(abs_dq), sign), sign);
             store8(&mut qcoeff[i * 8..], qc);
             store8(&mut dqcoeff[i * 8..], dqc);
             eobmax = lane_eob(&i8v[i], eobmax, nz);
@@ -840,23 +830,20 @@ fn quantize_fp_impl_neon(
                 vshlq_n_u16::<1>(vreinterpretq_u16_s16(abs)),
                 vshrq_n_u16::<2>(vreinterpretq_u16_s16(v_dequant)),
             );
-            let tmp = vandq_s16(
-                vqaddq_s16(abs, v_round),
-                vreinterpretq_s16_u16(mask),
-            );
+            let tmp = vandq_s16(vqaddq_s16(abs, v_round), vreinterpretq_s16_u16(mask));
             let tmp2 = vorrq_s16(
                 vshlq_n_s16::<1>(vqdmulhq_s16(tmp, v_quant)),
-                vreinterpretq_s16_u16(vshrq_n_u16::<14>(vreinterpretq_u16_s16(
-                    vmulq_s16(tmp, v_quant),
-                ))),
+                vreinterpretq_s16_u16(vshrq_n_u16::<14>(vreinterpretq_u16_s16(vmulq_s16(
+                    tmp, v_quant,
+                )))),
             );
             let nz = vcgtq_s16(tmp2, zero);
             let qc = vsubq_s16(veorq_s16(tmp2, sign), sign);
             let abs_dq = vorrq_s16(
                 vshlq_n_s16::<13>(vqdmulhq_s16(tmp2, v_dequant)),
-                vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(
-                    vmulq_s16(tmp2, v_dequant),
-                ))),
+                vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(vmulq_s16(
+                    tmp2, v_dequant,
+                )))),
             );
             let dqc = vsubq_s16(veorq_s16(abs_dq, sign), sign);
             store8(&mut qcoeff[i * 8..], qc);

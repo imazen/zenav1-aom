@@ -12,13 +12,25 @@
 //! set below is asserted EQUAL to what is observed, so a cell that closes (or
 //! a new one that opens) fails loudly and gets re-pinned with its KB.
 
-use aom_bench::{stream_allows_screen_content_tools, EncodeCell, ToggleKnobs};
+use aom_bench::{EncodeCell, ToggleKnobs, stream_allows_screen_content_tools};
 use aom_sys_ref as c;
 
 /// (label, vector, crop (w, h, x, y), cq, speed) — the two KB-13 cells.
 const CELLS: &[(&str, &str, (usize, usize, usize, usize), i32, i32)] = &[
-    ("kb13_q00_128", "av1-1-b8-00-quantizer-00", (128, 128, 64, 64), 63, 3),
-    ("kb13_grain_64", "av1-1-b8-23-film_grain-50", (64, 64, 96, 64), 63, 3),
+    (
+        "kb13_q00_128",
+        "av1-1-b8-00-quantizer-00",
+        (128, 128, 64, 64),
+        63,
+        3,
+    ),
+    (
+        "kb13_grain_64",
+        "av1-1-b8-23-film_grain-50",
+        (64, 64, 96, 64),
+        63,
+        3,
+    ),
 ];
 
 /// Cells still diverging, as (label, byte delta port − oracle).

@@ -33,13 +33,13 @@
 //!   eligible, run i16 lanes far outside their proof, and diverge here.
 
 use aom_dsp::cdef::{
-    CDEF_VERY_LARGE, cdef_find_dir, cdef_find_dir_scalar, cdef_find_dir_simd_eligible,
-    cdef_find_dir_took_simd_path,
+    cdef_find_dir, cdef_find_dir_scalar, cdef_find_dir_simd_eligible, cdef_find_dir_took_simd_path,
+    CDEF_VERY_LARGE,
 };
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -155,7 +155,8 @@ fn sweep(tier: &dyn core::fmt::Display, vec_live: bool) -> Totals {
                 let took_simd = cdef_find_dir_took_simd_path(&img, stride, coeff_shift);
                 if vec_live {
                     assert_eq!(
-                        took_simd, eligible,
+                        took_simd,
+                        eligible,
                         "[{tier}] routing diverged from cdef_find_dir_simd_eligible: \
                          cs={coeff_shift} stride={stride} flavour={}",
                         it % 9
@@ -169,7 +170,8 @@ fn sweep(tier: &dyn core::fmt::Display, vec_live: bool) -> Totals {
                 let got = cdef_find_dir(&img, stride, coeff_shift);
                 let want = cdef_find_dir_scalar(&img, stride, coeff_shift);
                 assert_eq!(
-                    got, want,
+                    got,
+                    want,
                     "[{tier}] cdef_find_dir divergence: cs={coeff_shift} stride={stride} \
                      flavour={} eligible={eligible} img={:?}",
                     it % 9,
@@ -218,7 +220,11 @@ fn assert_non_vacuous(simd_perms: usize) {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
 }
 

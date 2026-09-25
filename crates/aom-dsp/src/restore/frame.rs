@@ -23,12 +23,12 @@
 //! /writing up to 18/15 columns past the plane's right edge — dead values,
 //! but the memory must exist).
 
-use crate::restore::sgr::apply_selfguided_restoration;
-use crate::restore::wiener::{WienerScratch, wiener_convolve_add_src_into};
 use crate::entropy::lr::{
     LrFrameConfig, LrUnitInfo, RESTORATION_PROC_UNIT_SIZE, RESTORATION_UNIT_OFFSET, RESTORE_NONE,
     RESTORE_SGRPROJ, RESTORE_WIENER,
 };
+use crate::restore::sgr::apply_selfguided_restoration;
+use crate::restore::wiener::{wiener_convolve_add_src_into, WienerScratch};
 
 /// `RESTORATION_BORDER` / `RESTORATION_CTX_VERT` / `RESTORATION_EXTRA_HORZ`.
 const RESTORATION_BORDER: usize = 3;
@@ -217,7 +217,10 @@ fn save_deblock_lines<P: BndStore>(
     debug_assert!(lines_to_save == 1 || lines_to_save == 2);
     for i in 0..lines_to_save {
         let d = (row0 + i) * b.stride + RESTORATION_EXTRA_HORZ;
-        P::store_row(&mut buf[d..d + plane_w], &src[(row + i) * src_stride..][..plane_w]);
+        P::store_row(
+            &mut buf[d..d + plane_w],
+            &src[(row + i) * src_stride..][..plane_w],
+        );
     }
     if lines_to_save == 1 {
         let s0 = row0 * b.stride + RESTORATION_EXTRA_HORZ;
@@ -242,7 +245,10 @@ fn save_cdef_lines<P: BndStore>(
     let row0 = RESTORATION_CTX_VERT * stripe;
     for i in 0..RESTORATION_CTX_VERT {
         let d = (row0 + i) * b.stride + RESTORATION_EXTRA_HORZ;
-        P::store_row(&mut buf[d..d + plane_w], &src[row * src_stride..][..plane_w]);
+        P::store_row(
+            &mut buf[d..d + plane_w],
+            &src[row * src_stride..][..plane_w],
+        );
     }
     extend_lines(buf, row0, b.stride, plane_w);
 }

@@ -32,11 +32,15 @@
 use aom_dsp::transform::inv_txfm2d::{av1_inv_txfm2d_add, inv_input_len, inv_txfm_valid};
 use aom_dsp::transform::txfm2d::{av1_fwd_txfm2d, fwd_txfm_valid};
 use archmage::prelude::*;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::X64V3Token;
 
-const W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 const SEED: u64 = 0x_5119_d1ff_2d00_0001;
 
@@ -104,8 +108,8 @@ impl Rng {
 fn inv_spike(k: usize, i: usize, len: usize) -> i32 {
     const B: i32 = 1 << 19; // the bd12 row clamp bound
     match k {
-        0 => B,                                             // all +bound
-        1 => -B,                                            // all -bound
+        0 => B,  // all +bound
+        1 => -B, // all -bound
         2 => {
             if i % 2 == 0 {
                 B
@@ -134,7 +138,7 @@ fn inv_spike(k: usize, i: usize, len: usize) -> i32 {
                 0
             }
         } // last-coeff spike
-        _ => B - 1,                                         // ±(2^19 - 1), the exact hi bound
+        _ => B - 1, // ±(2^19 - 1), the exact hi bound
     }
 }
 
@@ -203,7 +207,7 @@ fn inv_spike_gate48(k: usize, i: usize) -> i32 {
 /// block that only the loosest pairs decline.
 fn inv_spike_gate16(k: usize, i: usize) -> i32 {
     match k {
-        0 => 1238,   // 16x16 Dct->Adst exact edge — every pair accepts
+        0 => 1238, // 16x16 Dct->Adst exact edge — every pair accepts
         1 => -1238,
         2 => 1239,   // over 16x16's two tightest cells only
         3 => 2474,   // 16x16 Dct->Dct exact edge
@@ -282,7 +286,7 @@ fn fwd_spike_gate(k: usize, i: usize) -> i16 {
                 -300
             }
         }
-        5 => 1023,  // the rect48 accept edge
+        5 => 1023, // the rect48 accept edge
         6 => -1023,
         7 => 1024, // just over -> decline
         8 => -1024,
@@ -293,14 +297,14 @@ fn fwd_spike_gate(k: usize, i: usize) -> i16 {
                 -513 // over the 4x4/8x8 bounds -> decline there
             }
         }
-        10 => 285,  // over 16x16 DCT->ADST/ADST->DCT (284) -> decline those pairs
+        10 => 285, // over 16x16 DCT->ADST/ADST->DCT (284) -> decline those pairs
         11 => -285,
-        12 => 316,  // over ADST->ADST (315)
-        13 => -724, // over DCT->IDTX (723)
-        14 => 804,  // over ADST->IDTX (803)
+        12 => 316,   // over ADST->ADST (315)
+        13 => -724,  // over DCT->IDTX (723)
+        14 => 804,   // over ADST->IDTX (803)
         15 => -1137, // over IDTX->ADST (1136)
-        16 => 2895, // IDTX->IDTX's exact edge -> accept
-        17 => 1448, // one over 16x8 DCT->IDTX (1447) -> decline that pair
+        16 => 2895,  // IDTX->IDTX's exact edge -> accept
+        17 => 1448,  // one over 16x8 DCT->IDTX (1447) -> decline that pair
         18 => -1606, // under 16x8 ADST->IDTX (1605) -> decline
         19 => {
             if i % 3 == 0 {
@@ -361,8 +365,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                     // Accepted-side band of the inv-4x4 i16 gate (all other
                     // sizes/types just take their normal paths on these).
                     for rep in 0..2 {
-                        let input: Vec<i32> =
-                            (0..ilen).map(|_| rng.coeff_gate()).collect();
+                        let input: Vec<i32> = (0..ilen).map(|_| rng.coeff_gate()).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} randg{rep}"),
                             &input,
@@ -372,8 +375,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                     // Accepted side of the fused 8x8 i16 gate: ±737 is inside
                     // the tightest (row, col) pair bound.
                     for rep in 0..2 {
-                        let input: Vec<i32> =
-                            (0..ilen).map(|_| rng.coeff_gate8()).collect();
+                        let input: Vec<i32> = (0..ilen).map(|_| rng.coeff_gate8()).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} randg8_{rep}"),
                             &input,
@@ -381,8 +383,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                         );
                     }
                     for k in 0..4usize {
-                        let input: Vec<i32> =
-                            (0..ilen).map(|i| inv_spike_gate(k, i)).collect();
+                        let input: Vec<i32> = (0..ilen).map(|i| inv_spike_gate(k, i)).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike{k}"),
                             &input,
@@ -390,8 +391,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                         );
                     }
                     for k in 0..6usize {
-                        let input: Vec<i32> =
-                            (0..ilen).map(|i| inv_spike_gate8(k, i)).collect();
+                        let input: Vec<i32> = (0..ilen).map(|i| inv_spike_gate8(k, i)).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike8_{k}"),
                             &input,
@@ -400,8 +400,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                     }
                     // Gate-edge spikes for the fused 4x8/8x4 i16 kernel.
                     for k in 0..5usize {
-                        let input: Vec<i32> =
-                            (0..ilen).map(|i| inv_spike_gate48(k, i)).collect();
+                        let input: Vec<i32> = (0..ilen).map(|i| inv_spike_gate48(k, i)).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike48_{k}"),
                             &input,
@@ -411,8 +410,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                     // Gate-edge spikes for the fused 16x16 + 8x16/16x8 i16
                     // kernel.
                     for k in 0..8usize {
-                        let input: Vec<i32> =
-                            (0..ilen).map(|i| inv_spike_gate16(k, i)).collect();
+                        let input: Vec<i32> = (0..ilen).map(|i| inv_spike_gate16(k, i)).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} gspike16_{k}"),
                             &input,
@@ -420,8 +418,7 @@ fn all_outputs() -> Vec<(String, Vec<i64>)> {
                         );
                     }
                     for k in 0..INV_SPIKES {
-                        let input: Vec<i32> =
-                            (0..ilen).map(|i| inv_spike(k, i, ilen)).collect();
+                        let input: Vec<i32> = (0..ilen).map(|i| inv_spike(k, i, ilen)).collect();
                         push_inv(
                             format!("inv sz{tx_size} ty{tx_type} bd{bd} st{stride} spike{k}"),
                             &input,
@@ -541,9 +538,18 @@ fn txfm2d_simd_equals_scalar_at_every_permutation() {
         "the SIMD permutation ({}) must run at least once — if this fails on \
          aarch64, archmage's `testable_dispatch` dev-feature is not enabled and \
          baseline neon was excluded from the permutations",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
-    assert!(scalar_perms >= 1, "the all-off (scalar) permutation must run at least once");
-    assert!(report.permutations_run >= 2, "need >=2 permutations to compare SIMD vs scalar");
+    assert!(
+        scalar_perms >= 1,
+        "the all-off (scalar) permutation must run at least once"
+    );
+    assert!(
+        report.permutations_run >= 2,
+        "need >=2 permutations to compare SIMD vs scalar"
+    );
 }
-

@@ -8,9 +8,8 @@
 //! reconstruction primitive lives here rather than in the encoder crate, so the
 //! decoder does not have to depend on the encoder to reach it.
 
-
 use crate::transform::inv_txfm2d::{
-    InvTxfmScratch, av1_inv_txfm2d_add_into, av1_inv_txfm2d_add_u8_into,
+    av1_inv_txfm2d_add_into, av1_inv_txfm2d_add_u8_into, InvTxfmScratch,
 };
 use crate::txb::{dequant_txb, txb_high, txb_wide};
 
@@ -46,7 +45,15 @@ pub fn reconstruct_txb(
 ) {
     let mut scratch = ReconScratch::default();
     reconstruct_txb_into(
-        dst, stride, tx_size, tx_type, qcoeff, dequant, iqmatrix, bd, &mut scratch,
+        dst,
+        stride,
+        tx_size,
+        tx_type,
+        qcoeff,
+        dequant,
+        iqmatrix,
+        bd,
+        &mut scratch,
     );
 }
 
@@ -89,15 +96,7 @@ pub fn reconstruct_txb_into(
     dq.clear();
     dq.resize(area, 0);
     dequant_txb(qcoeff, dq, tx_size, dequant, iqmatrix, bd);
-    av1_inv_txfm2d_add_into(
-        dq,
-        dst,
-        stride,
-        tx_type,
-        tx_size,
-        bd,
-        &mut scratch.txfm,
-    );
+    av1_inv_txfm2d_add_into(dq, dst, stride, tx_type, tx_size, bd, &mut scratch.txfm);
 }
 
 /// bd8 LOWBD (u8 pixel) counterpart of [`reconstruct_txb_into`] — the recon

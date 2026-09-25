@@ -13,15 +13,22 @@ use aom_sys_ref as c;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
 }
 
 fn run_case(rng: &mut Lcg, n: usize, k: usize, dim: usize, lo: i16, hi: i16, shift: u8) -> usize {
     let span = (hi - lo + 1) as u32;
-    let data: Vec<i16> = (0..n * dim).map(|_| ((lo as i32 + (rng.next() % span) as i32) << shift) as i16).collect();
-    let cents: Vec<i16> = (0..k * dim).map(|_| ((lo as i32 + (rng.next() % span) as i32) << shift) as i16).collect();
+    let data: Vec<i16> = (0..n * dim)
+        .map(|_| ((lo as i32 + (rng.next() % span) as i32) << shift) as i16)
+        .collect();
+    let cents: Vec<i16> = (0..k * dim)
+        .map(|_| ((lo as i32 + (rng.next() % span) as i32) << shift) as i16)
+        .collect();
     let mut mism = 0;
     // calc_indices
     let mut ia = vec![0u8; n];
@@ -30,7 +37,10 @@ fn run_case(rng: &mut Lcg, n: usize, k: usize, dim: usize, lo: i16, hi: i16, shi
     let db = c::ref_calc_indices(&data, &cents, &mut ib, k, dim);
     if ia != ib || da != db {
         mism += 1;
-        eprintln!("calc_indices MISMATCH n={n} k={k} dim={dim} range={lo}..{hi}<<{shift}: dist port={da} c={db}, first index diff at {:?}", ia.iter().zip(&ib).position(|(a, b)| a != b));
+        eprintln!(
+            "calc_indices MISMATCH n={n} k={k} dim={dim} range={lo}..{hi}<<{shift}: dist port={da} c={db}, first index diff at {:?}",
+            ia.iter().zip(&ib).position(|(a, b)| a != b)
+        );
     }
     // k_means (both sides start from the same centroids)
     let mut ca = cents.clone();
@@ -41,7 +51,11 @@ fn run_case(rng: &mut Lcg, n: usize, k: usize, dim: usize, lo: i16, hi: i16, shi
     c::ref_k_means(&data, &mut cb, &mut jb, k, dim, 50);
     if ca[..k * dim] != cb[..k * dim] || ja != jb {
         mism += 1;
-        eprintln!("k_means MISMATCH n={n} k={k} dim={dim} range={lo}..{hi}<<{shift}: centroids port={:?} c={:?}", &ca[..k * dim], &cb[..k * dim]);
+        eprintln!(
+            "k_means MISMATCH n={n} k={k} dim={dim} range={lo}..{hi}<<{shift}: centroids port={:?} c={:?}",
+            &ca[..k * dim],
+            &cb[..k * dim]
+        );
     }
     mism
 }
@@ -53,7 +67,13 @@ fn palette_kmeans_kernels_match_dispatched_oracle() {
     let mut mism = 0;
     let mut cases = 0;
     for &dim in &[1usize, 2] {
-        for &(lo, hi, shift) in &[(0i16, 255i16, 0u8), (0, 255, 4), (100, 105, 0), (0, 1, 0), (0, 3, 4)] {
+        for &(lo, hi, shift) in &[
+            (0i16, 255i16, 0u8),
+            (0, 255, 4),
+            (100, 105, 0),
+            (0, 1, 0),
+            (0, 3, 4),
+        ] {
             for &n in &[16usize, 64, 256, 1024, 4096] {
                 for k in 2..=8usize {
                     for _ in 0..3 {
@@ -65,5 +85,8 @@ fn palette_kmeans_kernels_match_dispatched_oracle() {
         }
     }
     eprintln!("palette k-means differential: {cases} cases, {mism} mismatching");
-    assert_eq!(mism, 0, "port palette k-means kernels diverge from the dispatched oracle");
+    assert_eq!(
+        mism, 0,
+        "port palette k-means kernels diverge from the dispatched oracle"
+    );
 }

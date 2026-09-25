@@ -408,9 +408,13 @@ pub fn av1_set_quantizer(
     // Select the luma/chroma QM formulas (function-pointer selection in C).
     let luma = |qi: i32| -> i32 {
         match tuning {
-            QuantTuning::Ssimulacra2 => aom_get_qmlevel_luma_ssimulacra2(qi, min_qmlevel, max_qmlevel),
+            QuantTuning::Ssimulacra2 => {
+                aom_get_qmlevel_luma_ssimulacra2(qi, min_qmlevel, max_qmlevel)
+            }
             QuantTuning::Iq => aom_get_qmlevel_allintra(qi, min_qmlevel, max_qmlevel),
-            QuantTuning::Psnr if is_allintra => aom_get_qmlevel_allintra(qi, min_qmlevel, max_qmlevel),
+            QuantTuning::Psnr if is_allintra => {
+                aom_get_qmlevel_allintra(qi, min_qmlevel, max_qmlevel)
+            }
             QuantTuning::Psnr => aom_get_qmlevel(qi, min_qmlevel, max_qmlevel),
         }
     };

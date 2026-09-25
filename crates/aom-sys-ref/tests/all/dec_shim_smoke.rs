@@ -140,5 +140,8 @@ fn cx_ctrl_ids_match_reference_headers() {
         );
     }
     // Probe indices beyond the table are unmapped.
-    assert_eq!(ref_cx_ctrl_id_by_probe(cx_ctrl::PROBE_TABLE.len() as i32), -1);
+    assert_eq!(
+        ref_cx_ctrl_id_by_probe(cx_ctrl::PROBE_TABLE.len() as i32),
+        -1
+    );
 }

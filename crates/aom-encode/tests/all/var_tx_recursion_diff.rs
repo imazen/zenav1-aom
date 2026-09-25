@@ -15,21 +15,33 @@
 //! unported); the active speed-0 early-terms (adaptive_txb_search_level=1,
 //! txb_split_cap=1) are transcribed on both sides.
 
-use aom_encode::BlockContext;
-use aom_encode::rd::rdcost;
-use aom_encode::var_tx::{InterLeafInputs, VarTxEnv, pick_recursive_tx_size_type_yrd, search_tx_type_inter};
 use aom_dsp::entropy::partition::{txfm_partition_context, txfm_partition_update};
 use aom_dsp::quant::{Dequants, PlaneQuantRows, Quants, av1_build_quantizer, set_q_index};
 use aom_dsp::txb::{CoeffCostSet, TxTypeCosts, fill_tx_type_costs, get_txb_ctx};
+use aom_encode::BlockContext;
+use aom_encode::rd::rdcost;
+use aom_encode::var_tx::{
+    InterLeafInputs, VarTxEnv, pick_recursive_tx_size_type_yrd, search_tx_type_inter,
+};
 
-const TXS_W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const TXS_H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const TXS_W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const TXS_H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 const TX_WU: [usize; 19] = [1, 2, 4, 8, 16, 1, 2, 2, 4, 4, 8, 8, 16, 1, 4, 2, 8, 4, 16];
 const TX_HU: [usize; 19] = [1, 2, 4, 8, 16, 2, 1, 4, 2, 8, 4, 16, 8, 4, 1, 8, 2, 16, 4];
 const SUB_TX: [usize; 19] = [0, 0, 1, 2, 3, 0, 0, 1, 1, 2, 2, 3, 3, 5, 6, 7, 8, 9, 10];
-const MAX_RECT: [usize; 22] = [0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18];
-const BLK_W: [usize; 22] = [4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64];
-const BLK_H: [usize; 22] = [4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16];
+const MAX_RECT: [usize; 22] = [
+    0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18,
+];
+const BLK_W: [usize; 22] = [
+    4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,
+];
+const BLK_H: [usize; 22] = [
+    4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 64, 32, 64, 128, 64, 128, 16, 4, 32, 8, 64, 16,
+];
 
 struct Rng(u64);
 impl Rng {
@@ -117,10 +129,22 @@ struct Rd {
 }
 impl Rd {
     fn init() -> Self {
-        Rd { rate: 0, dist: 0, sse: 0, skip: true, zero_rate: 0 }
+        Rd {
+            rate: 0,
+            dist: 0,
+            sse: 0,
+            skip: true,
+            zero_rate: 0,
+        }
     }
     fn invalid() -> Self {
-        Rd { rate: i32::MAX, dist: i64::MAX, sse: i64::MAX, skip: false, zero_rate: 0 }
+        Rd {
+            rate: i32::MAX,
+            dist: i64::MAX,
+            sse: i64::MAX,
+            skip: false,
+            zero_rate: 0,
+        }
     }
     fn merge(&mut self, s: &Rd) {
         if self.rate == i32::MAX || s.rate == i32::MAX {
@@ -165,7 +189,12 @@ fn c_try_no_split(
     let residual = extract_i16(c.residual, c.res_stride, br, bc, w, h);
     let pred = extract_u16(c.pred, c.pred_stride, br, bc, w, h);
     let src_off = c.src_off + 4 * br * c.src_stride + 4 * bc;
-    let bctx = BlockContext { above: &ta[bc..], left: &tl[br..], plane: 0, plane_bsize: c.bsize };
+    let bctx = BlockContext {
+        above: &ta[bc..],
+        left: &tl[br..],
+        plane: 0,
+        plane_bsize: c.bsize,
+    };
     let (skip_ctx, _) = get_txb_ctx(c.bsize, tx_size, 0, &ta[bc..], &tl[br..]);
     let zero_blk_rate = c.coeff_costs.tables(tx_size).txb_skip[skip_ctx as usize * 2 + 1];
 
@@ -208,11 +237,17 @@ fn c_try_no_split(
     };
     let mut rd = Rd::init();
     rd.zero_rate = zero_blk_rate;
-    rd.merge(&Rd { rate: leaf.rate, dist: leaf.dist, sse: leaf.sse, skip: leaf.skip_txfm, zero_rate: 0 });
+    rd.merge(&Rd {
+        rate: leaf.rate,
+        dist: leaf.dist,
+        sse: leaf.sse,
+        skip: leaf.skip_txfm,
+        zero_rate: 0,
+    });
 
     let mut eob = leaf.best_eob;
-    let pick_skip = rd.skip
-        || rd_of(c.rdmult, rd.rate, rd.dist) >= rd_of(c.rdmult, zero_blk_rate, rd.sse);
+    let pick_skip =
+        rd.skip || rd_of(c.rdmult, rd.rate, rd.dist) >= rd_of(c.rdmult, zero_blk_rate, rd.sse);
     if pick_skip {
         rd.rate = zero_blk_rate;
         rd.dist = rd.sse;
@@ -220,8 +255,8 @@ fn c_try_no_split(
     }
     rd.skip = pick_skip;
     if tx_size > 0 && depth < 2 {
-        rd.rate =
-            ((rd.rate as i64) + c.txfm_partition_cost[part_ctx][0] as i64).min(i32::MAX as i64) as i32;
+        rd.rate = ((rd.rate as i64) + c.txfm_partition_cost[part_ctx][0] as i64)
+            .min(i32::MAX as i64) as i32;
     }
     // C keeps the SEARCHED context for the siblings: `no_split->txb_entropy_ctx =
     // p->txb_entropy_ctx[block]` (tx_search.c:2447) — pick_skip_txfm zeroes only
@@ -295,10 +330,29 @@ fn c_select_tx_block(
                     col += sw;
                     continue;
                 }
-                let child_prev = if nblks > 0 && no_rd != i64::MAX { no_rd / nblks } else { i64::MAX };
-                let child_ref = if inner_ref == i64::MAX { i64::MAX } else { inner_ref - split_rdcost };
-                let (cs, cv) =
-                    c_select_tx_block(c, or, oc, sub, depth + 1, ta, tl, txa, txl, child_prev, child_ref);
+                let child_prev = if nblks > 0 && no_rd != i64::MAX {
+                    no_rd / nblks
+                } else {
+                    i64::MAX
+                };
+                let child_ref = if inner_ref == i64::MAX {
+                    i64::MAX
+                } else {
+                    inner_ref - split_rdcost
+                };
+                let (cs, cv) = c_select_tx_block(
+                    c,
+                    or,
+                    oc,
+                    sub,
+                    depth + 1,
+                    ta,
+                    tl,
+                    txa,
+                    txl,
+                    child_prev,
+                    child_ref,
+                );
                 if !cv {
                     ok = false;
                     break 'outer;
@@ -361,9 +415,24 @@ fn c_select_size_type(
     while idy < c.max_bh {
         let mut idx = 0;
         while idx < c.max_bw {
-            let best = if ref_best_rd == i64::MAX { i64::MAX } else { ref_best_rd - skip_rd.min(no_skip_rd) };
-            let (pn, valid) =
-                c_select_tx_block(c, idy, idx, max_tx, 0, &mut ta, &mut tl, &mut txa, &mut txl, i64::MAX, best);
+            let best = if ref_best_rd == i64::MAX {
+                i64::MAX
+            } else {
+                ref_best_rd - skip_rd.min(no_skip_rd)
+            };
+            let (pn, valid) = c_select_tx_block(
+                c,
+                idy,
+                idx,
+                max_tx,
+                0,
+                &mut ta,
+                &mut tl,
+                &mut txa,
+                &mut txl,
+                i64::MAX,
+                best,
+            );
             if !valid || pn.rate == i32::MAX {
                 return None;
             }
@@ -419,9 +488,7 @@ fn pick_recursive_tx_size_type_matches_c_recursion() {
             // skipped). Combined with the split-flag cost knob this drives the
             // full split recursion + depth-2 context threading.
             let tiles = [40i32, -32, 56, -48, 28, -60, 44, -20];
-            let res_at = |r: usize, cc: usize| -> i32 {
-                tiles[(r / 8 + 3 * (cc / 8) + iter) % 8]
-            };
+            let res_at = |r: usize, cc: usize| -> i32 { tiles[(r / 8 + 3 * (cc / 8) + iter) % 8] };
             let pred: Vec<u16> = (0..stride * (bh + 8))
                 .map(|i| {
                     let (r, cc) = (i / stride, i % stride);
@@ -432,7 +499,8 @@ fn pick_recursive_tx_size_type_matches_c_recursion() {
             let residual: Vec<i16> = (0..bw * bh)
                 .map(|i| {
                     let (r, cc) = (i / bw, i % bw);
-                    (i64::from(src[src_off + r * stride + cc]) - i64::from(pred[src_off + r * stride + cc])) as i16
+                    (i64::from(src[src_off + r * stride + cc])
+                        - i64::from(pred[src_off + r * stride + cc])) as i16
                 })
                 .collect();
 
@@ -612,5 +680,8 @@ fn random_coeff_set(rng: &mut Rng) -> CoeffCostSet {
             *x = rng.cost();
         }
     }
-    CoeffCostSet { by_txs_ctx, eob_by_multi_size }
+    CoeffCostSet {
+        by_txs_ctx,
+        eob_by_multi_size,
+    }
 }

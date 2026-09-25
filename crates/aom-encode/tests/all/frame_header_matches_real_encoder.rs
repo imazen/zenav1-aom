@@ -63,8 +63,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
             hdr.obu_has_size_field,
             "shim_encode_av1_kf always sets has_size_field"
         );
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));

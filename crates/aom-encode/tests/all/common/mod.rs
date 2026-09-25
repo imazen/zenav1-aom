@@ -6,9 +6,9 @@
 //! (each test binary uses a subset).
 #![allow(dead_code)]
 
+use aom_dsp::txb::{CoeffCostSet, LvMapCoeffCost, scan, txb_high, txb_wide};
 use aom_encode::tx_search::TX_SIZE_2D_TBL;
 use aom_sys_ref as c;
-use aom_dsp::txb::{CoeffCostSet, LvMapCoeffCost, scan, txb_high, txb_wide};
 
 pub const TX_W: [usize; 19] = [
     4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
@@ -859,9 +859,7 @@ pub fn c_search_tx_type_p(
                     let px_tx_type = if plane == 0 {
                         tx_type
                     } else {
-                        aom_encode::tx_search::uv_intra_tx_type(
-                            uv_mode, lossless, tx_size, reduced,
-                        )
+                        aom_encode::tx_search::uv_intra_tx_type(uv_mode, lossless, tx_size, reduced)
                     };
                     c::ref_inv_txfm2d_add(tx_size, &dqc, &mut recon, w, px_tx_type, bd as i32);
                 }
@@ -972,7 +970,8 @@ pub fn c_txfm_rd_in_plane_uv(
     if current_rd_in > ref_best_rd {
         return None;
     }
-    let plane_bsize = aom_dsp::entropy::partition::get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
+    let plane_bsize =
+        aom_dsp::entropy::partition::get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
     let (txw, txh) = (TX_W[tx_size], TX_H[tx_size]);
     let (txwu, txhu) = (txw >> 2, txh >> 2);
     let max_w = MI_W[plane_bsize];
@@ -1214,7 +1213,14 @@ pub fn c_txfm_rd_in_plane_uv(
                     } else {
                         wtype
                     };
-                    c::ref_inv_txfm2d_add(tx_size, &wdqc, &mut tight, txw, recon_tx_type, env.bd as i32);
+                    c::ref_inv_txfm2d_add(
+                        tx_size,
+                        &wdqc,
+                        &mut tight,
+                        txw,
+                        recon_tx_type,
+                        env.bd as i32,
+                    );
                 }
                 for r in 0..txh {
                     recon[txb_off + r * env.stride..txb_off + r * env.stride + txw]
@@ -1487,7 +1493,8 @@ pub fn c_intra_model_rd_uv(
     joint_sign: i32,
     tx_size: usize,
 ) -> i64 {
-    let plane_bsize = aom_dsp::entropy::partition::get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
+    let plane_bsize =
+        aom_dsp::entropy::partition::get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
     let (txw, txh) = (TX_W[tx_size], TX_H[tx_size]);
     let (txwu, txhu) = (txw >> 2, txh >> 2);
     let n = txw * txh;
@@ -2695,7 +2702,8 @@ pub fn c_encode_intra_block_plane_uv(
     recon: &mut [u16],
 ) -> (Vec<CTxb>, Vec<i8>, Vec<i8>) {
     use aom_encode::tx_search::trellis_rdmult_intra;
-    let plane_bsize = aom_dsp::entropy::partition::get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
+    let plane_bsize =
+        aom_dsp::entropy::partition::get_plane_block_size(env.bsize, env.ss_x, env.ss_y);
     let (txw, txh) = (TX_W[tx_size], TX_H[tx_size]);
     let (txwu, txhu) = (txw >> 2, txh >> 2);
     let max_w = MI_W[plane_bsize];
@@ -3229,7 +3237,8 @@ impl COracle<'_> {
                 }
             }
             if !self.monochrome && chroma_ref {
-                let plane_bsize = aom_dsp::entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
+                let plane_bsize =
+                    aom_dsp::entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
                 let (pmw, pmh) = (MI_W[plane_bsize], MI_H[plane_bsize]);
                 let (ptxwu, ptxhu) = (TX_W[uv_tx] >> 2, TX_H[uv_tx] >> 2);
                 let au = (mi_col >> ss_x) as usize;

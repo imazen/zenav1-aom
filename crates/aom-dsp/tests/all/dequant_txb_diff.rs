@@ -5,8 +5,8 @@
 //! on/off, with `qcoeff` biased to trip the 20-bit level mask, the 24-bit
 //! product mask, and the `±(1<<(7+bd))` clamp.
 
-use aom_sys_ref as c;
 use aom_dsp::txb::{dequant_txb, txb_high, txb_wide};
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {

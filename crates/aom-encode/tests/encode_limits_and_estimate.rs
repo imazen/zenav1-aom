@@ -17,7 +17,7 @@
 //! three bit depths, both superblock sizes, and the speed extremes.
 
 use aom_encode::key_frame::{
-    AllocMode, EncodeConfig, EncodeLimits, ESTIMATE_MAX_SLACK, KeyFrameConfig, KeyFrameError,
+    AllocMode, ESTIMATE_MAX_SLACK, EncodeConfig, EncodeLimits, KeyFrameConfig, KeyFrameError,
     KeyFramePlanes, encode_key_frame_with,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -117,7 +117,16 @@ fn measure_peak(cfg: &KeyFrameConfig) -> (u64, usize) {
     (peak, bytes.len())
 }
 
-fn cell(w: usize, h: usize, bd: u8, mono: bool, sx: usize, sy: usize, sb128: bool, speed: i32) -> KeyFrameConfig {
+fn cell(
+    w: usize,
+    h: usize,
+    bd: u8,
+    mono: bool,
+    sx: usize,
+    sy: usize,
+    sb128: bool,
+    speed: i32,
+) -> KeyFrameConfig {
     let mut c = KeyFrameConfig::allintra_speed0(w, h, bd, mono, sx, sy, 32);
     c.cpu_used = speed;
     c.sb_size_128 = sb128;
@@ -157,8 +166,14 @@ fn the_estimate_is_an_upper_bound_and_stays_honest() {
         ("8320x64", cell(8320, 64, 8, false, 1, 1, false, 9)),
         ("64x8320", cell(64, 8320, 8, false, 1, 1, false, 9)),
         // Threaded: each worker owns band contexts + scratch.
-        ("1024 s3 t4", threaded(cell(1024, 1024, 8, false, 1, 1, false, 3), 4)),
-        ("512 s6 t8", threaded(cell(512, 512, 8, false, 1, 1, false, 6), 8)),
+        (
+            "1024 s3 t4",
+            threaded(cell(1024, 1024, 8, false, 1, 1, false, 3), 4),
+        ),
+        (
+            "512 s6 t8",
+            threaded(cell(512, 512, 8, false, 1, 1, false, 6), 8),
+        ),
     ];
 
     // Measure EVERY cell before asserting any, so a failure prints the whole
@@ -249,7 +264,10 @@ fn every_limit_refuses_by_name_and_before_allocating() {
         ("pixels", EncodeLimits::new().with_max_pixels(1000)),
         ("width", EncodeLimits::new().with_max_width(64)),
         ("height", EncodeLimits::new().with_max_height(64)),
-        ("memory_bytes", EncodeLimits::new().with_max_memory_bytes(1024)),
+        (
+            "memory_bytes",
+            EncodeLimits::new().with_max_memory_bytes(1024),
+        ),
     ];
     for (what, limits) in cases {
         // Empty planes: a limit must be refused before a single source sample
@@ -264,7 +282,10 @@ fn every_limit_refuses_by_name_and_before_allocating() {
             KeyFrameError::LimitExceeded { what: w, .. } => assert_eq!(w, what),
             other => panic!("{what}: wrong error {other}"),
         }
-        assert!(e.to_string().contains(what), "Display must name the cap: {e}");
+        assert!(
+            e.to_string().contains(what),
+            "Display must name the cap: {e}"
+        );
         // The query must agree — that is what makes it usable for routing.
         assert!(cfg.check_limits(&limits).is_err());
     }
@@ -314,9 +335,21 @@ fn the_allocation_mode_is_honoured_and_alloc_failure_is_the_transient_case() {
     bad.cq_level = 64;
     for other in [
         bad.validate_configuration().unwrap_err(),
-        KeyFrameError::PlaneSize { plane: 0, expected: 1, got: 2 },
-        KeyFrameError::SampleRange { plane: 0, max: 255, got: 4096 },
-        KeyFrameError::LimitExceeded { what: "pixels", actual: 2, max: 1 },
+        KeyFrameError::PlaneSize {
+            plane: 0,
+            expected: 1,
+            got: 2,
+        },
+        KeyFrameError::SampleRange {
+            plane: 0,
+            max: 255,
+            got: 4096,
+        },
+        KeyFrameError::LimitExceeded {
+            what: "pixels",
+            actual: 2,
+            max: 1,
+        },
     ] {
         assert!(
             !other.is_transient(),
@@ -340,7 +373,10 @@ fn the_allocation_mode_is_honoured_and_alloc_failure_is_the_transient_case() {
         &EncodeConfig::new().with_alloc(AllocMode::Infallible),
     )
     .expect("infallible mode must still encode");
-    assert_eq!(a, b, "the allocation mode must not change a single coded byte");
+    assert_eq!(
+        a, b,
+        "the allocation mode must not change a single coded byte"
+    );
 
     // --- end to end, where the platform lets it be observed -------------
     // 65536x65536 is a SUPPORTED configuration (the dimension ceiling is
@@ -361,7 +397,9 @@ fn the_allocation_mode_is_honoured_and_alloc_failure_is_the_transient_case() {
     ) {
         Err(KeyFrameError::AllocFailed { bytes }) => {
             assert!(bytes > 0);
-            println!("pre-flight refused {est} bytes ({bytes} reserved) — mode observed end to end");
+            println!(
+                "pre-flight refused {est} bytes ({bytes} reserved) — mode observed end to end"
+            );
         }
         // The allocator GRANTED a 275 GB reservation, which means this kernel
         // overcommits. The pre-flight then correctly does not fire, and the

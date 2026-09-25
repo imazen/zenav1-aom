@@ -5,7 +5,6 @@
 //! quantizer, no quant-matrix), which is the stage directly downstream of the
 //! forward transform.
 
-
 mod build_quantizer;
 mod qm;
 mod qm_fwd_tables;
@@ -120,8 +119,9 @@ fn quantize_b_one(
     let coeff_sign = aomsign(coeff_v);
     let abs_coeff = (coeff_v ^ coeff_sign).wrapping_sub(coeff_sign);
     let tmp32 = if abs_coeff.wrapping_mul(WT) >= zbin_gate {
-        let clamped =
-            abs_coeff.wrapping_add(round_rpo).clamp(i16::MIN as i32, i16::MAX as i32) as i64;
+        let clamped = abs_coeff
+            .wrapping_add(round_rpo)
+            .clamp(i16::MIN as i32, i16::MAX as i32) as i64;
         let tmp = clamped * WT as i64;
         (((((tmp * quant_v) >> 16) + tmp) * quant_shift_v) >> shift) as i32
     } else {
@@ -189,13 +189,31 @@ pub fn aom_quantize_b_no_qmatrix(
     // block area is < 8 anyway).
     if n < 8 {
         return quantize_b_scalar(
-            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+            zbin,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
+            iscan,
+            coeff,
+            qcoeff,
+            dqcoeff,
         );
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     archmage::incant!(
         quantize_b_impl(
-            zbin, round, quant, quant_shift, dequant, log_scale, scan, iscan, coeff, qcoeff,
+            zbin,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
+            scan,
+            iscan,
+            coeff,
+            qcoeff,
             dqcoeff
         ),
         [v3, neon, scalar]
@@ -218,7 +236,16 @@ fn quantize_b_impl_scalar(
     dqcoeff: &mut [i32],
 ) -> u16 {
     quantize_b_scalar(
-        zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+        zbin,
+        round,
+        quant,
+        quant_shift,
+        dequant,
+        log_scale,
+        iscan,
+        coeff,
+        qcoeff,
+        dqcoeff,
     )
 }
 
@@ -372,7 +399,10 @@ fn quantize_b_impl_v3(
     let qs_f = lane0(quant_shift[0] as i32, quant_shift[1] as i32);
     let dq_f = lane0(dqv[0], dqv[1]);
     let (zg_a, rr_a) = (_mm256_set1_epi32(zg[1]), _mm256_set1_epi32(rr[1]));
-    let (q_a, qs_a) = (_mm256_set1_epi32(quant[1] as i32), _mm256_set1_epi32(quant_shift[1] as i32));
+    let (q_a, qs_a) = (
+        _mm256_set1_epi32(quant[1] as i32),
+        _mm256_set1_epi32(quant_shift[1] as i32),
+    );
     let dq_a = _mm256_set1_epi32(dqv[1]);
 
     let lo = _mm256_set1_epi32(i16::MIN as i32);
@@ -390,8 +420,7 @@ fn quantize_b_impl_v3(
             let sign = _mm256_srai_epi32::<31>(cv);
             let abs = _mm256_sub_epi32(_mm256_xor_si256(cv, sign), sign);
             let gate = _mm256_cmpgt_epi32(_mm256_mullo_epi32(abs, wt), $zg);
-            let clamped =
-                _mm256_min_epi32(_mm256_max_epi32(_mm256_add_epi32(abs, $rr), lo), hi);
+            let clamped = _mm256_min_epi32(_mm256_max_epi32(_mm256_add_epi32(abs, $rr), lo), hi);
             let t = _mm256_add_epi32(
                 _mm256_srai_epi32::<11>(_mm256_mullo_epi32(clamped, $q)),
                 _mm256_slli_epi32::<5>(clamped),
@@ -399,10 +428,8 @@ fn quantize_b_impl_v3(
             // Signed 32x32->64 products, even lanes directly, odd lanes via a
             // sign-extended i64 view (srli gets the lane, srai its sign).
             let pe = _mm256_mul_epi32(t, $qs);
-            let t_odd = _mm256_blend_epi32::<0xAA>(
-                _mm256_srli_epi64::<32>(t),
-                _mm256_srai_epi32::<31>(t),
-            );
+            let t_odd =
+                _mm256_blend_epi32::<0xAA>(_mm256_srli_epi64::<32>(t), _mm256_srai_epi32::<31>(t));
             // Odd lanes are always AC class (the DC lane is even), so the odd
             // product always uses the all-AC `qs_a` — `mul_epi32` reads the
             // i64-lane low halves, where a per-lane vector would supply the
@@ -424,8 +451,7 @@ fn quantize_b_impl_v3(
             _mm256_storeu_si256(q8, qc);
             _mm256_storeu_si256(d8, dq);
             let is8: &[i16; 8] = iscan[ci * 8..ci * 8 + 8].try_into().unwrap();
-            let isc =
-                _mm256_add_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(is8)), one);
+            let isc = _mm256_add_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(is8)), one);
             eob_v = _mm256_max_epi32(
                 eob_v,
                 _mm256_andnot_si256(_mm256_cmpeq_epi32(t32, zero), isc),
@@ -636,13 +662,31 @@ pub fn aom_highbd_quantize_b_no_qmatrix(
     }
     if n < 8 {
         return highbd_quantize_b_scalar(
-            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+            zbin,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
+            iscan,
+            coeff,
+            qcoeff,
+            dqcoeff,
         );
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     archmage::incant!(
         highbd_quantize_b_impl(
-            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff
+            zbin,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
+            iscan,
+            coeff,
+            qcoeff,
+            dqcoeff
         ),
         [v3, scalar]
     )
@@ -663,7 +707,16 @@ fn highbd_quantize_b_impl_scalar(
     dqcoeff: &mut [i32],
 ) -> u16 {
     highbd_quantize_b_scalar(
-        zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+        zbin,
+        round,
+        quant,
+        quant_shift,
+        dequant,
+        log_scale,
+        iscan,
+        coeff,
+        qcoeff,
+        dqcoeff,
     )
 }
 
@@ -804,7 +857,16 @@ fn highbd_quantize_b_impl_v3(
         || quant_shift[1] < 0
     {
         return highbd_quantize_b_scalar(
-            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+            zbin,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
+            iscan,
+            coeff,
+            qcoeff,
+            dqcoeff,
         );
     }
     let sh_cnt = _mm_cvtsi32_si128(shift);
@@ -914,8 +976,7 @@ fn highbd_quantize_b_impl_v3(
                 _mm256_storeu_si256(q8, qc);
                 _mm256_storeu_si256(d8, dq);
                 let is8: &[i16; 8] = iscan[ci * 8..ci * 8 + 8].try_into().unwrap();
-                let isc =
-                    _mm256_add_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(is8)), one);
+                let isc = _mm256_add_epi32(_mm256_cvtepi16_epi32(_mm_loadu_si128(is8)), one);
                 eob_v = _mm256_max_epi32(
                     eob_v,
                     _mm256_andnot_si256(_mm256_cmpeq_epi32(t32, zero), isc),
@@ -1460,7 +1521,16 @@ fn quantize_b_impl_neon(
     // scalar port, same policy as the v3 mirror.
     if n < 8 || n % 8 != 0 || iscan.len() < n || qcoeff.len() < n || dqcoeff.len() < n {
         return quantize_b_scalar(
-            zbin, round, quant, quant_shift, dequant, log_scale, iscan, coeff, qcoeff, dqcoeff,
+            zbin,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
+            iscan,
+            coeff,
+            qcoeff,
+            dqcoeff,
         );
     }
     let _ = scan;
@@ -1527,8 +1597,7 @@ fn quantize_b_impl_neon(
             let mut tmp = vqaddq_s16(abs, r0);
             tmp = vsraq_n_s16::<1>(tmp, vqdmulhq_s16(tmp, q0));
             if log_scale == 2 {
-                let ones =
-                    vandq_s16(vshrq_n_s16::<14>(vmulq_s16(tmp, qs0)), vdupq_n_s16(1));
+                let ones = vandq_s16(vshrq_n_s16::<14>(vmulq_s16(tmp, qs0)), vdupq_n_s16(1));
                 tmp = vqdmulhq_s16(tmp, qs0);
                 tmp = vaddq_s16(vshlq_s16(tmp, vdupq_n_s16(1)), ones);
             } else {
@@ -1543,9 +1612,9 @@ fn quantize_b_impl_neon(
             } else if log_scale == 2 {
                 vorrq_s16(
                     vshlq_n_s16::<13>(vqdmulhq_s16(tmp, dq0)),
-                    vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(
-                        vmulq_s16(tmp, dq0),
-                    ))),
+                    vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(vmulq_s16(
+                        tmp, dq0,
+                    )))),
                 )
             } else {
                 vmulq_s16(tmp, dq0)
@@ -1592,9 +1661,10 @@ fn quantize_b_impl_neon(
             } else if log_scale == 2 {
                 vorrq_s16(
                     vshlq_n_s16::<13>(vqdmulhq_s16(tmp, v_dequant_a)),
-                    vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(
-                        vmulq_s16(tmp, v_dequant_a),
-                    ))),
+                    vreinterpretq_s16_u16(vshrq_n_u16::<2>(vreinterpretq_u16_s16(vmulq_s16(
+                        tmp,
+                        v_dequant_a,
+                    )))),
                 )
             } else {
                 vmulq_s16(tmp, v_dequant_a)
@@ -1603,8 +1673,7 @@ fn quantize_b_impl_neon(
             store8(&mut qcoeff[i * 8..], qc);
             store8(&mut dqcoeff[i * 8..], dqc);
             let nz_mask = vandq_u16(vcgtq_s16(tmp, zero), cond);
-            let isc =
-                vld1q_s16(<&[i16; 8]>::try_from(&iscan[i * 8..i * 8 + 8]).unwrap());
+            let isc = vld1q_s16(<&[i16; 8]>::try_from(&iscan[i * 8..i * 8 + 8]).unwrap());
             let m = vmaxq_s16(isc, eobmax);
             eobmax = vbslq_s16(nz_mask, m, eobmax);
         } else {

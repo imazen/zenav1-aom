@@ -18,17 +18,6 @@
 //! This file is OWNED by the C4 tune-family track. Every test asserts real
 //! byte-identity — no `#[ignore]`, no weakened asserts, no graceful skips.
 
-use aom_encode::encode_intra::TrellisOptType;
-use aom_encode::encode_sb::SbEncodeEnv;
-use aom_encode::intra_uv_rd::UvLoopPolicy;
-use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
-use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
-use aom_encode::pack::pack_tile;
-use aom_encode::partition_pick::PickFrameCfg;
-use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
-use aom_encode::real_costs::derive_real_costs;
-use aom_encode::speed_features::SpeedFeatures;
-use aom_encode::TuneKnobs;
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
@@ -40,6 +29,17 @@ use aom_dsp::entropy::rb::ReadBitBuffer;
 use aom_dsp::quant::{
     Dequants, QuantTuning, Quants, av1_build_quantizer, av1_set_quantizer, set_q_index,
 };
+use aom_encode::TuneKnobs;
+use aom_encode::encode_intra::TrellisOptType;
+use aom_encode::encode_sb::SbEncodeEnv;
+use aom_encode::intra_uv_rd::UvLoopPolicy;
+use aom_encode::lf_search::{LfSearchFrame, build_lf_mi_grid, pick_filter_level};
+use aom_encode::obu_assemble::assemble_frame_obu_payload_single_tile;
+use aom_encode::pack::pack_tile;
+use aom_encode::partition_pick::PickFrameCfg;
+use aom_encode::rd::{EncMode, FrameUpdateType, TuneMetric, av1_compute_rd_mult_based_on_qindex};
+use aom_encode::real_costs::derive_real_costs;
+use aom_encode::speed_features::SpeedFeatures;
 use aom_sys_ref as c;
 
 const OBU_SEQUENCE_HEADER: u32 = 1;
@@ -56,8 +56,8 @@ fn walk_obus(bytes: &[u8]) -> Vec<(u32, &[u8])> {
         let hdr = read_obu_header(&bytes[pos..]).expect("valid OBU header");
         let after_header = pos + hdr.header_len;
         assert!(hdr.obu_has_size_field, "shim always sets has_size_field");
-        let (size, size_bytes) =
-            aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..]).expect("valid leb128 size");
+        let (size, size_bytes) = aom_dsp::entropy::leb128::uleb_decode(&bytes[after_header..])
+            .expect("valid leb128 size");
         let payload_start = after_header + size_bytes;
         let payload_end = payload_start + size as usize;
         out.push((hdr.obu_type, &bytes[payload_start..payload_end]));
@@ -303,7 +303,10 @@ fn run_tune_case(
         "tune gates run lossy cells only (qindex > 0)"
     );
     let tiles_log2 = p.tile_info.log2_cols + p.tile_info.log2_rows;
-    assert_eq!(tiles_log2, 0, "single-tile envelope: expected exactly 1 tile");
+    assert_eq!(
+        tiles_log2, 0,
+        "single-tile envelope: expected exactly 1 tile"
+    );
 
     let allintra = true;
     let fmt = if mono {
@@ -341,7 +344,10 @@ fn run_tune_case(
         cc.separate_uv_delta_q,
         /*delta_q_present=*/ false,
     );
-    assert_eq!(settings.base_qindex, qindex, "{ctx}: base qindex passthrough");
+    assert_eq!(
+        settings.base_qindex, qindex,
+        "{ctx}: base qindex passthrough"
+    );
     if !mono {
         // Mono streams never code chroma deltas (num_planes == 1) — the C
         // values exist but are unobservable; skip the cross-check there.
@@ -541,7 +547,7 @@ fn run_tune_case(
         )
     });
     let env = SbEncodeEnv {
-            ref_frame: None,
+        ref_frame: None,
         sb_size: SB,
         mi_rows,
         mi_cols,
@@ -607,8 +613,8 @@ fn run_tune_case(
     };
     let pick_cfg = PickFrameCfg {
         fixed_partition_size: None,
-            fs_sf: Default::default(),
-            inter: None,
+        fs_sf: Default::default(),
+        inter: None,
         mode_costs: &real.mode_costs,
         tx_size_costs: &real.tx_size_costs,
         skip_costs: &real.skip_costs,
@@ -621,7 +627,7 @@ fn run_tune_case(
         partition_cdfs: &real.partition_cdf,
         palette_costs: None,
         intrabc: None,
-            search_allow_intrabc: false,
+        search_allow_intrabc: false,
         intra_tools: Default::default(),
         allintra,
         speed,
@@ -918,7 +924,10 @@ fn encoder_gate_sharpness_e2e() {
                     let res = run_tune_case(
                         sz, sz, mono, 1, 1, cq, 8, &luma, &chroma, &chroma, &knobs, &port,
                     );
-                    results.push((format!("sharp{sharp} {tag} {sz}x{sz} cq{cq:>2}"), res.matched));
+                    results.push((
+                        format!("sharp{sharp} {tag} {sz}x{sz} cq{cq:>2}"),
+                        res.matched,
+                    ));
                 }
             }
         }
@@ -1023,11 +1032,7 @@ fn encoder_gate_chroma_deltaq_e2e() {
             chroma_deltaq: true,
             ..Default::default()
         };
-        for &(ss_x, ss_y, tag) in &[
-            (1usize, 1usize, "420"),
-            (1, 0, "422"),
-            (0, 0, "444"),
-        ] {
+        for &(ss_x, ss_y, tag) in &[(1usize, 1usize, "420"), (1, 0, "422"), (0, 0, "444")] {
             for &cq in &[12i32, 32, 50] {
                 let res = run_tune_case(
                     64, 64, false, ss_x, ss_y, cq, 8, &luma, &chroma, &chroma, &knobs, &port,
@@ -1078,7 +1083,10 @@ fn encoder_gate_tune_qm_stack_e2e() {
                     let res = run_tune_case(
                         sz, sz, false, ss_x, ss_y, cq, 8, &luma, &chroma, &chroma, &knobs, &port,
                     );
-                    results.push((format!("qmstack-{ttag} {tag} {sz}x{sz} cq{cq:>2}"), res.matched));
+                    results.push((
+                        format!("qmstack-{ttag} {tag} {sz}x{sz} cq{cq:>2}"),
+                        res.matched,
+                    ));
                 }
             }
         }
@@ -1146,7 +1154,10 @@ fn variance_boost_witness_knobs_bite() {
     let vb = enc(6, -1);
     assert_ne!(off, vb, "--deltaq-mode=6 must change the C bitstream");
     let vb200 = enc(6, 200);
-    assert_ne!(vb, vb200, "--deltaq-strength=200 must change a deltaq-6 stream");
+    assert_ne!(
+        vb, vb200,
+        "--deltaq-strength=200 must change a deltaq-6 stream"
+    );
 }
 
 /// **C4 piece 6 — `--deltaq-mode=6` DELTA_Q_VARIANCE_BOOST** (the tune
@@ -1183,9 +1194,10 @@ fn encoder_gate_variance_boost_deltaq_e2e() {
                     let res = run_tune_case(
                         sz, sz, mono, 1, 1, cq, 8, &luma, &chroma, &chroma, &knobs, &port,
                     );
-                    results.push((format!(
-                        "vboost-{stag} {tag} {sz}x{sz} cq{cq:>2}"
-                    ), res.matched));
+                    results.push((
+                        format!("vboost-{stag} {tag} {sz}x{sz} cq{cq:>2}"),
+                        res.matched,
+                    ));
                 }
             }
         }
@@ -1213,7 +1225,12 @@ fn encoder_gate_tune_composite_full_e2e() {
     let mut results: Vec<(String, bool)> = Vec::new();
     for &(qtune, ctune, ttag, adaptive) in &[
         (QuantTuning::Iq, c::AOM_TUNE_IQ, "iq", true),
-        (QuantTuning::Ssimulacra2, c::AOM_TUNE_SSIMULACRA2, "ssim2", false),
+        (
+            QuantTuning::Ssimulacra2,
+            c::AOM_TUNE_SSIMULACRA2,
+            "ssim2",
+            false,
+        ),
     ] {
         // Install the WHOLE handle_tuning bundle (AOME_SET_TUNING FIRST),
         // override ONLY CDEF off (port models no CDEF; CDEF is symbol-inert).

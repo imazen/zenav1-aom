@@ -14,8 +14,8 @@
 use aom_dsp::dist::{variance_4x4_units, variance_4x4_units_scalar};
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -84,7 +84,11 @@ fn variance_4x4_units_bit_identical_to_scalar_at_every_tier() {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(report.permutations_run >= 2);
 }

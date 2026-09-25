@@ -12,7 +12,6 @@
 //! `bhl = log2(adjusted height)` — and the levels buffer stride is
 //! `height + TX_PAD_HOR`.
 
-
 mod simd;
 mod tables;
 pub use tables::nz_map_ctx_offset;
@@ -27,7 +26,7 @@ mod read;
 pub use read::{dequant_txb, read_coeffs_txb, read_coeffs_txb_full, tx_scale};
 mod cost;
 pub use cost::{
-    CoeffCostTables, cost_coeffs_txb, cost_coeffs_txb_laplacian, cost_coeffs_txb_scratch,
+    cost_coeffs_txb, cost_coeffs_txb_laplacian, cost_coeffs_txb_scratch, CoeffCostTables,
 };
 mod prob_cost;
 pub use prob_cost::{cost_symbol, cost_tokens_from_cdf};

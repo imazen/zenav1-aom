@@ -3202,7 +3202,11 @@ pub fn read_uncompressed_header(rb: &mut ReadBitBuffer, cfg: &FrameHeaderObu) ->
     // caller supplies it as `cfg.skip_mode_allowed`; the reference-mode half is
     // the `reference_mode_select` bit just parsed. Combine them exactly as C
     // does; `p.skip_mode_allowed` carries the COMBINED value out.
-    let reference_mode_select = if !intra_only { rb.read_bit() != 0 } else { false };
+    let reference_mode_select = if !intra_only {
+        rb.read_bit() != 0
+    } else {
+        false
+    };
     let skip_mode_allowed = if cfg.derive_skip_mode_allowed {
         cfg.skip_mode_allowed && reference_mode_select
     } else {

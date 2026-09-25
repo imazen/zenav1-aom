@@ -179,13 +179,17 @@ fn run_case(rng: &mut Rng, cs: &Case) -> (bool, bool, bool) {
 
     // Side 1: lowbd u8 walk (the thing under test).
     let (mut y_lo, mut u_lo, mut v_lo) = (y8.clone(), u8p.clone(), v8.clone());
-    cdef_frame_u8(&mut y_lo, y_stride, &mut u_lo, &mut v_lo, uv_stride, &params);
+    cdef_frame_u8(
+        &mut y_lo, y_stride, &mut u_lo, &mut v_lo, uv_stride, &params,
+    );
 
     // Side 2: port highbd u16 walk (same visible pixels, PORT_PAD).
     let mut y_hi = widen(&y8, yw, yh, y_stride, PORT_PAD);
     let mut u_hi = widen(&u8p, uvw, uvh, uv_stride, PORT_PAD);
     let mut v_hi = widen(&v8, uvw, uvh, uv_stride, PORT_PAD);
-    cdef_frame(&mut y_hi, y_stride, &mut u_hi, &mut v_hi, uv_stride, &params);
+    cdef_frame(
+        &mut y_hi, y_stride, &mut u_hi, &mut v_hi, uv_stride, &params,
+    );
 
     // Side 3: REAL C lowbd walk (same visible pixels, C_PAD).
     let mut y_c = widen(&y8, yw, yh, y_stride, C_PAD);
@@ -212,14 +216,7 @@ fn run_case(rng: &mut Rng, cs: &Case) -> (bool, bool, bool) {
 
     let ctx = format!(
         "{}x{} planes={} ss={:?} damp={} skip_kind={} y={:?} uv={:?}",
-        cs.w,
-        cs.h,
-        cs.num_planes,
-        cs.ss,
-        cs.damping,
-        cs.skip_kind,
-        cs.strengths,
-        cs.uv_strengths
+        cs.w, cs.h, cs.num_planes, cs.ss, cs.damping, cs.skip_kind, cs.strengths, cs.uv_strengths
     );
     let mut changed = false;
     let mut check = |name: &str,
@@ -342,8 +339,14 @@ fn cdef_frame_u8_matches_c_lowbd_and_highbd_port() {
     // Coverage floors: the u8 walk must genuinely filter in most cases, and the
     // skip/-1 arms must all have run.
     assert!(n_changed * 2 > n, "pixel-changing floor: {n_changed}/{n}");
-    assert!(n_minus_one > 20, "-1 strength arm underexercised ({n_minus_one})");
-    assert!(n_allskip_fb > 20, "all-skip fb arm underexercised ({n_allskip_fb})");
+    assert!(
+        n_minus_one > 20,
+        "-1 strength arm underexercised ({n_minus_one})"
+    );
+    assert!(
+        n_allskip_fb > 20,
+        "all-skip fb arm underexercised ({n_allskip_fb})"
+    );
     assert!(
         skip_kind_seen.iter().all(|&k| k > 40),
         "skip kinds {skip_kind_seen:?}"

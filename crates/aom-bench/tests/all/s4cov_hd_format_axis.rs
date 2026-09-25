@@ -50,7 +50,14 @@ const CQ: i32 = 24;
 /// Mirror-tile a decoded cell up to `w x h` — same recipe as
 /// `kb36_above_720p_speed_axis::mirror_tile`, extended to carry monochrome
 /// cells through unchanged (a mono cell has no chroma planes to tile).
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -175,7 +182,11 @@ fn measure(cell: &EncodeCell, ctrls: &[(i32, i32)]) -> (Verdict, i64, String, u1
     let ms = t0.elapsed().as_millis();
     let (v, d, note) = match got {
         Ok(p) if p == real => (Verdict::Ok, 0, String::new()),
-        Ok(p) => (Verdict::Diverge, p.len() as i64 - real.len() as i64, String::new()),
+        Ok(p) => (
+            Verdict::Diverge,
+            p.len() as i64 - real.len() as i64,
+            String::new(),
+        ),
         Err(_) => (Verdict::Panic, 0, msg.lock().unwrap().clone()),
     };
     (v, d, note, ms, c_tu)
@@ -283,7 +294,11 @@ fn above_1080p_format_axis_byte_matches() {
             println!(
                 "  {tag} 1920x{h} ({}) cq{cq} cpu6: {v:?} delta {d:+} [{ms} ms]{}",
                 if h >= 1080 { ">=1080p" } else { "<1080p " },
-                if note.is_empty() { String::new() } else { format!("  [{note}]") }
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{note}]")
+                }
             );
             if v == Verdict::Panic {
                 panicked.push(format!("{} 1920x{h}: {note}", tag.trim()));
@@ -359,12 +374,26 @@ fn above_1080p_high_bitdepth_byte_matches_where_interpretable() {
                 if speed == 0 && h != 1080 {
                     continue;
                 }
-                let cell = mirror_tile(src, &format!("hdhbd_{tag}_{h}_s{speed}"), 1920, h, CQ, speed);
-                assert_eq!(cell.bd, src.bd, "the mirror-tile must preserve the bit depth");
+                let cell = mirror_tile(
+                    src,
+                    &format!("hdhbd_{tag}_{h}_s{speed}"),
+                    1920,
+                    h,
+                    CQ,
+                    speed,
+                );
+                assert_eq!(
+                    cell.bd, src.bd,
+                    "the mirror-tile must preserve the bit depth"
+                );
                 let (v, d, note, ms, _) = measure(&cell, &[]);
                 println!(
                     "  {tag} 1920x{h} cq{CQ} cpu{speed}: {v:?} delta {d:+} [{ms} ms]{}",
-                    if note.is_empty() { String::new() } else { format!("  [{note}]") }
+                    if note.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{note}]")
+                    }
                 );
                 if v == Verdict::Panic {
                     panicked.push(format!("{tag} 1920x{h} cpu{speed}: {note}"));
@@ -448,7 +477,11 @@ fn speed0_1080p_qindex_arm_localize() {
                      [predicted {}] [{ms} ms]{}",
                     4 * cq,
                     if predicted { "ARM" } else { "no-arm" },
-                    if note.is_empty() { String::new() } else { format!("  [{note}]") }
+                    if note.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{note}]")
+                    }
                 );
                 if v != Verdict::Ok {
                     fired.push(format!("{tag} {w}x{h} cq{cq} ({d:+})"));
@@ -508,7 +541,11 @@ fn speed0_1080p_band_map_is_pinned() {
                 println!(
                     "  {tag} {w}x{h} cq{cq} (qindex {}) cpu0: {v:?} delta {d:+} [{ms} ms]{}",
                     4 * cq,
-                    if note.is_empty() { String::new() } else { format!("  [{note}]") }
+                    if note.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{note}]")
+                    }
                 );
                 assert_ne!(
                     v,
@@ -590,7 +627,11 @@ fn band_1440_to_2160_speed_axis_byte_matches() {
             let (v, d, note, ms, _) = measure(&cell, &[]);
             println!(
                 "  {w}x{h} cq{CQ} cpu{speed}: {v:?} delta {d:+} [{ms} ms]{}",
-                if note.is_empty() { String::new() } else { format!("  [{note}]") }
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{note}]")
+                }
             );
             if v == Verdict::Panic {
                 panicked.push(format!("{w}x{h} cpu{speed}: {note}"));
@@ -673,7 +714,11 @@ fn crop_straddling_4k_arm_byte_matches() {
         println!(
             "  {w}x{h} (mi {mi_w}x{mi_h}, {}) cq{CQ} cpu5: {v:?} delta {d:+} [{ms} ms]{}",
             if short >= 2160 { ">=4k" } else { "<4k " },
-            if note.is_empty() { String::new() } else { format!("  [{note}]") }
+            if note.is_empty() {
+                String::new()
+            } else {
+                format!("  [{note}]")
+            }
         );
         if v != Verdict::Ok {
             bad.push(format!("{w}x{h} {v:?} ({d:+}) {note}"));

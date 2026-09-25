@@ -21,8 +21,12 @@ use aom_dsp::transform::inv_txfm2d::{
 };
 use aom_sys_ref as c;
 
-const W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 struct Rng(u64);
 impl Rng {
@@ -121,7 +125,11 @@ fn iwht4x4_lowbd_add_matches_c() {
     for stride in [4usize, 7, 16, 33] {
         for _ in 0..4000 {
             let full = rng.next() & 1 == 0;
-            let eob = if full { 2 + (rng.next() % 15) as usize } else { 1 };
+            let eob = if full {
+                2 + (rng.next() % 15) as usize
+            } else {
+                1
+            };
             let mut input = [0i32; 16];
             if full {
                 for v in input.iter_mut() {
@@ -144,10 +152,19 @@ fn iwht4x4_lowbd_add_matches_c() {
             av1_highbd_iwht4x4_add(&input, &mut want_hi, stride, eob, 8);
 
             for i in 0..4 * stride {
-                assert_eq!(got[i] as u16, want_c[i], "wht lowbd vs C: stride={stride} eob={eob} i={i}");
-                assert_eq!(got[i] as u16, want_hi[i], "wht lowbd vs highbd: stride={stride} i={i}");
+                assert_eq!(
+                    got[i] as u16, want_c[i],
+                    "wht lowbd vs C: stride={stride} eob={eob} i={i}"
+                );
+                assert_eq!(
+                    got[i] as u16, want_hi[i],
+                    "wht lowbd vs highbd: stride={stride} i={i}"
+                );
             }
         }
     }
-    assert!(full_cases > 100 && dc_cases > 100, "both WHT arms exercised");
+    assert!(
+        full_cases > 100 && dc_cases > 100,
+        "both WHT arms exercised"
+    );
 }

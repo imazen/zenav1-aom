@@ -7,12 +7,16 @@
 //! near-flat -> saturating, comparing the pruned mask + the reordered txk_map
 //! (incl. the force-keep-argmax early-return and both sort-network arms).
 
+use aom_dsp::txb::ext_tx_set_type;
 use aom_encode::prune_tx_2d::prune_tx_2d;
 use aom_sys_ref as c;
-use aom_dsp::txb::ext_tx_set_type;
 
-const TXS_W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const TXS_H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const TXS_W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const TXS_H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 /// `av1_ext_tx_used_flag[TxSetType]` (blockd.h): DTT9_IDTX_1DDCT(4)=0x0FFF, ALL16(5)=0xFFFF.
 const EXT_TX_USED_FLAG: [u16; 6] = [0x0001, 0x0201, 0x020F, 0x0E0F, 0x0FFF, 0xFFFF];
 
@@ -45,12 +49,17 @@ fn prune_tx_2d_matches_c() {
     for &tx_size in &tx_sizes {
         let (bw, bh) = (TXS_W[tx_size], TXS_H[tx_size]);
         let set = ext_tx_set_type(tx_size, true, false);
-        assert!(set == 4 || set == 5, "tx_size {tx_size} unexpected set {set}");
+        assert!(
+            set == 4 || set == 5,
+            "tx_size {tx_size} unexpected set {set}"
+        );
         let full_mask = EXT_TX_USED_FLAG[set];
 
         for iter in 0..64 {
             let amp = [2, 12, 60, 300, 1200][iter % 5];
-            let residual: Vec<i16> = (0..bw * bh).map(|_| rng.range(-amp, amp + 1) as i16).collect();
+            let residual: Vec<i16> = (0..bw * bh)
+                .map(|_| rng.range(-amp, amp + 1) as i16)
+                .collect();
             // in_mask: the full set, or a random subset (still >= a few bits).
             let in_mask = if iter % 3 == 0 {
                 full_mask
@@ -77,7 +86,11 @@ fn prune_tx_2d_matches_c() {
             }
 
             fired += 1;
-            if set == 5 { all16 += 1 } else { dtt9 += 1 }
+            if set == 5 {
+                all16 += 1
+            } else {
+                dtt9 += 1
+            }
             if c_mask.count_ones() < in_mask.count_ones() {
                 nontrivial += 1;
             }
@@ -90,5 +103,8 @@ fn prune_tx_2d_matches_c() {
     // Only TX_16X16 (tx_size_sqr == 16x16) uses DTT9 among the nnconfig sizes.
     assert!(dtt9 >= 60, "DTT9 sizes: {dtt9}");
     // The prune actually shrinks the incoming mask (real work, not a pass-through).
-    assert!(nontrivial > 20, "cases where the prune shrank the mask: {nontrivial}");
+    assert!(
+        nontrivial > 20,
+        "cases where the prune shrank the mask: {nontrivial}"
+    );
 }

@@ -10,8 +10,8 @@
 //! localize_stream_diff <port.obu> <c.obu>
 //! ```
 
-use aom_decode::frame::decode_frame_obus_prefilter;
 use aom_decode::KfTileDecode;
+use aom_decode::frame::decode_frame_obus_prefilter;
 use aom_dsp::entropy::partition::get_partition_subsize;
 
 /// MI width of each bsize enum index (decode_diff_multisb.rs's table).
@@ -44,7 +44,16 @@ fn replay(
         replay(tree, cur, mi_row, mi_col, sub, mi_rows, mi_cols, out);
         replay(tree, cur, mi_row, mi_col + hbs, sub, mi_rows, mi_cols, out);
         replay(tree, cur, mi_row + hbs, mi_col, sub, mi_rows, mi_cols, out);
-        replay(tree, cur, mi_row + hbs, mi_col + hbs, sub, mi_rows, mi_cols, out);
+        replay(
+            tree,
+            cur,
+            mi_row + hbs,
+            mi_col + hbs,
+            sub,
+            mi_rows,
+            mi_cols,
+            out,
+        );
     }
 }
 
@@ -99,9 +108,11 @@ fn compare(a: &KfTileDecode, b: &KfTileDecode, mi_rows: i32, mi_cols: i32, sb128
     // earliest leaf-level divergence.
     let mut leaf_reported = false;
     for rb in &b.blocks {
-        match a.blocks.iter().find(|x| {
-            x.mi_row == rb.mi_row && x.mi_col == rb.mi_col && x.bsize == rb.bsize
-        }) {
+        match a
+            .blocks
+            .iter()
+            .find(|x| x.mi_row == rb.mi_row && x.mi_col == rb.mi_col && x.bsize == rb.bsize)
+        {
             Some(ob) => {
                 let i = &ob.info;
                 let j = &rb.info;
@@ -126,17 +137,51 @@ fn compare(a: &KfTileDecode, b: &KfTileDecode, mi_rows: i32, mi_cols: i32, sb128
                 {
                     println!(
                         ">>> FIRST LEAF MISMATCH (mi_row={}, mi_col={}):\n  a: bsize={} part={} y_mode={} adl={} fi={}/{} tx={} uv={} cfl={}/{} pal={:?} ibc={} dv=({},{}) skip={} txbs={:?} txbs_uv={:?}\n  b: bsize={} part={} y_mode={} adl={} fi={}/{} tx={} uv={} cfl={}/{} pal={:?} ibc={} dv=({},{}) skip={} txbs={:?} txbs_uv={:?}",
-                        rb.mi_row, rb.mi_col,
-                        ob.bsize, ob.partition, i.y_mode, i.angle_delta_y, i.use_filter_intra, i.filter_intra_mode, ob.tx_size, i.uv_mode, i.cfl_alpha_idx, i.cfl_joint_sign, i.palette_size, i.use_intrabc, i.dv_row, i.dv_col, i.skip, ob.txbs, ob.txbs_uv,
-                        rb.bsize, rb.partition, j.y_mode, j.angle_delta_y, j.use_filter_intra, j.filter_intra_mode, rb.tx_size, j.uv_mode, j.cfl_alpha_idx, j.cfl_joint_sign, j.palette_size, j.use_intrabc, j.dv_row, j.dv_col, j.skip, rb.txbs, rb.txbs_uv,
+                        rb.mi_row,
+                        rb.mi_col,
+                        ob.bsize,
+                        ob.partition,
+                        i.y_mode,
+                        i.angle_delta_y,
+                        i.use_filter_intra,
+                        i.filter_intra_mode,
+                        ob.tx_size,
+                        i.uv_mode,
+                        i.cfl_alpha_idx,
+                        i.cfl_joint_sign,
+                        i.palette_size,
+                        i.use_intrabc,
+                        i.dv_row,
+                        i.dv_col,
+                        i.skip,
+                        ob.txbs,
+                        ob.txbs_uv,
+                        rb.bsize,
+                        rb.partition,
+                        j.y_mode,
+                        j.angle_delta_y,
+                        j.use_filter_intra,
+                        j.filter_intra_mode,
+                        rb.tx_size,
+                        j.uv_mode,
+                        j.cfl_alpha_idx,
+                        j.cfl_joint_sign,
+                        j.palette_size,
+                        j.use_intrabc,
+                        j.dv_row,
+                        j.dv_col,
+                        j.skip,
+                        rb.txbs,
+                        rb.txbs_uv,
                     );
                     leaf_reported = true;
                     // Dump the leaf sequence ending at the mismatch so the
                     // immediately-preceding committed leaves (the ctx writers)
                     // are visible.
-                    let idx = b.blocks.iter().position(|x| {
-                        x.mi_row == rb.mi_row && x.mi_col == rb.mi_col
-                    });
+                    let idx = b
+                        .blocks
+                        .iter()
+                        .position(|x| x.mi_row == rb.mi_row && x.mi_col == rb.mi_col);
                     if let Some(i0) = idx {
                         let lo = i0.saturating_sub(8);
                         for x in &b.blocks[lo..=i0] {
@@ -163,7 +208,11 @@ fn compare(a: &KfTileDecode, b: &KfTileDecode, mi_rows: i32, mi_cols: i32, sb128
     for (k, (x, y)) in pa.iter().zip(pb.iter()).enumerate() {
         if x != y {
             let (r, c) = (k / a.stride, k % a.stride);
-            println!("first luma recon diff at px ({c},{r}) = a:{x} b:{y}  (mi {},{})", c / 4, r / 4);
+            println!(
+                "first luma recon diff at px ({c},{r}) = a:{x} b:{y}  (mi {},{})",
+                c / 4,
+                r / 4
+            );
             return;
         }
     }
@@ -180,7 +229,10 @@ fn main() {
     let fb = std::fs::read(&a[2]).unwrap();
     let (ta, ca, _ha) = decode_frame_obus_prefilter(&fa).expect("decode a");
     let (tb, cb, _hb) = decode_frame_obus_prefilter(&fb).expect("decode b");
-    assert_eq!(ca.sb_size_128, cb.sb_size_128, "SB size differs — header-level divergence");
+    assert_eq!(
+        ca.sb_size_128, cb.sb_size_128,
+        "SB size differs — header-level divergence"
+    );
     assert_eq!((ca.mi_rows, ca.mi_cols), (cb.mi_rows, cb.mi_cols));
     println!("mi {}x{} sb128={}", ca.mi_cols, ca.mi_rows, ca.sb_size_128);
     compare(&ta, &tb, ca.mi_rows, ca.mi_cols, ca.sb_size_128);

@@ -147,7 +147,9 @@ fn real_svt_av1_intrabc_streams_round_trip_against_the_c_decoder() {
     let dav1d = std::env::var("AOM_DAV1D_BIN").ok();
     eprintln!(
         "=== SVT-AV1 IntraBC interop gate (GitHub #5) (dav1d leg: {}) ===",
-        dav1d.as_deref().unwrap_or("OFF — set AOM_DAV1D_BIN to enable")
+        dav1d
+            .as_deref()
+            .unwrap_or("OFF — set AOM_DAV1D_BIN to enable")
     );
     let dir = fixture_dir();
     let mut ran = 0usize;
@@ -261,7 +263,12 @@ fn real_svt_av1_intrabc_streams_round_trip_against_the_c_decoder() {
         // (6) optional dav1d leg — an INDEPENDENT implementation.
         if let Some(bin) = &dav1d {
             let out = std::process::Command::new(bin)
-                .args(["-i".as_ref(), path.as_os_str(), "-o".as_ref(), "/dev/null".as_ref()])
+                .args([
+                    "-i".as_ref(),
+                    path.as_os_str(),
+                    "-o".as_ref(),
+                    "/dev/null".as_ref(),
+                ])
                 .output()
                 .unwrap_or_else(|e| panic!("running {bin}: {e}"));
             assert!(

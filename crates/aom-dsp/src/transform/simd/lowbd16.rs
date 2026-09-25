@@ -202,14 +202,20 @@ fn inv_col_pass_u8_i16_core(
                 let a = i32x8::from_slice(t, &buf[base + src..base + src + 8]);
                 let b = i32x8::from_slice(t, &buf[base + src + 8..base + src + 16]);
                 let v = pack_clamp16(t, a, b);
-                if lr_flip { rev16(t, v) } else { v }
+                if lr_flip {
+                    rev16(t, v)
+                } else {
+                    v
+                }
             } else if active == 8 {
                 // col_n == 8: the whole row is one half-group.
                 let row: &[i32; 8] = buf[base..base + 8].try_into().unwrap();
                 let a = if lr_flip {
                     i32x8::from_array(
                         t,
-                        [row[7], row[6], row[5], row[4], row[3], row[2], row[1], row[0]],
+                        [
+                            row[7], row[6], row[5], row[4], row[3], row[2], row[1], row[0],
+                        ],
                     )
                 } else {
                     i32x8::from_array(t, *row)
@@ -226,7 +232,10 @@ fn inv_col_pass_u8_i16_core(
                 pack_clamp16(t, a, i32x8::zero(t))
             };
         }
-        incant!(run_inv1d_i16(kernel, &tin[..row_n], &mut tout[..row_n]), [v3, neon]);
+        incant!(
+            run_inv1d_i16(kernel, &tin[..row_n], &mut tout[..row_n]),
+            [v3, neon]
+        );
         for r in 0..row_n {
             let src = tout[if ud_flip { row_n - r - 1 } else { r }];
             // Terminal values are clamp_value outputs (i16); round_shift(_, 4)
@@ -383,12 +392,19 @@ fn inv_row_pass_i16_core(
             }
             *ti = pack_clamp16(t, a, b);
         }
-        incant!(run_inv1d_i16(kernel, &tin[..col_n], &mut tout[..col_n]), [v3, neon]);
+        incant!(
+            run_inv1d_i16(kernel, &tin[..col_n], &mut tout[..col_n]),
+            [v3, neon]
+        );
         // round_shift_array(buf_row, -shift[0]); shift[0] in {0,-1,-2}. Bit 0
         // is the scalar early return — an identity, never instantiated as a
         // shift (const-0 shift trap); 1/2 use the exact `rshift_mul` identity.
         if shift0_bit > 0 {
-            let m = if shift0_bit == 1 { rshift_mul(1) } else { rshift_mul(2) };
+            let m = if shift0_bit == 1 {
+                rshift_mul(1)
+            } else {
+                rshift_mul(2)
+            };
             for to in tout[..col_n].iter_mut() {
                 *to = mulhrs16(t, *to, m);
             }
@@ -444,8 +460,8 @@ mod tests {
     //! under AOM_FORCE_SCALAR — the permutation harness owns token state).
 
     use super::*;
-    use crate::transform::{av1_idct4, av1_idct8, av1_idct16, av1_idct32, av1_idct64};
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use crate::transform::{av1_idct16, av1_idct32, av1_idct4, av1_idct64, av1_idct8};
+    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 
     type ScalarKernel = fn(&[i32], &mut [i32], i32, &[i8]);
 
@@ -568,7 +584,9 @@ mod tests {
             [v3, neon]
         ));
         let mut sbuf = vec![-222_i32; col_n * row_n];
-        scalar_row_pass(scalar, mod_input, &mut sbuf, col_n, row_n, rect1, shift0_bit);
+        scalar_row_pass(
+            scalar, mod_input, &mut sbuf, col_n, row_n, rect1, shift0_bit,
+        );
         for r in 0..row_n {
             for c in 0..col_n {
                 assert_eq!(
@@ -637,8 +655,9 @@ mod tests {
                             i32::MAX - 1,
                             -2,
                         ];
-                        let mi: Vec<i32> =
-                            (0..col_n * row_n).map(|i| specials[i % specials.len()]).collect();
+                        let mi: Vec<i32> = (0..col_n * row_n)
+                            .map(|i| specials[i % specials.len()])
+                            .collect();
                         incant!(
                             assert_row_pass(
                                 name,
@@ -712,8 +731,9 @@ mod tests {
         for (name, n, scalar, kernel) in cases() {
             // (a) dense random over the FULL i16 lane domain.
             for rep in 0..64 {
-                let cols: Vec<[i16; 16]> =
-                    (0..n).map(|_| core::array::from_fn(|_| rng.lane())).collect();
+                let cols: Vec<[i16; 16]> = (0..n)
+                    .map(|_| core::array::from_fn(|_| rng.lane()))
+                    .collect();
                 incant!(
                     assert_batch16(
                         name,
@@ -737,8 +757,9 @@ mod tests {
                 &|r, l| if (r * 3 + l) % 3 == 0 { lo } else { hi },
             ];
             for (pi, pat) in pats.iter().enumerate() {
-                let cols: Vec<[i16; 16]> =
-                    (0..n).map(|r| core::array::from_fn(|l| pat(r, l))).collect();
+                let cols: Vec<[i16; 16]> = (0..n)
+                    .map(|r| core::array::from_fn(|l| pat(r, l)))
+                    .collect();
                 incant!(
                     assert_batch16(
                         name,
@@ -756,7 +777,14 @@ mod tests {
             cols[0] = core::array::from_fn(|l| [lo, hi, 0, -1, 1, lo + 1, hi - 1, 2][l % 8]);
             cols[n - 1] = core::array::from_fn(|l| [hi, lo, -2, 2, 0, -1, 1, lo + 1][l % 8]);
             incant!(
-                assert_batch16(name, n, scalar, kernel, &cols, &format!("[{tier}] extremes")),
+                assert_batch16(
+                    name,
+                    n,
+                    scalar,
+                    kernel,
+                    &cols,
+                    &format!("[{tier}] extremes")
+                ),
                 [v3, neon]
             );
         }

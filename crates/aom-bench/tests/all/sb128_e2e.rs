@@ -57,11 +57,7 @@ const GRID_A: &[(&str, (usize, usize, usize, usize), i32)] = &[
 /// `--sb-size=128 --max-partition-size=64`, port encode with the sb128
 /// bootstrap + the max-partition-size=64 knob, byte-compare the frame OBU
 /// payloads. Returns `(byte_exact, sb128_changed_vs_sb64)`.
-fn run_forced_split_cell(
-    label: &str,
-    crop: (usize, usize, usize, usize),
-    cq: i32,
-) -> (bool, bool) {
+fn run_forced_split_cell(label: &str, crop: (usize, usize, usize, usize), cq: i32) -> (bool, bool) {
     c::ref_init();
     let cell = EncodeCell::real_content(label, VPHOTO, Some(crop), cq, 0);
 
@@ -273,7 +269,11 @@ fn sb128_partial_sb_e2e() {
     let sb128 = [(AV1E_SET_SUPERBLOCK_SIZE, AOM_SUPERBLOCK_SIZE_128X128)];
     let mut failures = Vec::new();
     for &(vec, crop, cq) in &[
-        ("av1-1-b8-00-quantizer-00", Some((192usize, 192usize, 0usize, 0usize)), 32i32),
+        (
+            "av1-1-b8-00-quantizer-00",
+            Some((192usize, 192usize, 0usize, 0usize)),
+            32i32,
+        ),
         ("av1-1-b8-00-quantizer-00", Some((192, 192, 0, 0)), 63),
         ("av1-1-b8-01-size-196x196", None, 32),
         ("av1-1-b8-01-size-196x196", None, 63),

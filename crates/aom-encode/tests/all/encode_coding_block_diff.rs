@@ -8,12 +8,12 @@
 //! loop's bytes AND final contexts must match — a divergent txb order, footprint,
 //! or context slice would surface immediately.
 
+use aom_dsp::entropy::enc::OdEcEnc;
+use aom_dsp::txb::{CDF_ARENA_LEN, CoeffCostTables, ext_tx_derive, scan, write_coeffs_txb_full};
 use aom_encode::{
     BlockContexts, OptimizeInputs, QuantKind, QuantParams, TxTypeContext, encode_coding_block_plane,
 };
-use aom_dsp::entropy::enc::OdEcEnc;
 use aom_sys_ref as c;
-use aom_dsp::txb::{CDF_ARENA_LEN, CoeffCostTables, ext_tx_derive, scan, write_coeffs_txb_full};
 
 const BLK_W: [usize; 22] = [
     4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 64, 64, 64, 128, 128, 4, 16, 8, 32, 16, 64,

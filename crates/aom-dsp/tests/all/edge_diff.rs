@@ -2,7 +2,9 @@
 //! intra_edge_filter_strength, av1_use_intra_edge_upsample,
 //! av1_filter_intra_edge_c, av1_upsample_intra_edge_c.
 
-use aom_dsp::intra::edge::{edge_filter_strength, filter_intra_edge, upsample_intra_edge, use_upsample};
+use aom_dsp::intra::edge::{
+    edge_filter_strength, filter_intra_edge, upsample_intra_edge, use_upsample,
+};
 use aom_sys_ref as c;
 
 struct Rng(u64);
@@ -173,8 +175,8 @@ fn highbd_upsample_intra_edge_byte_identical() {
 /// test's 65 — and the upsample sweep covers its full `sz <= 16` domain.
 #[test]
 fn highbd_edge_kernels_match_c_at_every_tier() {
+    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
     use archmage::SimdToken;
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
     // Serialise: this sweep permutes PROCESS-GLOBAL dispatch state.
     let _serial = crate::dispatch_serial::dispatch_serial();
     let mut simd_perms = 0usize;
@@ -206,8 +208,7 @@ fn highbd_edge_kernels_match_c_at_every_tier() {
                 for _ in 0..40 {
                     const OFF: usize = 4;
                     let n = OFF + 2 * sz + 4;
-                    let base: Vec<u16> =
-                        (0..n).map(|_| (rng.next() as u32 & max) as u16).collect();
+                    let base: Vec<u16> = (0..n).map(|_| (rng.next() as u32 & max) as u16).collect();
                     let mut a = base.clone();
                     let mut b = base.clone();
                     aom_dsp::intra::edge::highbd_upsample_intra_edge(&mut a, OFF, sz, bd);
@@ -218,5 +219,8 @@ fn highbd_edge_kernels_match_c_at_every_tier() {
         }
     });
     eprintln!("{report}");
-    assert!(simd_perms >= 1, "no vector tier ever ran — sweep was vacuous");
+    assert!(
+        simd_perms >= 1,
+        "no vector tier ever ran — sweep was vacuous"
+    );
 }

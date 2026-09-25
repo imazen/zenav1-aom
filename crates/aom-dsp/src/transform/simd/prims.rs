@@ -146,7 +146,10 @@ mod x86 {
             rnd,
         );
         let cnt = _mm_cvtsi32_si128(cos_bit);
-        i32x8::from_m256i(t, low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)))
+        i32x8::from_m256i(
+            t,
+            low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)),
+        )
     }
 
     /// `round_shift(v as i64, bit)` on lanes for `bit` in `1..=32`.
@@ -156,10 +159,15 @@ mod x86 {
         debug_assert!((1..=32).contains(&bit));
         let rnd = _mm256_set1_epi64x(1i64 << (bit - 1));
         let lo = _mm256_add_epi64(_mm256_cvtepi32_epi64(_mm256_castsi256_si128(v.raw())), rnd);
-        let hi =
-            _mm256_add_epi64(_mm256_cvtepi32_epi64(_mm256_extracti128_si256::<1>(v.raw())), rnd);
+        let hi = _mm256_add_epi64(
+            _mm256_cvtepi32_epi64(_mm256_extracti128_si256::<1>(v.raw())),
+            rnd,
+        );
         let cnt = _mm_cvtsi32_si128(bit);
-        i32x8::from_m256i(t, low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)))
+        i32x8::from_m256i(
+            t,
+            low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)),
+        )
     }
 
     /// Reverse the 8 lanes (for `lr_flip` column groups).
@@ -272,13 +280,19 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn add64(a: V64, b: V64) -> V64 {
         use core::arch::x86_64::*;
-        V64 { lo: _mm256_add_epi64(a.lo, b.lo), hi: _mm256_add_epi64(a.hi, b.hi) }
+        V64 {
+            lo: _mm256_add_epi64(a.lo, b.lo),
+            hi: _mm256_add_epi64(a.hi, b.hi),
+        }
     }
 
     #[rite(v3)]
     pub(crate) fn sub64(a: V64, b: V64) -> V64 {
         use core::arch::x86_64::*;
-        V64 { lo: _mm256_sub_epi64(a.lo, b.lo), hi: _mm256_sub_epi64(a.hi, b.hi) }
+        V64 {
+            lo: _mm256_sub_epi64(a.lo, b.lo),
+            hi: _mm256_sub_epi64(a.hi, b.hi),
+        }
     }
 
     /// `c * v` per i64 lane for a NON-NEGATIVE constant `c < 2^31` — exact mod
@@ -296,7 +310,10 @@ mod x86 {
             let hi_prod = _mm256_mul_epu32(_mm256_srli_epi64::<32>(x), cv); // c * v_hi_u
             _mm256_add_epi64(lo_prod, _mm256_slli_epi64::<32>(hi_prod))
         };
-        V64 { lo: part(v.lo), hi: part(v.hi) }
+        V64 {
+            lo: part(v.lo),
+            hi: part(v.hi),
+        }
     }
 
     /// `round_shift(v, bit)` from i64 lanes to i32 lanes — add rounding, LOGICAL
@@ -407,7 +424,12 @@ mod neon {
         let rnd = vdupq_n_s64(1i64 << (bit - 1));
         let sh = vdupq_n_s64(-(bit as i64));
         let part = |x: int32x4_t| -> int32x4_t {
-            rnd_shr_narrow(vmull_s32(vget_low_s32(x), m2), vmull_high_s32(x, m4), rnd, sh)
+            rnd_shr_narrow(
+                vmull_s32(vget_low_s32(x), m2),
+                vmull_high_s32(x, m4),
+                rnd,
+                sh,
+            )
         };
         i32x8::from_repr(t, [part(a[0]), part(a[1])])
     }
@@ -532,13 +554,13 @@ mod neon {
 // The two tiers export the SAME names; exactly one module is compiled, so every
 // caller in `super` and in the generated kernels writes `hb(t, ..)` /
 // `transpose8(t, ..)` with no cfg and no suffix at the call site.
-#[cfg(target_arch = "x86_64")]
-pub(crate) use x86::{
+#[cfg(target_arch = "aarch64")]
+pub(crate) use neon::{
     add64, hb, mul_rshiftv, mulc64, revv, rshift64, rshiftv, shl_clamp64v, sub64, transpose8,
     widen64,
 };
-#[cfg(target_arch = "aarch64")]
-pub(crate) use neon::{
+#[cfg(target_arch = "x86_64")]
+pub(crate) use x86::{
     add64, hb, mul_rshiftv, mulc64, revv, rshift64, rshiftv, shl_clamp64v, sub64, transpose8,
     widen64,
 };

@@ -9,9 +9,9 @@
 //!
 //! Usage: `cargo run --release -p zenav1-aom-bench --example ibc_time`
 
-use aom_bench::winperf::{synth_i420, Content};
 use aom_bench::EncodeCell;
-use aom_encode::key_frame::{encode_key_frame, KeyFrameConfig, KeyFramePlanes};
+use aom_bench::winperf::{Content, synth_i420};
+use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, encode_key_frame};
 use std::time::Instant;
 
 fn cell(w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {

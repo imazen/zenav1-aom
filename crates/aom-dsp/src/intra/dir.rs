@@ -248,16 +248,7 @@ pub fn z1_high(
         z1_high_scalar(dst, stride, bw, bh, above, up, dx);
         return;
     }
-    z1_rows(
-        dst,
-        stride,
-        bw,
-        bh,
-        above.data(),
-        above.idx(0),
-        dx,
-        up,
-    );
+    z1_rows(dst, stride, bw, bh, above.data(), above.idx(0), dx, up);
 }
 
 /// bd8 z1: downcast the assembled edge to u8 once, then run
@@ -477,16 +468,7 @@ pub fn z3_high(
     }
     // up <= 1 under the gate: column-major taps + transposed stores, ONE
     // dispatch for the whole block (dir_simd::z3_cols).
-    crate::intra::dir_simd::z3_cols(
-        dst,
-        stride,
-        bw,
-        bh,
-        left.data(),
-        left.idx(0),
-        dy,
-        up,
-    );
+    crate::intra::dir_simd::z3_cols(dst, stride, bw, bh, left.data(), left.idx(0), dy, up);
 }
 
 /// `av1_highbd_dr_prediction_z3_c` — the never-dispatched scalar core.

@@ -41,7 +41,7 @@
 //! # Differential coverage
 //! `tests/compound_convolve_diff.rs`, tier 1 against the real exported C.
 
-use super::{FILTER_BITS, clip_pixel, rpo2};
+use super::{clip_pixel, rpo2, FILTER_BITS};
 
 /// `DIST_PRECISION_BITS` (`av1/common/enums.h:76`).
 const DIST_PRECISION_BITS: i32 = 4;

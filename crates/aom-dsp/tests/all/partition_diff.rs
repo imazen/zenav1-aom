@@ -1009,7 +1009,7 @@ fn get_pred_context_switchable_interp_matches_c() {
     let ref_vals = [0i32, 1, 4, 7]; // INTRA_FRAME, LAST, GOLDEN, ALTREF
     let ref1_vals = [-1i32, 5]; // NONE, BWDREF
     let filt_vals = [0usize, 1, 2]; // EIGHTTAP / SMOOTH / SHARP
-    // Build the neighbour candidate list: None + a spread of Some(...).
+                                    // Build the neighbour candidate list: None + a spread of Some(...).
     let mut nbrs: Vec<Option<(i32, i32, usize, usize)>> = vec![None];
     for &r0 in &ref_vals {
         for &r1 in &ref1_vals {
@@ -1026,8 +1026,9 @@ fn get_pred_context_switchable_interp_matches_c() {
             for cur_comp in [false, true] {
                 for &above in &nbrs {
                     for &left in &nbrs {
-                        let got =
-                            get_pred_context_switchable_interp(dir, cur_ref0, cur_comp, above, left);
+                        let got = get_pred_context_switchable_interp(
+                            dir, cur_ref0, cur_comp, above, left,
+                        );
                         let want = c::ref_get_pred_context_switchable_interp(
                             dir, cur_ref0, cur_comp, above, left,
                         );
@@ -6291,7 +6292,9 @@ fn read_mb_modes_kf_prefix_roundtrips_write() {
 fn read_delta_q_params_normative_clamps() {
     use aom_dsp::entropy::dec::OdEcDec;
     use aom_dsp::entropy::enc::OdEcEnc;
-    use aom_dsp::entropy::partition::{read_delta_q_params_sb, write_delta_lflevel, write_delta_qindex};
+    use aom_dsp::entropy::partition::{
+        read_delta_q_params_sb, write_delta_lflevel, write_delta_qindex,
+    };
     let mut rng = Rng(0xc1a3_c1a3_0000_0001);
     // (base, res, reduced, expected current_qindex after clamp)
     let dq_vectors = [

@@ -18,7 +18,7 @@
 //! pass against the wrong rounding.
 
 use aom_dsp::inter::scale::{
-    REF_INVALID_SCALE, REF_NO_SCALE, ScaleFactors, scale_mv, valid_ref_frame_size,
+    scale_mv, valid_ref_frame_size, ScaleFactors, REF_INVALID_SCALE, REF_NO_SCALE,
 };
 use aom_sys_ref::{
     ref_is_scaled, ref_scale_mv, ref_scaled_x, ref_scaled_y, ref_setup_scale_factors_for_frame,
@@ -43,7 +43,11 @@ fn valid_ref_frame_size_matches_c() {
                     let want = ref_valid_ref_frame_size(rw, rh, tw, th);
                     assert_eq!(got, want, "ref={rw}x{rh} this={tw}x{th}");
                     checked += 1;
-                    if got { valid += 1 } else { invalid += 1 }
+                    if got {
+                        valid += 1
+                    } else {
+                        invalid += 1
+                    }
                 }
             }
         }

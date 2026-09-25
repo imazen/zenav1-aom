@@ -9,14 +9,14 @@
 //! SIMD_REACH_AUDIT_2026-07-28.md finding F4).
 
 use aom_dsp::txb::{
-    TX_PAD_2D, TX_PAD_HOR, TX_TYPE_TO_CLASS, get_nz_map_contexts, txb_high, txb_init_levels,
-    txb_wide,
+    get_nz_map_contexts, txb_high, txb_init_levels, txb_wide, TX_PAD_2D, TX_PAD_HOR,
+    TX_TYPE_TO_CLASS,
 };
 use aom_sys_ref as c;
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -100,7 +100,11 @@ fn nz_map_contexts_simd_bit_identical_to_c_at_every_tier() {
         simd_perms >= 1,
         "the SIMD permutation ({}) must run at least once — a passing run with \
          zero vector permutations compares the scalar path against itself.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(report.permutations_run >= 2);
 }

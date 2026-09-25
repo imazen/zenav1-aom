@@ -11,11 +11,11 @@
 //!   CfL kernels — the decoder track validated them by hand-traced vectors +
 //!   roundtrip only, with the shared-misread risk documented).
 
+use aom_dsp::intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
 use aom_encode::mode_costs::{
     CflCosts, IntraModeCosts, fill_cfl_costs, fill_palette_uv_mode_costs, intra_mode_info_cost_uv,
 };
 use aom_encode::tx_search::{TxMaskParams, get_tx_mask_uv_intra, uv_intra_tx_type};
-use aom_dsp::intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
 use aom_sys_ref as c;
 
 struct Rng(u64);

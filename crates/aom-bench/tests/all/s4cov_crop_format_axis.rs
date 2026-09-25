@@ -42,7 +42,6 @@
 //! cargo test --profile test-fast -p zenav1-aom-bench --test s4cov_crop_format_axis -- --ignored --nocapture
 //! ```
 
-
 use aom_bench::{EncodeCell, ToggleKnobs};
 use aom_sys_ref as c;
 use aom_sys_ref::cx_ctrl::{AOM_SUPERBLOCK_SIZE_128X128, AV1E_SET_SUPERBLOCK_SIZE};
@@ -71,10 +70,7 @@ fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, speed: i32) -
     }
     let (mut u, mut v) = (Vec::new(), Vec::new());
     if !base.mono {
-        let (bcw, bch) = (
-            (bw + base.ss_x) >> base.ss_x,
-            (bh + base.ss_y) >> base.ss_y,
-        );
+        let (bcw, bch) = ((bw + base.ss_x) >> base.ss_x, (bh + base.ss_y) >> base.ss_y);
         let (cw, ch) = ((w + base.ss_x) >> base.ss_x, (h + base.ss_y) >> base.ss_y);
         u = vec![0u16; cw * ch];
         v = vec![0u16; cw * ch];
@@ -247,11 +243,7 @@ fn report(rows: &[Row]) -> Vec<String> {
             ));
         }
     }
-    println!(
-        "  {}/{} byte-exact",
-        rows.len() - bad.len(),
-        rows.len()
-    );
+    println!("  {}/{} byte-exact", rows.len() - bad.len(), rows.len());
     bad
 }
 

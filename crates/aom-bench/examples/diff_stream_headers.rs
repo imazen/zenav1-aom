@@ -38,7 +38,9 @@ fn main() {
     // the OBU size field — report the first content difference too.
     match fa.iter().zip(fb.iter()).position(|(x, y)| x != y) {
         Some(i) => println!("first byte diff at offset {i} (a={} b={})", fa[i], fb[i]),
-        None if fa.len() != fb.len() => println!("prefix-identical; len {} vs {}", fa.len(), fb.len()),
+        None if fa.len() != fb.len() => {
+            println!("prefix-identical; len {} vs {}", fa.len(), fb.len())
+        }
         None => println!("byte-identical"),
     }
 }

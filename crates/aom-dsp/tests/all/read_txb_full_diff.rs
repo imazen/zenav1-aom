@@ -25,9 +25,19 @@ impl Rng {
 }
 
 const REGIONS: [(usize, usize, usize); 13] = [
-    (0, 5 * 13, 2), (195, 4, 5), (219, 4, 6), (247, 4, 7), (279, 4, 8), (315, 4, 9),
-    (355, 4, 10), (399, 4, 11), (447, 5 * 2 * 9, 2), (717, 5 * 2 * 4, 3), (877, 5 * 2 * 42, 4),
-    (2977, 5 * 2 * 21, 4), (4027, 2 * 3, 2),
+    (0, 5 * 13, 2),
+    (195, 4, 5),
+    (219, 4, 6),
+    (247, 4, 7),
+    (279, 4, 8),
+    (315, 4, 9),
+    (355, 4, 10),
+    (399, 4, 11),
+    (447, 5 * 2 * 9, 2),
+    (717, 5 * 2 * 4, 3),
+    (877, 5 * 2 * 42, 4),
+    (2977, 5 * 2 * 21, 4),
+    (4027, 2 * 3, 2),
 ];
 
 fn gen_arena(rng: &mut Rng) -> Vec<u16> {
@@ -66,7 +76,11 @@ fn gen_coeffs(rng: &mut Rng, scan: &[i16], area: usize) -> (Vec<i32>, usize) {
             5..=7 => rng.range(1, 20) as i32,
             _ => rng.range(1, 3000) as i32,
         };
-        if rng.next() & 1 == 1 { -mag } else { mag }
+        if rng.next() & 1 == 1 {
+            -mag
+        } else {
+            mag
+        }
     };
     #[allow(clippy::needless_range_loop)]
     for i in 0..eob {
@@ -90,7 +104,8 @@ fn read_coeffs_txb_full_roundtrips_write() {
                     let use_fi = tx_type % 3 == 0;
                     let fi_mode = tx_type % 5;
                     let mode = [0usize, 1, 2, 6, 12][tx_type % 5];
-                    let d = ext_tx_derive(tx_size, is_inter, reduced, tx_type, use_fi, fi_mode, mode);
+                    let d =
+                        ext_tx_derive(tx_size, is_inter, reduced, tx_type, use_fi, fi_mode, mode);
                     for &plane_type in &[0usize, 1] {
                         for &signal_gate in &[true, false] {
                             let writes = plane_type == 0 && signal_gate && d.num > 1;
@@ -113,9 +128,23 @@ fn read_coeffs_txb_full_roundtrips_write() {
                                 let mut ae = arena0.clone();
                                 let mut ee = extcdf0.clone();
                                 write_coeffs_txb_full(
-                                    &mut enc, &mut ae, &mut ee, &coeff, eob, tx_size, tx_type,
-                                    plane_type, txb_skip_ctx, dc_sign_ctx, upd, is_inter, reduced,
-                                    use_fi, fi_mode, mode, signal_gate,
+                                    &mut enc,
+                                    &mut ae,
+                                    &mut ee,
+                                    &coeff,
+                                    eob,
+                                    tx_size,
+                                    tx_type,
+                                    plane_type,
+                                    txb_skip_ctx,
+                                    dc_sign_ctx,
+                                    upd,
+                                    is_inter,
+                                    reduced,
+                                    use_fi,
+                                    fi_mode,
+                                    mode,
+                                    signal_gate,
                                 );
                                 let bytes = enc.done().to_vec();
 
@@ -124,14 +153,32 @@ fn read_coeffs_txb_full_roundtrips_write() {
                                 let mut ed = extcdf0.clone();
                                 let mut tcoeff = vec![0i32; area];
                                 let (eob_d, tt_d) = read_coeffs_txb_full(
-                                    &mut dec, &mut ad, &mut ed, &mut tcoeff, tx_size, plane_type,
-                                    txb_skip_ctx, dc_sign_ctx, upd, is_inter, reduced, signal_gate,
+                                    &mut dec,
+                                    &mut ad,
+                                    &mut ed,
+                                    &mut tcoeff,
+                                    tx_size,
+                                    plane_type,
+                                    txb_skip_ctx,
+                                    dc_sign_ctx,
+                                    upd,
+                                    is_inter,
+                                    reduced,
+                                    signal_gate,
                                     tx_type,
                                 );
                                 let m = format!("ts={tx_size} tt={tx_type} inter={is_inter} red={reduced} pl={plane_type} gate={signal_gate} upd={upd} eob={eob}");
                                 assert_eq!(eob_d, eob, "eob {m}");
                                 assert_eq!(tcoeff, coeff, "coeffs {m}");
-                                let want_tt = if plane_type == 0 { if writes { tx_type } else { 0 } } else { tx_type };
+                                let want_tt = if plane_type == 0 {
+                                    if writes {
+                                        tx_type
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    tx_type
+                                };
                                 assert_eq!(tt_d, want_tt, "tx_type {m}");
                                 assert_eq!(ae, ad, "coeff cdf {m}");
                                 assert_eq!(ee, ed, "ext_tx cdf {m}");

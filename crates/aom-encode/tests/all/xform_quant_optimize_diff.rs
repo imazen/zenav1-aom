@@ -6,10 +6,10 @@
 //! ref_optimize_txb[_qm] -> ref_txb_entropy_context (or the txb-skip cost at
 //! eob 0). Locks the trellis + context wiring on top of xform_quant.
 
-use aom_encode::{BlockContext, OptimizeInputs, QuantKind, QuantParams, xform_quant_optimize};
-use aom_sys_ref as c;
 use aom_dsp::transform::txfm2d::fwd_txfm_valid;
 use aom_dsp::txb::{CoeffCostTables, iscan as real_iscan, scan, txb_high, txb_wide};
+use aom_encode::{BlockContext, OptimizeInputs, QuantKind, QuantParams, xform_quant_optimize};
+use aom_sys_ref as c;
 #[cfg(target_arch = "x86_64")]
 use archmage::SimdToken;
 

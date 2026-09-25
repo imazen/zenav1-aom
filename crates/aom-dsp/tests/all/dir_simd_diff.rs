@@ -22,12 +22,12 @@
 //! (the runtime gate really fired, so the comparison is not scalar-vs-scalar).
 
 use aom_dsp::intra::dir::{
-    DR_INTRA_DERIVATIVE, EdgeRef16, get_dx, get_dy, z1_high, z1_high_scalar, z2_high,
-    z2_high_scalar, z3_high, z3_high_scalar,
+    get_dx, get_dy, z1_high, z1_high_scalar, z2_high, z2_high_scalar, z3_high, z3_high_scalar,
+    EdgeRef16, DR_INTRA_DERIVATIVE,
 };
 use aom_dsp::intra::edge::use_upsample;
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 const PAD: usize = 16;
 const BUF: usize = 160;
@@ -76,8 +76,8 @@ impl Rng {
 fn fill_edge(buf: &mut [u16], kind: usize, maxv: u32, rng: &mut Rng) {
     for (i, e) in buf.iter_mut().enumerate() {
         *e = match kind {
-            0 => rng.upto(maxv + 1) as u16,                                  // dense random
-            1 => ((i as u32 * 37) % (maxv + 1)) as u16,                      // ramp
+            0 => rng.upto(maxv + 1) as u16,             // dense random
+            1 => ((i as u32 * 37) % (maxv + 1)) as u16, // ramp
             2 => {
                 if i % 2 == 0 {
                     maxv as u16
@@ -85,7 +85,7 @@ fn fill_edge(buf: &mut [u16], kind: usize, maxv: u32, rng: &mut Rng) {
                     0
                 }
             } // max sawtooth
-            3 => (maxv - (i as u32 * 11) % (maxv + 1)) as u16,               // reverse ramp
+            3 => (maxv - (i as u32 * 11) % (maxv + 1)) as u16, // reverse ramp
             4 => {
                 if i < BUF / 2 {
                     0
@@ -93,7 +93,7 @@ fn fill_edge(buf: &mut [u16], kind: usize, maxv: u32, rng: &mut Rng) {
                     maxv as u16
                 }
             } // step
-            _ => maxv as u16,                                                 // flat (control)
+            _ => maxv as u16,                           // flat (control)
         };
     }
 }
@@ -147,12 +147,10 @@ fn dir_highbd_simd_bit_identical_to_scalar_at_every_tier() {
                         for &filter_type in &[0i32, 1] {
                             for angle in angles() {
                                 let (dx, dy) = (get_dx(angle), get_dy(angle));
-                                let up = use_upsample(
-                                    bw as i32, bh as i32, angle - 90, filter_type,
-                                );
-                                let upl = use_upsample(
-                                    bh as i32, bw as i32, angle - 180, filter_type,
-                                );
+                                let up =
+                                    use_upsample(bw as i32, bh as i32, angle - 90, filter_type);
+                                let upl =
+                                    use_upsample(bh as i32, bw as i32, angle - 180, filter_type);
                                 let n = bh * stride;
                                 let (mut got, mut want) = (vec![0u16; n], vec![0u16; n]);
                                 if angle > 0 && angle < 90 {
@@ -293,8 +291,7 @@ fn z1_u8e_bit_identical_to_z1_high() {
                                 continue;
                             }
                             let dx = get_dx(angle);
-                            let up =
-                                use_upsample(bw as i32, bh as i32, angle - 90, filter_type);
+                            let up = use_upsample(bw as i32, bh as i32, angle - 90, filter_type);
                             let n = bh * stride;
                             let (mut got, mut want) = (vec![0u16; n], vec![0u16; n]);
                             z1_high_u8e(&mut got, stride, bw, bh, &a, up, dx);
@@ -316,9 +313,7 @@ fn z1_u8e_bit_identical_to_z1_high() {
             }
         }
     });
-    eprintln!(
-        "z1 u8e parity: {report}  (vec-admitted cells up0={u8e_cells} up1={u8e_up_cells})"
-    );
+    eprintln!("z1 u8e parity: {report}  (vec-admitted cells up0={u8e_cells} up1={u8e_up_cells})");
     assert!(simd_perms >= 1);
     assert!(report.permutations_run >= 2);
     assert!(
@@ -327,4 +322,3 @@ fn z1_u8e_bit_identical_to_z1_high() {
          comparison would be vacuous"
     );
 }
-

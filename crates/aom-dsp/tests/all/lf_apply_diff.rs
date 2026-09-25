@@ -23,8 +23,7 @@
 
 use aom_dsp::loopfilter::frame::{
     lf_frame_init, loop_filter_frame, loop_filter_frame_opt, loop_filter_frame_u8, LfFrameBuf,
-    LfFrameBufU8, LfMi,
-    LfMiGrid, LfParams, LfSeg, FRAME_LF_COUNT, MODE_LF_LUT,
+    LfFrameBufU8, LfMi, LfMiGrid, LfParams, LfSeg, FRAME_LF_COUNT, MODE_LF_LUT,
 };
 use aom_sys_ref as c;
 
@@ -52,10 +51,16 @@ impl Rng {
 // ---- spec tables the generator needs (common_data.h) ----------------------------
 
 /// `mi_size_wide` / `mi_size_high` per bsize.
-const MI_W: [usize; 22] = [1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16];
-const MI_H: [usize; 22] = [1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4];
+const MI_W: [usize; 22] = [
+    1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 1, 4, 2, 8, 4, 16,
+];
+const MI_H: [usize; 22] = [
+    1, 2, 1, 2, 4, 2, 4, 8, 4, 8, 16, 8, 16, 32, 16, 32, 4, 1, 8, 2, 16, 4,
+];
 /// `max_txsize_rect_lookup[bsize]`.
-const MAX_TX_RECT: [usize; 22] = [0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18];
+const MAX_TX_RECT: [usize; 22] = [
+    0, 5, 6, 1, 7, 8, 2, 9, 10, 3, 11, 12, 4, 4, 4, 4, 13, 14, 15, 16, 17, 18,
+];
 /// `sub_tx_size_map[tx]` (common_data.h:165).
 const SUB_TX: [usize; 19] = [0, 0, 1, 2, 3, 0, 0, 1, 1, 2, 2, 3, 3, 5, 6, 7, 8, 9, 10];
 
@@ -110,7 +115,15 @@ impl Frame {
     /// express the opt path's `mi_prev != mbmi` same-block test — pointer
     /// identity is always false there, which wrongly un-skips interior edges
     /// of skipped blocks).
-    fn stamp(&mut self, rng: &mut Rng, mi_r: usize, mi_c: usize, bsize: usize, uniform_tx: bool, no_skip: bool) {
+    fn stamp(
+        &mut self,
+        rng: &mut Rng,
+        mi_r: usize,
+        mi_c: usize,
+        bsize: usize,
+        uniform_tx: bool,
+        no_skip: bool,
+    ) {
         if mi_r >= self.mi_rows || mi_c >= self.mi_cols {
             return; // fully out of frame: not in the mi grid
         }
@@ -126,8 +139,7 @@ impl Frame {
         let skip = !no_skip && is_inter && rng.chance(1, 3);
         let segment_id = rng.upto(8) as u8;
         let dlf_base = rng.range_i(-63, 63) as i8;
-        let dlf: [i8; FRAME_LF_COUNT] =
-            core::array::from_fn(|_| rng.range_i(-63, 63) as i8);
+        let dlf: [i8; FRAME_LF_COUNT] = core::array::from_fn(|_| rng.range_i(-63, 63) as i8);
         // Block tx depth chain (intra blocks are uniform; inter blocks vary
         // per cell to exercise the flattened vartx contract).
         let max_tx = MAX_TX_RECT[bsize];
@@ -170,7 +182,15 @@ impl Frame {
 
     /// Recursive partition of a `sq`-mi square node (like the AV1 tree; rect +
     /// 1:4 leaves included so every block shape appears).
-    fn part(&mut self, rng: &mut Rng, mi_r: usize, mi_c: usize, sq: usize, uniform_tx: bool, no_skip: bool) {
+    fn part(
+        &mut self,
+        rng: &mut Rng,
+        mi_r: usize,
+        mi_c: usize,
+        sq: usize,
+        uniform_tx: bool,
+        no_skip: bool,
+    ) {
         let can_split = sq > 1;
         let choice = rng.upto(10);
         if can_split && (choice < 4 || sq > 8) {
@@ -207,7 +227,14 @@ impl Frame {
         }
     }
 
-    fn generate(rng: &mut Rng, mi_rows: usize, mi_cols: usize, sb_mi: usize, uniform_tx: bool, no_skip: bool) -> Self {
+    fn generate(
+        rng: &mut Rng,
+        mi_rows: usize,
+        mi_cols: usize,
+        sb_mi: usize,
+        uniform_tx: bool,
+        no_skip: bool,
+    ) -> Self {
         let mut f = Frame::new(mi_rows, mi_cols);
         let mut r = 0;
         while r < mi_rows {
@@ -233,7 +260,8 @@ fn gen_plane(rng: &mut Rng, w: usize, h: usize, stride: usize, bd: i32) -> Vec<u
     let mut p = vec![0u16; stride * h];
     for r in 0..h {
         for col in 0..w {
-            let g = base as i64 + (dx as i64 * col as i64 + dy as i64 * r as i64) / 4
+            let g = base as i64
+                + (dx as i64 * col as i64 + dy as i64 * r as i64) / 4
                 + rng.upto(2 * amp + 1) as i64
                 - amp as i64;
             p[r * stride + col] = g.clamp(0, maxv as i64) as u16;
@@ -276,7 +304,12 @@ fn random_params(rng: &mut Rng, luma_on: bool, chroma_on: bool) -> LfParams {
 
 fn ref_params(p: &LfParams) -> c::RefLfParams {
     c::RefLfParams {
-        filter_level: [p.filter_level[0], p.filter_level[1], p.filter_level_u, p.filter_level_v],
+        filter_level: [
+            p.filter_level[0],
+            p.filter_level[1],
+            p.filter_level_u,
+            p.filter_level_v,
+        ],
         sharpness: p.sharpness,
         mode_ref_delta_enabled: p.mode_ref_delta_enabled,
         ref_deltas: p.ref_deltas,
@@ -396,9 +429,21 @@ fn run_one(
     };
     let num_planes: usize = if mono { 1 } else { 3 };
     c::ref_lf_filter_frame(
-        &mut cy, y_stride, &mut cu, &mut cv, uv_stride,
-        w as i32, h as i32, ss_x as i32, ss_y as i32, bd,
-        &grid, &ref_params(&p), 0, num_planes as i32, false,
+        &mut cy,
+        y_stride,
+        &mut cu,
+        &mut cv,
+        uv_stride,
+        w as i32,
+        h as i32,
+        ss_x as i32,
+        ss_y as i32,
+        bd,
+        &grid,
+        &ref_params(&p),
+        0,
+        num_planes as i32,
+        false,
     );
 
     // Rust.
@@ -452,7 +497,11 @@ fn run_one(
             loop_filter_frame_u8(&mut buf8, &mi_grid, &p, 0, num_planes);
         }
         let widen = |v: &[u8]| -> Vec<u16> { v.iter().map(|&x| x as u16).collect() };
-        assert_eq!(widen(&y8), y, "LOWBD-u8 LUMA {w}x{h} ss=({ss_x},{ss_y}) mono={mono}");
+        assert_eq!(
+            widen(&y8),
+            y,
+            "LOWBD-u8 LUMA {w}x{h} ss=({ss_x},{ss_y}) mono={mono}"
+        );
         assert_eq!(widen(&u8v), u, "LOWBD-u8 U {w}x{h} ss=({ss_x},{ss_y})");
         assert_eq!(widen(&v8), v, "LOWBD-u8 V {w}x{h} ss=({ss_x},{ss_y})");
     }
@@ -496,11 +545,26 @@ fn run_one(
             // `mi_prev != mbmi` pointer test always report a prediction edge.
             let (mut oy, mut ou, mut ov) = (y0.clone(), u0.clone(), v0.clone());
             c::ref_lf_filter_frame(
-                &mut oy, y_stride, &mut ou, &mut ov, uv_stride,
-                w as i32, h as i32, ss_x as i32, ss_y as i32, bd,
-                &grid, &ref_params(&p), 0, num_planes as i32, true,
+                &mut oy,
+                y_stride,
+                &mut ou,
+                &mut ov,
+                uv_stride,
+                w as i32,
+                h as i32,
+                ss_x as i32,
+                ss_y as i32,
+                bd,
+                &grid,
+                &ref_params(&p),
+                0,
+                num_planes as i32,
+                true,
             );
-            assert_eq!(py, oy, "OPT LUMA {w}x{h} ss=({ss_x},{ss_y}) bd{bd} mono={mono} u_tx={uniform_tx}");
+            assert_eq!(
+                py, oy,
+                "OPT LUMA {w}x{h} ss=({ss_x},{ss_y}) bd{bd} mono={mono} u_tx={uniform_tx}"
+            );
             assert_eq!(pu, ou, "OPT U {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
             assert_eq!(pv, ov, "OPT V {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
         }
@@ -511,7 +575,10 @@ fn run_one(
             // to this case), the batched opt walk must reproduce the level-0
             // walk bit-for-bit. This holds WITH skipped blocks because the
             // port derives pu_edge geometrically, not by pointer identity.
-            assert_eq!(py, y, "opt-vs-nonopt LUMA {w}x{h} ss=({ss_x},{ss_y}) bd{bd} mono={mono}");
+            assert_eq!(
+                py, y,
+                "opt-vs-nonopt LUMA {w}x{h} ss=({ss_x},{ss_y}) bd{bd} mono={mono}"
+            );
             assert_eq!(pu, u, "opt-vs-nonopt U {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
             assert_eq!(pv, v, "opt-vs-nonopt V {w}x{h} ss=({ss_x},{ss_y}) bd{bd}");
         }
@@ -582,9 +649,21 @@ fn zero_derived_level_walk_is_noop() {
             dlf: &f.dlf,
         };
         c::ref_lf_filter_frame(
-            &mut cy, y_stride, &mut cu, &mut cv, y_stride >> 1,
-            w as i32, h as i32, 1, 1, 8,
-            &grid, &ref_params(&p), 0, 3, false,
+            &mut cy,
+            y_stride,
+            &mut cu,
+            &mut cv,
+            y_stride >> 1,
+            w as i32,
+            h as i32,
+            1,
+            1,
+            8,
+            &grid,
+            &ref_params(&p),
+            0,
+            3,
+            false,
         );
         let mi_grid = LfMiGrid {
             mi: &f.mi,
@@ -649,8 +728,8 @@ fn filter_frame_matches_c() {
                     let sb_mi = if rep == 2 { 32 } else { 16 };
                     let check_opt = rep == 1;
                     changed += run_one(
-                        &mut rng, w, h, ss_x, ss_y, mono, bd, sb_mi, false,
-                        false, check_opt, check_opt,
+                        &mut rng, w, h, ss_x, ss_y, mono, bd, sb_mi, false, false, check_opt,
+                        check_opt,
                     ) as u32;
                     n += 1;
                 }
@@ -660,7 +739,9 @@ fn filter_frame_matches_c() {
     // Zero-level no-op arm (the lf==0 envelope streams take this path).
     for &(w, h) in &[(64usize, 64usize), (100, 76)] {
         for &(ss_x, ss_y, mono) in &formats {
-            run_one(&mut rng, w, h, ss_x, ss_y, mono, 8, 16, true, false, false, false);
+            run_one(
+                &mut rng, w, h, ss_x, ss_y, mono, 8, 16, true, false, false, false,
+            );
             n += 1;
         }
     }
@@ -705,8 +786,7 @@ fn filter_frame_opt_matches_on_uniform_tx() {
                     // rep 1: no-skip — adds the real C-opt oracle.
                     let no_skip = rep == 1;
                     changed += run_one(
-                        &mut rng, w, h, ss_x, ss_y, mono, bd, 16, false,
-                        true, no_skip, true,
+                        &mut rng, w, h, ss_x, ss_y, mono, bd, 16, false, true, no_skip, true,
                     ) as u32;
                     n += 1;
                 }

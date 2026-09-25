@@ -53,14 +53,27 @@ fn read_tx_type_roundtrips_write() {
 
                             let mut enc = OdEcEnc::new();
                             write_tx_type(
-                                &mut enc, &mut ce, tx_size, is_inter, reduced, tx_type,
-                                false, 0, 0, signal_gate,
+                                &mut enc,
+                                &mut ce,
+                                tx_size,
+                                is_inter,
+                                reduced,
+                                tx_type,
+                                false,
+                                0,
+                                0,
+                                signal_gate,
                             );
                             let bytes = enc.done().to_vec();
 
                             let mut dec = OdEcDec::new(&bytes);
                             let got = read_tx_type(
-                                &mut dec, &mut cdd, tx_size, is_inter, reduced, signal_gate,
+                                &mut dec,
+                                &mut cdd,
+                                tx_size,
+                                is_inter,
+                                reduced,
+                                signal_gate,
                             );
                             let expected = if d.num > 1 && signal_gate { tx_type } else { 0 };
                             assert_eq!(

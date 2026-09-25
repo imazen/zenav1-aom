@@ -14,7 +14,9 @@
 //! (cfl_subsample_*_c / cfl_subtract_average_*_c / cfl_predict_hbd_*_c) are
 //! DEFERRED until aom-sys-ref is free to take new extern declarations.
 
-use aom_dsp::intra::cfl::{cfl_idx_to_alpha, cfl_predict_block, cfl_store_tx, CflCtx, CFL_BUF_LINE};
+use aom_dsp::intra::cfl::{
+    cfl_idx_to_alpha, cfl_predict_block, cfl_store_tx, CflCtx, CFL_BUF_LINE,
+};
 
 const TX_4X4: usize = 0;
 const TX_8X8: usize = 1;

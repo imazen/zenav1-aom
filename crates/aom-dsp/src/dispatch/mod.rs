@@ -70,7 +70,6 @@
 //! directly instead of relying on token availability. That is a deliberate
 //! design change, not a bug fix, and is NOT implemented.
 
-
 use std::sync::OnceLock;
 
 /// True when the `AOM_FORCE_SCALAR` environment variable pins this process
@@ -84,7 +83,8 @@ use std::sync::OnceLock;
 pub fn scalar_forced() -> bool {
     static PIN: OnceLock<bool> = OnceLock::new();
     *PIN.get_or_init(|| {
-        let forced = std::env::var_os("AOM_FORCE_SCALAR").is_some_and(|v| !v.is_empty() && v != "0");
+        let forced =
+            std::env::var_os("AOM_FORCE_SCALAR").is_some_and(|v| !v.is_empty() && v != "0");
         if forced {
             disable_all_simd_tokens();
         }

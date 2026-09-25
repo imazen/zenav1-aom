@@ -10,6 +10,8 @@
 //! (≤ 15); `get_nz_mag` (min-3) and `get_br_ctx` (saturating) yield identical
 //! contexts to the encoder's full-magnitude levels buffer.
 
+use crate::entropy::cdf::{read_bit, read_symbol};
+use crate::entropy::dec::OdEcDec;
 use crate::txb::write::{
     A_BASE, A_BASE_EOB, A_BR, A_DC_SIGN, A_EOB_EXTRA, A_TXB_SKIP, EOB_OFF, TXSIZE_LOG2_MINUS4,
 };
@@ -18,8 +20,6 @@ use crate::txb::{
     txb_bhl, txb_high, txb_wide, txsize_entropy_ctx, TxClass, EOB_GROUP_START, EOB_OFFSET_BITS,
     TX_TYPE_TO_CLASS,
 };
-use crate::entropy::cdf::{read_bit, read_symbol};
-use crate::entropy::dec::OdEcDec;
 
 use crate::txb::scan::scan;
 
@@ -165,13 +165,9 @@ fn read_txb_body(
                 upd,
             ) + 1
         } else {
-            let ctx = get_lower_levels_ctx(
-                &levels_buf,
-                pos,
-                bhl,
-                nz_map_ctx_offset(tx_size),
-                tx_class,
-            ) as usize;
+            let ctx =
+                get_lower_levels_ctx(&levels_buf, pos, bhl, nz_map_ctx_offset(tx_size), tx_class)
+                    as usize;
             rsym(
                 dec,
                 cdfs,

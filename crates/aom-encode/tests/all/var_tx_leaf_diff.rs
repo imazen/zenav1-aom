@@ -13,19 +13,27 @@
 //! full inter ext-tx set. The trellis rd-mult is the INTER luma constant 16
 //! (plane_rd_mult[is_inter=1][luma], encodetxb.h:270), computed once for both.
 
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{TxTypeCosts, ext_tx_set_type, fill_tx_type_costs, scan, txb_high, txb_wide};
 use aom_encode::BlockContext;
 use aom_encode::tx_search::{AV1_EXT_TX_USED_FLAG, TX_SIZE_2D_TBL};
 use aom_encode::var_tx::{InterLeafInputs, search_tx_type_inter};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{TxTypeCosts, ext_tx_set_type, fill_tx_type_costs, scan, txb_high, txb_wide};
 
-const TX_W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const TX_H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
-const TX_TO_BSIZE: [usize; 19] = [0, 3, 6, 9, 12, 1, 2, 4, 5, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21];
+const TX_W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const TX_H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
+const TX_TO_BSIZE: [usize; 19] = [
+    0, 3, 6, 9, 12, 1, 2, 4, 5, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21,
+];
 const TXSIZE_SQR_UP_MAP: [usize; 19] = [0, 1, 2, 3, 4, 1, 1, 2, 2, 3, 3, 4, 4, 2, 2, 3, 3, 4, 4];
 /// sadvar_shim variance size index per TX_SIZE (w x h -> case index).
-const VAR_IDX: [usize; 19] = [0, 4, 9, 14, 18, 1, 3, 5, 8, 10, 13, 15, 17, 2, 7, 6, 12, 11, 16];
+const VAR_IDX: [usize; 19] = [
+    0, 4, 9, 14, 18, 1, 3, 5, 8, 10, 13, 15, 17, 2, 7, 6, 12, 11, 16,
+];
 
 struct Rng(u64);
 impl Rng {
@@ -84,7 +92,11 @@ fn inter_mask(tx_size: usize, lossless: bool, reduced: bool) -> u16 {
         txk_allowed = 0;
     }
     // enable_flip_idtx = 1 (no DCT_ADST_TX_MASK strip); use_inter_dct_only = 0.
-    let mut mask = if txk_allowed < 16 { (1u16 << txk_allowed) & flag } else { flag };
+    let mut mask = if txk_allowed < 16 {
+        (1u16 << txk_allowed) & flag
+    } else {
+        flag
+    };
     if mask == 0 {
         mask = 1; // DCT_DCT
     }
@@ -142,7 +154,8 @@ fn search_tx_type_inter_matches_c_chain() {
                 .collect();
             let residual: Vec<i16> = (0..w * h)
                 .map(|i| {
-                    (i64::from(src[src_off + (i / w) * STRIDE + (i % w)]) - i64::from(pred[i])) as i16
+                    (i64::from(src[src_off + (i / w) * STRIDE + (i % w)]) - i64::from(pred[i]))
+                        as i16
                 })
                 .collect();
 
@@ -260,7 +273,16 @@ fn search_tx_type_inter_matches_c_chain() {
 
             let mut best_rd_c = i64::MAX;
             #[allow(clippy::type_complexity)]
-            let mut best_c: Option<(usize, u16, i32, i64, i64, u8, Vec<i32>, Vec<i32>)> = None;
+            let mut best_c: Option<(
+                usize,
+                u16,
+                i32,
+                i64,
+                i64,
+                u8,
+                Vec<i32>,
+                Vec<i32>,
+            )> = None;
             for tx_type in 0..16usize {
                 if mask_c & (1 << tx_type) == 0 {
                     continue;
@@ -367,8 +389,14 @@ fn search_tx_type_inter_matches_c_chain() {
                         let tx_dom = d;
                         let mut recon = pred.clone();
                         c::ref_inv_txfm2d_add(tx_size, &dqc, &mut recon, w, tx_type, bd as i32);
-                        let (_v, vf_sse) =
-                            c::ref_hbd_variance(VAR_IDX[tx_size], bd, &src[src_off..], STRIDE, &recon, w);
+                        let (_v, vf_sse) = c::ref_hbd_variance(
+                            VAR_IDX[tx_size],
+                            bd,
+                            &src[src_off..],
+                            STRIDE,
+                            &recon,
+                            w,
+                        );
                         d = 16 * i64::from(vf_sse);
                         if high_energy && d < tx_dom {
                             d = tx_dom;
@@ -383,7 +411,16 @@ fn search_tx_type_inter_matches_c_chain() {
                 let rd = c::ref_rdcost(rdmult, rate_c, dist_c);
                 if rd < best_rd_c {
                     best_rd_c = rd;
-                    best_c = Some((tx_type, eob as u16, rate_c, dist_c, sse_c, entropy_ctx_c, qc.clone(), dqc.clone()));
+                    best_c = Some((
+                        tx_type,
+                        eob as u16,
+                        rate_c,
+                        dist_c,
+                        sse_c,
+                        entropy_ctx_c,
+                        qc.clone(),
+                        dqc.clone(),
+                    ));
                 }
                 if (best_rd_c - (best_rd_c >> 1)) > ref_best_rd {
                     break;
@@ -433,7 +470,13 @@ fn search_tx_type_inter_matches_c_chain() {
     assert!(b_quant_blocks > 30, "B-quant arm: {b_quant_blocks}");
     assert!(eob0_winners > 5, "eob0 winners: {eob0_winners}");
     assert!(coded_winners > 100, "coded winners: {coded_winners}");
-    assert!(high_energy_hits > 15, "high-energy hybrid: {high_energy_hits}");
-    assert!(multi_type_blocks > 60, "multi-type blocks: {multi_type_blocks}");
+    assert!(
+        high_energy_hits > 15,
+        "high-energy hybrid: {high_energy_hits}"
+    );
+    assert!(
+        multi_type_blocks > 60,
+        "multi-type blocks: {multi_type_blocks}"
+    );
     assert!(nondct_winners > 10, "non-DCT winners: {nondct_winners}");
 }

@@ -132,7 +132,10 @@ fn report(tag: &str, a: Snap, b: Snap, px: usize, blocks: Option<usize>) {
     println!("  TOTAL alloc-ish{:>12}", calls);
     println!("  bytes          {:>12}", b.bytes - a.bytes);
     println!("  peak live      {:>12}", b.peak.max(a.peak));
-    println!("  per megapixel  {:>12.0}", calls as f64 / (px as f64 / 1e6));
+    println!(
+        "  per megapixel  {:>12.0}",
+        calls as f64 / (px as f64 / 1e6)
+    );
     if let Some(n) = blocks {
         println!("  per superblock {:>12.1}", calls as f64 / n as f64);
     }
@@ -190,7 +193,13 @@ fn main() {
 fn cell_from_repo(w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
     let label = format!("photo_{w}x{h}_cq{cq}_s{speed}");
     if w <= 196 && h <= 196 {
-        return EncodeCell::real_content(&label, "av1-1-b8-01-size-196x196", Some((w, h, 0, 0)), cq, speed);
+        return EncodeCell::real_content(
+            &label,
+            "av1-1-b8-01-size-196x196",
+            Some((w, h, 0, 0)),
+            cq,
+            speed,
+        );
     }
     let base = EncodeCell::real_content("base", "av1-1-b8-01-size-196x196", None, cq, speed);
     let mir = |i: usize, n: usize| {
@@ -214,7 +223,17 @@ fn cell_from_repo(w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
             v[r * cw + c] = base.v[mir(r, bch) * bcw + mir(c, bcw)];
         }
     }
-    EncodeCell { label, w, h, y, u, v, cq_level: cq, speed, ..base }
+    EncodeCell {
+        label,
+        w,
+        h,
+        y,
+        u,
+        v,
+        cq_level: cq,
+        speed,
+        ..base
+    }
 }
 
 fn census(cell: &EncodeCell, w: usize, h: usize) {
@@ -233,7 +252,13 @@ fn census(cell: &EncodeCell, w: usize, h: usize) {
     let w3 = watch0();
 
     let sb = ((w + 63) / 64) * ((h + 63) / 64);
-    report("C bootstrap encode (UNTIMED in drv-aom)", s0, s1, w * h, None);
+    report(
+        "C bootstrap encode (UNTIMED in drv-aom)",
+        s0,
+        s1,
+        w * h,
+        None,
+    );
     report("port_encode, warm-up call", s1, s2, w * h, Some(sb));
     report("port_encode, MEASURED call", s2, s3, w * h, Some(sb));
     println!("--- size histogram, MEASURED call (log2 bucket: count) ---");
@@ -248,7 +273,10 @@ fn census(cell: &EncodeCell, w: usize, h: usize) {
     println!("  (each of these sizes has exactly one call site; the count IS its call count)");
     for (i, sz) in WATCH.iter().enumerate() {
         let n = w3[i] - w2[i];
-        println!("  size {sz:<7} n = {n:<10} per 64x64 SB = {:.2}", n as f64 / sb as f64);
+        println!(
+            "  size {sz:<7} n = {n:<10} per 64x64 SB = {:.2}",
+            n as f64 / sb as f64
+        );
     }
     println!("coded frame bytes = {}", out.len());
     println!("superblocks(64x64) = {sb}");

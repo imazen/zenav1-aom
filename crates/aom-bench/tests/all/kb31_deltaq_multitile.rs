@@ -387,11 +387,19 @@ fn multi_tile_deltaq_round_trips() {
                 (AV1E_SET_DELTALF_MODE, 1),
             ]);
             let (tc, tr, dqp, _) = coded_facts(&c_tu);
-            assert!(tc * tr > 1 && dqp, "{}: not a multi-tile delta-q stream", cell.label);
+            assert!(
+                tc * tr > 1 && dqp,
+                "{}: not a multi-tile delta-q stream",
+                cell.label
+            );
             // The port's frame OBU is byte-identical to the reference (the gates
             // above), so decoding the reference stream decodes the port's bytes.
-            let dec = aom_decode::frame::decode_frame_obus(&c_tu)
-                .unwrap_or_else(|e| panic!("{}: port decode of a {tc}x{tr}-tile delta-q stream failed: {e:?}", cell.label));
+            let dec = aom_decode::frame::decode_frame_obus(&c_tu).unwrap_or_else(|e| {
+                panic!(
+                    "{}: port decode of a {tc}x{tr}-tile delta-q stream failed: {e:?}",
+                    cell.label
+                )
+            });
             assert_eq!(
                 (dec.width, dec.height),
                 (cell.w, cell.h),
@@ -401,7 +409,10 @@ fn multi_tile_deltaq_round_trips() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 6, "every multi-tile delta-q round-trip cell must run");
+    assert_eq!(
+        checked, 6,
+        "every multi-tile delta-q round-trip cell must run"
+    );
 }
 
 /// **The AREA predicate, at the size that forces it.** 4032x2368 is 63 SB columns

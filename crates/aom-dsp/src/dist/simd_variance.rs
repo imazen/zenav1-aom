@@ -206,15 +206,9 @@ pub(crate) fn sse_u16_u8_impl_v3(
             } else {
                 let av: &[u16; 8] = ar[c..c + 8].try_into().unwrap();
                 let bv: &[u8; 8] = br[c..c + 8].try_into().unwrap();
-                let d = _mm_sub_epi16(
-                    _mm_loadu_si128(av),
-                    _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
-                );
+                let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_cvtepu8_epi16(_mm_loadu_si64(bv)));
                 let sq = _mm_madd_epi16(d, d);
-                xv = _mm256_add_epi32(
-                    xv,
-                    _mm256_castsi128_si256(sq),
-                );
+                xv = _mm256_add_epi32(xv, _mm256_castsi128_si256(sq));
             }
         }
     }
@@ -271,10 +265,7 @@ fn sse_u16_u8_rows_v3<const W: usize>(
             } else {
                 let av: &[u16; 8] = ar[c..c + 8].try_into().unwrap();
                 let bv: &[u8; 8] = br[c..c + 8].try_into().unwrap();
-                let d = _mm_sub_epi16(
-                    _mm_loadu_si128(av),
-                    _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
-                );
+                let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_cvtepu8_epi16(_mm_loadu_si64(bv)));
                 let sq = _mm_madd_epi16(d, d);
                 xv = _mm256_add_epi32(xv, _mm256_castsi128_si256(sq));
             }
@@ -308,10 +299,7 @@ fn sse_u16_u8_w4_v3(
     if h == 0 {
         return 0;
     }
-    if h % 4 != 0
-        || a.len() < (h - 1) * a_stride + 4
-        || b.len() < (h - 1) * b_stride + 4
-    {
+    if h % 4 != 0 || a.len() < (h - 1) * a_stride + 4 || b.len() < (h - 1) * b_stride + 4 {
         return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, 4, h);
     }
     let (aa, bb) = (&a[..(h - 1) * a_stride + 4], &b[..(h - 1) * b_stride + 4]);
@@ -449,10 +437,7 @@ pub(crate) fn sse_u8_impl_v3(
                     _mm_cvtepu8_epi16(_mm_loadu_si64(bv)),
                 );
                 let sq = _mm_madd_epi16(d, d);
-                xv = _mm256_add_epi32(
-                    xv,
-                    _mm256_castsi128_si256(sq),
-                );
+                xv = _mm256_add_epi32(xv, _mm256_castsi128_si256(sq));
             }
         }
     }
@@ -653,10 +638,14 @@ pub(crate) fn highbd_variance64_impl_v3(
                 let xv = _mm256_madd_epi16(d, d);
                 // Fold: sv i32 lanes -> i64 (sign-extend); xv lanes are
                 // non-negative and each < 2*4095^2 < 2^26 per row-pair.
-                let s128 =
-                    _mm_add_epi32(_mm256_castsi256_si128(sv), _mm256_extracti128_si256::<1>(sv));
-                let x128 =
-                    _mm_add_epi32(_mm256_castsi256_si128(xv), _mm256_extracti128_si256::<1>(xv));
+                let s128 = _mm_add_epi32(
+                    _mm256_castsi256_si128(sv),
+                    _mm256_extracti128_si256::<1>(sv),
+                );
+                let x128 = _mm_add_epi32(
+                    _mm256_castsi256_si128(xv),
+                    _mm256_extracti128_si256::<1>(xv),
+                );
                 let s64 = _mm_add_epi64(
                     _mm_cvtepi32_epi64(s128),
                     _mm_cvtepi32_epi64(_mm_srli_si128::<8>(s128)),
@@ -839,8 +828,7 @@ pub(crate) fn highbd_variance64_impl_v3(
                 let av: &[u16; 8] = ar[c..c + 8].try_into().unwrap();
                 let bv: &[u16; 8] = br[c..c + 8].try_into().unwrap();
                 let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_loadu_si128(bv));
-                sv =
-                    _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
+                sv = _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
                 xv = _mm256_add_epi32(xv, _mm256_zextsi128_si256(_mm_madd_epi16(d, d)));
             }
         }
@@ -906,8 +894,7 @@ fn var_w_v3<const W: usize>(
                 let bv: &[u16; 8] = br[c..c + 8].try_into().unwrap();
                 let d = _mm_sub_epi16(_mm_loadu_si128(av), _mm_loadu_si128(bv));
                 let ones128 = _mm_set1_epi16(1);
-                sv =
-                    _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
+                sv = _mm256_add_epi32(sv, _mm256_zextsi128_si256(_mm_madd_epi16(d, ones128)));
                 xv = _mm256_add_epi32(xv, _mm256_zextsi128_si256(_mm_madd_epi16(d, d)));
             }
         }

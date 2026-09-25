@@ -27,8 +27,6 @@
 //! `(qcoeff, dqcoeff, eob, txb_entropy_ctx)`.
 #![forbid(unsafe_code)]
 
-
-
 // ---------------------------------------------------------------------------
 // PUBLIC API SURFACE. The only thing an external consumer needs from this crate
 // is `key_frame` -- zenavif, the sole external consumer, uses exactly
@@ -483,7 +481,13 @@ pub fn xform_quant_into(
     // TX_4X4 (== 0) and DCT_DCT (== 0) upstream, so this is the only tx here.
     // `clear` + `resize(_, 0)` reproduces the `vec![0i32; n]` these three
     // replace element for element (see `XformQuantScratch`).
-    let XformQuantScratch { coeff, qcoeff, dqcoeff, fwd, .. } = scratch;
+    let XformQuantScratch {
+        coeff,
+        qcoeff,
+        dqcoeff,
+        fwd,
+        ..
+    } = scratch;
     // GROW-ONLY, not clear-and-refill — and `resize` alone does NOT give that:
     // it truncates when the buffer is longer than requested, so alternating
     // tx sizes bounce the length and re-zero the grown tail on every larger
@@ -528,36 +532,38 @@ pub fn xform_quant_into(
         // adaptive helper (av1_quantize_b_facade's use_quant_b_adapt arm); qm_sel
         // /iqm_sel carry the per-transform QM (None = flat). FP/DC unaffected.
         (QuantKind::B, _, _, true) if qp.adaptive => aom_highbd_quantize_b_adaptive_helper(
-            qp.zbin, qp.round, qp.quant, qp.quant_shift, qp.dequant, log_scale, qm_sel, iqm_sel, sc,
-            src, qcoeff, dqcoeff,
+            qp.zbin,
+            qp.round,
+            qp.quant,
+            qp.quant_shift,
+            qp.dequant,
+            log_scale,
+            qm_sel,
+            iqm_sel,
+            sc,
+            src,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::B, _, _, false) if qp.adaptive => aom_quantize_b_adaptive_helper(
-            qp.zbin, qp.round, qp.quant, qp.quant_shift, qp.dequant, log_scale, qm_sel, iqm_sel, sc,
-            src, qcoeff, dqcoeff,
+            qp.zbin,
+            qp.round,
+            qp.quant,
+            qp.quant_shift,
+            qp.dequant,
+            log_scale,
+            qm_sel,
+            iqm_sel,
+            sc,
+            src,
+            qcoeff,
+            dqcoeff,
         ),
         (QuantKind::Fp, Some(qm), Some(iqm), false) => av1_quantize_fp_qm(
-            qp.round,
-            qp.quant,
-            qp.dequant,
-            log_scale,
-            qm,
-            iqm,
-            sc,
-            src,
-            qcoeff,
-            dqcoeff,
+            qp.round, qp.quant, qp.dequant, log_scale, qm, iqm, sc, src, qcoeff, dqcoeff,
         ),
         (QuantKind::Fp, Some(qm), Some(iqm), true) => av1_highbd_quantize_fp_qm(
-            qp.round,
-            qp.quant,
-            qp.dequant,
-            log_scale,
-            qm,
-            iqm,
-            sc,
-            src,
-            qcoeff,
-            dqcoeff,
+            qp.round, qp.quant, qp.dequant, log_scale, qm, iqm, sc, src, qcoeff, dqcoeff,
         ),
         // The hottest quantizer (speed-0 search path): SIMD-dispatched, bit-
         // identical to the scalar port at every tier (quantize_fp_simd_diff);
@@ -574,14 +580,7 @@ pub fn xform_quant_into(
             dqcoeff,
         ),
         (QuantKind::Fp, _, _, true) => av1_highbd_quantize_fp_no_qmatrix(
-            qp.quant,
-            qp.dequant,
-            qp.round,
-            log_scale,
-            sc,
-            src,
-            qcoeff,
-            dqcoeff,
+            qp.quant, qp.dequant, qp.round, log_scale, sc, src, qcoeff, dqcoeff,
         ),
         (QuantKind::B, Some(qm), Some(iqm), false) => aom_quantize_b_qm(
             qp.zbin,
@@ -669,7 +668,10 @@ pub fn xform_quant_into(
         txb_entropy_context(qcoeff, tx_size, tx_type, eob as usize)
     };
 
-    XformQuantSummary { eob, txb_entropy_ctx }
+    XformQuantSummary {
+        eob,
+        txb_entropy_ctx,
+    }
 }
 
 /// Neighbour entropy contexts + plane geometry for `get_txb_ctx` (the block's
@@ -802,9 +804,8 @@ pub fn dump_trellis_calls() {
     }
 }
 
-static TRELLIS_CALLS: std::sync::Mutex<
-    Option<std::collections::HashMap<String, u64>>,
-> = std::sync::Mutex::new(None);
+static TRELLIS_CALLS: std::sync::Mutex<Option<std::collections::HashMap<String, u64>>> =
+    std::sync::Mutex::new(None);
 
 /// [`xform_quant_optimize_split`] with caller-owned coefficient buffers.
 /// Byte-identical output; see [`XformQuantScratch`].
@@ -858,12 +859,17 @@ pub fn xform_quant_optimize_split_into(
     let dequant = [qp.dequant[0], qp.dequant[1]];
     let sc = scan(tx_size, tx_type);
     scratch.levels.resize(aom_dsp::txb::TX_PAD_2D, 0);
-    let XformQuantScratch { coeff, qcoeff, dqcoeff, levels, .. } = scratch;
+    let XformQuantScratch {
+        coeff,
+        qcoeff,
+        dqcoeff,
+        levels,
+        ..
+    } = scratch;
     // Fixed-extent binding: the trellis indexes `levels` through
     // `padded_idx` on EVERY coefficient — a `&mut [u8]` slice would carry a
     // bounds check per access that the `[u8; TX_PAD_2D]` array type removes.
-    let levels: &mut [u8; aom_dsp::txb::TX_PAD_2D] =
-        levels.as_mut_slice().try_into().unwrap();
+    let levels: &mut [u8; aom_dsp::txb::TX_PAD_2D] = levels.as_mut_slice().try_into().unwrap();
     // `xform_quant_into` leaves the scratch Vecs grow-only now — slice each to
     // the live coefficient count; the trellis's reads/writes are all
     // scan-indexed below `n_coeffs`.
@@ -1139,7 +1145,9 @@ pub fn pixel_distortion(
     let w = TX_W[tx_size];
     let h = TX_H[tx_size];
     let mut recon = pred[..w * h].to_vec();
-    aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add(dqcoeff, &mut recon, w, tx_type, tx_size, bd);
+    aom_dsp::transform::inv_txfm2d::av1_inv_txfm2d_add(
+        dqcoeff, &mut recon, w, tx_type, tx_size, bd,
+    );
     aom_dsp::dist::highbd_sse(&recon, w, source, w, w, h)
 }
 
@@ -1214,11 +1222,7 @@ pub fn dist_block_tx_domain_qm(
 /// `dist_block_tx_domain` (tx_search.c:2204-2249): `Some` only when the
 /// [`QuantParams`] carries a frame QM context resolving a genuine matrix for
 /// `(tx_size, tx_type)` (2-D transforms below the flat level).
-pub fn dist_qmatrix<'a>(
-    qp: &QuantParams<'a>,
-    tx_size: usize,
-    tx_type: usize,
-) -> Option<&'a [u8]> {
+pub fn dist_qmatrix<'a>(qp: &QuantParams<'a>, tx_size: usize, tx_type: usize) -> Option<&'a [u8]> {
     resolve_qm(qp, tx_size, tx_type).0
 }
 

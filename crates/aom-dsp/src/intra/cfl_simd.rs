@@ -90,7 +90,13 @@ fn cfl_predict_impl_scalar(
     let mut ac_off = 0usize;
     let mut off = dst_off;
     for _ in 0..height {
-        cfl_predict_row_scalar(&ac[ac_off..ac_off + width], &mut dst[off..off + width], alpha_q3, max, width);
+        cfl_predict_row_scalar(
+            &ac[ac_off..ac_off + width],
+            &mut dst[off..off + width],
+            alpha_q3,
+            max,
+            width,
+        );
         ac_off += CFL_BUF_LINE;
         off += dst_stride;
     }

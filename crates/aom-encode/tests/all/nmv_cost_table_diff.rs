@@ -13,10 +13,10 @@
 //! currently take synthetic cost tables as input; this differential proves the
 //! port builds the *real* ones byte-for-byte from the frame's nmv CDFs.
 
-use aom_encode::intrabc_search::{
-    fill_dv_costs, fill_nmv_costs, MV_MAX, MV_SUBPEL_HIGH, MV_SUBPEL_LOW, MV_SUBPEL_NONE,
-};
 use aom_dsp::entropy::default_cdfs::{DEFAULT_NMV_COMPS, DEFAULT_NMV_JOINTS};
+use aom_encode::intrabc_search::{
+    MV_MAX, MV_SUBPEL_HIGH, MV_SUBPEL_LOW, MV_SUBPEL_NONE, fill_dv_costs, fill_nmv_costs,
+};
 use aom_sys_ref::ref_build_nmv_cost_table;
 
 const MV_VALS: usize = (MV_MAX as usize) * 2 + 1;
@@ -103,12 +103,9 @@ fn assert_matches(
     assert_eq!(port.dv_costs[0].len(), MV_VALS);
     assert_eq!(port.dv_costs[1].len(), MV_VALS);
     // Compare full magnitude tables; report the first mismatch precisely.
-    for (comp, (p, c)) in [
-        (&port.dv_costs[0], &c_cost0),
-        (&port.dv_costs[1], &c_cost1),
-    ]
-    .iter()
-    .enumerate()
+    for (comp, (p, c)) in [(&port.dv_costs[0], &c_cost0), (&port.dv_costs[1], &c_cost1)]
+        .iter()
+        .enumerate()
     {
         if let Some(idx) = (0..MV_VALS).find(|&i| p[i] != c[i]) {
             let v = idx as i32 - MV_MAX;
@@ -136,13 +133,25 @@ fn nmv_cost_table_default_context_matches_real_c() {
 
     // Anti-vacuity: fractional (LOW) then high-precision (HIGH) bits genuinely
     // change the magnitude costs — the precision gates are exercised, not inert.
-    assert_ne!(none0, low0, "LOW precision must add fractional-pel costs vs NONE");
-    assert_ne!(low0, high0, "HIGH precision must add high-precision costs vs LOW");
+    assert_ne!(
+        none0, low0,
+        "LOW precision must add fractional-pel costs vs NONE"
+    );
+    assert_ne!(
+        low0, high0,
+        "HIGH precision must add high-precision costs vs LOW"
+    );
 
     // Regression: fill_nmv_costs at NONE == the intrabc DV-cost builder.
     let dv = fill_dv_costs(joints, comp0, comp1);
-    assert_eq!(dv.joint_mv, fill_nmv_costs(MV_SUBPEL_NONE, joints, comp0, comp1).joint_mv);
-    assert_eq!(dv.dv_costs[0], none0, "NONE precision must equal fill_dv_costs");
+    assert_eq!(
+        dv.joint_mv,
+        fill_nmv_costs(MV_SUBPEL_NONE, joints, comp0, comp1).joint_mv
+    );
+    assert_eq!(
+        dv.dv_costs[0], none0,
+        "NONE precision must equal fill_dv_costs"
+    );
 }
 
 /// A sweep of synthetic-but-valid nmv_contexts at every precision — exercises

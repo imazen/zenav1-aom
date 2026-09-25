@@ -8,8 +8,8 @@
 //! marshalled `struct segmentation`.
 
 use aom_dsp::quant::{
-    av1_build_quantizer, av1_get_qindex, set_q_index, Dequants, Quants, Segmentation,
-    QINDEX_RANGE, SEG_LVL_ALT_Q,
+    av1_build_quantizer, av1_get_qindex, set_q_index, Dequants, Quants, Segmentation, QINDEX_RANGE,
+    SEG_LVL_ALT_Q,
 };
 use aom_sys_ref::{ref_get_qindex, ref_set_q_index};
 
@@ -34,7 +34,17 @@ impl Rng {
 fn check_rows(bd: u8, ydc: i32, udc: i32, uac: i32, vdc: i32, vac: i32, sharpness: i32) {
     let mut quants = Quants::zeroed();
     let mut deq = Dequants::zeroed();
-    av1_build_quantizer(bd, ydc, udc, uac, vdc, vac, &mut quants, &mut deq, sharpness);
+    av1_build_quantizer(
+        bd,
+        ydc,
+        udc,
+        uac,
+        vdc,
+        vac,
+        &mut quants,
+        &mut deq,
+        sharpness,
+    );
 
     for qindex in 0..QINDEX_RANGE {
         let cref = ref_set_q_index(bd as i32, ydc, udc, uac, vdc, vac, sharpness, qindex as i32);
@@ -107,7 +117,11 @@ fn get_qindex_matches_c() {
             data[s][SEG_LVL_ALT_Q] = d;
             altq[s] = d;
         }
-        let seg = Segmentation { enabled, feature_mask: mask, feature_data: data };
+        let seg = Segmentation {
+            enabled,
+            feature_mask: mask,
+            feature_data: data,
+        };
         for segment_id in 0..8usize {
             let base = rng.range(0, 256);
             let rust = av1_get_qindex(&seg, segment_id, base);
@@ -121,14 +135,25 @@ fn get_qindex_matches_c() {
         }
     }
     // Clamp edges: data pushing past both ends.
-    for (base, d) in [(0, -255), (255, 255), (128, -200), (128, 200), (0, 0), (255, -1)] {
+    for (base, d) in [
+        (0, -255),
+        (255, 255),
+        (128, -200),
+        (128, 200),
+        (0, 0),
+        (255, -1),
+    ] {
         let mut mask = [0u32; 8];
         mask[3] = 1 << SEG_LVL_ALT_Q;
         let mut data = [[0i16; 8]; 8];
         data[3][SEG_LVL_ALT_Q] = d;
         let mut altq = [0i16; 8];
         altq[3] = d;
-        let seg = Segmentation { enabled: true, feature_mask: mask, feature_data: data };
+        let seg = Segmentation {
+            enabled: true,
+            feature_mask: mask,
+            feature_data: data,
+        };
         assert_eq!(
             av1_get_qindex(&seg, 3, base),
             ref_get_qindex(true, &mask, &altq, 3, base),

@@ -10,8 +10,8 @@
 //! `av1_write_tx_type` (plane-0 tx_type signaling) is out of scope on both sides.
 
 use aom_dsp::entropy::enc::OdEcEnc;
-use aom_sys_ref as c;
 use aom_dsp::txb::{scan, txb_high, txb_wide, write_coeffs_txb, CDF_ARENA_LEN};
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -32,19 +32,19 @@ impl Rng {
 /// `nsymbs + 1` u16 — an `nsymbs`-entry inverse-CDF (`icdf[nsymbs-1] == 0`) plus
 /// a 1-u16 adaptation counter. Mirrors `write.rs` / the shim exactly.
 const REGIONS: [(usize, usize, usize); 13] = [
-    (0, 5 * 13, 2),   // TXB_SKIP
-    (195, 4, 5),      // EOB16
-    (219, 4, 6),      // EOB32
-    (247, 4, 7),      // EOB64
-    (279, 4, 8),      // EOB128
-    (315, 4, 9),      // EOB256
-    (355, 4, 10),     // EOB512
-    (399, 4, 11),     // EOB1024
-    (447, 5 * 2 * 9, 2),  // EOB_EXTRA
-    (717, 5 * 2 * 4, 3),  // BASE_EOB
-    (877, 5 * 2 * 42, 4), // BASE
+    (0, 5 * 13, 2),        // TXB_SKIP
+    (195, 4, 5),           // EOB16
+    (219, 4, 6),           // EOB32
+    (247, 4, 7),           // EOB64
+    (279, 4, 8),           // EOB128
+    (315, 4, 9),           // EOB256
+    (355, 4, 10),          // EOB512
+    (399, 4, 11),          // EOB1024
+    (447, 5 * 2 * 9, 2),   // EOB_EXTRA
+    (717, 5 * 2 * 4, 3),   // BASE_EOB
+    (877, 5 * 2 * 42, 4),  // BASE
     (2977, 5 * 2 * 21, 4), // BR
-    (4027, 2 * 3, 2), // DC_SIGN
+    (4027, 2 * 3, 2),      // DC_SIGN
 ];
 
 /// A valid random CDF arena, filled slot-by-slot per the real layout: each slot
@@ -78,11 +78,15 @@ fn gen_coeffs(rng: &mut Rng, scan: &[i16], area: usize) -> (Vec<i32>, usize) {
     let nz = |rng: &mut Rng| -> i32 {
         // strictly nonzero magnitude
         let mag = match rng.range(0, 10) {
-            0..=4 => rng.range(1, 3) as i32, // base (1..2)
+            0..=4 => rng.range(1, 3) as i32,  // base (1..2)
             5..=7 => rng.range(1, 20) as i32, // base-range
-            _ => rng.range(1, 3000) as i32,  // golomb
+            _ => rng.range(1, 3000) as i32,   // golomb
         };
-        if rng.next() & 1 == 1 { -mag } else { mag }
+        if rng.next() & 1 == 1 {
+            -mag
+        } else {
+            mag
+        }
     };
     #[allow(clippy::needless_range_loop)]
     for i in 0..eob {
@@ -118,14 +122,29 @@ fn write_coeffs_txb_byte_identical() {
                         let mut arena_r = arena0.clone();
 
                         let want = c::ref_write_coeffs_txb(
-                            &coeff, eob, tx_size, tx_type, plane_type, txb_skip_ctx,
-                            dc_sign_ctx, upd, &mut arena_c,
+                            &coeff,
+                            eob,
+                            tx_size,
+                            tx_type,
+                            plane_type,
+                            txb_skip_ctx,
+                            dc_sign_ctx,
+                            upd,
+                            &mut arena_c,
                         );
 
                         let mut enc = OdEcEnc::new();
                         write_coeffs_txb(
-                            &mut enc, &mut arena_r, &coeff, eob, tx_size, tx_type,
-                            plane_type, txb_skip_ctx, dc_sign_ctx, upd,
+                            &mut enc,
+                            &mut arena_r,
+                            &coeff,
+                            eob,
+                            tx_size,
+                            tx_type,
+                            plane_type,
+                            txb_skip_ctx,
+                            dc_sign_ctx,
+                            upd,
                         );
                         let got = enc.done().to_vec();
 

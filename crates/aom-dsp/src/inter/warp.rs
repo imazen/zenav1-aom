@@ -844,8 +844,8 @@ pub fn highbd_warp_affine(
                     let coeffs = &AV1_WARPED_FILTER[offs];
                     let mut sum = 1i32 << offset_bits_vert;
                     for m in 0..8usize {
-                        sum += tmp[((k + m as i32 + 4) * 8 + (l + 4)) as usize]
-                            * i32::from(coeffs[m]);
+                        sum +=
+                            tmp[((k + m as i32 + 4) * 8 + (l + 4)) as usize] * i32::from(coeffs[m]);
                     }
                     let out_row = (i - p_row + k + 4) as usize;
                     let out_col = (j - p_col + l + 4) as usize;
@@ -871,10 +871,8 @@ pub fn highbd_warp_affine(
                         }
                     } else {
                         let sum = round_power_of_two(sum, reduce_bits_vert);
-                        pred[out_row * p_stride + out_col] = clip_pixel_highbd(
-                            sum - (1 << (bd - 1)) - (1 << bd),
-                            bd,
-                        );
+                        pred[out_row * p_stride + out_col] =
+                            clip_pixel_highbd(sum - (1 << (bd - 1)) - (1 << bd), bd);
                     }
                     sy += gamma;
                     l += 1;

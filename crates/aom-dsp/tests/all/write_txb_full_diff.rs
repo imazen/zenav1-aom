@@ -9,8 +9,8 @@
 //! intra + inter + reduced-set + filter-intra tx-type contexts.
 
 use aom_dsp::entropy::enc::OdEcEnc;
-use aom_sys_ref as c;
 use aom_dsp::txb::{ext_tx_derive, scan, txb_high, txb_wide, write_coeffs_txb_full, CDF_ARENA_LEN};
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -81,7 +81,11 @@ fn gen_coeffs(rng: &mut Rng, sc: &[i16], area: usize) -> (Vec<i32>, usize) {
             5..=7 => rng.range(1, 20) as i32,
             _ => rng.range(1, 3000) as i32,
         };
-        if rng.next() & 1 == 1 { -mag } else { mag }
+        if rng.next() & 1 == 1 {
+            -mag
+        } else {
+            mag
+        }
     };
     #[allow(clippy::needless_range_loop)]
     for i in 0..eob {
@@ -108,7 +112,8 @@ fn write_coeffs_txb_full_identical() {
                     let use_fi = tx_type % 3 == 0;
                     let fi_mode = tx_type % 5;
                     let mode = [0usize, 1, 2, 6, 12][tx_type % 5];
-                    let d = ext_tx_derive(tx_size, is_inter, reduced, tx_type, use_fi, fi_mode, mode);
+                    let d =
+                        ext_tx_derive(tx_size, is_inter, reduced, tx_type, use_fi, fi_mode, mode);
                     for &plane_type in &[0usize, 1] {
                         for &signal_gate in &[true, false] {
                             // A tx_type write happens only for luma with an in-set
@@ -133,16 +138,43 @@ fn write_coeffs_txb_full_identical() {
 
                                 let mut enc = OdEcEnc::new();
                                 write_coeffs_txb_full(
-                                    &mut enc, &mut arena_r, &mut ext_r, &coeff, eob, tx_size, tx_type,
-                                    plane_type, txb_skip_ctx, dc_sign_ctx, upd, is_inter, reduced,
-                                    use_fi, fi_mode, mode, signal_gate,
+                                    &mut enc,
+                                    &mut arena_r,
+                                    &mut ext_r,
+                                    &coeff,
+                                    eob,
+                                    tx_size,
+                                    tx_type,
+                                    plane_type,
+                                    txb_skip_ctx,
+                                    dc_sign_ctx,
+                                    upd,
+                                    is_inter,
+                                    reduced,
+                                    use_fi,
+                                    fi_mode,
+                                    mode,
+                                    signal_gate,
                                 );
                                 let got = enc.done().to_vec();
 
                                 let want = c::ref_write_coeffs_txb_full(
-                                    &coeff, eob, tx_size, tx_type, plane_type, txb_skip_ctx,
-                                    dc_sign_ctx, upd, &mut arena_c, &mut ext_c, is_inter, reduced,
-                                    use_fi, fi_mode, mode, signal_gate,
+                                    &coeff,
+                                    eob,
+                                    tx_size,
+                                    tx_type,
+                                    plane_type,
+                                    txb_skip_ctx,
+                                    dc_sign_ctx,
+                                    upd,
+                                    &mut arena_c,
+                                    &mut ext_c,
+                                    is_inter,
+                                    reduced,
+                                    use_fi,
+                                    fi_mode,
+                                    mode,
+                                    signal_gate,
                                 );
 
                                 let m = format!("ts={tx_size} tt={tx_type} inter={is_inter} red={reduced} pl={plane_type} gate={signal_gate} upd={upd} eob={eob}");
@@ -162,5 +194,8 @@ fn write_coeffs_txb_full_identical() {
         }
     }
     // The tx_type symbol path must actually fire (else we only tested the skip).
-    assert!(tx_type_written > 0, "tx_type was never written — coverage gap");
+    assert!(
+        tx_type_written > 0,
+        "tx_type was never written — coverage gap"
+    );
 }

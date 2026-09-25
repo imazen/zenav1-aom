@@ -239,7 +239,9 @@ fn fdct4x4_lp_matches_c() {
         // and an all-zero block exercises the `if (i == 0 && in_high[0])`
         // nonzero-bias branch from the other side.
         let src: Vec<i16> = match iter {
-            0 => (0..16).map(|i| if (i / 4 + i % 4) % 2 == 0 { 255 } else { -255 }).collect(),
+            0 => (0..16)
+                .map(|i| if (i / 4 + i % 4) % 2 == 0 { 255 } else { -255 })
+                .collect(),
             1 => vec![0i16; 16],
             2 => vec![255i16; 16],
             3 => vec![-255i16; 16],
@@ -283,7 +285,9 @@ fn fdct4x4_lp_tiers_agree_over_the_reachable_range() {
     let mut peak = 0i32;
     for iter in 0..2_000 {
         let src: Vec<i16> = match iter {
-            0 => (0..16).map(|i| if (i / 4 + i % 4) % 2 == 0 { 255 } else { -255 }).collect(),
+            0 => (0..16)
+                .map(|i| if (i / 4 + i % 4) % 2 == 0 { 255 } else { -255 })
+                .collect(),
             1 => vec![255i16; 16],
             2 => vec![-255i16; 16],
             n if n % 2 == 0 => (0..16).map(|_| rng.residual()).collect(),
@@ -299,7 +303,10 @@ fn fdct4x4_lp_tiers_agree_over_the_reachable_range() {
         );
         peak = peak.max(want.iter().map(|v| i32::from(*v).abs()).max().unwrap());
     }
-    assert!(peak >= 8_000, "the grid never loaded the transform (peak {peak})");
+    assert!(
+        peak >= 8_000,
+        "the grid never loaded the transform (peak {peak})"
+    );
     assert_eq!(
         c::REF_FDCT4X4_SIMD_IS_DISTINCT,
         cfg!(any(target_arch = "aarch64", target_arch = "x86_64")),
@@ -472,9 +479,8 @@ fn block_yrd_lowbd_matches_c_walk() {
                 } else {
                     (bw4, bh4)
                 };
-                let (want, coded) = c_block_yrd_lowbd(
-                    &diff, bw4, mbw, mbh, tx, &round_fp, &quant_fp, &dequant,
-                );
+                let (want, coded) =
+                    c_block_yrd_lowbd(&diff, bw4, mbw, mbh, tx, &round_fp, &quant_fp, &dequant);
                 let got = block_yrd_lowbd(
                     &diff, bw4, bh4, mbw, mbh, tx, &round_fp, &quant_fp, &dequant,
                 );
@@ -927,8 +933,7 @@ fn lp_hadamard_transpose_is_load_bearing_and_only_moves_the_eob() {
                 );
             }
         }
-        let (nq, ndq, neob) =
-            c::ref_quantize_lp(&want, &round_fp, &quant_fp, &dequant, scan, scan);
+        let (nq, ndq, neob) = c::ref_quantize_lp(&want, &round_fp, &quant_fp, &dequant, scan, scan);
         let (oq, odq, oeob) = c::ref_quantize_lp(&old, &round_fp, &quant_fp, &dequant, scan, scan);
         // (2) every order-invariant consumer is blind to it.
         assert_eq!(

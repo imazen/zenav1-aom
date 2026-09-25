@@ -16,7 +16,7 @@
 //! recon plane is u8, NOT a lane-count change; expect a small Ir delta.
 
 use aom_dsp::loopfilter::frame::{
-    loop_filter_frame, loop_filter_frame_u8, LfFrameBuf, LfFrameBufU8, LfMi, LfMiGrid, LfParams,
+    LfFrameBuf, LfFrameBufU8, LfMi, LfMiGrid, LfParams, loop_filter_frame, loop_filter_frame_u8,
 };
 
 struct Rng(u64);
@@ -88,7 +88,11 @@ fn workload() -> Workload {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let dither = (rng.next() % 5) as i32 - 2;
-            let base = if (i / 32) % 2 == 0 { 128i32 } else { (rng.next() & 0xff) as i32 };
+            let base = if (i / 32) % 2 == 0 {
+                128i32
+            } else {
+                (rng.next() & 0xff) as i32
+            };
             out.push((base + dither).clamp(0, 255) as u8);
         }
         out
@@ -98,7 +102,19 @@ fn workload() -> Workload {
     let y = genp(&mut rng, y_stride * (mi_rows * 4) as usize);
     let u = genp(&mut rng, uv_stride * ((mi_rows * 4) >> 1) as usize);
     let v = genp(&mut rng, uv_stride * ((mi_rows * 4) >> 1) as usize);
-    Workload { mi, mi_rows, mi_cols, p, y, u, v, y_stride, uv_stride, w, h }
+    Workload {
+        mi,
+        mi_rows,
+        mi_cols,
+        p,
+        y,
+        u,
+        v,
+        y_stride,
+        uv_stride,
+        w,
+        h,
+    }
 }
 
 fn main() {
@@ -110,14 +126,26 @@ fn main() {
     let side = args[1].as_str();
     let iters: usize = args[2].parse().expect("iters must be a number");
     let wl = workload();
-    let grid = LfMiGrid { mi: &wl.mi, stride: wl.mi_cols as usize, mi_rows: wl.mi_rows, mi_cols: wl.mi_cols };
+    let grid = LfMiGrid {
+        mi: &wl.mi,
+        stride: wl.mi_cols as usize,
+        mi_rows: wl.mi_rows,
+        mi_cols: wl.mi_cols,
+    };
 
     // Byte-identity cross-check (u8 path vs u16 path) before profiling.
     {
         let (mut y8, mut u8v, mut v8) = (wl.y.clone(), wl.u.clone(), wl.v.clone());
         let mut buf8 = LfFrameBufU8 {
-            y: &mut y8, y_stride: wl.y_stride, u: &mut u8v, v: &mut v8, uv_stride: wl.uv_stride,
-            crop_width: wl.w, crop_height: wl.h, ss_x: 1, ss_y: 1,
+            y: &mut y8,
+            y_stride: wl.y_stride,
+            u: &mut u8v,
+            v: &mut v8,
+            uv_stride: wl.uv_stride,
+            crop_width: wl.w,
+            crop_height: wl.h,
+            ss_x: 1,
+            ss_y: 1,
         };
         loop_filter_frame_u8(&mut buf8, &grid, &wl.p, 0, 3);
 
@@ -127,8 +155,16 @@ fn main() {
             wl.v.iter().map(|&x| x as u16).collect(),
         );
         let mut buf16 = LfFrameBuf {
-            y: &mut y16, y_stride: wl.y_stride, u: &mut u16v, v: &mut v16, uv_stride: wl.uv_stride,
-            crop_width: wl.w, crop_height: wl.h, ss_x: 1, ss_y: 1, bd: 8,
+            y: &mut y16,
+            y_stride: wl.y_stride,
+            u: &mut u16v,
+            v: &mut v16,
+            uv_stride: wl.uv_stride,
+            crop_width: wl.w,
+            crop_height: wl.h,
+            ss_x: 1,
+            ss_y: 1,
+            bd: 8,
         };
         loop_filter_frame(&mut buf16, &grid, &wl.p, 0, 3);
 
@@ -152,8 +188,15 @@ fn main() {
                 u.copy_from_slice(&wl.u);
                 v.copy_from_slice(&wl.v);
                 let mut buf = LfFrameBufU8 {
-                    y: &mut y, y_stride: wl.y_stride, u: &mut u, v: &mut v, uv_stride: wl.uv_stride,
-                    crop_width: wl.w, crop_height: wl.h, ss_x: 1, ss_y: 1,
+                    y: &mut y,
+                    y_stride: wl.y_stride,
+                    u: &mut u,
+                    v: &mut v,
+                    uv_stride: wl.uv_stride,
+                    crop_width: wl.w,
+                    crop_height: wl.h,
+                    ss_x: 1,
+                    ss_y: 1,
                 };
                 loop_filter_frame_u8(&mut buf, &grid, &wl.p, 0, 3);
                 sink = sink.wrapping_add(buf.y[0] as u64);
@@ -169,8 +212,16 @@ fn main() {
                 u.copy_from_slice(&u0);
                 v.copy_from_slice(&v0);
                 let mut buf = LfFrameBuf {
-                    y: &mut y, y_stride: wl.y_stride, u: &mut u, v: &mut v, uv_stride: wl.uv_stride,
-                    crop_width: wl.w, crop_height: wl.h, ss_x: 1, ss_y: 1, bd: 8,
+                    y: &mut y,
+                    y_stride: wl.y_stride,
+                    u: &mut u,
+                    v: &mut v,
+                    uv_stride: wl.uv_stride,
+                    crop_width: wl.w,
+                    crop_height: wl.h,
+                    ss_x: 1,
+                    ss_y: 1,
+                    bd: 8,
                 };
                 loop_filter_frame(&mut buf, &grid, &wl.p, 0, 3);
                 sink = sink.wrapping_add(buf.y[0] as u64);

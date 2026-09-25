@@ -30,7 +30,14 @@ use std::time::Instant;
 
 /// Mirror-tile a small cell up to `w`x`h` — the same recipe as
 /// `kb28_crop_dims::mirror_tile` / `s4cov_hd_speed_axis::mirror_tile`.
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -107,11 +114,24 @@ fn main() {
             speed,
         )
     } else {
-        mirror_tile(&base, &format!("photo_{w}x{h}_cq{cq}_s{speed}"), w, h, cq, speed)
+        mirror_tile(
+            &base,
+            &format!("photo_{w}x{h}_cq{cq}_s{speed}"),
+            w,
+            h,
+            cq,
+            speed,
+        )
     };
 
     let mut cfg = KeyFrameConfig::allintra_speed0(
-        cell.w, cell.h, cell.bd, cell.mono, cell.ss_x, cell.ss_y, cell.cq_level,
+        cell.w,
+        cell.h,
+        cell.bd,
+        cell.mono,
+        cell.ss_x,
+        cell.ss_y,
+        cell.cq_level,
     );
     cfg.cpu_used = cell.speed;
     // Optional 7th arg: the tile grid, as `N` (square: cols = rows = N) or
@@ -140,11 +160,8 @@ fn main() {
 
     let run = |arm: &str| -> Vec<u8> {
         match arm {
-            "port" => encode_key_frame(
-                KeyFramePlanes::new(&cell.y, &cell.u, &cell.v),
-                &cfg,
-            )
-            .expect("the port must encode this cell"),
+            "port" => encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), &cfg)
+                .expect("the port must encode this cell"),
             "c" => c::ref_encode_av1_kf_screen_content(
                 &cell.y,
                 &cell.u,

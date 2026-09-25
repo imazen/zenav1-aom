@@ -28,15 +28,24 @@ fn grain_table_write_matches_c() {
         let port_bytes = write_film_grain_table(&entries);
 
         assert_eq!(
-            port_bytes, c_bytes,
+            port_bytes,
+            c_bytes,
             "idx {idx}: port re-serialization differs from C aom_film_grain_table_write\n\
              --- C ---\n{}\n--- port ---\n{}",
             String::from_utf8_lossy(&c_bytes),
             String::from_utf8_lossy(&port_bytes)
         );
-        updated += entries.iter().filter(|e| e.params.update_parameters).count();
+        updated += entries
+            .iter()
+            .filter(|e| e.params.update_parameters)
+            .count();
     }
     // Anti-vacuity: most vectors carry a full param body (not just the E line).
-    assert!(updated >= 12, "too few update_parameters vectors exercised ({updated})");
-    println!("grain_table_write_diff: 16 built-in vectors byte-identical (read∘write == C aom_film_grain_table_write)");
+    assert!(
+        updated >= 12,
+        "too few update_parameters vectors exercised ({updated})"
+    );
+    println!(
+        "grain_table_write_diff: 16 built-in vectors byte-identical (read∘write == C aom_film_grain_table_write)"
+    );
 }

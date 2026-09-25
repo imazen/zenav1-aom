@@ -30,13 +30,17 @@
 //! AOM_FORCE_SCALAR=1 cargo test -p zenav1-aom-dsp --test recon_lowbd_diff
 //! ```
 
-use aom_dsp::recon::{ReconScratch, reconstruct_txb_into, reconstruct_txb_u8_into};
+use aom_dsp::recon::{reconstruct_txb_into, reconstruct_txb_u8_into, ReconScratch};
 use aom_dsp::transform::inv_txfm2d::{inv_input_len, inv_txfm_valid};
 use aom_sys_ref as c;
 
 /// Full (un-repacked) transform dims — the residual/prediction buffer is `w*h`.
-const W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 struct Rng(u64);
 impl Rng {
@@ -60,7 +64,11 @@ impl Rng {
             return 0;
         }
         let mag = (self.next() % (1 << 17)) as i32;
-        if r & 1 == 0 { mag } else { -mag }
+        if r & 1 == 0 {
+            mag
+        } else {
+            -mag
+        }
     }
     /// A realistic dequant step (DC or AC), matching the encode-side harness's
     /// `[4, 800)` range.
@@ -110,7 +118,14 @@ fn check(
     // lowbd u8 path (the thing under test)
     let mut got_u8 = pred.clone();
     reconstruct_txb_u8_into(
-        &mut got_u8, stride, tx_size, tx_type, &qcoeff, dequant, iqm_ref, scratch,
+        &mut got_u8,
+        stride,
+        tx_size,
+        tx_type,
+        &qcoeff,
+        dequant,
+        iqm_ref,
+        scratch,
     );
 
     // oracle 1 — real exported C: dequant + inverse transform + add, at bd8
@@ -121,7 +136,15 @@ fn check(
     // oracle 2 — port highbd (u16) path at bd8
     let mut want_hi: Vec<u16> = pred.iter().map(|&p| p as u16).collect();
     reconstruct_txb_into(
-        &mut want_hi, stride, tx_size, tx_type, &qcoeff, dequant, iqm_ref, 8, scratch,
+        &mut want_hi,
+        stride,
+        tx_size,
+        tx_type,
+        &qcoeff,
+        dequant,
+        iqm_ref,
+        8,
+        scratch,
     );
 
     let mut changed = false;
@@ -164,7 +187,13 @@ fn recon_lowbd_zero_coeff() {
                 let pred: Vec<u8> = (0..buf_len).map(|_| rng.pixel_u8()).collect();
                 let mut got = pred.clone();
                 reconstruct_txb_u8_into(
-                    &mut got, stride, tx_size, tx_type, &qcoeff, dequant, iqm.as_deref(),
+                    &mut got,
+                    stride,
+                    tx_size,
+                    tx_type,
+                    &qcoeff,
+                    dequant,
+                    iqm.as_deref(),
                     &mut scratch,
                 );
                 assert_eq!(

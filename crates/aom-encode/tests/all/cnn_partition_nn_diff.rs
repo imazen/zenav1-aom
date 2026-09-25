@@ -134,7 +134,6 @@ fn nn_predict_matches_c_intra_cnn_branch_shapes() {
     eprintln!("nn_predict_matches_c_intra_cnn_branch_shapes: {n} configs bit-identical");
 }
 
-
 // ---------------------------------------------------------------------------
 // KB-41 root #26 — the DISPATCHED variant
 // ---------------------------------------------------------------------------
@@ -214,7 +213,13 @@ fn nn_predict_dispatched_matches_dispatched_c() {
         for reduce_prec in [true, false] {
             let mut got = vec![0.0f32; num_out];
             nn_predict_dispatched(
-                &features, &hidden, &wsl, &bsl, num_out, reduce_prec, &mut got,
+                &features,
+                &hidden,
+                &wsl,
+                &bsl,
+                num_out,
+                reduce_prec,
+                &mut got,
             );
             let want = c::ref_nn_predict_dispatched(
                 &features,
@@ -243,7 +248,11 @@ fn nn_predict_dispatched_matches_dispatched_c() {
                 mismatches.push(format!(
                     "in={num_in} hidden={hidden:?} out={num_out} reduce_prec={reduce_prec}: \
                      port {got:?} vs {} {expect:?}",
-                    if avx2 { "dispatched C" } else { "av1_nn_predict_c" }
+                    if avx2 {
+                        "dispatched C"
+                    } else {
+                        "av1_nn_predict_c"
+                    }
                 ));
             }
         }

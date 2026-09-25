@@ -36,7 +36,7 @@
 //! value stays inside 16 bits. The narrowing is kept because C has it, not
 //! because the differential pins it.
 
-use super::{FILTER_BITS, clip_pixel, rpo2};
+use super::{clip_pixel, rpo2, FILTER_BITS};
 
 /// `SCALE_SUBPEL_BITS` (`aom_dsp/aom_filter.h:28`).
 const SCALE_SUBPEL_BITS: i32 = 10;

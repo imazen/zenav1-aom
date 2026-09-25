@@ -30,7 +30,17 @@ fn check(bd: u8, ydc: i32, udc: i32, uac: i32, vdc: i32, vac: i32, sharpness: i3
 
     let mut quants = Quants::zeroed();
     let mut deq = Dequants::zeroed();
-    av1_build_quantizer(bd, ydc, udc, uac, vdc, vac, &mut quants, &mut deq, sharpness);
+    av1_build_quantizer(
+        bd,
+        ydc,
+        udc,
+        uac,
+        vdc,
+        vac,
+        &mut quants,
+        &mut deq,
+        sharpness,
+    );
 
     // Table order must match the flat layout documented in rd_shim.c.
     let tables: [(&str, &[[i16; 8]; QINDEX_RANGE]); 21] = [

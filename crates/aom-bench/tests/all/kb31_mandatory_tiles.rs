@@ -105,7 +105,13 @@ const GRID: &[(usize, usize, usize, usize, &str)] = &[
         1,
         "64 SB cols == max_width_sb — set_tile_info's `<=` loop splits here, where\n         av1_get_tile_limits' `<` bound alone would not",
     ),
-    (4160, 64, 2, 1, "65 SB cols — av1_get_tile_limits splits too"),
+    (
+        4160,
+        64,
+        2,
+        1,
+        "65 SB cols — av1_get_tile_limits splits too",
+    ),
     (4160, 128, 2, 1, "the same split with more than one SB row"),
 ];
 
@@ -395,7 +401,11 @@ fn issue6_reported_sizes_encode() {
             }
         };
         let delta = ours.len() as i64 - real.len() as i64;
-        println!("  {w}x{h} ({want_cols}x{want_rows} tiles): {} B vs {} B, delta {delta:+}", ours.len(), real.len());
+        println!(
+            "  {w}x{h} ({want_cols}x{want_rows} tiles): {} B vs {} B, delta {delta:+}",
+            ours.len(),
+            real.len()
+        );
         // KB-32's two roots took this from +3,193 (0.15%) to +339 (0.016%), and
         // KB-12 (0953fa7) closed the remaining estimate-arm leaf-mode residual to
         // ZERO — so this is a HARD BYTE GATE since 2026-08-02, not a bound. The

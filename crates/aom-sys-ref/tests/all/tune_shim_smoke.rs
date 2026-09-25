@@ -48,7 +48,10 @@ fn tune_shim_stock_matches_base_and_knobs_bite() {
             },
         );
         assert!(!base.is_empty() && !stock.is_empty());
-        assert_eq!(base, stock, "stock tune-shim must reproduce the base shim (cq={cq})");
+        assert_eq!(
+            base, stock,
+            "stock tune-shim must reproduce the base shim (cq={cq})"
+        );
 
         // tune=IQ (cdef/deltaq arms left ON) must change the stream.
         let iq = c::ref_encode_av1_kf_tune(

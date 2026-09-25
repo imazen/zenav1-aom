@@ -41,11 +41,17 @@ fn to_bd(base: &EncodeCell, label: &str, bd: u8) -> EncodeCell {
     }
 }
 
-
 /// Mirror-tile a small cell up to `w`x`h` — the recipe every >=1080p gate in
 /// this repo uses (`kb28_crop_dims::mirror_tile`), since no corpus vector is
 /// that large.
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -67,7 +73,17 @@ fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, spee
             v[r * cw + col] = base.v[mir(r, bch) * bcw + mir(col, bcw)];
         }
     }
-    EncodeCell { label: label.to_string(), w, h, cq_level: cq, speed, y, u, v, ..base.clone() }
+    EncodeCell {
+        label: label.to_string(),
+        w,
+        h,
+        cq_level: cq,
+        speed,
+        y,
+        u,
+        v,
+        ..base.clone()
+    }
 }
 
 fn fnv64(b: &[u8]) -> u64 {
@@ -96,7 +112,14 @@ fn main() {
                 (w.parse().unwrap(), h.parse().unwrap())
             })
             .collect(),
-        None => vec![(64, 64), (100, 100), (128, 128), (196, 196), (192, 192), (256, 256)],
+        None => vec![
+            (64, 64),
+            (100, 100),
+            (128, 128),
+            (196, 196),
+            (192, 192),
+            (256, 256),
+        ],
     };
     let cqs: Vec<i32> = match args.get(1) {
         Some(a) => a.split(',').map(|t| t.parse().unwrap()).collect(),
@@ -104,13 +127,7 @@ fn main() {
     };
     for &(w, h) in &sizes {
         for &cq in &cqs {
-            let src = EncodeCell::real_content(
-                "tier10",
-                "av1-1-b10-00-quantizer-00",
-                None,
-                cq,
-                0,
-            );
+            let src = EncodeCell::real_content("tier10", "av1-1-b10-00-quantizer-00", None, cq, 0);
             let b10 = mirror_tile(&src, "tier10m", w, h, cq, 0);
             let cell = to_bd(&b10, &format!("bd12_{w}x{h}_cq{cq}"), 12);
             let c_tu = cell.c_encode_ctrls(&[]);

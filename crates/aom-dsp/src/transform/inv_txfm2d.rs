@@ -7,7 +7,7 @@
 //! stages, `av1_round_shift_array` shifts, and `highbd_clip_pixel_add`
 //! reconstruction onto the destination. Depends on `bd` (8/10/12).
 
-use crate::transform::cospi::{NEW_SQRT2_BITS, NEW_INV_SQRT2};
+use crate::transform::cospi::{NEW_INV_SQRT2, NEW_SQRT2_BITS};
 use crate::transform::fdct::{clamp_value, round_shift};
 use crate::transform::txfm2d::{
     get_rect_tx_log_ratio, FLIP_CFG, HTX_TAB, TXFM_TYPE_LS, TX_SIZES_ALL, TX_SIZE_HIGH,
@@ -339,7 +339,12 @@ fn inv_txfm2d_add_4x4_fused(
             temp_in[c] = input[c * 4 + r];
         }
         clamp_buf(&mut temp_in, (bd + 8) as i8);
-        f_row(&temp_in, &mut buf[r * 4..r * 4 + 4], INV_COS_BIT, &stage_range_row);
+        f_row(
+            &temp_in,
+            &mut buf[r * 4..r * 4 + 4],
+            INV_COS_BIT,
+            &stage_range_row,
+        );
     }
 
     // Columns.
@@ -353,7 +358,11 @@ fn inv_txfm2d_add_4x4_fused(
         f_col(&temp_in, &mut temp_out, INV_COS_BIT, &stage_range_col);
         round_shift_array(&mut temp_out, -(shift[1] as i32));
         for r in 0..4 {
-            let src = if ud_flip { temp_out[3 - r] } else { temp_out[r] };
+            let src = if ud_flip {
+                temp_out[3 - r]
+            } else {
+                temp_out[r]
+            };
             let idx = r * stride + c;
             output[idx] = highbd_clip_pixel_add(output[idx], src, bd);
         }
@@ -488,9 +497,15 @@ pub fn av1_inv_txfm2d_add_into(
             }
         }
     }
-    let InvTxfmScratch { buf, mod_input: mod_input_scratch } = scratch;
+    let InvTxfmScratch {
+        buf,
+        mod_input: mod_input_scratch,
+    } = scratch;
     let cfg = get_inv_txfm_cfg(tx_type, tx_size);
-    assert!(cfg.valid, "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})");
+    assert!(
+        cfg.valid,
+        "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})"
+    );
     let col_n = TX_SIZE_WIDE[tx_size];
     let row_n = TX_SIZE_HIGH[tx_size];
     let shift = cfg.shift;
@@ -562,7 +577,12 @@ pub fn av1_inv_txfm2d_add_into(
                 }
             }
             clamp_buf(ti, (bd + 8) as i8);
-            f_row(ti, &mut buf[r * col_n..r * col_n + col_n], INV_COS_BIT, &stage_range_row);
+            f_row(
+                ti,
+                &mut buf[r * col_n..r * col_n + col_n],
+                INV_COS_BIT,
+                &stage_range_row,
+            );
             round_shift_array(&mut buf[r * col_n..r * col_n + col_n], -(shift[0] as i32));
         }
     }
@@ -600,7 +620,11 @@ pub fn av1_inv_txfm2d_add_into(
             f_col(ti, to, INV_COS_BIT, &stage_range_col);
             round_shift_array(to, -(shift[1] as i32));
             for r in 0..row_n {
-                let src = if cfg.ud_flip { to[row_n - r - 1] } else { to[r] };
+                let src = if cfg.ud_flip {
+                    to[row_n - r - 1]
+                } else {
+                    to[r]
+                };
                 let idx = r * stride + c;
                 output[idx] = highbd_clip_pixel_add(output[idx], src, bd);
             }
@@ -658,9 +682,15 @@ pub fn av1_inv_txfm2d_add_u8_into(
     scratch: &mut InvTxfmScratch,
 ) {
     const BD: i32 = 8;
-    let InvTxfmScratch { buf, mod_input: mod_input_scratch } = scratch;
+    let InvTxfmScratch {
+        buf,
+        mod_input: mod_input_scratch,
+    } = scratch;
     let cfg = get_inv_txfm_cfg(tx_type, tx_size);
-    assert!(cfg.valid, "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})");
+    assert!(
+        cfg.valid,
+        "unsupported inverse (tx_type={tx_type}, tx_size={tx_size})"
+    );
     // The fused 4x4 whole-block kernel — C's `lowbd_inv_txfm2d_add_4x4`,
     // u8 store. Same gating as the u16 driver's `inv_txfm2d_add_4x4_fused`.
     #[cfg(target_arch = "x86_64")]
@@ -842,7 +872,12 @@ pub fn av1_inv_txfm2d_add_u8_into(
                 }
             }
             clamp_buf(ti, (BD + 8) as i8);
-            f_row(ti, &mut buf[r * col_n..r * col_n + col_n], INV_COS_BIT, &stage_range_row);
+            f_row(
+                ti,
+                &mut buf[r * col_n..r * col_n + col_n],
+                INV_COS_BIT,
+                &stage_range_row,
+            );
             round_shift_array(&mut buf[r * col_n..r * col_n + col_n], -(shift[0] as i32));
         }
     }
@@ -878,7 +913,11 @@ pub fn av1_inv_txfm2d_add_u8_into(
             f_col(ti, to, INV_COS_BIT, &stage_range_col);
             round_shift_array(to, -(shift[1] as i32));
             for r in 0..row_n {
-                let src = if cfg.ud_flip { to[row_n - r - 1] } else { to[r] };
+                let src = if cfg.ud_flip {
+                    to[row_n - r - 1]
+                } else {
+                    to[r]
+                };
                 let idx = r * stride + c;
                 output[idx] = clip_pixel_add_u8(output[idx], src);
             }
@@ -985,7 +1024,13 @@ const UNIT_QUANT_SHIFT: i32 = 2;
 /// `eob <= 1` branch is significant for lossless (it produces a different,
 /// correct result than the full transform on a DC-only block — not merely an
 /// optimization), so the two kernels are NOT interchangeable.
-pub fn av1_highbd_iwht4x4_add(input: &[i32], output: &mut [u16], stride: usize, eob: usize, bd: i32) {
+pub fn av1_highbd_iwht4x4_add(
+    input: &[i32],
+    output: &mut [u16],
+    stride: usize,
+    eob: usize,
+    bd: i32,
+) {
     if eob > 1 {
         av1_highbd_iwht4x4_16_add(input, output, stride, bd);
     } else {

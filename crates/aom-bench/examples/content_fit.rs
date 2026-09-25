@@ -85,7 +85,10 @@ fn main() {
         a.remove(0);
         return screen_fit(&a);
     }
-    assert!((3..=4).contains(&a.len()), "usage: content_fit <reference.yuv> <w> <h> [1|2|3|all]");
+    assert!(
+        (3..=4).contains(&a.len()),
+        "usage: content_fit <reference.yuv> <w> <h> [1|2|3|all]"
+    );
     let (w, h): (usize, usize) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let pass = a.get(3).map_or("all", |s| s.as_str());
     let want = |n: &str| pass == "all" || pass == n;
@@ -114,7 +117,11 @@ fn main() {
     // and a purely isotropic one), so a 1-D-dominant grid is the right shape;
     // the other axes set HOW oriented the oriented half is.
     let iso = [26, 22, 18, 15, 12, 10]; // `detail`'s ladder, which already matches the work level
-    for &orient_period in if want("1") { &[64usize, 128, 256][..] } else { &[][..] } {
+    for &orient_period in if want("1") {
+        &[64usize, 128, 256][..]
+    } else {
+        &[][..]
+    } {
         for &streak_p in &[(32i32, 8i32), (48, 12), (96, 24)] {
             for &streak_a in &[(40i32, 14i32)] {
                 for &mix in &[(2i32, 8i32), (3, 7), (4, 6), (5, 5), (6, 4), (7, 3), (8, 2)] {
@@ -136,7 +143,11 @@ fn main() {
     // A second pass on the best-shaped axes, varying the streak amplitude
     // ladder and the contrast — held fixed above so the first pass reads as one
     // clean axis.
-    for &orient_period in if want("2") { &[128usize, 256][..] } else { &[][..] } {
+    for &orient_period in if want("2") {
+        &[128usize, 256][..]
+    } else {
+        &[][..]
+    } {
         for &streak_p in &[(48i32, 12i32), (64, 16)] {
             for &streak_a in &[(40i32, 8i32), (40, 14), (40, 22), (40, 30)] {
                 for &mix in &[(4i32, 6i32), (5, 5), (6, 4)] {
@@ -160,7 +171,11 @@ fn main() {
     // `contrast`) were the smallest value on their axis — i.e. the grid ran out
     // before the optimum did. This pass extends both downward and refines `mix`
     // on a /20 denominator so the ratio can move by less than a whole step.
-    for &orient_period in if want("3") { &[96usize, 128, 192][..] } else { &[][..] } {
+    for &orient_period in if want("3") {
+        &[96usize, 128, 192][..]
+    } else {
+        &[][..]
+    } {
         for &streak_p in &[(56i32, 14i32), (64, 16), (80, 20)] {
             for &streak_a in &[(40i32, 4i32), (40, 8), (40, 14)] {
                 for &mix in &[(11i32, 9i32), (12, 8), (13, 7)] {
@@ -231,11 +246,17 @@ fn row(p: &PhotoParams, w: usize, h: usize, refc: &Counts) {
 }
 
 fn flat_tx(c: &Counts) -> Vec<u64> {
-    (0..N_TX_TYPE * N_TX_SIZE).map(|i| c.fwd_tx[i / N_TX_SIZE][i % N_TX_SIZE]).collect()
+    (0..N_TX_TYPE * N_TX_SIZE)
+        .map(|i| c.fwd_tx[i / N_TX_SIZE][i % N_TX_SIZE])
+        .collect()
 }
 
 fn pct(n: u64, d: u64) -> f64 {
-    if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 }
+    if d == 0 {
+        0.0
+    } else {
+        100.0 * n as f64 / d as f64
+    }
 }
 
 fn l1_class(a: &Counts, b: &Counts) -> f64 {
@@ -250,7 +271,10 @@ fn l1_class(a: &Counts, b: &Counts) -> f64 {
 
 fn l1(a: &[u64], b: &[u64]) -> f64 {
     let (sa, sb) = (a.iter().sum::<u64>(), b.iter().sum::<u64>());
-    a.iter().zip(b).map(|(x, y)| (pct(*x, sa) - pct(*y, sb)).abs()).sum()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (pct(*x, sa) - pct(*y, sb)).abs())
+        .sum()
 }
 
 /// One encode's census, plus the coded byte count. A warm-up encode's counts
@@ -295,7 +319,12 @@ fn yuv_cell(path: &str, w: usize, h: usize) -> EncodeCell {
 }
 
 fn photo_cell(p: &PhotoParams, w: usize, h: usize) -> EncodeCell {
-    cell_from("photo-candidate".to_string(), w, h, &winperf::synth_i420_photo(w, h, p))
+    cell_from(
+        "photo-candidate".to_string(),
+        w,
+        h,
+        &winperf::synth_i420_photo(w, h, p),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -331,10 +360,16 @@ fn screen_shares(c: &Counts) -> [f64; 5] {
 /// carry `allow_screen_content_tools`) and both screen knobs on.
 fn screen_census_of(cell: &EncodeCell) -> (Box<Counts>, usize, bool) {
     let boot = cell.c_encode_screen(true, true);
-    assert!(!boot.is_empty(), "the C screen bootstrap encode produced nothing");
+    assert!(
+        !boot.is_empty(),
+        "the C screen bootstrap encode produced nothing"
+    );
     let scdet = aom_bench::stream_allows_screen_content_tools(&boot);
-    let knobs =
-        ToggleKnobs { enable_palette: true, enable_intrabc: true, ..Default::default() };
+    let knobs = ToggleKnobs {
+        enable_palette: true,
+        enable_intrabc: true,
+        ..Default::default()
+    };
     census::reset();
     let _ = cell.port_encode_with(&boot, &knobs);
     let base = census::snapshot();
@@ -345,7 +380,12 @@ fn screen_census_of(cell: &EncodeCell) -> (Box<Counts>, usize, bool) {
 }
 
 fn screen_cell(p: &ScreenParams, w: usize, h: usize) -> EncodeCell {
-    cell_from("screen-candidate".to_string(), w, h, &winperf::synth_i420_screen(w, h, p))
+    cell_from(
+        "screen-candidate".to_string(),
+        w,
+        h,
+        &winperf::synth_i420_screen(w, h, p),
+    )
 }
 
 fn screen_fit(a: &[String]) {
@@ -504,7 +544,9 @@ fn screen_fit(a: &[String]) {
 fn screen_row(p: &ScreenParams, w: usize, h: usize, target: &[f64; 5]) {
     let (c, bytes, scdet) = screen_census_of(&screen_cell(p, w, h));
     let s = screen_shares(c.as_ref());
-    let l1_screen: f64 = (0..SCREEN_CLASS.len()).map(|i| (s[i] - target[i]).abs()).sum();
+    let l1_screen: f64 = (0..SCREEN_CLASS.len())
+        .map(|i| (s[i] - target[i]).abs())
+        .sum();
     println!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t\
          {:.2}\t{:.2}\t{}\t{}",

@@ -121,8 +121,12 @@ impl Content {
     }
 
     /// Every content, in the order the census and the workflow list them.
-    pub const ALL: [Content; 4] =
-        [Content::Detail, Content::Smooth, Content::Photo, Content::Screen];
+    pub const ALL: [Content; 4] = [
+        Content::Detail,
+        Content::Smooth,
+        Content::Photo,
+        Content::Screen,
+    ];
 }
 
 /// The sequence-header bootstrap for [`CELL`] at [`Content::Detail`], as hex.
@@ -213,7 +217,10 @@ fn bootstrap_hex(hex: &str) -> Vec<u8> {
             Some(h) => out.push((h << 4) | v),
         }
     }
-    assert!(hi.is_none(), "winperf bootstrap fixture: odd hex digit count");
+    assert!(
+        hi.is_none(),
+        "winperf bootstrap fixture: odd hex digit count"
+    );
     out
 }
 
@@ -232,8 +239,7 @@ fn hash32(mut x: u32) -> u32 {
 /// Lattice value at integer grid point `(gx, gy)` for octave `seed`, in 0..=255.
 fn lattice(gx: i32, gy: i32, seed: u32) -> i32 {
     let h = hash32(
-        (gx as u32)
-            .wrapping_mul(0x9e37_79b9)
+        (gx as u32).wrapping_mul(0x9e37_79b9)
             ^ (gy as u32).wrapping_mul(0x85eb_ca6b)
             ^ seed.wrapping_mul(0xc2b2_ae35),
     );
@@ -665,9 +671,8 @@ pub fn synth_i420_screen(w: usize, h: usize, p: &ScreenParams) -> Vec<u8> {
     let gp = p.glyph_px;
 
     // Per-panel state, computed once so the inner loop is a lookup.
-    let panel_of = |x: usize, y: usize| -> (u32, u32) {
-        ((x / p.panel_px) as u32, (y / p.panel_px) as u32)
-    };
+    let panel_of =
+        |x: usize, y: usize| -> (u32, u32) { ((x / p.panel_px) as u32, (y / p.panel_px) as u32) };
     let panel_hash = |px: u32, py: u32| -> u32 {
         hash32(px.wrapping_mul(0x9e37_79b9) ^ py.wrapping_mul(0x85eb_ca6b) ^ 0x1234_5678)
     };
@@ -798,20 +803,40 @@ mod tests {
     fn synth_source_is_pinned_and_not_blank() {
         let (w, h, _, _) = CELL;
         for (content, want, lo_below, hi_above) in [
-            (Content::Detail, (159_114_483u64, 34_350_299u64, 33_351_188u64), 90u8, 200u8),
+            (
+                Content::Detail,
+                (159_114_483u64, 34_350_299u64, 33_351_188u64),
+                90u8,
+                200u8,
+            ),
             // Smooth's observed luma range is 80..=224 (Detail's is 66..=232),
             // and the two variants share a chroma generator by design — the
             // content axis under test is luma detail.
-            (Content::Smooth, (167_367_154, 34_350_299, 33_351_188), 100, 190),
+            (
+                Content::Smooth,
+                (167_367_154, 34_350_299, 33_351_188),
+                100,
+                190,
+            ),
             // Photo's observed luma range is 56..=251 — wider than either
             // isotropic variant, because the streak field adds long coherent
             // ramps on top of the noise rather than averaging into it.
-            (Content::Photo, (146_304_204, 34_350_299, 33_351_188), 70, 235),
+            (
+                Content::Photo,
+                (146_304_204, 34_350_299, 33_351_188),
+                70,
+                235,
+            ),
             // Screen draws from a 6-level ladder spanning 24..=224, and its
             // chroma is FLAT PER PANEL rather than the shared noise plane — the
             // property the UV palette needs, and the reason its u/v sums differ
             // from the other three.
-            (Content::Screen, (125_351_887, 34_996_224, 32_636_928), 40, 200),
+            (
+                Content::Screen,
+                (125_351_887, 34_996_224, 32_636_928),
+                40,
+                200,
+            ),
         ] {
             let buf = synth_i420(w, h, content);
             let (cw, ch) = (w / 2, h / 2);
@@ -845,7 +870,11 @@ mod tests {
         // one point several times.
         for (i, a) in Content::ALL.iter().enumerate() {
             for b in &Content::ALL[i + 1..] {
-                assert_ne!(synth_i420(64, 64, *a), synth_i420(64, 64, *b), "{a:?} == {b:?}");
+                assert_ne!(
+                    synth_i420(64, 64, *a),
+                    synth_i420(64, 64, *b),
+                    "{a:?} == {b:?}"
+                );
             }
         }
     }
@@ -854,8 +883,16 @@ mod tests {
     /// over one `bs x bs` block. The census's own statistic, computed without
     /// the encoder.
     fn block_dir_grad(y: &[u8], w: usize, h: usize, bx: usize, by: usize, bs: usize) -> [f64; 8] {
-        const DIRS: [(i32, i32); 8] =
-            [(4, 0), (4, 2), (3, 3), (2, 4), (0, 4), (-2, 4), (-3, 3), (-4, 2)];
+        const DIRS: [(i32, i32); 8] = [
+            (4, 0),
+            (4, 2),
+            (3, 3),
+            (2, 4),
+            (0, 4),
+            (-2, 4),
+            (-3, 3),
+            (-4, 2),
+        ];
         let mut g = [0.0; 8];
         for (i, (dx, dy)) in DIRS.iter().enumerate() {
             let (mut acc, mut n) = (0u64, 0u64);
@@ -865,7 +902,8 @@ mod tests {
                         continue;
                     }
                     let a = i64::from(y[yy * w + xx]);
-                    let b = i64::from(y[((yy as i32 + dy) as usize) * w + (xx as i32 + dx) as usize]);
+                    let b =
+                        i64::from(y[((yy as i32 + dy) as usize) * w + (xx as i32 + dx) as usize]);
                     acc += (a - b).unsigned_abs();
                     n += 1;
                 }

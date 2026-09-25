@@ -238,9 +238,10 @@ pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
     #[cfg(target_arch = "x86_64")]
     {
         let _ = crate::dispatch::scalar_forced();
-        if let Some(()) =
-            archmage::incant!(hadamard_lp_8x8_v3(src_diff, src_stride, coeff), [v3, scalar])
-        {
+        if let Some(()) = archmage::incant!(
+            hadamard_lp_8x8_v3(src_diff, src_stride, coeff),
+            [v3, scalar]
+        ) {
             return;
         }
     }
@@ -473,8 +474,7 @@ pub fn hadamard_8x8_into(src: &[i16], src_stride: usize, out: &mut [i32; 64]) {
     #[cfg(target_arch = "x86_64")]
     {
         let _ = crate::dispatch::scalar_forced();
-        if let Some(()) = archmage::incant!(hadamard_8x8_avx2(src, src_stride, out), [v3, scalar])
-        {
+        if let Some(()) = archmage::incant!(hadamard_8x8_avx2(src, src_stride, out), [v3, scalar]) {
             return;
         }
     }
@@ -489,9 +489,11 @@ pub fn hadamard_8x8_into(src: &[i16], src_stride: usize, out: &mut [i32; 64]) {
 pub fn hadamard_16x16_into(src: &[i16], src_stride: usize, out: &mut [i32; 256]) {
     for idx in 0..4 {
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
-        hadamard_8x8_into(&src[off..], src_stride, (&mut out[idx * 64..idx * 64 + 64])
-            .try_into()
-            .unwrap());
+        hadamard_8x8_into(
+            &src[off..],
+            src_stride,
+            (&mut out[idx * 64..idx * 64 + 64]).try_into().unwrap(),
+        );
     }
     for idx in 0..64 {
         let a0 = out[idx];
@@ -526,9 +528,11 @@ pub fn hadamard_16x16(src: &[i16], src_stride: usize) -> [i32; 256] {
 pub fn hadamard_32x32_into(src: &[i16], src_stride: usize, out: &mut [i32; 1024]) {
     for idx in 0..4 {
         let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
-        hadamard_16x16_into(&src[off..], src_stride, (&mut out[idx * 256..idx * 256 + 256])
-            .try_into()
-            .unwrap());
+        hadamard_16x16_into(
+            &src[off..],
+            src_stride,
+            (&mut out[idx * 256..idx * 256 + 256]).try_into().unwrap(),
+        );
     }
     for idx in 0..256 {
         let a0 = out[idx];
@@ -637,10 +641,11 @@ pub fn highbd_hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
 pub fn highbd_hadamard_16x16_into(src: &[i16], src_stride: usize, out: &mut [i32; 256]) {
     for idx in 0..4 {
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
-        highbd_hadamard_8x8_into(&src[off..], src_stride, (&mut out
-            [idx * 64..idx * 64 + 64])
-            .try_into()
-            .unwrap());
+        highbd_hadamard_8x8_into(
+            &src[off..],
+            src_stride,
+            (&mut out[idx * 64..idx * 64 + 64]).try_into().unwrap(),
+        );
     }
     for idx in 0..64 {
         let (a0, a1, a2, a3) = (out[idx], out[idx + 64], out[idx + 128], out[idx + 192]);
@@ -666,10 +671,11 @@ pub fn highbd_hadamard_16x16(src: &[i16], src_stride: usize) -> [i32; 256] {
 pub fn highbd_hadamard_32x32_into(src: &[i16], src_stride: usize, out: &mut [i32; 1024]) {
     for idx in 0..4 {
         let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
-        highbd_hadamard_16x16_into(&src[off..], src_stride, (&mut out
-            [idx * 256..idx * 256 + 256])
-            .try_into()
-            .unwrap());
+        highbd_hadamard_16x16_into(
+            &src[off..],
+            src_stride,
+            (&mut out[idx * 256..idx * 256 + 256]).try_into().unwrap(),
+        );
     }
     for idx in 0..256 {
         let (a0, a1, a2, a3) = (out[idx], out[idx + 256], out[idx + 512], out[idx + 768]);

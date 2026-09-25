@@ -16,7 +16,7 @@
 //! The first setup cross-checks u8 vs delegate byte-identity (a corrupt build
 //! must never be profiled).
 
-use aom_dsp::cdef::frame::{cdef_frame, cdef_frame_u8, CdefFrameParams};
+use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame, cdef_frame_u8};
 
 struct Rng(u64);
 impl Rng {
@@ -139,10 +139,24 @@ fn main() {
     // Byte-identity cross-check: the two sides must agree on every frame.
     for f in &frames {
         let (mut y1, mut u1, mut v1) = (f.y.clone(), f.u.clone(), f.v.clone());
-        cdef_frame_u8(&mut y1, f.y_stride, &mut u1, &mut v1, f.uv_stride, &f.params());
+        cdef_frame_u8(
+            &mut y1,
+            f.y_stride,
+            &mut u1,
+            &mut v1,
+            f.uv_stride,
+            &f.params(),
+        );
         let widen = |p: &[u8]| -> Vec<u16> { p.iter().map(|&x| x as u16).collect() };
         let (mut y2, mut u2, mut v2) = (widen(&f.y), widen(&f.u), widen(&f.v));
-        cdef_frame(&mut y2, f.y_stride, &mut u2, &mut v2, f.uv_stride, &f.params());
+        cdef_frame(
+            &mut y2,
+            f.y_stride,
+            &mut u2,
+            &mut v2,
+            f.uv_stride,
+            &f.params(),
+        );
         let narrow = |p: &[u16]| -> Vec<u8> { p.iter().map(|&x| x as u8).collect() };
         assert_eq!(y1, narrow(&y2), "u8 vs delegate luma divergence");
         assert_eq!(u1, narrow(&u2), "u8 vs delegate U divergence");
@@ -153,8 +167,10 @@ fn main() {
     match side {
         "u8" => {
             // Reusable u8 dst planes (mirroring the decoder's plane reuse).
-            let mut dsts: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> =
-                frames.iter().map(|f| (f.y.clone(), f.u.clone(), f.v.clone())).collect();
+            let mut dsts: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = frames
+                .iter()
+                .map(|f| (f.y.clone(), f.u.clone(), f.v.clone()))
+                .collect();
             for _ in 0..iters {
                 for (f, (y, u, v)) in frames.iter().zip(dsts.iter_mut()) {
                     y.copy_from_slice(&f.y);
@@ -169,10 +185,18 @@ fn main() {
             // Reusable u16 tmp planes (the widen target) + u8 dst planes.
             let mut tmp: Vec<(Vec<u16>, Vec<u16>, Vec<u16>)> = frames
                 .iter()
-                .map(|f| (vec![0u16; f.y.len()], vec![0u16; f.u.len()], vec![0u16; f.v.len()]))
+                .map(|f| {
+                    (
+                        vec![0u16; f.y.len()],
+                        vec![0u16; f.u.len()],
+                        vec![0u16; f.v.len()],
+                    )
+                })
                 .collect();
-            let mut dsts: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> =
-                frames.iter().map(|f| (f.y.clone(), f.u.clone(), f.v.clone())).collect();
+            let mut dsts: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = frames
+                .iter()
+                .map(|f| (f.y.clone(), f.u.clone(), f.v.clone()))
+                .collect();
             for _ in 0..iters {
                 for ((f, (ty, tu, tv)), (dy, du, dv)) in
                     frames.iter().zip(tmp.iter_mut()).zip(dsts.iter_mut())

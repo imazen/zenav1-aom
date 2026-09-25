@@ -60,7 +60,11 @@ fn patched_sample(w: usize, h: usize, pw: usize, ph: usize) -> impl Fn(usize, us
     }
 }
 
-fn planes_of(w: usize, h: usize, f: impl Fn(usize, usize) -> i32) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+fn planes_of(
+    w: usize,
+    h: usize,
+    f: impl Fn(usize, usize) -> i32,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let mut y = vec![0u16; w * h];
     for r in 0..h {
         for col in 0..w {
@@ -91,8 +95,8 @@ fn port(y: &[u16], u: &[u16], v: &[u16], cfg: &KeyFrameConfig) -> Vec<u8> {
 /// unreachable, KB-66).
 fn c_one_pass(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, cq: i32, speed: i32) -> Vec<u8> {
     c::ref_encode_av1_kf_screen_content(
-        y, u, v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0,
-        /*two_pass=*/ false, /*enable_palette=*/ true, /*enable_intrabc=*/ true,
+        y, u, v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0, /*two_pass=*/ false,
+        /*enable_palette=*/ true, /*enable_intrabc=*/ true,
     )
 }
 
@@ -100,8 +104,8 @@ fn c_one_pass(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, cq: i32, spee
 /// and so DOES run `av1_determine_sc_tools_with_encoding`.
 fn c_two_pass(y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize, cq: i32, speed: i32) -> Vec<u8> {
     c::ref_encode_av1_kf_screen_content(
-        y, u, v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0,
-        /*two_pass=*/ true, /*enable_palette=*/ true, /*enable_intrabc=*/ true,
+        y, u, v, w, h, 8, false, 1, 1, cq, speed, false, true, 2, 0, /*two_pass=*/ true,
+        /*enable_palette=*/ true, /*enable_intrabc=*/ true,
     )
 }
 
@@ -119,7 +123,12 @@ fn zenaom_trial_flips_detector_negative_screen_content() {
         for &speed in &[0i32, 3] {
             let label = format!("{w}x{h} patch64 s{speed}");
             let (y, u, v) = planes_of(w, h, patched_sample(w, h, 64, 64));
-            let exact = port(&y, &u, &v, &cfg_for(w, h, 32, speed, KeyFrameMode::LibaomExact));
+            let exact = port(
+                &y,
+                &u,
+                &v,
+                &cfg_for(w, h, 32, speed, KeyFrameMode::LibaomExact),
+            );
             let zen = port(&y, &u, &v, &cfg_for(w, h, 32, speed, KeyFrameMode::Zenaom));
             assert_eq!(
                 exact,
@@ -174,7 +183,10 @@ fn zenaom_photo_content_does_not_flip() {
         let c_dec = c::ref_decode_av1_kf(&zen_hinted, w, h);
         let p_dec = aom_decode::frame::decode_frame_obus(&zen_hinted)
             .unwrap_or_else(|e| panic!("{w}x{h} hinted decode: {e}"));
-        assert_eq!((&p_dec.y, &p_dec.u, &p_dec.v), (&c_dec.y, &c_dec.u, &c_dec.v));
+        assert_eq!(
+            (&p_dec.y, &p_dec.u, &p_dec.v),
+            (&c_dec.y, &c_dec.u, &c_dec.v)
+        );
     }
 }
 
@@ -188,7 +200,12 @@ fn libaom_exact_ignores_the_trial() {
     let (y, u, v) = planes_of(w, h, patched_sample(w, h, 64, 64));
     for &cq in &[20i32, 32, 50] {
         for &speed in &[0i32, 3, 6] {
-            let ours = port(&y, &u, &v, &cfg_for(w, h, cq, speed, KeyFrameMode::LibaomExact));
+            let ours = port(
+                &y,
+                &u,
+                &v,
+                &cfg_for(w, h, cq, speed, KeyFrameMode::LibaomExact),
+            );
             let theirs = c_one_pass(&y, &u, &v, w, h, cq, speed);
             assert_eq!(
                 ours, theirs,
@@ -212,7 +229,12 @@ fn probe_zenaom_trial_matrix() {
         for &(pw, ph) in &[(48usize, 48usize), (64, 64), (96, 64), (128, 96)] {
             for &speed in &[0i32, 3] {
                 let (y, u, v) = planes_of(w, h, patched_sample(w, h, pw, ph));
-                let exact = port(&y, &u, &v, &cfg_for(w, h, 32, speed, KeyFrameMode::LibaomExact));
+                let exact = port(
+                    &y,
+                    &u,
+                    &v,
+                    &cfg_for(w, h, 32, speed, KeyFrameMode::LibaomExact),
+                );
                 let zen = port(&y, &u, &v, &cfg_for(w, h, 32, speed, KeyFrameMode::Zenaom));
                 let c1 = c_one_pass(&y, &u, &v, w, h, 32, speed);
                 let c2 = c_two_pass(&y, &u, &v, w, h, 32, speed);

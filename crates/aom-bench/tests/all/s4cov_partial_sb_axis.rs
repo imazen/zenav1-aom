@@ -61,10 +61,7 @@ fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, speed: i32) -
     }
     let (mut u, mut v) = (Vec::new(), Vec::new());
     if !base.mono {
-        let (bcw, bch) = (
-            (bw + base.ss_x) >> base.ss_x,
-            (bh + base.ss_y) >> base.ss_y,
-        );
+        let (bcw, bch) = ((bw + base.ss_x) >> base.ss_x, (bh + base.ss_y) >> base.ss_y);
         let (cw, ch) = ((w + base.ss_x) >> base.ss_x, (h + base.ss_y) >> base.ss_y);
         u = vec![0u16; cw * ch];
         v = vec![0u16; cw * ch];
@@ -212,7 +209,11 @@ fn measure(cell: &EncodeCell, ctrls: &[(i32, i32)], partial: bool) -> (Row, Vec<
     std::panic::set_hook(hook);
     let (verdict, delta, note) = match got {
         Ok(p) if p == real => (Verdict::Ok, 0, String::new()),
-        Ok(p) => (Verdict::Diverge, p.len() as i64 - real.len() as i64, String::new()),
+        Ok(p) => (
+            Verdict::Diverge,
+            p.len() as i64 - real.len() as i64,
+            String::new(),
+        ),
         Err(_) => (Verdict::Panic, 0, msg.lock().unwrap().clone()),
     };
     let row = Row {
@@ -452,7 +453,11 @@ fn mono_speed0_size_qindex_localize() {
         let real = EncodeCell::frame_obu_payload(&c_tu);
         let port = cell.port_encode_with(&c_tu, &ToggleKnobs::default());
         let fd = (0..port.len().min(real.len())).find(|&i| port[i] != real[i]);
-        let v = if port == real { Verdict::Ok } else { Verdict::Diverge };
+        let v = if port == real {
+            Verdict::Ok
+        } else {
+            Verdict::Diverge
+        };
         (v, port.len() as i64 - real.len() as i64, fd)
     };
 
@@ -462,7 +467,11 @@ fn mono_speed0_size_qindex_localize() {
         let (v, d, fd) = run(&mono, 64, cq, 0);
         println!(
             "     cq{cq:<2} -> {} delta {:+} first-diff {:?}",
-            if v == Verdict::Ok { "ok     " } else { "DIVERGE" },
+            if v == Verdict::Ok {
+                "ok     "
+            } else {
+                "DIVERGE"
+            },
             d,
             fd
         );
@@ -479,9 +488,17 @@ fn mono_speed0_size_qindex_localize() {
         let (vc, dc, _) = run(&b8, 64, 24, speed);
         println!(
             "     cpu{speed}: mono {} ({:+})   |   4:2:0 control {} ({:+})",
-            if vm == Verdict::Ok { "ok     " } else { "DIVERGE" },
+            if vm == Verdict::Ok {
+                "ok     "
+            } else {
+                "DIVERGE"
+            },
             dm,
-            if vc == Verdict::Ok { "ok     " } else { "DIVERGE" },
+            if vc == Verdict::Ok {
+                "ok     "
+            } else {
+                "DIVERGE"
+            },
             dc
         );
         if vm != Verdict::Ok {
@@ -629,8 +646,15 @@ fn partial_sb_high_bitdepth_formats_byte_match() {
         if !src.mono {
             let cw = (src.w + src.ss_x) >> src.ss_x;
             let ch = (src.h + src.ss_y) >> src.ss_y;
-            assert_eq!(src.u.len(), cw * ch, "{tag}: chroma plane must match (ss_x, ss_y)");
-            assert!(src.u.iter().any(|&s| s != src.u[0]), "{tag}: chroma must carry texture");
+            assert_eq!(
+                src.u.len(),
+                cw * ch,
+                "{tag}: chroma plane must match (ss_x, ss_y)"
+            );
+            assert!(
+                src.u.iter().any(|&s| s != src.u[0]),
+                "{tag}: chroma must carry texture"
+            );
         }
     }
 

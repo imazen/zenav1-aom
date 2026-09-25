@@ -19,6 +19,9 @@
 //! Monochrome, !is_chroma_ref (sub-8x8 at even mi), CfL-forbidden (>32x32),
 //! and no-beat (tight best_rd) arms included.
 
+use aom_dsp::intra::cfl::{CFL_BUF_SQUARE, CflCtx};
+use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
+use aom_dsp::txb::{CoeffCostTables, TxTypeCosts, fill_tx_type_costs};
 use aom_encode::encode_intra::TrellisOptType;
 use aom_encode::intra_rd::IntraSbySearchCfg;
 use aom_encode::intra_rd::{Block4x4VarInfo, IntraSbyGates, TOP_INTRA_MODEL_COUNT};
@@ -26,10 +29,7 @@ use aom_encode::intra_uv_rd::{UvLoopPolicy, UvRdEnv, chroma_plane_offset, is_chr
 use aom_encode::mode_costs::{CflCosts, TxSizeCosts, fill_cfl_costs, fill_tx_size_costs};
 use aom_encode::rd_pick::{RdPickUvArgs, RdPickUvOutcome, ReencodeParams, rd_pick_intra_mode_sb};
 use aom_encode::tx_search::{TxTypeSearchPolicy, TxfmYrdEnv};
-use aom_dsp::intra::cfl::{CFL_BUF_SQUARE, CflCtx};
-use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::txb::{CoeffCostTables, TxTypeCosts, fill_tx_type_costs};
 
 use crate::common::*;
 
@@ -159,7 +159,8 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
             let mut src_u = recon_u0.clone();
             let mut src_v = recon_v0.clone();
             if !mono {
-                let plane_bsize = aom_dsp::entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
+                let plane_bsize =
+                    aom_dsp::entropy::partition::get_plane_block_size(bsize, ss_x, ss_y);
                 let (pw, ph) = (BLK_W_L[plane_bsize], BLK_H_L[plane_bsize]);
                 let base_u = rng.range(64, maxv as i32 - 63);
                 let base_v = rng.range(64, maxv as i32 - 63);
@@ -559,7 +560,7 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
                 allintra,
                 &mut cvar,
                 &mut clog,
-            use_intra_dct_only,
+                use_intra_dct_only,
             );
 
             let m = format!(

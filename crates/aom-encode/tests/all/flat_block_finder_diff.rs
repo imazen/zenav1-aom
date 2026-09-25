@@ -48,11 +48,17 @@ fn make_plane(rng: &mut Rng, w: usize, h: usize, bs: usize, maxv: f64) -> Vec<u1
     for y in 0..h {
         for x in 0..w {
             let (bx, by) = (x / bs, y / bs);
-            let textured = (bx.wrapping_mul(7).wrapping_add(by.wrapping_mul(13)) + (rng.0 as usize & 3)) % 3 == 0;
+            let textured =
+                (bx.wrapping_mul(7).wrapping_add(by.wrapping_mul(13)) + (rng.0 as usize & 3)) % 3
+                    == 0;
             let base = maxv * 0.5 + (x as f64 / w as f64 - 0.5) * maxv * 0.2;
             let val = if textured {
                 // Sharp checker + strong noise → high gradient, non-flat.
-                let checker = if ((x / 4) + (y / 4)) & 1 == 0 { maxv * 0.35 } else { -maxv * 0.35 };
+                let checker = if ((x / 4) + (y / 4)) & 1 == 0 {
+                    maxv * 0.35
+                } else {
+                    -maxv * 0.35
+                };
                 base + checker + rng.noise(maxv * 0.15)
             } else {
                 // Smooth base + small noise → low gradient, some variance = flat.
@@ -73,7 +79,12 @@ fn flat_block_finder_run_matches_c() {
     let mut any_flat = 0i64;
     let mut any_nonflat = 0i64;
     // (block_size, bit_depth, use_highbd)
-    let configs = [(32usize, 8i32, false), (32, 10, true), (16, 8, false), (32, 12, true)];
+    let configs = [
+        (32usize, 8i32, false),
+        (32, 10, true),
+        (16, 8, false),
+        (32, 12, true),
+    ];
     for (ci, &(bs, bd, hbd)) in configs.iter().enumerate() {
         let maxv = ((1u32 << bd) - 1) as f64;
         for t in 0..12 {
@@ -98,8 +109,16 @@ fn flat_block_finder_run_matches_c() {
             trials += 1;
         }
     }
-    println!("flat_block_finder_diff: {trials} trials bit-identical to C ({any_flat} flat / {any_nonflat} non-flat block-cells)");
+    println!(
+        "flat_block_finder_diff: {trials} trials bit-identical to C ({any_flat} flat / {any_nonflat} non-flat block-cells)"
+    );
     // Anti-vacuity: both classes must be well represented across the corpus.
-    assert!(any_flat > 100, "too few flat blocks ({any_flat}) — content not exercising the flat arm");
-    assert!(any_nonflat > 100, "too few non-flat blocks ({any_nonflat}) — content too flat");
+    assert!(
+        any_flat > 100,
+        "too few flat blocks ({any_flat}) — content not exercising the flat arm"
+    );
+    assert!(
+        any_nonflat > 100,
+        "too few non-flat blocks ({any_nonflat}) — content too flat"
+    );
 }

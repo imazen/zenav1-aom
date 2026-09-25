@@ -103,7 +103,11 @@ fn base(label: &str, w: usize, h: usize, mono: bool, cq: i32, speed: i32) -> Enc
             y[r * w + c] = content(r, c);
         }
     }
-    let (cw, ch) = if mono { (0, 0) } else { ((w + 1) >> 1, (h + 1) >> 1) };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + 1) >> 1, (h + 1) >> 1)
+    };
     let cont_uv = |r: usize, c: usize| -> u16 { (110 + ((r * 2 + c) % 40)) as u16 };
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];
@@ -152,15 +156,9 @@ fn main() {
     let cdef: bool = arg(&args, "--cdef", "false").parse().unwrap();
     let lr: bool = arg(&args, "--lr", "false").parse().unwrap();
 
-    let cell = MultiFrameEncodeCell::translational(
-        &base("dump", w, h, mono, cq, speed),
-        dx,
-        dy,
-    );
+    let cell = MultiFrameEncodeCell::translational(&base("dump", w, h, mono, cq, speed), dx, dy);
     let stream = cell.c_encode_inter(cdef, lr);
-    eprintln!(
-        "cfg: {w}x{h} mono={mono} cq={cq} speed={speed} dx={dx} dy={dy} cdef={cdef} lr={lr}"
-    );
+    eprintln!("cfg: {w}x{h} mono={mono} cq={cq} speed={speed} dx={dx} dy={dy} cdef={cdef} lr={lr}");
     eprintln!("stream: {} bytes", stream.len());
     for (t, s, e) in obu_spans(&stream) {
         eprintln!("  OBU type={t:<2} [{s:>5}..{e:>5}) len={}", e - s);

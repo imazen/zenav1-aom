@@ -18,7 +18,7 @@
 //! # Differential coverage
 //! `tests/compound_convolve_diff.rs`, tier 1 against the real exported C.
 
-use super::{FILTER_BITS, rpo2};
+use super::{rpo2, FILTER_BITS};
 
 #[inline]
 fn clip_pixel_highbd(v: i32, bd: u32) -> u16 {

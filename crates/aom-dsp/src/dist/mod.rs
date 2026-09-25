@@ -2,12 +2,11 @@
 //! `aom_dsp/sad.c`, `variance.c`). SAD, variance, and bilinear sub-pixel
 //! variance — the workhorses of encoder motion search / RDO (speed-0 path).
 
-
-pub mod simd;
-mod simd_variance;
 pub mod avg;
 pub mod hadamard;
 pub mod obmc;
+pub mod simd;
+mod simd_variance;
 
 const FILTER_BITS: i32 = 7;
 
@@ -53,7 +52,14 @@ pub fn sse_scalar(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize
 }
 
 /// `aom_highbd_sse_c`: SSE over 16-bit samples.
-pub fn highbd_sse(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> i64 {
+pub fn highbd_sse(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
     let mut sse: i64 = 0;
     for y in 0..h {
         for x in 0..w {
@@ -72,7 +78,14 @@ pub fn highbd_sse(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usi
 /// magetypes kernel in `simd_variance.rs`; width 4, non-multiples of 8 (the
 /// frame-edge `pixel_dist_visible_only` clip) and the `AOM_FORCE_SCALAR` pin
 /// run the scalar twin.
-pub fn sse_u16_u8(a: &[u16], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> i64 {
+pub fn sse_u16_u8(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
     let _ = crate::dispatch::scalar_forced();
     if w != 4 && (w < 8 || !w.is_multiple_of(8)) {
         return sse_u16_u8_scalar(a, a_stride, b, b_stride, w, h);
@@ -111,8 +124,13 @@ pub fn sse_u16_u8_scalar(
 /// `aom_comp_avg_pred` (comp = ROUND_POWER_OF_TWO(ref+second_pred, 1)) followed
 /// by `sad`.
 pub fn sad_avg(
-    src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize, second_pred: &[u8],
-    w: usize, h: usize,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+    second_pred: &[u8],
+    w: usize,
+    h: usize,
 ) -> u32 {
     let mut s: u32 = 0;
     for y in 0..h {
@@ -127,11 +145,19 @@ pub fn sad_avg(
 /// `aom_obmc_sad<W>x<H>_c`: overlapped block motion-comp SAD. `wsrc` and `mask`
 /// are contiguous i32 buffers (stride = width); `sad += (|wsrc - pre*mask| + 2048)
 /// >> 12` (ROUND_POWER_OF_TWO by 12).
-pub fn obmc_sad(pre: &[u8], pre_stride: usize, wsrc: &[i32], mask: &[i32], w: usize, h: usize) -> u32 {
+pub fn obmc_sad(
+    pre: &[u8],
+    pre_stride: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+) -> u32 {
     let mut sad: u32 = 0;
     for y in 0..h {
         for x in 0..w {
-            let d = (wsrc[y * w + x] - pre[y * pre_stride + x] as i32 * mask[y * w + x]).unsigned_abs();
+            let d =
+                (wsrc[y * w + x] - pre[y * pre_stride + x] as i32 * mask[y * w + x]).unsigned_abs();
             sad += (d + 2048) >> 12;
         }
     }
@@ -145,8 +171,16 @@ pub fn obmc_sad(pre: &[u8], pre_stride: usize, wsrc: &[i32], mask: &[i32], w: us
 /// a/b are swapped.
 #[allow(clippy::too_many_arguments)]
 pub fn masked_sad(
-    src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize, second_pred: &[u8],
-    msk: &[u8], msk_stride: usize, invert_mask: bool, w: usize, h: usize,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+    second_pred: &[u8],
+    msk: &[u8],
+    msk_stride: usize,
+    invert_mask: bool,
+    w: usize,
+    h: usize,
 ) -> u32 {
     let mut sad: u32 = 0;
     for y in 0..h {
@@ -163,11 +197,19 @@ pub fn masked_sad(
 }
 
 /// `aom_highbd_obmc_sad<W>x<H>_c`: highbd OBMC SAD (samples 16-bit; wsrc/mask i32).
-pub fn highbd_obmc_sad(pre: &[u16], pre_stride: usize, wsrc: &[i32], mask: &[i32], w: usize, h: usize) -> u32 {
+pub fn highbd_obmc_sad(
+    pre: &[u16],
+    pre_stride: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+) -> u32 {
     let mut sad: u32 = 0;
     for y in 0..h {
         for x in 0..w {
-            let d = (wsrc[y * w + x] - pre[y * pre_stride + x] as i32 * mask[y * w + x]).unsigned_abs();
+            let d =
+                (wsrc[y * w + x] - pre[y * pre_stride + x] as i32 * mask[y * w + x]).unsigned_abs();
             sad += (d + 2048) >> 12;
         }
     }
@@ -178,8 +220,16 @@ pub fn highbd_obmc_sad(pre: &[u16], pre_stride: usize, wsrc: &[i32], mask: &[i32
 /// Mask stays 8-bit (0..=64); samples are 16-bit.
 #[allow(clippy::too_many_arguments)]
 pub fn highbd_masked_sad(
-    src: &[u16], src_stride: usize, ref_: &[u16], ref_stride: usize, second_pred: &[u16],
-    msk: &[u8], msk_stride: usize, invert_mask: bool, w: usize, h: usize,
+    src: &[u16],
+    src_stride: usize,
+    ref_: &[u16],
+    ref_stride: usize,
+    second_pred: &[u16],
+    msk: &[u8],
+    msk_stride: usize,
+    invert_mask: bool,
+    w: usize,
+    h: usize,
 ) -> u32 {
     let mut sad: u32 = 0;
     for y in 0..h {
@@ -196,7 +246,14 @@ pub fn highbd_masked_sad(
 }
 
 /// `aom_highbd_sad<W>x<H>_c`: SAD over 16-bit (10/12-bit) samples.
-pub fn highbd_sad(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> u32 {
+pub fn highbd_sad(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
     let mut s: u32 = 0;
     for y in 0..h {
         for x in 0..w {
@@ -208,8 +265,13 @@ pub fn highbd_sad(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usi
 
 /// `aom_highbd_sad<W>x<H>_avg_c`: highbd compound-prediction SAD.
 pub fn highbd_sad_avg(
-    src: &[u16], src_stride: usize, ref_: &[u16], ref_stride: usize, second_pred: &[u16],
-    w: usize, h: usize,
+    src: &[u16],
+    src_stride: usize,
+    ref_: &[u16],
+    ref_stride: usize,
+    second_pred: &[u16],
+    w: usize,
+    h: usize,
 ) -> u32 {
     let mut s: u32 = 0;
     for y in 0..h {
@@ -227,16 +289,23 @@ pub fn highbd_sad_avg(
 /// SIMD-dispatched (Gate 3): widths >= 8 take the magetypes kernel in
 /// `simd_variance.rs` (bit-identical on the pixel domain — see its module
 /// docs); width 4 and the `AOM_FORCE_SCALAR` pin run the scalar twin.
-fn highbd_variance64(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> (u64, i64) {
+fn highbd_variance64(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> (u64, i64) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
-    // The SIMD kernel processes 8 lanes at a time and requires `w % 8 == 0`.
-    // Fully-visible txb variances are always power-of-two widths, but the
-    // frame-edge visible-only SSE (`dist_block_px_domain` -> C's
-    // `pixel_dist_visible_only`) can pass an arbitrary `visible_cols` >= 8 that
-    // is not a multiple of 8 (e.g. a 64-wide txb at coded col 64 on a superres
-    // frame downscaled to width 114 -> visible 50). The scalar twin is
-    // bit-identical to the SIMD kernel on multiple-of-8 widths and correct for
-    // the rest, so route non-multiples through it.
+                                              // The SIMD kernel processes 8 lanes at a time and requires `w % 8 == 0`.
+                                              // Fully-visible txb variances are always power-of-two widths, but the
+                                              // frame-edge visible-only SSE (`dist_block_px_domain` -> C's
+                                              // `pixel_dist_visible_only`) can pass an arbitrary `visible_cols` >= 8 that
+                                              // is not a multiple of 8 (e.g. a 64-wide txb at coded col 64 on a superres
+                                              // frame downscaled to width 114 -> visible 50). The scalar twin is
+                                              // bit-identical to the SIMD kernel on multiple-of-8 widths and correct for
+                                              // the rest, so route non-multiples through it.
     if w != 4 && (w < 8 || !w.is_multiple_of(8)) {
         return highbd_variance64_scalar(a, a_stride, b, b_stride, w, h);
     }
@@ -324,7 +393,15 @@ pub fn variance_4x4_units(
 
 /// `aom_highbd_<bd>_variance<W>x<H>_c`: returns (variance, sse). `bd` ∈ {8,10,12}.
 #[inline]
-pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize, bd: u8) -> (u32, u32) {
+pub fn highbd_variance(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+    bd: u8,
+) -> (u32, u32) {
     let (sse_long, sum_long) = highbd_variance64(a, a_stride, b, b_stride, w, h);
     // bd-dependent normalisation (ROUND_POWER_OF_TWO), matching libaom
     // highbd_8/10/12_variance.
@@ -358,7 +435,11 @@ pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w
         sse.wrapping_sub(mean_sq as u32)
     } else {
         let v = i64::from(sse) - mean_sq;
-        if v >= 0 { v as u32 } else { 0 }
+        if v >= 0 {
+            v as u32
+        } else {
+            0
+        }
     };
     (var, sse)
 }
@@ -368,8 +449,15 @@ pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w
 /// variance against `b`. Returns (variance, sse).
 #[allow(clippy::too_many_arguments)]
 pub fn highbd_sub_pixel_variance(
-    a: &[u16], a_stride: usize, xoffset: usize, yoffset: usize,
-    b: &[u16], b_stride: usize, w: usize, h: usize, bd: u8,
+    a: &[u16],
+    a_stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+    bd: u8,
 ) -> (u32, u32) {
     // First pass (horizontal), pixel_step = 1, u16 -> u16.
     let fx = BILINEAR_FILTERS_2T[xoffset];
@@ -395,7 +483,14 @@ pub fn highbd_sub_pixel_variance(
 }
 
 /// libaom `variance()`: returns (sse, sum).
-fn variance_raw(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> (u32, i32) {
+fn variance_raw(
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> (u32, i32) {
     let mut tsum: i32 = 0;
     let mut tsse: u32 = 0;
     for y in 0..h {
@@ -409,7 +504,14 @@ fn variance_raw(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, 
 }
 
 /// `aom_variance<W>x<H>_c`: returns (variance, sse).
-pub fn variance(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> (u32, u32) {
+pub fn variance(
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
     let (sse, sum) = variance_raw(a, a_stride, b, b_stride, w, h);
     let var = sse.wrapping_sub(((sum as i64 * sum as i64) / (w * h) as i64) as u32);
     (var, sse)
@@ -424,8 +526,14 @@ fn rpo2(v: i32, n: i32) -> u16 {
 /// then variance against `b`. Returns (variance, sse).
 #[allow(clippy::too_many_arguments)]
 pub fn sub_pixel_variance(
-    a: &[u8], a_stride: usize, xoffset: usize, yoffset: usize,
-    b: &[u8], b_stride: usize, w: usize, h: usize,
+    a: &[u8],
+    a_stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
 ) -> (u32, u32) {
     // First pass (horizontal): output (h+1) x w into u16 fdata3.
     let fx = BILINEAR_FILTERS_2T[xoffset];
@@ -502,8 +610,14 @@ pub fn highbd_block_error(coeff: &[i32], dqcoeff: &[i32], bd: u8) -> (i64, i64) 
 /// encoder feeds to the forward transform.
 #[allow(clippy::too_many_arguments)]
 pub fn subtract_block(
-    rows: usize, cols: usize, diff: &mut [i16], diff_stride: usize,
-    src: &[u8], src_stride: usize, pred: &[u8], pred_stride: usize,
+    rows: usize,
+    cols: usize,
+    diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
 ) {
     for r in 0..rows {
         let (d, s, p) = (r * diff_stride, r * src_stride, r * pred_stride);
@@ -522,8 +636,14 @@ pub fn subtract_block(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn highbd_subtract_block(
-    rows: usize, cols: usize, diff: &mut [i16], diff_stride: usize,
-    src: &[u16], src_stride: usize, pred: &[u16], pred_stride: usize,
+    rows: usize,
+    cols: usize,
+    diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
 ) {
     // KB-PERF-37: row slices, not triple indexing. The old form emitted THREE
     // bounds checks per ELEMENT against three runtime slice lengths, which also
@@ -592,7 +712,13 @@ pub fn subtract_block_u16_u8(
 /// (=10); both sums then get the `>> 2*(bd-8)` bit-depth normalization. Returns
 /// `(error, ssz)`. With a flat matrix (all weights `1<<AOM_QM_BITS` = 32) this
 /// reduces to [`highbd_block_error`].
-pub fn block_error_qm(coeff: &[i32], dqcoeff: &[i32], qmatrix: &[u8], scan: &[i16], bd: u8) -> (i64, i64) {
+pub fn block_error_qm(
+    coeff: &[i32],
+    dqcoeff: &[i32],
+    qmatrix: &[u8],
+    scan: &[i16],
+    bd: u8,
+) -> (i64, i64) {
     let shift = 2 * (bd as i32 - 8);
     let rounding = (1i64 << shift) >> 1;
     let mut error = 0i64;
@@ -634,7 +760,10 @@ pub fn sum_squares_2d_i16(src: &[i16], src_stride: usize, width: usize, height: 
 /// The transcribed scalar reference for [`sum_squares_2d_i16`].
 #[allow(dead_code)]
 pub(crate) fn sum_squares_2d_i16_scalar_ref(
-    src: &[i16], src_stride: usize, width: usize, height: usize,
+    src: &[i16],
+    src_stride: usize,
+    width: usize,
+    height: usize,
 ) -> u64 {
     let mut ss = 0u64;
     for r in 0..height {

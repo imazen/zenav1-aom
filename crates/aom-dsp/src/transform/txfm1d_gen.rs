@@ -1389,4 +1389,3 @@ pub fn av1_fadst16(input: &[i32], out: &mut [i32], cos_bit: i32, stage_range: &[
     out[14] = step[15];
     out[15] = step[0];
 }
-

@@ -9,9 +9,9 @@ pub mod cfl;
 mod cfl_simd;
 pub mod dir;
 mod dir_simd;
-mod filter_simd;
 pub mod edge;
 mod edge_simd;
+mod filter_simd;
 mod simd;
 mod simd16;
 mod weights;
@@ -186,9 +186,7 @@ pub fn predict(
         // PAETH/SMOOTH/SMOOTH_V/SMOOTH_H. Directional modes (D45..D67) go to
         // the dr_predictor family and never reach here; the decoder selects
         // the family from the mode before calling.
-        _ => unreachable!(
-            "predict: mode {mode} is not a non-directional intra predictor"
-        ),
+        _ => unreachable!("predict: mode {mode} is not a non-directional intra predictor"),
     }
 }
 
@@ -310,9 +308,7 @@ pub fn predict_highbd(
         // PAETH/SMOOTH/SMOOTH_V/SMOOTH_H. Directional modes (D45..D67) go to
         // the dr_predictor family and never reach here; the decoder selects
         // the family from the mode before calling.
-        _ => unreachable!(
-            "predict_highbd: mode {mode} is not a non-directional intra predictor"
-        ),
+        _ => unreachable!("predict_highbd: mode {mode} is not a non-directional intra predictor"),
     }
 }
 
@@ -1050,7 +1046,11 @@ fn assemble_dir_edges(recon: &[u16], g: &DirEdge, above_data: &mut [u16], left_d
             if n_topright_px > 0 {
                 // n_top_px == txwpx here (C assert): the real row is full.
                 let s = aoff + txwpx;
-                copy_edge(&mut above_data[P + txwpx..], &recon[s..], n_topright_px as usize);
+                copy_edge(
+                    &mut above_data[P + txwpx..],
+                    &recon[s..],
+                    n_topright_px as usize,
+                );
                 i += n_topright_px as usize;
             }
             if i < num_top {
@@ -1402,9 +1402,9 @@ pub fn predict_intra_high(
     bd: i32,
 ) {
     let is_dr = (1..=8).contains(&mode); // V_PRED..=D67_PRED
-    // Content census (`crate::census`) — a no-op unless the `census` feature is
-    // on, and the timing binaries are never built with it. See that module for
-    // why it exists: winperf's `detail` reaches `z1` six times in a 1 MP frame.
+                                         // Content census (`crate::census`) — a no-op unless the `census` feature is
+                                         // on, and the timing binaries are never built with it. See that module for
+                                         // why it exists: winperf's `detail` reaches `z1` six times in a 1 MP frame.
     crate::census::note_intra_pred(mode, angle_delta, use_filter_intra, tx_size);
     if use_filter_intra {
         build_filter_intra_high(
@@ -1863,10 +1863,26 @@ fn dr_predict_u8(
         dir::z3(dst, dst_stride, bw, bh, &left, upsample_left, dy);
     } else if angle == 90 {
         let above = AboveRef(&above_data[pad - 1..]);
-        predict(V, dst, dst_stride, bw, bh, &above, &left_data[pad..pad + bh]);
+        predict(
+            V,
+            dst,
+            dst_stride,
+            bw,
+            bh,
+            &above,
+            &left_data[pad..pad + bh],
+        );
     } else if angle == 180 {
         let above = AboveRef(&above_data[pad - 1..]);
-        predict(H, dst, dst_stride, bw, bh, &above, &left_data[pad..pad + bh]);
+        predict(
+            H,
+            dst,
+            dst_stride,
+            bw,
+            bh,
+            &above,
+            &left_data[pad..pad + bh],
+        );
     }
 }
 
@@ -1941,7 +1957,11 @@ fn assemble_dir_edges_u8(recon: &[u8], g: &DirEdge, above_data: &mut [u8], left_
             let mut i = n_top_px;
             if n_topright_px > 0 {
                 let s = aoff + txwpx;
-                copy_edge(&mut above_data[P + txwpx..], &recon[s..], n_topright_px as usize);
+                copy_edge(
+                    &mut above_data[P + txwpx..],
+                    &recon[s..],
+                    n_topright_px as usize,
+                );
                 i += n_topright_px as usize;
             }
             if i < num_top {
@@ -2062,7 +2082,11 @@ pub fn build_directional_intra_u8(
                     filter_type,
                 );
                 let n_px = n_top_px + 1 + if need_right { txhpx } else { 0 };
-                edge::filter_intra_edge(&mut above_data[DIR_PAD - 1..DIR_PAD - 1 + n_px], n_px, strength);
+                edge::filter_intra_edge(
+                    &mut above_data[DIR_PAD - 1..DIR_PAD - 1 + n_px],
+                    n_px,
+                    strength,
+                );
             }
             if need_left && n_left_px > 0 {
                 let strength = edge::edge_filter_strength(
@@ -2072,7 +2096,11 @@ pub fn build_directional_intra_u8(
                     filter_type,
                 );
                 let n_px = n_left_px + 1 + if need_bottom { txwpx } else { 0 };
-                edge::filter_intra_edge(&mut left_data[DIR_PAD - 1..DIR_PAD - 1 + n_px], n_px, strength);
+                edge::filter_intra_edge(
+                    &mut left_data[DIR_PAD - 1..DIR_PAD - 1 + n_px],
+                    n_px,
+                    strength,
+                );
             }
         }
         upsample_above = edge::use_upsample(txwpx as i32, txhpx as i32, p_angle - 90, filter_type);

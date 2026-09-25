@@ -203,8 +203,7 @@ fn perfect_recon_resolves_to_none() {
         );
         let outcome = pick_filter_restoration(&input);
         assert_eq!(
-            outcome.frame_restoration_type,
-            [RESTORE_NONE; 3],
+            outcome.frame_restoration_type, [RESTORE_NONE; 3],
             "{w}x{h}: perfect recon must resolve to NONE"
         );
         assert!(outcome.units.iter().all(|u| u.is_empty()));
@@ -270,7 +269,9 @@ fn noisy_recon_search_improves_sse_and_is_deterministic() {
         let sse_after = apply_and_sse(&outcome, &src, &recon, stride, w, h, (1, 1), bd);
         for p in 0..3 {
             match outcome.frame_restoration_type[p] {
-                RESTORE_NONE => assert_eq!(sse_after[p], sse_before[p], "p{p} NONE must be a no-op"),
+                RESTORE_NONE => {
+                    assert_eq!(sse_after[p], sse_before[p], "p{p} NONE must be a no-op")
+                }
                 _ => assert!(
                     sse_after[p] < sse_before[p],
                     "bd{bd} p{p}: applied restoration must reduce SSE ({} -> {})",
@@ -331,7 +332,15 @@ fn sf_disables_constrain_the_outcome() {
         ..Default::default()
     };
     let outcome = pick_filter_restoration(&build_input(
-        &src, &recon, stride, w, h, (1, 1), 8, 70000, sf_off,
+        &src,
+        &recon,
+        stride,
+        w,
+        h,
+        (1, 1),
+        8,
+        70000,
+        sf_off,
     ));
     assert_eq!(outcome.frame_restoration_type, [RESTORE_NONE; 3]);
 

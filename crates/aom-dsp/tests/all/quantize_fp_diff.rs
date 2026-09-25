@@ -3,8 +3,8 @@
 //! coeffs + quant params + scan to both; assert qcoeff, dqcoeff, and eob are
 //! byte-identical.
 
-use aom_sys_ref as c;
 use aom_dsp::quant::av1_quantize_fp_no_qmatrix;
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -43,14 +43,32 @@ fn check(rng: &mut Rng, log_scale: i32, n: usize, scan: &[i16]) {
 
     let mut q_got = vec![0i32; n];
     let mut dq_got = vec![0i32; n];
-    let eob_got =
-        av1_quantize_fp_no_qmatrix(&quant, &dequant, &round, log_scale, scan, &coeff, &mut q_got, &mut dq_got);
+    let eob_got = av1_quantize_fp_no_qmatrix(
+        &quant,
+        &dequant,
+        &round,
+        log_scale,
+        scan,
+        &coeff,
+        &mut q_got,
+        &mut dq_got,
+    );
 
-    let (q_want, dq_want, eob_want) = c::ref_quantize_fp(log_scale, &coeff, &round, &quant, &dequant, scan);
+    let (q_want, dq_want, eob_want) =
+        c::ref_quantize_fp(log_scale, &coeff, &round, &quant, &dequant, scan);
 
-    assert_eq!(eob_got, eob_want, "eob mismatch log_scale={log_scale} n={n}");
-    assert_eq!(q_got, q_want, "qcoeff mismatch log_scale={log_scale} n={n}\ncoeff={coeff:?}");
-    assert_eq!(dq_got, dq_want, "dqcoeff mismatch log_scale={log_scale} n={n}");
+    assert_eq!(
+        eob_got, eob_want,
+        "eob mismatch log_scale={log_scale} n={n}"
+    );
+    assert_eq!(
+        q_got, q_want,
+        "qcoeff mismatch log_scale={log_scale} n={n}\ncoeff={coeff:?}"
+    );
+    assert_eq!(
+        dq_got, dq_want,
+        "dqcoeff mismatch log_scale={log_scale} n={n}"
+    );
 }
 
 #[test]
@@ -81,15 +99,23 @@ fn quantize_fp_edge_cases() {
         let dequant = [100i16, 100];
         let mut q = vec![0i32; n];
         let mut dq = vec![0i32; n];
-        let eob = av1_quantize_fp_no_qmatrix(&quant, &dequant, &round, log_scale, &scan, &coeff, &mut q, &mut dq);
-        let (qw, dqw, eobw) = c::ref_quantize_fp(log_scale, &coeff, &round, &quant, &dequant, &scan);
+        let eob = av1_quantize_fp_no_qmatrix(
+            &quant, &dequant, &round, log_scale, &scan, &coeff, &mut q, &mut dq,
+        );
+        let (qw, dqw, eobw) =
+            c::ref_quantize_fp(log_scale, &coeff, &round, &quant, &dequant, &scan);
         assert_eq!((eob, &q, &dq), (eobw, &qw, &dqw));
         // large saturated coeffs
-        let coeff2: Vec<i32> = (0..n).map(|i| if i % 2 == 0 { 1 << 18 } else { -(1 << 18) }).collect();
+        let coeff2: Vec<i32> = (0..n)
+            .map(|i| if i % 2 == 0 { 1 << 18 } else { -(1 << 18) })
+            .collect();
         let mut q2 = vec![0i32; n];
         let mut dq2 = vec![0i32; n];
-        let eob2 = av1_quantize_fp_no_qmatrix(&quant, &dequant, &round, log_scale, &scan, &coeff2, &mut q2, &mut dq2);
-        let (qw2, dqw2, eobw2) = c::ref_quantize_fp(log_scale, &coeff2, &round, &quant, &dequant, &scan);
+        let eob2 = av1_quantize_fp_no_qmatrix(
+            &quant, &dequant, &round, log_scale, &scan, &coeff2, &mut q2, &mut dq2,
+        );
+        let (qw2, dqw2, eobw2) =
+            c::ref_quantize_fp(log_scale, &coeff2, &round, &quant, &dequant, &scan);
         assert_eq!((eob2, &q2, &dq2), (eobw2, &qw2, &dqw2));
         let _ = &mut rng;
     }

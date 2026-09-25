@@ -11,15 +11,17 @@
 //!   installed exactly as `set_q_index` installs them — the facade, not the
 //!   harness, picks the rows each quantizer kind reads.
 
+use aom_dsp::quant::{
+    Dequants, Quants, SEG_LVL_ALT_Q, Segmentation, av1_build_quantizer, set_q_index,
+};
+use aom_dsp::transform::txfm2d::fwd_txfm_valid;
+use aom_dsp::txb::{txb_high, txb_wide};
 use aom_encode::rd::{
     EncMode, FrameType, FrameUpdateType, TuneMetric, av1_set_error_per_bit, av1_set_sad_per_bit,
     init_plane_quantizers,
 };
 use aom_encode::{QuantKind, QuantParams, xform_quant};
-use aom_dsp::quant::{Dequants, Quants, SEG_LVL_ALT_Q, Segmentation, av1_build_quantizer, set_q_index};
 use aom_sys_ref as c;
-use aom_dsp::transform::txfm2d::fwd_txfm_valid;
-use aom_dsp::txb::{txb_high, txb_wide};
 
 const TX_W: [usize; 19] = [
     4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,

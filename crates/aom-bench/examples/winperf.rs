@@ -81,7 +81,11 @@ fn leb128(mut v: usize) -> Vec<u8> {
 fn reassemble(bootstrap: &[u8], frame_payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     for (ty, hdr, payload) in walk(bootstrap) {
-        let p: &[u8] = if ty == OBU_FRAME { frame_payload } else { &payload };
+        let p: &[u8] = if ty == OBU_FRAME {
+            frame_payload
+        } else {
+            &payload
+        };
         out.extend_from_slice(&hdr);
         out.extend_from_slice(&leb128(p.len()));
         out.extend_from_slice(p);

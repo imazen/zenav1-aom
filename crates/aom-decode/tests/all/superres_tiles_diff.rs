@@ -162,7 +162,10 @@ fn run_cell(
     );
     let label =
         format!("{w}x{h} bd{bd} mono={mono} ss={ss:?} D={denom} tcols_log2={tile_cols_log2}");
-    eprintln!("    cell {label} cdef={cdef} lr={restoration} bytes={}", bytes.len());
+    eprintln!(
+        "    cell {label} cdef={cdef} lr={restoration} bytes={}",
+        bytes.len()
+    );
     assert!(bytes.len() > 50, "{label}: suspiciously small stream");
 
     // Facts from OUR OWN parse of the real stream.
@@ -251,7 +254,10 @@ fn run_cell(
     assert_eq!(cref.info[1] != 0, mono, "{label}: monochrome flag");
     assert_eq!(port.y, cref.y, "{label}: LUMA mismatch vs the C decoder");
     if mono {
-        assert!(port.u.is_empty() && port.v.is_empty(), "{label}: mono chroma");
+        assert!(
+            port.u.is_empty() && port.v.is_empty(),
+            "{label}: mono chroma"
+        );
     } else {
         assert_eq!(port.u, cref.u, "{label}: U mismatch vs the C decoder");
         assert_eq!(port.v, cref.v, "{label}: V mismatch vs the C decoder");
@@ -296,7 +302,11 @@ fn superres_multitile_luma_byte_identical_to_c() {
             }
         }
     }
-    assert_eq!(n as usize, 2 * 2 * GRID.len(), "multi-tile superres luma arm count");
+    assert_eq!(
+        n as usize,
+        2 * 2 * GRID.len(),
+        "multi-tile superres luma arm count"
+    );
     // A THREE-column stream has a tile with NEITHER pad_left NOR pad_right — the
     // fully-interior case, where both of the convolve's edges read a neighbour.
     assert!(
@@ -354,7 +364,11 @@ fn superres_multitile_chroma_byte_identical_to_c() {
             }
         }
     }
-    assert_eq!(n as usize, 2 * 3 * GRID.len(), "multi-tile superres chroma arm count");
+    assert_eq!(
+        n as usize,
+        2 * 3 * GRID.len(),
+        "multi-tile superres chroma arm count"
+    );
     assert!(
         subsampled_cells >= 8,
         "4:2:0 (subsampled tile boundaries) barely exercised ({subsampled_cells})"
@@ -396,7 +410,20 @@ fn superres_multitile_below_min_tile_width_is_rejected() {
     for &(w, h, denom, ctl_log2) in cases {
         // CONTROL — conformant, byte-identical to C (run_cell asserts both, and
         // that every inner column is >= 128 px).
-        let control = run_cell(w, h, 8, true, (1, 1), 28, denom, ctl_log2, 0, false, false, 0);
+        let control = run_cell(
+            w,
+            h,
+            8,
+            true,
+            (1, 1),
+            28,
+            denom,
+            ctl_log2,
+            0,
+            false,
+            false,
+            0,
+        );
         assert_eq!(
             control.min_inner_px, 128,
             "{w}x{h} D={denom}: control inner width is {}px, not the 2-superblock \

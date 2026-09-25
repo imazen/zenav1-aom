@@ -1160,8 +1160,8 @@ fn z1_rows_u8e_impl(
 ) {
     use archmage::intrinsics::x86_64::*;
     const EVENS: [u8; 32] = [
-        0, 2, 4, 6, 8, 10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0, 2, 4, 6, 8, 10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0, 2, 4, 6, 8, 10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 2, 4, 6, 8,
+        10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     ];
     const EVENS128: [u8; 16] = [
         0, 2, 4, 6, 8, 10, 12, 14, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -1257,9 +1257,8 @@ fn z1_rows_u8e_impl(
         }
         for j in i..n_act {
             let t = start + j * inc_us;
-            drow[j] = super::dir::rpo2_5_16(
-                edge[t] as i32 * (32 - shift) + edge[t + 1] as i32 * shift,
-            );
+            drow[j] =
+                super::dir::rpo2_5_16(edge[t] as i32 * (32 - shift) + edge[t + 1] as i32 * shift);
         }
         if n_act < bw {
             drow[n_act..].fill(fillv);

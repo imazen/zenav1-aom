@@ -3,11 +3,15 @@
 //! Both sides get an identical randomized destination buffer; the reconstructed
 //! pixel planes must be byte-identical.
 
-use aom_sys_ref as c;
 use aom_dsp::transform::inv_txfm2d::{av1_inv_txfm2d_add, inv_input_len, inv_txfm_valid};
+use aom_sys_ref as c;
 
-const W: [usize; 19] = [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-const H: [usize; 19] = [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+const W: [usize; 19] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+const H: [usize; 19] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 
 struct Rng(u64);
 impl Rng {
@@ -101,7 +105,11 @@ fn highbd_iwht4x4_add_matches_c() {
         for stride in [4usize, 7, 16, 33] {
             for _ in 0..3000 {
                 let full = rng.next() & 1 == 0;
-                let eob = if full { 2 + (rng.next() % 15) as usize } else { 1 };
+                let eob = if full {
+                    2 + (rng.next() % 15) as usize
+                } else {
+                    1
+                };
                 let mut input = [0i32; 16];
                 if full {
                     for v in input.iter_mut() {

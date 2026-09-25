@@ -7,8 +7,8 @@
 //! and input bounds are chosen so the C `half_btf` inner 32-bit products stay
 //! within defined behaviour (clamp keeps operands <= 2^16, cospi <= 2^13).
 
-use aom_sys_ref as c;
 use aom_dsp::transform as r;
+use aom_sys_ref as c;
 
 type RFn = fn(&[i32], &mut [i32], i32, &[i8]);
 type CFn = unsafe extern "C" fn(*const i32, *mut i32, i8, *const i8);
@@ -22,18 +22,78 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
-        Case { name: "idct4",  size: 4,  rf: r::av1_idct4,  cf: c::av1_idct4 },
-        Case { name: "idct8",  size: 8,  rf: r::av1_idct8,  cf: c::av1_idct8 },
-        Case { name: "idct16", size: 16, rf: r::av1_idct16, cf: c::av1_idct16 },
-        Case { name: "idct32", size: 32, rf: r::av1_idct32, cf: c::av1_idct32 },
-        Case { name: "idct64", size: 64, rf: r::av1_idct64, cf: c::av1_idct64 },
-        Case { name: "iadst4",  size: 4,  rf: r::av1_iadst4,  cf: c::av1_iadst4 },
-        Case { name: "iadst8",  size: 8,  rf: r::av1_iadst8,  cf: c::av1_iadst8 },
-        Case { name: "iadst16", size: 16, rf: r::av1_iadst16, cf: c::av1_iadst16 },
-        Case { name: "iidentity4",  size: 4,  rf: r::av1_iidentity4,  cf: c::av1_iidentity4_c },
-        Case { name: "iidentity8",  size: 8,  rf: r::av1_iidentity8,  cf: c::av1_iidentity8_c },
-        Case { name: "iidentity16", size: 16, rf: r::av1_iidentity16, cf: c::av1_iidentity16_c },
-        Case { name: "iidentity32", size: 32, rf: r::av1_iidentity32, cf: c::av1_iidentity32_c },
+        Case {
+            name: "idct4",
+            size: 4,
+            rf: r::av1_idct4,
+            cf: c::av1_idct4,
+        },
+        Case {
+            name: "idct8",
+            size: 8,
+            rf: r::av1_idct8,
+            cf: c::av1_idct8,
+        },
+        Case {
+            name: "idct16",
+            size: 16,
+            rf: r::av1_idct16,
+            cf: c::av1_idct16,
+        },
+        Case {
+            name: "idct32",
+            size: 32,
+            rf: r::av1_idct32,
+            cf: c::av1_idct32,
+        },
+        Case {
+            name: "idct64",
+            size: 64,
+            rf: r::av1_idct64,
+            cf: c::av1_idct64,
+        },
+        Case {
+            name: "iadst4",
+            size: 4,
+            rf: r::av1_iadst4,
+            cf: c::av1_iadst4,
+        },
+        Case {
+            name: "iadst8",
+            size: 8,
+            rf: r::av1_iadst8,
+            cf: c::av1_iadst8,
+        },
+        Case {
+            name: "iadst16",
+            size: 16,
+            rf: r::av1_iadst16,
+            cf: c::av1_iadst16,
+        },
+        Case {
+            name: "iidentity4",
+            size: 4,
+            rf: r::av1_iidentity4,
+            cf: c::av1_iidentity4_c,
+        },
+        Case {
+            name: "iidentity8",
+            size: 8,
+            rf: r::av1_iidentity8,
+            cf: c::av1_iidentity8_c,
+        },
+        Case {
+            name: "iidentity16",
+            size: 16,
+            rf: r::av1_iidentity16,
+            cf: c::av1_iidentity16_c,
+        },
+        Case {
+            name: "iidentity32",
+            size: 32,
+            rf: r::av1_iidentity32,
+            cf: c::av1_iidentity32_c,
+        },
     ]
 }
 

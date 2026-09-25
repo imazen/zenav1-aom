@@ -4,11 +4,11 @@
 //! and REAL `av1_ext_tx_inv`) and `get_tx_type_cost` (txb_rdopt.c static,
 //! transcription shim over the REAL header-static set-derivation tables).
 
-use aom_sys_ref as c;
 use aom_dsp::txb::{
     fill_tx_type_costs, get_tx_type_cost, TxTypeCosts, EXT_TX_SETS_INTER, EXT_TX_SETS_INTRA,
     EXT_TX_SIZES, INTRA_MODES, TX_TYPES,
 };
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -47,7 +47,8 @@ fn gen_cdf_row(rng: &mut Rng, nsymbs: usize) -> Vec<u16> {
 /// Random full CDF arrays in the `FRAME_CONTEXT` flat layouts, each row valid
 /// for its set's symbol count.
 fn gen_cdfs(rng: &mut Rng) -> (Vec<u16>, Vec<u16>) {
-    let mut intra = Vec::with_capacity(EXT_TX_SETS_INTRA * EXT_TX_SIZES * INTRA_MODES * (TX_TYPES + 1));
+    let mut intra =
+        Vec::with_capacity(EXT_TX_SETS_INTRA * EXT_TX_SIZES * INTRA_MODES * (TX_TYPES + 1));
     for s in 0..EXT_TX_SETS_INTRA {
         let nsymbs = NUM_EXT_TX_SET[IDX_TO_TYPE[0][s]].max(2);
         for _ in 0..EXT_TX_SIZES * INTRA_MODES {
@@ -137,8 +138,8 @@ fn get_tx_type_cost_matches_c() {
                                             mode as i32,
                                         );
                                         let got = get_tx_type_cost(
-                                            &costs, plane, tx_size, tx_type, is_inter,
-                                            reduced, lossless, use_fi, fi_mode, mode,
+                                            &costs, plane, tx_size, tx_type, is_inter, reduced,
+                                            lossless, use_fi, fi_mode, mode,
                                         );
                                         assert_eq!(
                                             got, want,

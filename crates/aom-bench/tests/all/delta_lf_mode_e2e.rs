@@ -60,8 +60,10 @@ fn run_cell(cell: &EncodeCell) -> Result<usize, String> {
 /// non-square shapes. Any divergence is a regression.
 #[test]
 fn delta_lf_mode_e2e() {
-    let mut cells: Vec<EncodeCell> =
-        [12, 20, 32, 48, 63].into_iter().map(|cq| cell(192, 192, cq)).collect();
+    let mut cells: Vec<EncodeCell> = [12, 20, 32, 48, 63]
+        .into_iter()
+        .map(|cq| cell(192, 192, cq))
+        .collect();
     cells.push(cell(192, 128, 32));
     cells.push(cell(128, 192, 32));
 
@@ -97,7 +99,8 @@ fn delta_lf_mode_knob_bites() {
     let c_stream = cell.c_encode_ctrls(&ctrls());
     let real = EncodeCell::frame_obu_payload(&c_stream);
     // The delta-lf stream must differ from mode-2-only (proves delta-lf fired).
-    let mode2_only = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&[(AV1E_SET_DELTAQ_MODE, 2)]));
+    let mode2_only =
+        EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&[(AV1E_SET_DELTAQ_MODE, 2)]));
     assert_ne!(
         real, mode2_only,
         "delta-lf must add symbols vs mode-2-only for the witness to be meaningful"
@@ -105,7 +108,10 @@ fn delta_lf_mode_knob_bites() {
     // Port with the delta-lf arm OFF (mode-2 only) diverges from the delta-lf reference...
     let without = cell.port_encode_with(
         &c_stream,
-        &ToggleKnobs { deltaq_mode2: true, ..Default::default() },
+        &ToggleKnobs {
+            deltaq_mode2: true,
+            ..Default::default()
+        },
     );
     assert_ne!(
         without, real,

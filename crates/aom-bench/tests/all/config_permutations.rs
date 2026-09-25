@@ -390,23 +390,32 @@ fn run_array(ctx: &Ctx, t: usize, shard: usize, n_shards: usize, min_moved_pct: 
             continue;
         }
         let dl = format!("{}_dup_{}", ctx.tag, cp::row_label(dup));
-        let dup_c = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&cp::knobs_of(dup).c_ctrls()));
-        let rep_c = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&cp::knobs_of(rep).c_ctrls()));
+        let dup_c =
+            EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&cp::knobs_of(dup).c_ctrls()));
+        let rep_c =
+            EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&cp::knobs_of(rep).c_ctrls()));
         assert_eq!(
-            dup_c, rep_c,
+            dup_c,
+            rep_c,
             "{dl}: the collapse dropped this row as equivalent to {}, but real \
              aomenc produced different bytes — the Effective signature is \
              over-collapsing and the array is under-covering",
             cp::row_label(rep)
         );
-        let dup_p = cell.port_encode_with(&cell.c_encode_ctrls(&cp::knobs_of(dup).c_ctrls()), &cp::knobs_of(dup));
+        let dup_p = cell.port_encode_with(
+            &cell.c_encode_ctrls(&cp::knobs_of(dup).c_ctrls()),
+            &cp::knobs_of(dup),
+        );
         assert_eq!(
             dup_p, dup_c,
             "{dl}: collapsed-away row is not byte-identical to real aomenc"
         );
     }
 
-    let non_stock: Vec<&Cell> = cells.iter().filter(|c| c.label != format!("{}_stock", ctx.tag)).collect();
+    let non_stock: Vec<&Cell> = cells
+        .iter()
+        .filter(|c| c.label != format!("{}_stock", ctx.tag))
+        .collect();
     let moved = non_stock.iter().filter(|c| c.c_moved).count();
     let moved_pct = if non_stock.is_empty() {
         100.0
@@ -457,8 +466,14 @@ fn render(
          cannot author them); the cell context itself is fully REPLAYED",
         cells.len(),
         cells.iter().filter(|c| c.exact).count(),
-        ALL_AXES.iter().filter(|a| a.kind() == AxisKind::Derived).count(),
-        ALL_AXES.iter().filter(|a| a.kind() != AxisKind::Derived).count()
+        ALL_AXES
+            .iter()
+            .filter(|a| a.kind() == AxisKind::Derived)
+            .count(),
+        ALL_AXES
+            .iter()
+            .filter(|a| a.kind() != AxisKind::Derived)
+            .count()
     );
     for c in cells {
         let _ = writeln!(
@@ -488,13 +503,40 @@ fn render(
 #[test]
 fn config_permutation_coverage_arithmetic() {
     let raw = cp::raw_space_size();
-    assert_eq!(raw, 14_155_776, "the axis set changed — re-pin the arithmetic");
+    assert_eq!(
+        raw, 14_155_776,
+        "the axis set changed — re-pin the arithmetic"
+    );
 
     // Exhaustive walk of the raw space: legality + distinct effective states.
     let ctxs = [
-        ("64x64 4:2:0", CellCtx { w: 64, h: 64, mono: false, sb_px: 64 }),
-        ("64x64 mono", CellCtx { w: 64, h: 64, mono: true, sb_px: 64 }),
-        ("32x32 4:2:0", CellCtx { w: 32, h: 32, mono: false, sb_px: 64 }),
+        (
+            "64x64 4:2:0",
+            CellCtx {
+                w: 64,
+                h: 64,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "64x64 mono",
+            CellCtx {
+                w: 64,
+                h: 64,
+                mono: true,
+                sb_px: 64,
+            },
+        ),
+        (
+            "32x32 4:2:0",
+            CellCtx {
+                w: 32,
+                h: 32,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
     ];
     let mut report = String::from("\n=== config-permutation coverage arithmetic ===\n");
     let _ = writeln!(report, "raw cartesian product of {N_AXES} axes : {raw}");
@@ -548,7 +590,10 @@ fn config_permutation_coverage_arithmetic() {
         100.0 * (raw - legal_total) as f64 / raw as f64,
         cp::illegal_reason(&{
             let mut r = DEFAULT_ROW;
-            r[ALL_AXES.iter().position(|&a| a == Axis::TxSizeSearch).unwrap()] = 1;
+            r[ALL_AXES
+                .iter()
+                .position(|&a| a == Axis::TxSizeSearch)
+                .unwrap()] = 1;
             r[ALL_AXES.iter().position(|&a| a == Axis::Tx64).unwrap()] = 1;
             r
         })
@@ -583,14 +628,20 @@ fn config_permutation_coverage_arithmetic() {
          re-derive and re-pin (and re-run the collapse proof)"
     );
     assert_eq!(
-        ALL_AXES.iter().filter(|a| a.kind() == AxisKind::Derived).count(),
+        ALL_AXES
+            .iter()
+            .filter(|a| a.kind() == AxisKind::Derived)
+            .count(),
         16,
         "the DERIVED axis count moved — re-check AxisKind against the encoder \
          paths before re-pinning; a knob silently becoming bootstrap-carried \
          weakens every cell that covers it"
     );
     assert_eq!(
-        ALL_AXES.iter().filter(|a| a.kind() == AxisKind::BootstrapSeq).count(),
+        ALL_AXES
+            .iter()
+            .filter(|a| a.kind() == AxisKind::BootstrapSeq)
+            .count(),
         2
     );
     assert_eq!(
@@ -710,11 +761,7 @@ fn predicted_equivalences(ctx: &CellCtx) -> Vec<(String, Row, Row)> {
         ("diroff_kills_angledelta", Axis::AngleDelta),
         ("diroff_kills_edgefilter", Axis::EdgeFilter),
     ] {
-        push(
-            name,
-            dir_off,
-            row_with(&[(Axis::Directional, 1), (ax, 1)]),
-        );
+        push(name, dir_off, row_with(&[(Axis::Directional, 1), (ax, 1)]));
     }
     // dct-only / default-tx-only subsume the flip-idtx knob.
     push(
@@ -725,11 +772,7 @@ fn predicted_equivalences(ctx: &CellCtx) -> Vec<(String, Row, Row)> {
 
     // Context-conditional deaths.
     if ctx.mono {
-        push(
-            "mono_kills_cfl",
-            DEFAULT_ROW,
-            row_with(&[(Axis::Cfl, 1)]),
-        );
+        push("mono_kills_cfl", DEFAULT_ROW, row_with(&[(Axis::Cfl, 1)]));
     }
     if ctx.w < ctx.sb_px || ctx.h < ctx.sb_px {
         push(
@@ -811,7 +854,8 @@ fn run_collapse_proof(ctx: &Ctx) {
 
     for (name, a, b, ca, pa, cb, pb) in &results {
         assert_eq!(
-            ca, cb,
+            ca,
+            cb,
             "{}/{name}: the collapse engine calls these two knob rows \
              equivalent, but REAL AOMENC produced different bytes ({} vs {}) — \
              the Effective signature is under-refined and the covering array is \
@@ -823,7 +867,8 @@ fn run_collapse_proof(ctx: &Ctx) {
             cp::row_label(b)
         );
         assert_eq!(
-            pa, pb,
+            pa,
+            pb,
             "{}/{name}: real aomenc treats these two knob rows identically but \
              the PORT does not ({} vs {} bytes) — the port is steering on a \
              knob C ignores. Rows: {} vs {}",
@@ -892,14 +937,75 @@ macro_rules! gate {
 // on every context (2026-07-30), so these floors have real headroom and still
 // fail loudly if a context drifts toward configurations the encoder ignores.
 
-gate!(C_64_CQ32, t = 4, shards = 3, min_moved = 90.0, combinations_t4_64cq32_s0 = 0, combinations_t4_64cq32_s1 = 1, combinations_t4_64cq32_s2 = 2);
-gate!(C_64_CQ63, t = 4, shards = 2, min_moved = 70.0, combinations_t4_64cq63_s0 = 0, combinations_t4_64cq63_s1 = 1);
-gate!(C_32_CQ32, t = 4, shards = 2, min_moved = 80.0, combinations_t4_32cq32_s0 = 0, combinations_t4_32cq32_s1 = 1);
-gate!(C_444_CQ32, t = 4, shards = 3, min_moved = 90.0, combinations_t4_444cq32_s0 = 0, combinations_t4_444cq32_s1 = 1, combinations_t4_444cq32_s2 = 2);
-gate!(C_422_CQ32, t = 4, shards = 2, min_moved = 90.0, combinations_t4_422cq32_s0 = 0, combinations_t4_422cq32_s1 = 1);
-gate!(C_B10_CQ32, t = 4, shards = 3, min_moved = 90.0, combinations_t4_b10cq32_s0 = 0, combinations_t4_b10cq32_s1 = 1, combinations_t4_b10cq32_s2 = 2);
-gate!(C_MONO_CQ32, t = 4, shards = 3, min_moved = 85.0, combinations_t4_mono_s0 = 0, combinations_t4_mono_s1 = 1, combinations_t4_mono_s2 = 2);
-gate!(C_128_CQ32, t = 4, shards = 3, min_moved = 90.0, combinations_t4_128cq32_s0 = 0, combinations_t4_128cq32_s1 = 1, combinations_t4_128cq32_s2 = 2);
+gate!(
+    C_64_CQ32,
+    t = 4,
+    shards = 3,
+    min_moved = 90.0,
+    combinations_t4_64cq32_s0 = 0,
+    combinations_t4_64cq32_s1 = 1,
+    combinations_t4_64cq32_s2 = 2
+);
+gate!(
+    C_64_CQ63,
+    t = 4,
+    shards = 2,
+    min_moved = 70.0,
+    combinations_t4_64cq63_s0 = 0,
+    combinations_t4_64cq63_s1 = 1
+);
+gate!(
+    C_32_CQ32,
+    t = 4,
+    shards = 2,
+    min_moved = 80.0,
+    combinations_t4_32cq32_s0 = 0,
+    combinations_t4_32cq32_s1 = 1
+);
+gate!(
+    C_444_CQ32,
+    t = 4,
+    shards = 3,
+    min_moved = 90.0,
+    combinations_t4_444cq32_s0 = 0,
+    combinations_t4_444cq32_s1 = 1,
+    combinations_t4_444cq32_s2 = 2
+);
+gate!(
+    C_422_CQ32,
+    t = 4,
+    shards = 2,
+    min_moved = 90.0,
+    combinations_t4_422cq32_s0 = 0,
+    combinations_t4_422cq32_s1 = 1
+);
+gate!(
+    C_B10_CQ32,
+    t = 4,
+    shards = 3,
+    min_moved = 90.0,
+    combinations_t4_b10cq32_s0 = 0,
+    combinations_t4_b10cq32_s1 = 1,
+    combinations_t4_b10cq32_s2 = 2
+);
+gate!(
+    C_MONO_CQ32,
+    t = 4,
+    shards = 3,
+    min_moved = 85.0,
+    combinations_t4_mono_s0 = 0,
+    combinations_t4_mono_s1 = 1,
+    combinations_t4_mono_s2 = 2
+);
+gate!(
+    C_128_CQ32,
+    t = 4,
+    shards = 3,
+    min_moved = 90.0,
+    combinations_t4_128cq32_s0 = 0,
+    combinations_t4_128cq32_s1 = 1,
+    combinations_t4_128cq32_s2 = 2
+);
 
 /// Every context used by the default tier, cheapest first.
 const ALL_CONTEXTS: &[&Ctx] = &[
@@ -1126,7 +1232,11 @@ fn mono_vector_open_divergences_pinned() {
         );
         println!(
             "  monovec cq{cq} {knob}: {} port={}B c={}B",
-            if port == c_payload { "exact  " } else { "DIVERGE" },
+            if port == c_payload {
+                "exact  "
+            } else {
+                "DIVERGE"
+            },
             port.len(),
             c_payload.len()
         );
@@ -1322,12 +1432,32 @@ fn independence_evidence_sweep() {
 /// points and wrong elsewhere.
 #[test]
 fn redundant_levels_are_globally_redundant() {
-    let ctx = CellCtx { w: 64, h: 64, mono: false, sb_px: 64 };
+    let ctx = CellCtx {
+        w: 64,
+        h: 64,
+        mono: false,
+        sb_px: 64,
+    };
     // The three level equivalences the design claims are GLOBAL.
     let claims = [
-        (Axis::MaxPart, 1u8, 0u8, "partition_strategy.h:214 min(sf,CLI,sb) at SB64"),
-        (Axis::CdfUpdate, 2, 0, "encoder.c:4390 case 2 -> 0 on an intra-only frame"),
-        (Axis::Trellis, 3, 0, "init_rd_sf: FULL vs NO_ESTIMATE_YRD differ only in inter-only estimate_yrd_for_sb"),
+        (
+            Axis::MaxPart,
+            1u8,
+            0u8,
+            "partition_strategy.h:214 min(sf,CLI,sb) at SB64",
+        ),
+        (
+            Axis::CdfUpdate,
+            2,
+            0,
+            "encoder.c:4390 case 2 -> 0 on an intra-only frame",
+        ),
+        (
+            Axis::Trellis,
+            3,
+            0,
+            "init_rd_sf: FULL vs NO_ESTIMATE_YRD differ only in inter-only estimate_yrd_for_sb",
+        ),
     ];
     for (ax, la, lb, why) in claims {
         let a = ix(ax);
@@ -1350,7 +1480,10 @@ fn redundant_levels_are_globally_redundant() {
                 cp::row_label(row)
             );
         });
-        println!("{}: level {la} == level {lb} over {checked} backgrounds ({why})", ax.tag());
+        println!(
+            "{}: level {la} == level {lb} over {checked} backgrounds ({why})",
+            ax.tag()
+        );
     }
 }
 
@@ -1419,7 +1552,10 @@ fn combinations_dct_only_verdict_set_pinned() {
     );
     // Since KB-60 (2026-09-13) every row is byte-exact — the expected set is
     // empty; any entry here is a regression.
-    let expected: BTreeSet<String> = DCT_ONLY_DIVERGENT_ROWS.iter().map(|s| s.to_string()).collect();
+    let expected: BTreeSet<String> = DCT_ONLY_DIVERGENT_ROWS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(
         diverged, expected,
         "the --use-intra-dct-only divergence set MOVED — the knob is byte-exact \
@@ -1458,21 +1594,81 @@ struct Content {
 /// moves is attributable to CONTENT.
 const CONTENTS: &[Content] = &[
     // --- class NATURAL (screen detector does not fire) ---
-    Content { tag: "nat_64x64", vector: "av1-1-b8-01-size-64x64", crop: None, screen: false },
-    Content { tag: "nat_allintra", vector: "av1-1-b8-02-allintra", crop: Some((64, 64, 96, 96)), screen: false },
-    Content { tag: "nat_cdfupd", vector: "av1-1-b8-04-cdfupdate", crop: Some((64, 64, 96, 96)), screen: false },
-    Content { tag: "nat_b10", vector: "av1-1-b10-00-quantizer-00", crop: Some((64, 64, 64, 64)), screen: false },
+    Content {
+        tag: "nat_64x64",
+        vector: "av1-1-b8-01-size-64x64",
+        crop: None,
+        screen: false,
+    },
+    Content {
+        tag: "nat_allintra",
+        vector: "av1-1-b8-02-allintra",
+        crop: Some((64, 64, 96, 96)),
+        screen: false,
+    },
+    Content {
+        tag: "nat_cdfupd",
+        vector: "av1-1-b8-04-cdfupdate",
+        crop: Some((64, 64, 96, 96)),
+        screen: false,
+    },
+    Content {
+        tag: "nat_b10",
+        vector: "av1-1-b10-00-quantizer-00",
+        crop: Some((64, 64, 64, 64)),
+        screen: false,
+    },
     // --- class NOISE (film grain synthesised into the decoded source) ---
-    Content { tag: "grain_b8", vector: "av1-1-b8-23-film_grain-50", crop: Some((64, 64, 96, 96)), screen: false },
-    Content { tag: "grain_b10", vector: "av1-1-b10-23-film_grain-50", crop: Some((64, 64, 96, 96)), screen: false },
+    Content {
+        tag: "grain_b8",
+        vector: "av1-1-b8-23-film_grain-50",
+        crop: Some((64, 64, 96, 96)),
+        screen: false,
+    },
+    Content {
+        tag: "grain_b10",
+        vector: "av1-1-b10-23-film_grain-50",
+        crop: Some((64, 64, 96, 96)),
+        screen: false,
+    },
     // --- class DC-FLAT (decoded at a crushing qindex -> few colors per block) ---
-    Content { tag: "flat_b8_q63", vector: "av1-1-b8-00-quantizer-63", crop: Some((64, 64, 96, 96)), screen: false },
-    Content { tag: "flat_b10_q63", vector: "av1-1-b10-00-quantizer-63", crop: Some((64, 64, 64, 64)), screen: false },
-    Content { tag: "det_b8_q00", vector: "av1-1-b8-00-quantizer-00", crop: Some((64, 64, 96, 96)), screen: false },
+    Content {
+        tag: "flat_b8_q63",
+        vector: "av1-1-b8-00-quantizer-63",
+        crop: Some((64, 64, 96, 96)),
+        screen: false,
+    },
+    Content {
+        tag: "flat_b10_q63",
+        vector: "av1-1-b10-00-quantizer-63",
+        crop: Some((64, 64, 64, 64)),
+        screen: false,
+    },
+    Content {
+        tag: "det_b8_q00",
+        vector: "av1-1-b8-00-quantizer-00",
+        crop: Some((64, 64, 96, 96)),
+        screen: false,
+    },
     // --- class SCREEN (the detector fires) ---
-    Content { tag: "scr_mono_b8", vector: "av1-1-b8-24-monochrome", crop: Some((64, 64, 64, 64)), screen: true },
-    Content { tag: "scr_mono_b10", vector: "av1-1-b10-24-monochrome", crop: Some((64, 64, 64, 64)), screen: true },
-    Content { tag: "scr_ibc_b8", vector: "av1-1-b8-16-intra_only-intrabc-extreme-dv", crop: Some((64, 64, 64, 64)), screen: true },
+    Content {
+        tag: "scr_mono_b8",
+        vector: "av1-1-b8-24-monochrome",
+        crop: Some((64, 64, 64, 64)),
+        screen: true,
+    },
+    Content {
+        tag: "scr_mono_b10",
+        vector: "av1-1-b10-24-monochrome",
+        crop: Some((64, 64, 64, 64)),
+        screen: true,
+    },
+    Content {
+        tag: "scr_ibc_b8",
+        vector: "av1-1-b8-16-intra_only-intrabc-extreme-dv",
+        crop: Some((64, 64, 64, 64)),
+        screen: true,
+    },
 ];
 
 impl Content {
@@ -1480,7 +1676,6 @@ impl Content {
         EncodeCell::real_content(self.tag, self.vector, self.crop, cq, 0)
     }
 }
-
 
 /// The measured [`cp::screen_stat`] per content, PINNED:
 /// `(tag, counts_1, blocks, allow_screen_content_tools)`. Measured 2026-07-30
@@ -1560,7 +1755,11 @@ fn content_taxonomy_is_measured_and_pinned() {
             st.counts_1,
             st.blocks,
             st.allow_screen_content_tools as u8,
-            if reacted { "MOVED the C payload" } else { "inert" }
+            if reacted {
+                "MOVED the C payload"
+            } else {
+                "inert"
+            }
         );
         assert!(
             st.allow_screen_content_tools || !reacted,
@@ -1578,7 +1777,12 @@ fn content_taxonomy_is_measured_and_pinned() {
             "{}: measured screen verdict != the declared taxonomy class",
             ct.tag
         );
-        measured.push((ct.tag, st.counts_1, st.blocks, st.allow_screen_content_tools));
+        measured.push((
+            ct.tag,
+            st.counts_1,
+            st.blocks,
+            st.allow_screen_content_tools,
+        ));
     }
     println!("{report}");
     assert_eq!(
@@ -1659,7 +1863,8 @@ fn run_content_matrix(contents: &[&Content], cqs: &[i32]) -> (BTreeSet<String>, 
         for &cq in cqs {
             let cell = ct.cell(cq);
             let stock = c_stock_payload(&cell);
-            let port_stock = cell.port_encode_with(&cell.c_encode_ctrls(&[]), &ToggleKnobs::default());
+            let port_stock =
+                cell.port_encode_with(&cell.c_encode_ctrls(&[]), &ToggleKnobs::default());
             assert_eq!(
                 stock, port_stock,
                 "{}/cq{cq}: the STOCK encode of this content is NOT byte-identical \
@@ -1810,7 +2015,14 @@ const SCREEN_ARRAY_OPEN_ROWS: &[&str] = &[];
 ///
 /// Same four-part gate as [`run_array`] (byte-identity, anti-vacuity,
 /// collapse soundness in the stock direction, non-empty shard).
-fn run_content_array(ct: &Content, cq: i32, t: usize, shard: usize, n_shards: usize, min_moved_pct: f64) {
+fn run_content_array(
+    ct: &Content,
+    cq: i32,
+    t: usize,
+    shard: usize,
+    n_shards: usize,
+    min_moved_pct: f64,
+) {
     c::ref_init();
     let cell = ct.cell(cq);
     let cctx = cell_ctx(&cell);
@@ -1848,7 +2060,10 @@ fn run_content_array(ct: &Content, cq: i32, t: usize, shard: usize, n_shards: us
         }
         cells.push(r);
     }
-    let non_stock: Vec<&Cell> = cells.iter().filter(|c| !c.label.ends_with("_stock")).collect();
+    let non_stock: Vec<&Cell> = cells
+        .iter()
+        .filter(|c| !c.label.ends_with("_stock"))
+        .collect();
     let moved = non_stock.iter().filter(|c| c.c_moved).count();
     let moved_pct = if non_stock.is_empty() {
         100.0
@@ -1871,7 +2086,8 @@ fn run_content_array(ct: &Content, cq: i32, t: usize, shard: usize, n_shards: us
         .filter(|l| cells.iter().any(|c| &c.label == l))
         .collect();
     assert_eq!(
-        open, expected,
+        open,
+        expected,
         "{tag}: the SCREEN-class covering-array divergence set MOVED ({} of {} \
          cells open). Every axis runs at full strength here (no pins since \
          KB-17 closed), so a NEW entry is a knob combination that diverges on \
@@ -1954,7 +2170,10 @@ fn combinations_screen_dtxo_verdict_set_pinned() {
         diverged.len(),
         diverged
     );
-    let expected: BTreeSet<String> = SCREEN_DTXO_DIVERGENT_ROWS.iter().map(|s| s.to_string()).collect();
+    let expected: BTreeSet<String> = SCREEN_DTXO_DIVERGENT_ROWS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(
         diverged, expected,
         "the screen-content --use-intra-default-tx-only divergence set MOVED. \
@@ -1964,7 +2183,10 @@ fn combinations_screen_dtxo_verdict_set_pinned() {
          `TxTypeSearchPolicy::use_screen_content_tools` -> \
          `get_default_tx_type_y`, tx_search.c:1806-1808)."
     );
-    assert!(n >= 17, "the t=2 array shrank to {n} legal rows — coverage lost");
+    assert!(
+        n >= 17,
+        "the t=2 array shrank to {n} legal rows — coverage lost"
+    );
 }
 
 /// Recorded divergence set for [`combinations_screen_dtxo_verdict_set_pinned`]:
@@ -2065,7 +2287,11 @@ fn content_axis_evidence_sweep() {
                         r.exact as u8,
                         r.c_moved as u8,
                         r.port_len,
-                        if r.exact { "-".to_string() } else { r.c_len.to_string() }
+                        if r.exact {
+                            "-".to_string()
+                        } else {
+                            r.c_len.to_string()
+                        }
                     );
                 }
             }
@@ -2234,11 +2460,7 @@ impl SizeCtx {
 fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
-        if m < n {
-            m
-        } else {
-            2 * n - 1 - m
-        }
+        if m < n { m } else { 2 * n - 1 - m }
     };
     let (bw, bh) = (base.w, base.h);
     let mut y = vec![0u16; w * h];
@@ -2247,10 +2469,7 @@ fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32) -> E
             y[r * w + col] = base.y[mir(r, bh) * bw + mir(col, bw)];
         }
     }
-    let (bcw, bch) = (
-        (bw + base.ss_x) >> base.ss_x,
-        (bh + base.ss_y) >> base.ss_y,
-    );
+    let (bcw, bch) = ((bw + base.ss_x) >> base.ss_x, (bh + base.ss_y) >> base.ss_y);
     let (cw, ch) = ((w + base.ss_x) >> base.ss_x, (h + base.ss_y) >> base.ss_y);
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];
@@ -2455,7 +2674,13 @@ const ALL_SIZE_CONTEXTS: &[&SizeCtx] = &[
 
 /// One size cell: byte-identity against real aomenc, with the SB-size control
 /// on both sides.
-fn run_size_cell(sc: &SizeCtx, cell: &EncodeCell, label: &str, knobs: &ToggleKnobs, stock: &[u8]) -> Cell {
+fn run_size_cell(
+    sc: &SizeCtx,
+    cell: &EncodeCell,
+    label: &str,
+    knobs: &ToggleKnobs,
+    stock: &[u8],
+) -> Cell {
     let c_tu = cell.c_encode_ctrls(&sc.ctrls(knobs));
     assert!(!c_tu.is_empty(), "{label}: C encode failed");
     let c_payload = EncodeCell::frame_obu_payload(&c_tu);
@@ -2490,7 +2715,8 @@ fn run_size_array(sc: &SizeCtx, t: usize, shard: usize, n_shards: usize, min_mov
     c::ref_init();
     let cell = sc.cell();
     let cctx = sc.ctx();
-    let stock = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&sc.ctrls(&ToggleKnobs::default())));
+    let stock =
+        EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&sc.ctrls(&ToggleKnobs::default())));
     let stock_eff = Effective::resolve(&DEFAULT_ROW, &cctx);
 
     let array = cp::covering_array(t);
@@ -2503,7 +2729,11 @@ fn run_size_array(sc: &SizeCtx, t: usize, shard: usize, n_shards: usize, min_mov
         .filter(|(i, _)| i % n_shards == shard)
         .map(|(_, r)| r)
         .collect();
-    assert!(!rows.is_empty(), "{}: shard {shard}/{n_shards} is empty", sc.tag);
+    assert!(
+        !rows.is_empty(),
+        "{}: shard {shard}/{n_shards} is empty",
+        sc.tag
+    );
 
     let mut cells = Vec::new();
     let mut skipped = 0usize;
@@ -2525,7 +2755,10 @@ fn run_size_array(sc: &SizeCtx, t: usize, shard: usize, n_shards: usize, min_mov
         cells.push(r);
     }
 
-    let non_stock: Vec<&Cell> = cells.iter().filter(|c| !c.label.ends_with("_stock")).collect();
+    let non_stock: Vec<&Cell> = cells
+        .iter()
+        .filter(|c| !c.label.ends_with("_stock"))
+        .collect();
     let moved = non_stock.iter().filter(|c| c.c_moved).count();
     let moved_pct = if non_stock.is_empty() {
         100.0
@@ -2537,8 +2770,14 @@ fn run_size_array(sc: &SizeCtx, t: usize, shard: usize, n_shards: usize, min_mov
         println!(
             "  {}: {skipped} row(s) skipped — {}",
             sc.tag,
-            sc.skip_reason(&rows.iter().copied().find(|r| sc.skip_reason(r).is_some()).unwrap())
-                .unwrap()
+            sc.skip_reason(
+                &rows
+                    .iter()
+                    .copied()
+                    .find(|r| sc.skip_reason(r).is_some())
+                    .unwrap()
+            )
+            .unwrap()
         );
     }
 
@@ -2606,7 +2845,8 @@ fn interaction_rows(full_maxpart: bool) -> Vec<Row> {
 fn run_interaction_set(sc: &SizeCtx, full_maxpart: bool, shard: usize, n_shards: usize) {
     c::ref_init();
     let cell = sc.cell();
-    let stock = EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&sc.ctrls(&ToggleKnobs::default())));
+    let stock =
+        EncodeCell::frame_obu_payload(&cell.c_encode_ctrls(&sc.ctrls(&ToggleKnobs::default())));
     let rows: Vec<Row> = interaction_rows(full_maxpart)
         .into_iter()
         .filter(|r| sc.skip_reason(r).is_none())
@@ -2656,50 +2896,78 @@ fn run_interaction_set(sc: &SizeCtx, full_maxpart: bool, shard: usize, n_shards:
 // and interacts with every knob, so it earns the same strength as the aligned
 // contexts. 187 rows x 199 ms = 37 s CPU, sharded 3 ways.
 #[test]
-fn size_t4_part68_s0() { run_size_array(&S_PART68, 4, 0, 3, 85.0) }
+fn size_t4_part68_s0() {
+    run_size_array(&S_PART68, 4, 0, 3, 85.0)
+}
 #[test]
-fn size_t4_part68_s1() { run_size_array(&S_PART68, 4, 1, 3, 85.0) }
+fn size_t4_part68_s1() {
+    run_size_array(&S_PART68, 4, 1, 3, 85.0)
+}
 #[test]
-fn size_t4_part68_s2() { run_size_array(&S_PART68, 4, 2, 3, 85.0) }
+fn size_t4_part68_s2() {
+    run_size_array(&S_PART68, 4, 2, 3, 85.0)
+}
 
 // CLASS 4 second overhang magnitude + CLASS 5 (one-dimension partial) + CLASS 9
 // (frame smaller than an SB128 superblock) at t=2. Pairwise is the defensible
 // floor for a context whose purpose is to re-witness a class already covered at
 // t=4 under a different geometry parameter.
 #[test]
-fn size_t2_part96() { run_size_array(&S_PART96, 2, 0, 1, 85.0) }
+fn size_t2_part96() {
+    run_size_array(&S_PART96, 2, 0, 1, 85.0)
+}
 #[test]
-fn size_t2_part128x96() { run_size_array(&S_PART128X96, 2, 0, 1, 85.0) }
+fn size_t2_part128x96() {
+    run_size_array(&S_PART128X96, 2, 0, 1, 85.0)
+}
 #[test]
-fn size_t2_sb128_64() { run_size_array(&S_SB128_64, 2, 0, 1, 80.0) }
+fn size_t2_sb128_64() {
+    run_size_array(&S_SB128_64, 2, 0, 1, 80.0)
+}
 
 // CLASS 6 — the cheap SB128 class where the rect-kill is live. t=2 for breadth
 // PLUS the full 24-row rect-kill interaction cross, so the reduction applied to
 // the expensive >= 480p context is demonstrated to be sufficient at the same
 // mechanism where a full cross is affordable.
 #[test]
-fn size_t2_sb128_128_s0() { run_size_array(&S_SB128_128, 2, 0, 2, 85.0) }
+fn size_t2_sb128_128_s0() {
+    run_size_array(&S_SB128_128, 2, 0, 2, 85.0)
+}
 #[test]
-fn size_t2_sb128_128_s1() { run_size_array(&S_SB128_128, 2, 1, 2, 85.0) }
+fn size_t2_sb128_128_s1() {
+    run_size_array(&S_SB128_128, 2, 1, 2, 85.0)
+}
 #[test]
-fn size_ix_sb128_128_s0() { run_interaction_set(&S_SB128_128, true, 0, 2) }
+fn size_ix_sb128_128_s0() {
+    run_interaction_set(&S_SB128_128, true, 0, 2)
+}
 #[test]
-fn size_ix_sb128_128_s1() { run_interaction_set(&S_SB128_128, true, 1, 2) }
+fn size_ix_sb128_128_s1() {
+    run_interaction_set(&S_SB128_128, true, 1, 2)
+}
 
 // CLASS 7 — SB128 + partial SB, interaction set only (1.99 s/cell).
 #[test]
-fn size_ix_sb128_192_s0() { run_interaction_set(&S_SB128_192, false, 0, 2) }
+fn size_ix_sb128_192_s0() {
+    run_interaction_set(&S_SB128_192, false, 0, 2)
+}
 #[test]
-fn size_ix_sb128_192_s1() { run_interaction_set(&S_SB128_192, false, 1, 2) }
+fn size_ix_sb128_192_s1() {
+    run_interaction_set(&S_SB128_192, false, 1, 2)
+}
 
 // CLASS 8 — the >= 480p class. 2.85 s/cell, so the interaction set runs with
 // MaxPart reduced to {128, 64}: level 2 (32 px) force-splits the 128 root
 // strictly harder than level 1 (64 px) already does, so it cannot expose a
 // rect-kill behaviour level 1 does not.
 #[test]
-fn size_ix_sb128_576_s0() { run_interaction_set(&S_SB128_576, false, 0, 2) }
+fn size_ix_sb128_576_s0() {
+    run_interaction_set(&S_SB128_576, false, 0, 2)
+}
 #[test]
-fn size_ix_sb128_576_s1() { run_interaction_set(&S_SB128_576, false, 1, 2) }
+fn size_ix_sb128_576_s1() {
+    run_interaction_set(&S_SB128_576, false, 1, 2)
+}
 
 /// THE VALIDITY ANSWER, computed rather than asserted: collapse a candidate
 /// size list into its distinct size classes and report which are covered by the
@@ -2714,21 +2982,141 @@ fn size_class_inventory_is_pinned() {
     // plus probe geometries that are expected to COLLAPSE into an existing
     // class (so the collapse is exercised, not merely claimed).
     let candidates: Vec<(&str, CellCtx)> = vec![
-        ("32x32 sb64 (existing)", CellCtx { w: 32, h: 32, mono: false, sb_px: 64 }),
-        ("64x64 sb64 (existing)", CellCtx { w: 64, h: 64, mono: false, sb_px: 64 }),
-        ("128x128 sb64 (existing)", CellCtx { w: 128, h: 128, mono: false, sb_px: 64 }),
-        ("512x512 sb64 (probe)", CellCtx { w: 512, h: 512, mono: false, sb_px: 64 }),
-        ("68x68 sb64 (added)", CellCtx { w: 68, h: 68, mono: false, sb_px: 64 }),
-        ("96x96 sb64 (added)", CellCtx { w: 96, h: 96, mono: false, sb_px: 64 }),
-        ("196x196 sb64 (probe)", CellCtx { w: 196, h: 196, mono: false, sb_px: 64 }),
-        ("128x96 sb64 (added)", CellCtx { w: 128, h: 96, mono: false, sb_px: 64 }),
-        ("64x64 sb128 (added)", CellCtx { w: 64, h: 64, mono: false, sb_px: 128 }),
-        ("128x128 sb128 (added)", CellCtx { w: 128, h: 128, mono: false, sb_px: 128 }),
-        ("192x192 sb128 (added)", CellCtx { w: 192, h: 192, mono: false, sb_px: 128 }),
-        ("512x512 sb128 (finding-B gate)", CellCtx { w: 512, h: 512, mono: true, sb_px: 128 }),
-        ("576x576 sb128 (added)", CellCtx { w: 576, h: 576, mono: true, sb_px: 128 }),
-        ("480x480 sb128 (finding-B gate)", CellCtx { w: 480, h: 480, mono: true, sb_px: 128 }),
-        ("2160x2160 sb64 (OUT OF BUDGET)", CellCtx { w: 2160, h: 2160, mono: false, sb_px: 64 }),
+        (
+            "32x32 sb64 (existing)",
+            CellCtx {
+                w: 32,
+                h: 32,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "64x64 sb64 (existing)",
+            CellCtx {
+                w: 64,
+                h: 64,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "128x128 sb64 (existing)",
+            CellCtx {
+                w: 128,
+                h: 128,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "512x512 sb64 (probe)",
+            CellCtx {
+                w: 512,
+                h: 512,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "68x68 sb64 (added)",
+            CellCtx {
+                w: 68,
+                h: 68,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "96x96 sb64 (added)",
+            CellCtx {
+                w: 96,
+                h: 96,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "196x196 sb64 (probe)",
+            CellCtx {
+                w: 196,
+                h: 196,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "128x96 sb64 (added)",
+            CellCtx {
+                w: 128,
+                h: 96,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
+        (
+            "64x64 sb128 (added)",
+            CellCtx {
+                w: 64,
+                h: 64,
+                mono: false,
+                sb_px: 128,
+            },
+        ),
+        (
+            "128x128 sb128 (added)",
+            CellCtx {
+                w: 128,
+                h: 128,
+                mono: false,
+                sb_px: 128,
+            },
+        ),
+        (
+            "192x192 sb128 (added)",
+            CellCtx {
+                w: 192,
+                h: 192,
+                mono: false,
+                sb_px: 128,
+            },
+        ),
+        (
+            "512x512 sb128 (finding-B gate)",
+            CellCtx {
+                w: 512,
+                h: 512,
+                mono: true,
+                sb_px: 128,
+            },
+        ),
+        (
+            "576x576 sb128 (added)",
+            CellCtx {
+                w: 576,
+                h: 576,
+                mono: true,
+                sb_px: 128,
+            },
+        ),
+        (
+            "480x480 sb128 (finding-B gate)",
+            CellCtx {
+                w: 480,
+                h: 480,
+                mono: true,
+                sb_px: 128,
+            },
+        ),
+        (
+            "2160x2160 sb64 (OUT OF BUDGET)",
+            CellCtx {
+                w: 2160,
+                h: 2160,
+                mono: false,
+                sb_px: 64,
+            },
+        ),
     ];
     let ctxs: Vec<CellCtx> = candidates.iter().map(|(_, c)| *c).collect();
     let classes = size_class_partition(&ctxs, 0);
@@ -2770,8 +3158,18 @@ fn size_class_inventory_is_pinned() {
     //    context would buy exactly nothing over the 1.0 s/cell 128x128 one.
     // (512 and 256 are both SB-aligned multi-SB frames, so >= 480p is the ONLY
     // property that differs between them — the clean discriminator.)
-    let big64 = CellCtx { w: 512, h: 512, mono: false, sb_px: 64 };
-    let mid64 = CellCtx { w: 256, h: 256, mono: false, sb_px: 64 };
+    let big64 = CellCtx {
+        w: 512,
+        h: 512,
+        mono: false,
+        sb_px: 64,
+    };
+    let mid64 = CellCtx {
+        w: 256,
+        h: 256,
+        mono: false,
+        sb_px: 64,
+    };
     assert_eq!(
         size_derived(&big64, 0),
         size_derived(&mid64, 0),
@@ -2788,8 +3186,18 @@ fn size_class_inventory_is_pinned() {
     // 2. ... and it is NOT vacuous: the same size pair SPLITS at SB128, which
     //    is exactly the gap the >= 480p SB128 contexts close (the 576
     //    interaction cross plus the 480/512 finding-B byte gate).
-    let big128 = CellCtx { w: 512, h: 512, mono: false, sb_px: 128 };
-    let mid128 = CellCtx { w: 256, h: 256, mono: false, sb_px: 128 };
+    let big128 = CellCtx {
+        w: 512,
+        h: 512,
+        mono: false,
+        sb_px: 128,
+    };
+    let mid128 = CellCtx {
+        w: 256,
+        h: 256,
+        mono: false,
+        sb_px: 128,
+    };
     assert_ne!(
         size_derived(&big128, 0),
         size_derived(&mid128, 0),
@@ -2921,7 +3329,10 @@ fn size_axis_open_divergences_pinned() {
     };
     let a_ctrls = S_SB128_128.ctrls(&a_knobs);
     let c_tu = a_cell.c_encode_ctrls(&a_ctrls);
-    assert!(!c_tu.is_empty(), "C must accept --sb-size=128 --max-partition-size=32");
+    assert!(
+        !c_tu.is_empty(),
+        "C must accept --sb-size=128 --max-partition-size=32"
+    );
     let a_real = EncodeCell::frame_obu_payload(&c_tu);
     let a_port = a_cell.port_encode_with(&c_tu, &a_knobs);
     println!(
@@ -2945,8 +3356,14 @@ fn size_axis_open_divergences_pinned() {
     // winning tx types were non-uniform. These three cells each committed such
     // a leaf; they must now be byte-identical to real aomenc.
     let mut open = Vec::new();
-    let p14 = ToggleKnobs { enable_1to4_partitions: false, ..Default::default() };
-    let ab0 = ToggleKnobs { enable_ab_partitions: false, ..Default::default() };
+    let p14 = ToggleKnobs {
+        enable_1to4_partitions: false,
+        ..Default::default()
+    };
+    let ab0 = ToggleKnobs {
+        enable_ab_partitions: false,
+        ..Default::default()
+    };
     let ab0p14 = ToggleKnobs {
         enable_ab_partitions: false,
         enable_1to4_partitions: false,
@@ -3019,10 +3436,30 @@ fn size_axis_open_divergences_pinned() {
 #[test]
 fn size_axis_teeth_are_real() {
     for ctx in [
-        CellCtx { w: 64, h: 64, mono: false, sb_px: 64 },
-        CellCtx { w: 32, h: 32, mono: false, sb_px: 64 },
-        CellCtx { w: 128, h: 128, mono: false, sb_px: 64 },
-        CellCtx { w: 68, h: 68, mono: false, sb_px: 64 },
+        CellCtx {
+            w: 64,
+            h: 64,
+            mono: false,
+            sb_px: 64,
+        },
+        CellCtx {
+            w: 32,
+            h: 32,
+            mono: false,
+            sb_px: 64,
+        },
+        CellCtx {
+            w: 128,
+            h: 128,
+            mono: false,
+            sb_px: 64,
+        },
+        CellCtx {
+            w: 68,
+            h: 68,
+            mono: false,
+            sb_px: 64,
+        },
     ] {
         assert!(
             !size_derived(&ctx, 0).rect_kill_reachable,
@@ -3069,7 +3506,11 @@ fn size_axis_budget_is_accounted() {
         (&S_PART96, "t=2", cp::covering_array(2).len()),
         (&S_PART128X96, "t=2", cp::covering_array(2).len()),
         (&S_SB128_64, "t=2", cp::covering_array(2).len()),
-        (&S_SB128_128, "t=2 + full rect-kill cross", cp::covering_array(2).len() + 24),
+        (
+            &S_SB128_128,
+            "t=2 + full rect-kill cross",
+            cp::covering_array(2).len() + 24,
+        ),
         (&S_SB128_192, "rect-kill cross", 16),
         (&S_SB128_576, "rect-kill cross", 16),
     ];
@@ -3094,7 +3535,13 @@ fn size_axis_budget_is_accounted() {
         let _ = writeln!(
             report,
             "  {:<12} {:>4}x{:<4} sb{:<3} {:<26} {:>4} rows x {:>5} ms",
-            sc.tag, sc.w, sc.h, if sc.sb128 { 128 } else { 64 }, strength, rows, sc.ms_per_cell
+            sc.tag,
+            sc.w,
+            sc.h,
+            if sc.sb128 { 128 } else { 64 },
+            strength,
+            rows,
+            sc.ms_per_cell
         );
     }
     let _ = writeln!(
@@ -3112,7 +3559,6 @@ fn size_axis_budget_is_accounted() {
         total_ms / 1000
     );
 }
-
 
 // ===========================================================================
 // The SPEED axis (added 2026-07-30)
@@ -3199,8 +3645,7 @@ fn write_evidence_if_changed(path: &std::path::Path, data: &str) {
             return;
         }
     }
-    std::fs::write(path, format!("{}{data}", evidence_provenance()))
-        .expect("write evidence TSV");
+    std::fs::write(path, format!("{}{data}", evidence_provenance())).expect("write evidence TSV");
 }
 
 fn evidence_provenance() -> String {
@@ -3261,16 +3706,76 @@ struct SpeedCtx {
 /// [`aom_bench::config_perm::SPEED_SF_EQUALITY_IS_NOT_A_COLLAPSE`] for why
 /// `{7,8,9}` do NOT merge despite an identical resolved `SpeedFeatures`.
 const SPEED_CONTEXTS: &[SpeedCtx] = &[
-    SpeedCtx { speed: 0, t: 2, shards: 1, ms_per_cell: 114, min_moved_pct: 75.0 },
-    SpeedCtx { speed: 1, t: 2, shards: 1, ms_per_cell: 56, min_moved_pct: 75.0 },
-    SpeedCtx { speed: 2, t: 4, shards: 3, ms_per_cell: 48, min_moved_pct: 75.0 },
-    SpeedCtx { speed: 3, t: 2, shards: 1, ms_per_cell: 42, min_moved_pct: 75.0 },
-    SpeedCtx { speed: 4, t: 3, shards: 2, ms_per_cell: 30, min_moved_pct: 55.0 },
-    SpeedCtx { speed: 5, t: 2, shards: 1, ms_per_cell: 27, min_moved_pct: 55.0 },
-    SpeedCtx { speed: 6, t: 3, shards: 1, ms_per_cell: 16, min_moved_pct: 40.0 },
-    SpeedCtx { speed: 7, t: 3, shards: 1, ms_per_cell: 3, min_moved_pct: 30.0 },
-    SpeedCtx { speed: 8, t: 3, shards: 1, ms_per_cell: 3, min_moved_pct: 30.0 },
-    SpeedCtx { speed: 9, t: 2, shards: 1, ms_per_cell: 2, min_moved_pct: 15.0 },
+    SpeedCtx {
+        speed: 0,
+        t: 2,
+        shards: 1,
+        ms_per_cell: 114,
+        min_moved_pct: 75.0,
+    },
+    SpeedCtx {
+        speed: 1,
+        t: 2,
+        shards: 1,
+        ms_per_cell: 56,
+        min_moved_pct: 75.0,
+    },
+    SpeedCtx {
+        speed: 2,
+        t: 4,
+        shards: 3,
+        ms_per_cell: 48,
+        min_moved_pct: 75.0,
+    },
+    SpeedCtx {
+        speed: 3,
+        t: 2,
+        shards: 1,
+        ms_per_cell: 42,
+        min_moved_pct: 75.0,
+    },
+    SpeedCtx {
+        speed: 4,
+        t: 3,
+        shards: 2,
+        ms_per_cell: 30,
+        min_moved_pct: 55.0,
+    },
+    SpeedCtx {
+        speed: 5,
+        t: 2,
+        shards: 1,
+        ms_per_cell: 27,
+        min_moved_pct: 55.0,
+    },
+    SpeedCtx {
+        speed: 6,
+        t: 3,
+        shards: 1,
+        ms_per_cell: 16,
+        min_moved_pct: 40.0,
+    },
+    SpeedCtx {
+        speed: 7,
+        t: 3,
+        shards: 1,
+        ms_per_cell: 3,
+        min_moved_pct: 30.0,
+    },
+    SpeedCtx {
+        speed: 8,
+        t: 3,
+        shards: 1,
+        ms_per_cell: 3,
+        min_moved_pct: 30.0,
+    },
+    SpeedCtx {
+        speed: 9,
+        t: 2,
+        shards: 1,
+        ms_per_cell: 2,
+        min_moved_pct: 15.0,
+    },
 ];
 
 fn speed_ctx(speed: i32) -> &'static SpeedCtx {
@@ -3380,15 +3885,69 @@ const SPEED_OPEN_COMBINATIONS: &[(i32, &str)] = &[
 /// ignores, so an unreduced array at speed 9 would spend ~85% of its cells on
 /// rows real aomenc cannot react to.
 const SPEED_LIVE_LEVELS: &[(i32, &[&str])] = &[
-    (0, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (1, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (2, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (3, &["rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (4, &["rect0", "p140", "minp8", "minp16", "smth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (5, &["rect0", "minp8", "minp16", "smth0", "paeth0", "cfl0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (6, &["rect0", "minp16", "smth0", "dir0", "adlt0", "fint0", "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (7, &["smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2"]),
-    (8, &["smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "flip0", "rtxs1", "cdf0", "trel1", "trel2"]),
+    (
+        0,
+        &[
+            "rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0",
+            "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        1,
+        &[
+            "rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0",
+            "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        2,
+        &[
+            "rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0",
+            "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        3,
+        &[
+            "rect0", "ab0", "p140", "minp8", "minp16", "smth0", "paeth0", "dir0", "diag0", "adlt0",
+            "fint0", "edgf0", "rtx0", "flip0", "dtxo1", "rtxs1", "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        4,
+        &[
+            "rect0", "p140", "minp8", "minp16", "smth0", "dir0", "diag0", "adlt0", "fint0",
+            "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        5,
+        &[
+            "rect0", "minp8", "minp16", "smth0", "paeth0", "cfl0", "dir0", "diag0", "adlt0",
+            "fint0", "edgf0", "rtx0", "flip0", "rtxs1", "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        6,
+        &[
+            "rect0", "minp16", "smth0", "dir0", "adlt0", "fint0", "edgf0", "rtx0", "flip0",
+            "rtxs1", "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        7,
+        &[
+            "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "flip0", "rtxs1",
+            "txss0", "cdf0", "trel1", "trel2",
+        ],
+    ),
+    (
+        8,
+        &[
+            "smth0", "paeth0", "dir0", "diag0", "adlt0", "fint0", "edgf0", "flip0", "rtxs1",
+            "cdf0", "trel1", "trel2",
+        ],
+    ),
     (9, &["fint0", "rtxs1", "cdf0", "trel1"]),
 ];
 
@@ -3417,7 +3976,12 @@ fn run_speed_matrix(speeds: &[i32]) -> (BTreeSet<String>, BTreeMap<i32, BTreeSet
         // Harness-faithfulness control: the stock encode of this content must be
         // byte-exact at THIS speed, else nothing measured here is attributable
         // to a knob.
-        let base = run_cell(&cell, &format!("s{speed}_stock"), &ToggleKnobs::default(), &stock);
+        let base = run_cell(
+            &cell,
+            &format!("s{speed}_stock"),
+            &ToggleKnobs::default(),
+            &stock,
+        );
         assert!(
             base.exact,
             "s{speed}: the STOCK encode of the primary speed context is NOT \
@@ -3430,7 +3994,12 @@ fn run_speed_matrix(speeds: &[i32]) -> (BTreeSet<String>, BTreeMap<i32, BTreeSet
             let mut row = DEFAULT_ROW;
             row[i] = l;
             let label = cp::row_label(&row);
-            let r = run_cell(&cell, &format!("s{speed}_{label}"), &cp::knobs_of(&row), &stock);
+            let r = run_cell(
+                &cell,
+                &format!("s{speed}_{label}"),
+                &cp::knobs_of(&row),
+                &stock,
+            );
             cells += 1;
             if !r.exact {
                 divergent.insert(format!("s{speed}/{label}"));
@@ -3516,7 +4085,9 @@ fn remap_open_levels(row: &Row, speed: i32) -> Row {
         let mut probe = DEFAULT_ROW;
         probe[i] = r[i];
         let label = cp::row_label(&probe);
-        if SPEED_OPEN_SINGLETONS.iter().any(|(s, l)| *s == speed && *l == label)
+        if SPEED_OPEN_SINGLETONS
+            .iter()
+            .any(|(s, l)| *s == speed && *l == label)
             || axis_level_dead_at_speed(*ax, r[i], speed).is_some()
         {
             r[i] = 0;
@@ -3571,7 +4142,10 @@ fn run_speed_array(speed: i32, shard: usize, n_shards: usize) {
         }
         cells.push(r);
     }
-    let non_stock: Vec<&Cell> = cells.iter().filter(|c| !c.label.ends_with("_stock")).collect();
+    let non_stock: Vec<&Cell> = cells
+        .iter()
+        .filter(|c| !c.label.ends_with("_stock"))
+        .collect();
     let moved = non_stock.iter().filter(|c| c.c_moved).count();
     let moved_pct = if non_stock.is_empty() {
         100.0
@@ -3591,7 +4165,8 @@ fn run_speed_array(speed: i32, shard: usize, n_shards: usize) {
         .map(|(_, l)| l.to_string())
         .collect();
     assert_eq!(
-        open, expected,
+        open,
+        expected,
         "{tag}: the set of covering-array cells that are NOT byte-identical to \
          real aomenc at --cpu-used={speed} MOVED. The levels this speed pins \
          open are remapped to default, so anything here is a knob COMBINATION \
@@ -3759,7 +4334,12 @@ fn run_speed_size_txstats(shard: usize, n_shards: usize) {
     c::ref_init();
     let speed = 2;
     let cell = speed_noise_cell("txstats_512_s2", 512, 512, 32, speed);
-    let cctx = CellCtx { w: 512, h: 512, mono: true, sb_px: 64 };
+    let cctx = CellCtx {
+        w: 512,
+        h: 512,
+        mono: true,
+        sb_px: 64,
+    };
     // The model must agree that this context is the one that turns the sf on.
     let sd = cp::size_derived(&cctx, speed);
     assert_eq!(
@@ -3806,7 +4386,14 @@ fn run_speed_size_txstats(shard: usize, n_shards: usize) {
     let moved = cells.iter().filter(|c| c.c_moved).count();
     println!(
         "{}",
-        render(&cells, "txstats512s2", 2, shard, n_shards, 100.0 * moved as f64 / cells.len() as f64)
+        render(
+            &cells,
+            "txstats512s2",
+            2,
+            shard,
+            n_shards,
+            100.0 * moved as f64 / cells.len() as f64
+        )
     );
     let open: Vec<&Cell> = cells.iter().filter(|c| !c.exact).collect();
     assert!(
@@ -3849,9 +4436,9 @@ fn run_speed_size_txstats(shard: usize, n_shards: usize) {
     // (`--use-intra-default-tx-only`, one tx type) and `dir0` (no directional
     // modes left to carry a non-DCT default).)
     const WITNESS_ROWS: &[(Axis, u8, bool)] = &[
-        (Axis::CdfUpdate, 0, true),   // the stock row (level 0 = default)
-        (Axis::Trellis, 1, true),     // --disable-trellis-quant=1
-        (Axis::FlipIdtx, 1, false),   // --enable-flip-idtx=0: structurally blind
+        (Axis::CdfUpdate, 0, true), // the stock row (level 0 = default)
+        (Axis::Trellis, 1, true),   // --disable-trellis-quant=1
+        (Axis::FlipIdtx, 1, false), // --enable-flip-idtx=0: structurally blind
     ];
     let (ax, lv, must) = WITNESS_ROWS[shard % WITNESS_ROWS.len()];
     let mut wrow = DEFAULT_ROW;
@@ -3862,13 +4449,20 @@ fn run_speed_size_txstats(shard: usize, n_shards: usize) {
     let with = cell.port_encode_with(&c_tu, &wknobs);
     let without = cell.port_encode_with(
         &c_tu,
-        &ToggleKnobs { disable_tx_stats_prune: true, ..wknobs },
+        &ToggleKnobs {
+            disable_tx_stats_prune: true,
+            ..wknobs
+        },
     );
     let witnessed = without != with;
     println!(
         "  prune_tx_type_using_stats=1 LIVENESS on `{wlabel}`: forcing the sf \
          off {} the port's bytes ({} B -> {} B); expected {}",
-        if witnessed { "CHANGES" } else { "leaves unchanged" },
+        if witnessed {
+            "CHANGES"
+        } else {
+            "leaves unchanged"
+        },
         with.len(),
         without.len(),
         if must { "CHANGES" } else { "unchanged" }
@@ -3996,8 +4590,18 @@ fn speed_class_inventory_is_pinned() {
     );
 
     // (3) speed x framesize. Sub-480p vs >=480p at every speed.
-    let small = CellCtx { w: 64, h: 64, mono: false, sb_px: 64 };
-    let big = CellCtx { w: 512, h: 512, mono: true, sb_px: 64 };
+    let small = CellCtx {
+        w: 64,
+        h: 64,
+        mono: false,
+        sb_px: 64,
+    };
+    let big = CellCtx {
+        w: 512,
+        h: 512,
+        mono: true,
+        sb_px: 64,
+    };
     let mut table = String::from(
         "\n=== speed x framesize (cp::size_derived) ===\n  speed | prune_tx_type_using_stats \
          64x64 / 512x512 | sq_only_threshold 64x64 / 512x512\n",
@@ -4178,7 +4782,12 @@ fn speed_axis_teeth_are_real() {
     for &speed in ALL_SPEEDS.iter().skip(1) {
         let a = aom_encode::speed_features::SpeedFeatures::set_allintra(speed - 1, false, false);
         let b = aom_encode::speed_features::SpeedFeatures::set_allintra(speed, false, false);
-        assert_ne!(a, b, "cpu-used={} and {speed} resolve identically", speed - 1);
+        assert_ne!(
+            a,
+            b,
+            "cpu-used={} and {speed} resolve identically",
+            speed - 1
+        );
     }
     // KB-41 root #10 (2026-08-30): `rt_sf.use_nonrd_pick_mode` (C :579, speed
     // >= 8) is in the struct now — it gates the frame-wide IntraBC search
@@ -4191,7 +4800,10 @@ fn speed_axis_teeth_are_real() {
         !s7.use_nonrd_pick_mode && s9.use_nonrd_pick_mode,
         "rt_sf.use_nonrd_pick_mode must be 0 at cpu-used 7 and 1 at 9 (speed_features.c:579)"
     );
-    assert_ne!(s7, s9, "cpu-used 7 and 9 collapsed back onto one SpeedFeatures class");
+    assert_ne!(
+        s7, s9,
+        "cpu-used 7 and 9 collapsed back onto one SpeedFeatures class"
+    );
 }
 
 /// BUDGET ACCOUNTING for the speed axis — no encoding, just the arithmetic that
@@ -4311,7 +4923,13 @@ fn speed_envelope_stock_map_is_pinned() {
     // (tag, vector, crop, mono, the speeds whose STOCK encode DIVERGES)
     // (tag, vector, crop, mono, [(speed, expected verdict)]) — every speed not
     // listed must be "ok".
-    let probes: &[(&str, &str, Option<(usize, usize, usize, usize)>, bool, &[(i32, &str)])] = &[
+    let probes: &[(
+        &str,
+        &str,
+        Option<(usize, usize, usize, usize)>,
+        bool,
+        &[(i32, &str)],
+    )] = &[
         ("sz64", SPEED_VECTOR, None, false, &[]),
         // KB-21 (2026-07-30): the `early_term_after_none_split` root closed the
         // cpu-5 column on the two 4:2:0 contexts. KB-21 root #2 (2026-07-31)
@@ -4319,9 +4937,27 @@ fn speed_envelope_stock_map_is_pinned() {
         // ordering (tx-type cost added to an `eob == 0` laplacian estimate) and
         // the SATD trellis-skip's per-tx-type `AV1_XFORM_QUANT_B` switch — so
         // all three bd8 contexts are byte-identical at every speed 0..9.
-        ("q00_64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), false, &[]),
-        ("q00_mono64", "av1-1-b8-00-quantizer-00", Some((64, 64, 64, 64)), true, &[]),
-        ("q00_128", "av1-1-b8-00-quantizer-00", Some((128, 128, 64, 64)), false, &[]),
+        (
+            "q00_64",
+            "av1-1-b8-00-quantizer-00",
+            Some((64, 64, 64, 64)),
+            false,
+            &[],
+        ),
+        (
+            "q00_mono64",
+            "av1-1-b8-00-quantizer-00",
+            Some((64, 64, 64, 64)),
+            true,
+            &[],
+        ),
+        (
+            "q00_128",
+            "av1-1-b8-00-quantizer-00",
+            Some((128, 128, 64, 64)),
+            false,
+            &[],
+        ),
         (
             "b10_64",
             "av1-1-b10-00-quantizer-00",
@@ -4340,7 +4976,8 @@ fn speed_envelope_stock_map_is_pinned() {
             &[],
         ),
     ];
-    let mut report = String::from("\n=== speed envelope: stock byte-identity per (content, cpu-used) ===\n");
+    let mut report =
+        String::from("\n=== speed envelope: stock byte-identity per (content, cpu-used) ===\n");
     let mut failures = Vec::new();
     // No probe is expected to panic any more (KB-20 closed the last one), but
     // the `catch_unwind` + silent hook stays: it is what lets a NEW unported
@@ -4366,7 +5003,10 @@ fn speed_envelope_stock_map_is_pinned() {
                 Ok(_) => "diverge",
                 Err(_) => "panic",
             };
-            let want = open.iter().find(|(s, _)| *s == speed).map_or("ok", |(_, v)| *v);
+            let want = open
+                .iter()
+                .find(|(s, _)| *s == speed)
+                .map_or("ok", |(_, v)| *v);
             let _ = write!(line, " s{speed}={got}");
             if got != want {
                 failures.push(format!(
@@ -4530,7 +5170,6 @@ fn speed_nonrd_hbd_byte_identity() {
     );
 }
 
-
 /// DEEP TIER (`--ignored`) — the full speed-axis evidence grid, written to
 /// `benchmarks/config_perm_speed_axis_2026-07-30.tsv`.
 ///
@@ -4555,9 +5194,7 @@ fn speed_axis_evidence_sweep() {
         "# [summary] one line per (content, speed): cells run, divergences, \
          panics, stock verdict\ncontent\tspeed\tcells\tdivergent\tpanic\tstock\n",
     );
-    let mut tsv = String::from(
-        "content\tspeed\trow\texact\tc_moved\tport_len\tc_len\tms\n",
-    );
+    let mut tsv = String::from("content\tspeed\trow\texact\tc_moved\tport_len\tc_len\tms\n");
     struct Probe {
         tag: &'static str,
         vector: &'static str,
@@ -4565,11 +5202,36 @@ fn speed_axis_evidence_sweep() {
         mono: bool,
     }
     let probes = [
-        Probe { tag: "sz64", vector: SPEED_VECTOR, crop: None, mono: false },
-        Probe { tag: "q00_64", vector: "av1-1-b8-00-quantizer-00", crop: Some((64, 64, 64, 64)), mono: false },
-        Probe { tag: "q00_mono64", vector: "av1-1-b8-00-quantizer-00", crop: Some((64, 64, 64, 64)), mono: true },
-        Probe { tag: "q00_128", vector: "av1-1-b8-00-quantizer-00", crop: Some((128, 128, 64, 64)), mono: false },
-        Probe { tag: "b10_64", vector: "av1-1-b10-00-quantizer-00", crop: Some((64, 64, 64, 64)), mono: false },
+        Probe {
+            tag: "sz64",
+            vector: SPEED_VECTOR,
+            crop: None,
+            mono: false,
+        },
+        Probe {
+            tag: "q00_64",
+            vector: "av1-1-b8-00-quantizer-00",
+            crop: Some((64, 64, 64, 64)),
+            mono: false,
+        },
+        Probe {
+            tag: "q00_mono64",
+            vector: "av1-1-b8-00-quantizer-00",
+            crop: Some((64, 64, 64, 64)),
+            mono: true,
+        },
+        Probe {
+            tag: "q00_128",
+            vector: "av1-1-b8-00-quantizer-00",
+            crop: Some((128, 128, 64, 64)),
+            mono: false,
+        },
+        Probe {
+            tag: "b10_64",
+            vector: "av1-1-b10-00-quantizer-00",
+            crop: Some((64, 64, 64, 64)),
+            mono: false,
+        },
     ];
     for p in &probes {
         for &speed in ALL_SPEEDS.iter() {

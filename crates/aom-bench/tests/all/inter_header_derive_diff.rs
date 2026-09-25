@@ -16,11 +16,6 @@
 //! Swept over cq {20,40,60,63} x {64x64, 128x128} x {mono, 4:2:0}.
 
 use aom_bench::{EncodeCell, MultiFrameEncodeCell};
-use aom_encode::inter_frame::{
-    LowDelayPHeaderParams, PRIMARY_REF_NONE, TWO_FRAME_P_REF_MAP_IDX, TWO_FRAME_P_REFRESH_FLAGS,
-    derive_lowdelay_p_frame_header,
-};
-use aom_encode::rc::base_qindex_lowdelay_p_from_cq;
 use aom_dsp::entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
     RestorationHeader, TileInfoHeader, read_sequence_header_obu, read_uncompressed_header,
@@ -29,6 +24,11 @@ use aom_dsp::entropy::header::{
 use aom_dsp::entropy::obu::read_obu_header;
 use aom_dsp::entropy::rb::ReadBitBuffer;
 use aom_dsp::entropy::wb::WriteBitBuffer;
+use aom_encode::inter_frame::{
+    LowDelayPHeaderParams, PRIMARY_REF_NONE, TWO_FRAME_P_REF_MAP_IDX, TWO_FRAME_P_REFRESH_FLAGS,
+    derive_lowdelay_p_frame_header,
+};
+use aom_encode::rc::base_qindex_lowdelay_p_from_cq;
 
 const KF_REF_DELTAS: [i8; 8] = [1, 0, 0, 0, -1, 0, -1, -1];
 const KF_MODE_DELTAS: [i8; 2] = [0, 0];
@@ -41,7 +41,11 @@ fn base(label: &str, w: usize, h: usize, mono: bool, cq: i32) -> EncodeCell {
             y[r * w + c] = content(r, c);
         }
     }
-    let (cw, ch) = if mono { (0, 0) } else { ((w + 1) >> 1, (h + 1) >> 1) };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + 1) >> 1, (h + 1) >> 1)
+    };
     let cont_uv = |r: usize, c: usize| -> u16 { (110 + ((r * 2 + c) % 40)) as u16 };
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];
@@ -145,9 +149,8 @@ fn seq_template_and_real_p_header(
             reduced_still_picture_hdr: seq.reduced_still_picture_hdr,
             decoder_model_info_present_flag: seq.decoder_model_info_present_flag,
             equal_picture_interval: seq.timing_info.equal_picture_interval,
-            frame_presentation_time_length: seq
-                .decoder_model_info
-                .frame_presentation_time_length as u32,
+            frame_presentation_time_length: seq.decoder_model_info.frame_presentation_time_length
+                as u32,
             frame_id_numbers_present_flag: s.frame_id_numbers_present_flag,
             frame_id_length: s.frame_id_length as u32,
             force_screen_content_tools: s.force_screen_content_tools,

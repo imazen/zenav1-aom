@@ -42,11 +42,11 @@
 //!   offset store is exercised (the frame walk always stores into a plane at a
 //!   row offset with stride >> block width).
 
-use aom_dsp::cdef::{CDEF_BSTRIDE, CDEF_VERY_LARGE, cdef_filter_block, cdef_filter_block_u8};
+use aom_dsp::cdef::{cdef_filter_block, cdef_filter_block_u8, CDEF_BSTRIDE, CDEF_VERY_LARGE};
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -124,8 +124,21 @@ fn sweep_width(tier: &dyn core::fmt::Display, block_width: usize, seed: u64) -> 
 
             let mut got = vec![DST_PAD; dlen];
             cdef_filter_block_u8(
-                &mut got, dst_off, dstride, &inbuf, in_off, pri, sec, dir, prid, secd, cshift,
-                block_width, bh, en_pri, en_sec,
+                &mut got,
+                dst_off,
+                dstride,
+                &inbuf,
+                in_off,
+                pri,
+                sec,
+                dir,
+                prid,
+                secd,
+                cshift,
+                block_width,
+                bh,
+                en_pri,
+                en_sec,
             );
             let mut want = vec![DST_PAD; dlen];
             cdef_filter_block(
@@ -158,7 +171,9 @@ fn sweep_width(tier: &dyn core::fmt::Display, block_width: usize, seed: u64) -> 
             for i in 0..bh {
                 let row = dst_off + i * dstride;
                 assert!(
-                    got[row + block_width..row + dstride].iter().all(|&x| x == DST_PAD),
+                    got[row + block_width..row + dstride]
+                        .iter()
+                        .all(|&x| x == DST_PAD),
                     "wrote past the block width on row {i}: {ctx}"
                 );
             }
@@ -168,9 +183,9 @@ fn sweep_width(tier: &dyn core::fmt::Display, block_width: usize, seed: u64) -> 
             // Ceiling is 75%: variant 3 (both classes disabled) is a no-op by
             // construction. Measured ~48-50%; the floor asserted below is 1/3.
             let centre = |i: usize, j: usize| inbuf[in_off + i * CDEF_BSTRIDE + j] as u8;
-            if (0..bh).any(|i| {
-                (0..block_width).any(|j| got[dst_off + i * dstride + j] != centre(i, j))
-            }) {
+            if (0..bh)
+                .any(|i| (0..block_width).any(|j| got[dst_off + i * dstride + j] != centre(i, j)))
+            {
                 n_changed += 1;
             }
         }
@@ -201,7 +216,11 @@ fn assert_non_vacuous(simd_perms: usize) {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
 }
 

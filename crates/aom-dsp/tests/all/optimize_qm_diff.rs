@@ -9,8 +9,8 @@
 //! in get_coeff_dist stays within i64 (the regime real encoder coefficients live
 //! in — large weights pair with small high-frequency coeffs).
 
-use aom_sys_ref as c;
 use aom_dsp::txb::{optimize_txb_qm, scan, txb_high, txb_wide, CoeffCostTables};
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -122,9 +122,27 @@ fn optimize_txb_qm_round_trip_identical() {
                 let mut qc_c = qcoeff0.clone();
                 let mut dqc_c = dqcoeff0.clone();
                 let (eob_wc, rate_wc) = c::ref_optimize_txb_qm(
-                    tx_size, tx_type, &mut qc_c, &mut dqc_c, &tcoeff, eob, &dequant, rdmult,
-                    dc_sign_ctx, txb_skip_ctx, sharpness, sc, &txb_skip, &base_eob, &base,
-                    &eob_extra, &dc_sign, &lps, &eob_c, &iqm, &qm,
+                    tx_size,
+                    tx_type,
+                    &mut qc_c,
+                    &mut dqc_c,
+                    &tcoeff,
+                    eob,
+                    &dequant,
+                    rdmult,
+                    dc_sign_ctx,
+                    txb_skip_ctx,
+                    sharpness,
+                    sc,
+                    &txb_skip,
+                    &base_eob,
+                    &base,
+                    &eob_extra,
+                    &dc_sign,
+                    &lps,
+                    &eob_c,
+                    &iqm,
+                    &qm,
                 );
 
                 // Rust.
@@ -140,8 +158,20 @@ fn optimize_txb_qm_round_trip_identical() {
                     eob: &eob_c,
                 };
                 let r = optimize_txb_qm(
-                    tx_size, tx_type, &mut qc_r, &mut dqc_r, &tcoeff, eob, dequant, rdmult,
-                    dc_sign_ctx, txb_skip_ctx, sharpness, sc, &t, &iqm,
+                    tx_size,
+                    tx_type,
+                    &mut qc_r,
+                    &mut dqc_r,
+                    &tcoeff,
+                    eob,
+                    dequant,
+                    rdmult,
+                    dc_sign_ctx,
+                    txb_skip_ctx,
+                    sharpness,
+                    sc,
+                    &t,
+                    &iqm,
                     Some(&qm),
                 );
 

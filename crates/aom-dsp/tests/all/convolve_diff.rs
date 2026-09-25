@@ -5,7 +5,16 @@ use aom_sys_ref as c;
 
 const BORDER: usize = 8;
 const SIZES: [(usize, usize); 10] = [
-    (8, 8), (8, 16), (16, 8), (16, 16), (16, 32), (32, 16), (32, 32), (64, 64), (8, 32), (64, 16),
+    (8, 8),
+    (8, 16),
+    (16, 8),
+    (16, 16),
+    (16, 32),
+    (32, 16),
+    (32, 32),
+    (64, 64),
+    (8, 32),
+    (64, 16),
 ];
 
 struct Rng(u64);
@@ -47,7 +56,9 @@ fn convolve_x_y_sr_byte_identical() {
 
             let subpel_y = (rng.next() % 16) as usize;
             let mut g2 = vec![0u8; w * h];
-            aom_dsp::convolve::convolve_2d_sr(&src, src_off, stride, &mut g2, w, w, h, subpel, subpel_y, ftype);
+            aom_dsp::convolve::convolve_2d_sr(
+                &src, src_off, stride, &mut g2, w, w, h, subpel, subpel_y, ftype,
+            );
             let w2 = c::ref_convolve_2d_sr(&src, src_off, stride, w, h, subpel, subpel_y, ftype);
             assert_eq!(g2, w2, "convolve_2d_sr {w}x{h} spx={subpel} spy={subpel_y}");
         }

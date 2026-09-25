@@ -11,8 +11,8 @@
 use aom_dsp::loopfilter::highbd;
 // `summon()` comes from this trait; needed at MODULE scope because the
 // non-vacuity counter below lives outside the fn-local `use` blocks.
+use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 use archmage::SimdToken;
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
 struct Rng(u64);
 impl Rng {
@@ -103,10 +103,14 @@ fn hbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
                         let mut want = buf.clone();
                         if dir == b'h' {
                             highbd::horizontal(width, &mut got, CENTER, PITCH, bl, li, th, bd);
-                            highbd::horizontal_scalar(width, &mut want, CENTER, PITCH, bl, li, th, bd);
+                            highbd::horizontal_scalar(
+                                width, &mut want, CENTER, PITCH, bl, li, th, bd,
+                            );
                         } else {
                             highbd::vertical(width, &mut got, CENTER, PITCH, bl, li, th, bd);
-                            highbd::vertical_scalar(width, &mut want, CENTER, PITCH, bl, li, th, bd);
+                            highbd::vertical_scalar(
+                                width, &mut want, CENTER, PITCH, bl, li, th, bd,
+                            );
                         }
                         assert_eq!(
                             got, want,
@@ -125,7 +129,11 @@ fn hbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(report.permutations_run >= 2);
 }
@@ -165,14 +173,36 @@ fn hbd_lpf_batch_identical_to_singles() {
                         let mut got = buf.clone();
                         let mut want = buf.clone();
                         if dir == b'h' {
-                            highbd::horizontal_n(width, &mut got, CENTER, PITCH, bl, li, th, bd, nseg);
+                            highbd::horizontal_n(
+                                width, &mut got, CENTER, PITCH, bl, li, th, bd, nseg,
+                            );
                             for s in 0..nseg {
-                                highbd::horizontal(width, &mut want, CENTER + 4 * s, PITCH, bl, li, th, bd);
+                                highbd::horizontal(
+                                    width,
+                                    &mut want,
+                                    CENTER + 4 * s,
+                                    PITCH,
+                                    bl,
+                                    li,
+                                    th,
+                                    bd,
+                                );
                             }
                         } else {
-                            highbd::vertical_n(width, &mut got, CENTER, PITCH, bl, li, th, bd, nseg);
+                            highbd::vertical_n(
+                                width, &mut got, CENTER, PITCH, bl, li, th, bd, nseg,
+                            );
                             for s in 0..nseg {
-                                highbd::vertical(width, &mut want, CENTER + 4 * s * PITCH, PITCH, bl, li, th, bd);
+                                highbd::vertical(
+                                    width,
+                                    &mut want,
+                                    CENTER + 4 * s * PITCH,
+                                    PITCH,
+                                    bl,
+                                    li,
+                                    th,
+                                    bd,
+                                );
                             }
                         }
                         assert_eq!(
@@ -226,12 +256,28 @@ fn lowbd_lpf_batch_identical_to_singles() {
                     if dir == b'h' {
                         loopfilter::horizontal_n(width, &mut got, CENTER, PITCH, bl, li, th, nseg);
                         for s in 0..nseg {
-                            loopfilter::horizontal(width, &mut want, CENTER + 4 * s, PITCH, bl, li, th);
+                            loopfilter::horizontal(
+                                width,
+                                &mut want,
+                                CENTER + 4 * s,
+                                PITCH,
+                                bl,
+                                li,
+                                th,
+                            );
                         }
                     } else {
                         loopfilter::vertical_n(width, &mut got, CENTER, PITCH, bl, li, th, nseg);
                         for s in 0..nseg {
-                            loopfilter::vertical(width, &mut want, CENTER + 4 * s * PITCH, PITCH, bl, li, th);
+                            loopfilter::vertical(
+                                width,
+                                &mut want,
+                                CENTER + 4 * s * PITCH,
+                                PITCH,
+                                bl,
+                                li,
+                                th,
+                            );
                         }
                     }
                     assert_eq!(
@@ -307,8 +353,16 @@ fn lowbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
                     // which passes when blimit+limit >= 255 even where the scalar
                     // tier's exact-int sum fails — the same C-internal divergence
                     // lowbd_lpf_sse2_diff pins against the real `_sse2` kernels.
-                    let bl = if rng.upto(2) == 0 { rng.upto(255) as u8 } else { (16 + rng.upto(200)) as u8 };
-                    let li = if rng.upto(2) == 0 { rng.upto(255 - bl as u32) as u8 } else { (1 + rng.upto(64)) as u8 };
+                    let bl = if rng.upto(2) == 0 {
+                        rng.upto(255) as u8
+                    } else {
+                        (16 + rng.upto(200)) as u8
+                    };
+                    let li = if rng.upto(2) == 0 {
+                        rng.upto(255 - bl as u32) as u8
+                    } else {
+                        (1 + rng.upto(64)) as u8
+                    };
                     let th = rng.upto(256) as u8;
 
                     let mut got = buf.clone();
@@ -336,7 +390,11 @@ fn lowbd_lpf_simd_bit_identical_to_scalar_at_every_tier() {
          zero vector permutations compares the scalar path against itself. On \
          aarch64 this needs archmage's `testable_dispatch` dev-feature, else \
          baseline neon is excluded from the permutation set.",
-        if cfg!(target_arch = "aarch64") { "neon" } else { "v3/AVX2" }
+        if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "v3/AVX2"
+        }
     );
     assert!(report.permutations_run >= 2);
 }

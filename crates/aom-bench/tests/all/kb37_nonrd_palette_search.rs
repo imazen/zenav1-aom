@@ -117,7 +117,14 @@ fn ui_chroma(r: usize, c: usize) -> u16 {
     }
 }
 
-fn cell_from(label: &str, w: usize, h: usize, cq: i32, speed: i32, luma: impl Fn(usize, usize) -> u16) -> EncodeCell {
+fn cell_from(
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+    luma: impl Fn(usize, usize) -> u16,
+) -> EncodeCell {
     let mut y = vec![0u16; w * h];
     for r in 0..h {
         for cc in 0..w {

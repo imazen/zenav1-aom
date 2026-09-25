@@ -71,7 +71,15 @@ fn mirror_tile(base: &EncodeCell, w: usize, h: usize, cq: i32, speed: i32) -> En
     }
 }
 
-fn from_i420(buf: &[u8], sw: usize, sh: usize, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn from_i420(
+    buf: &[u8],
+    sw: usize,
+    sh: usize,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }

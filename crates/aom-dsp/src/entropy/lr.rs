@@ -506,7 +506,11 @@ pub fn count_primitive_quniform(n: u16, v: u16) -> i32 {
     }
     let l = (15 - n.leading_zeros() as i32) + 1;
     let m = (1i32 << l) - n as i32;
-    if (v as i32) < m { l - 1 } else { l }
+    if (v as i32) < m {
+        l - 1
+    } else {
+        l
+    }
 }
 
 /// `write_primitive_subexpfin` (aom_dsp/binary_codes_writer.c): finite

@@ -4,9 +4,9 @@
 //! (ref_inv_txfm2d_add -> ref_hbd_sse). Confirms the reconstruction/SSE wiring
 //! (sizing, stride, clamp) matches C across tx sizes/types and bd 8/10/12.
 
+use aom_dsp::transform::inv_txfm2d::{inv_input_len, inv_txfm_valid};
 use aom_encode::pixel_distortion;
 use aom_sys_ref as c;
-use aom_dsp::transform::inv_txfm2d::{inv_input_len, inv_txfm_valid};
 
 const TX_W: [usize; 19] = [
     4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,

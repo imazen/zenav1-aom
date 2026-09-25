@@ -26,8 +26,8 @@
 //! proves the port tracks the INJECTED params, not the bootstrap (anti-leak).
 
 use aom_bench::EncodeCell;
-use aom_encode::grain_table::{lookup, read_film_grain_table};
 use aom_dsp::entropy::header::FilmGrainParams;
+use aom_encode::grain_table::{lookup, read_film_grain_table};
 use aom_sys_ref as c;
 
 /// Test-vector indices exercising the writer's branches: TV1 rich full-chroma
@@ -96,7 +96,15 @@ fn run_cell(cell: &EncodeCell, tv: i32) -> (bool, bool, bool) {
 }
 
 /// A 4:2:0 bd8 synthetic cell (mono/444 built by tweaking ss/mono).
-fn synth_cell(label: &str, sz: usize, mono: bool, ss_x: usize, ss_y: usize, cq: i32, bd: u8) -> EncodeCell {
+fn synth_cell(
+    label: &str,
+    sz: usize,
+    mono: bool,
+    ss_x: usize,
+    ss_y: usize,
+    cq: i32,
+    bd: u8,
+) -> EncodeCell {
     let maxv = (1u16 << bd) - 1;
     let mask = u32::from(maxv);
     let (w, h) = (sz, sz);
@@ -108,7 +116,11 @@ fn synth_cell(label: &str, sz: usize, mono: bool, ss_x: usize, ss_y: usize, cq: 
             y[r * w + col] = ((base ^ hf) as u16).min(maxv);
         }
     }
-    let (cw, ch) = if mono { (0, 0) } else { ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y) };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y)
+    };
     let mut u = vec![0u16; cw * ch];
     let mut v = vec![0u16; cw * ch];
     if !mono {
@@ -118,12 +130,30 @@ fn synth_cell(label: &str, sz: usize, mono: bool, ss_x: usize, ss_y: usize, cq: 
                 let hf = if (r + col) % 3 == 0 { mask / 20 } else { 0 };
                 u[r * cw + col] = ((base ^ hf) as u16).min(maxv);
                 let base2 = (((r + 7) * 19 + (col + 3) * 29) as u32) & mask;
-                let hf2 = if (r + col + 10) % 3 == 0 { mask / 20 } else { 0 };
+                let hf2 = if (r + col + 10) % 3 == 0 {
+                    mask / 20
+                } else {
+                    0
+                };
                 v[r * cw + col] = ((base2 ^ hf2) as u16).min(maxv);
             }
         }
     }
-    EncodeCell { label: label.to_string(), w, h, mono, ss_x, ss_y, usage: 2, cq_level: cq, speed: 0, bd, y, u, v }
+    EncodeCell {
+        label: label.to_string(),
+        w,
+        h,
+        mono,
+        ss_x,
+        ss_y,
+        usage: 2,
+        cq_level: cq,
+        speed: 0,
+        bd,
+        y,
+        u,
+        v,
+    }
 }
 
 /// CORE: 4:2:0 bd8 REAL content (the KB-6 byte-exact cells) × the four test
@@ -149,8 +179,14 @@ fn film_grain_table_inject_420_real() {
             let (plain_exact, changed, matched) = run_cell(cell, tv);
             n += 1;
             let tag = format!("{} tv{}", cell.label, tv);
-            assert!(plain_exact, "{tag}: PLAIN encode not byte-exact — not a grain bug");
-            assert!(changed, "{tag}: grain stream == plain stream (grain not present — vacuous)");
+            assert!(
+                plain_exact,
+                "{tag}: PLAIN encode not byte-exact — not a grain bug"
+            );
+            assert!(
+                changed,
+                "{tag}: grain stream == plain stream (grain not present — vacuous)"
+            );
             let verdict = if matched { "EXACT" } else { "MISMATCH" };
             println!("  {tag:20} {verdict}");
             if !matched {
@@ -158,8 +194,15 @@ fn film_grain_table_inject_420_real() {
             }
         }
     }
-    println!("film_grain_table_inject_420_real: {}/{} EXACT", n - fails.len(), n);
-    assert!(fails.is_empty(), "film-grain table-inject MISMATCH: {fails:?}");
+    println!(
+        "film_grain_table_inject_420_real: {}/{} EXACT",
+        n - fails.len(),
+        n
+    );
+    assert!(
+        fails.is_empty(),
+        "film-grain table-inject MISMATCH: {fails:?}"
+    );
 }
 
 /// FORMAT AXES: mono / 4:4:4 / bd10 synthetic cells — exercise the writer's
@@ -201,11 +244,21 @@ fn film_grain_table_inject_format_axes() {
     if !skipped.is_empty() {
         println!("film_grain_table_inject_format_axes: skipped (not plain-exact): {skipped:?}");
     }
-    println!("film_grain_table_inject_format_axes: {}/{} EXACT", n - fails.len(), n);
-    assert!(fails.is_empty(), "film-grain format-axis MISMATCH: {fails:?}");
+    println!(
+        "film_grain_table_inject_format_axes: {}/{} EXACT",
+        n - fails.len(),
+        n
+    );
+    assert!(
+        fails.is_empty(),
+        "film-grain format-axis MISMATCH: {fails:?}"
+    );
     // At least the 4:4:4 + bd10 cells must be plain-exact and gated (mono may or
     // may not be, depending on the harness) — guard against a vacuous all-skip.
-    assert!(n >= 2, "format-axis gate ran too few cells ({n}); all skipped: {skipped:?}");
+    assert!(
+        n >= 2,
+        "format-axis gate ran too few cells ({n}); all skipped: {skipped:?}"
+    );
 }
 
 /// ANTI-LEAK WITNESS (rule 4): with a fixed TV1 grain bootstrap, injecting the
@@ -224,8 +277,19 @@ fn film_grain_no_bootstrap_leak_witness() {
 
     // Reference stream uses the TV1 table.
     let grain = c::ref_encode_av1_kf_film_grain_table(
-        &cell.y, &cell.u, &cell.v, cell.w, cell.h, i32::from(cell.bd), cell.mono,
-        cell.ss_x as i32, cell.ss_y as i32, cell.cq_level, cell.speed, cell.usage, &p1,
+        &cell.y,
+        &cell.u,
+        &cell.v,
+        cell.w,
+        cell.h,
+        i32::from(cell.bd),
+        cell.mono,
+        cell.ss_x as i32,
+        cell.ss_y as i32,
+        cell.cq_level,
+        cell.speed,
+        cell.usage,
+        &p1,
     );
     let real = EncodeCell::frame_obu_payload(&grain);
 
@@ -237,7 +301,10 @@ fn film_grain_no_bootstrap_leak_witness() {
     let _ = std::fs::remove_file(&p1);
     let _ = std::fs::remove_file(&p2);
 
-    assert_eq!(with_correct, real, "injecting the parsed TV1 params must byte-match");
+    assert_eq!(
+        with_correct, real,
+        "injecting the parsed TV1 params must byte-match"
+    );
     assert_ne!(
         with_wrong, real,
         "injecting TV2 params must DIVERGE from the TV1 stream — proves no bootstrap leak"

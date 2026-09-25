@@ -22,7 +22,7 @@
 //! sizes, the boundaries of every enumerated field, and the combinations a
 //! wrapper would generate — and asks only "does the encoder answer".
 
-use aom_encode::key_frame::{encode_key_frame, KeyFrameConfig, KeyFramePlanes, MAX_FRAME_DIM};
+use aom_encode::key_frame::{KeyFrameConfig, KeyFramePlanes, MAX_FRAME_DIM, encode_key_frame};
 
 /// A deterministic textured source. Content matters here only in that it must
 /// not be flat: a flat frame codes to a handful of skip blocks and would exit
@@ -65,10 +65,7 @@ enum Outcome {
 fn attempt(cfg: &KeyFrameConfig) -> Outcome {
     let (y, u, v) = planes(cfg);
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        encode_key_frame(
-            KeyFramePlanes::new(&y, &u, &v),
-            cfg,
-        )
+        encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg)
     }));
     match r {
         Ok(Ok(bytes)) => Outcome::Ok(bytes.len()),
@@ -107,12 +104,19 @@ fn assert_no_panics(label: &str, cells: &[(String, Outcome)]) {
 }
 
 fn summarise(label: &str, cells: &[(String, Outcome)]) -> (usize, usize) {
-    let ok = cells.iter().filter(|(_, o)| matches!(o, Outcome::Ok(_))).count();
+    let ok = cells
+        .iter()
+        .filter(|(_, o)| matches!(o, Outcome::Ok(_)))
+        .count();
     let refused: Vec<&(String, Outcome)> = cells
         .iter()
         .filter(|(_, o)| matches!(o, Outcome::Refused(_)))
         .collect();
-    println!("{label}: {ok} ok, {} refused, of {}", refused.len(), cells.len());
+    println!(
+        "{label}: {ok} ok, {} refused, of {}",
+        refused.len(),
+        cells.len()
+    );
     for (l, o) in &refused {
         println!("    REFUSED {l}: {o:?}");
     }
@@ -135,7 +139,11 @@ fn every_format_and_depth_encodes_at_an_awkward_size() {
                 cfg.cpu_used = 6;
                 let label = format!(
                     "{w}x{h} bd{bd} {}",
-                    if mono { "mono".into() } else { format!("ss{sx}{sy}") }
+                    if mono {
+                        "mono".into()
+                    } else {
+                        format!("ss{sx}{sy}")
+                    }
                 );
                 let o = attempt(&cfg);
                 cells.push((label, o));
@@ -175,8 +183,12 @@ fn every_enumerated_knob_encodes_across_its_whole_range() {
                 cfg.enable_cdef = cdef;
                 cfg.enable_restoration = lr;
                 cells.push((
-                    format!("sb{} tiles{tc}x{tr} cdef{} lr{}", if sb128 { 128 } else { 64 },
-                            cdef as u8, lr as u8),
+                    format!(
+                        "sb{} tiles{tc}x{tr} cdef{} lr{}",
+                        if sb128 { 128 } else { 64 },
+                        cdef as u8,
+                        lr as u8
+                    ),
                     attempt(&cfg),
                 ));
             }
@@ -226,10 +238,7 @@ fn the_documented_refusals_are_exactly_these() {
         // The planes are deliberately empty here: a config-level refusal must
         // come back BEFORE any source sample is read.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            encode_key_frame(
-                KeyFramePlanes::new(&[], &[], &[]),
-                &cfg,
-            )
+            encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &cfg)
         }));
         let o = match r {
             Ok(Ok(b)) => Outcome::Ok(b.len()),
@@ -288,11 +297,8 @@ fn a_non_power_of_two_tile_grid_encodes_and_decodes() {
     );
 
     let (y, u, v) = planes(&cfg);
-    let stream = encode_key_frame(
-        KeyFramePlanes::new(&y, &u, &v),
-        &cfg,
-    )
-    .expect("a 4x3 tile grid must encode");
+    let stream = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
+        .expect("a 4x3 tile grid must encode");
 
     // The REAL C decoder is the authority on whether the tile syntax is well
     // formed: a wrong `context_update_tile_id` width or a tile count that
@@ -331,16 +337,11 @@ fn every_error_variant_carries_a_category_and_a_retry_verdict() {
     // unsupported
     let mut c = base;
     c.cq_level = 64;
-    let unsupported = c
-        .validate_configuration()
-        .expect_err("cq 64 must refuse");
+    let unsupported = c.validate_configuration().expect_err("cq 64 must refuse");
 
     // invalid-input: a config that VALIDATES but whose planes do not match.
-    let plane_size = encode_key_frame(
-        KeyFramePlanes::new(&[0u16; 4], &[], &[]),
-        &base,
-    )
-    .expect_err("mismatched planes must refuse");
+    let plane_size = encode_key_frame(KeyFramePlanes::new(&[0u16; 4], &[], &[]), &base)
+        .expect_err("mismatched planes must refuse");
 
     // limit-exceeded
     let limit = base
@@ -378,8 +379,7 @@ fn every_error_variant_carries_a_category_and_a_retry_verdict() {
         let _: &dyn core::error::Error = e;
     }
     // The four categories must be DISTINCT, else they cannot drive a decision.
-    let cats: std::collections::BTreeSet<&str> =
-        seen.iter().map(|(e, _)| e.category()).collect();
+    let cats: std::collections::BTreeSet<&str> = seen.iter().map(|(e, _)| e.category()).collect();
     assert_eq!(cats.len(), 4, "categories must be distinct: {cats:?}");
 }
 
@@ -445,7 +445,11 @@ fn screenish_block_fraction(y: &[u16], w: usize, h: usize, bd: u8) -> f64 {
             }
         }
     }
-    if total == 0 { 0.0 } else { hits as f64 / total as f64 }
+    if total == 0 {
+        0.0
+    } else {
+        hits as f64 / total as f64
+    }
 }
 
 /// **The standing goal's last must-close item, asked of the SHIPPING path.**
@@ -503,10 +507,7 @@ fn screen_shaped_tiny_cells_encode_rather_than_refuse() {
                 }
 
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    encode_key_frame(
-                        KeyFramePlanes::new(&y, &u, &v),
-                        &cfg,
-                    )
+                    encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
                 }));
                 let o = match r {
                     Ok(Ok(b)) => Outcome::Ok(b.len()),

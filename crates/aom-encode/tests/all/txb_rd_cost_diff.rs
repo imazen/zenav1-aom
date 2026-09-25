@@ -7,9 +7,9 @@
 //! The rate is coefficient-coding bits only; block-level mode/tx signaling is out
 //! of scope on both sides (as in cost_coeffs_diff.rs).
 
+use aom_dsp::txb::{CoeffCostTables, scan, txb_high, txb_wide};
 use aom_encode::txb_rd_cost;
 use aom_sys_ref as c;
-use aom_dsp::txb::{CoeffCostTables, scan, txb_high, txb_wide};
 
 struct Rng(u64);
 impl Rng {

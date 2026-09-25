@@ -4,8 +4,8 @@
 //! byte-identical optimized qcoeff / dqcoeff, the same reduced eob, and the same
 //! rate. `get_tx_type_cost` (plane-0 tx_type rate) is out of scope on both sides.
 
-use aom_sys_ref as c;
 use aom_dsp::txb::{optimize_txb, scan, txb_high, txb_wide, CoeffCostTables};
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -83,8 +83,7 @@ fn optimize_txb_round_trip_identical() {
                 let lps = tbl(&mut rng, 21 * 26);
                 let eob_c = tbl(&mut rng, 2 * 11);
 
-                let dequant: [i16; 2] =
-                    [rng.range(4, 4000) as i16, rng.range(4, 4000) as i16];
+                let dequant: [i16; 2] = [rng.range(4, 4000) as i16, rng.range(4, 4000) as i16];
                 let dqv = [dequant[0] as i32, dequant[1] as i32];
                 let pels: [i64; 19] = [
                     16, 64, 256, 1024, 4096, 32, 32, 128, 128, 512, 512, 2048, 2048, 64, 64, 256,
@@ -103,9 +102,25 @@ fn optimize_txb_round_trip_identical() {
                 let mut qc_c = qcoeff0.clone();
                 let mut dqc_c = dqcoeff0.clone();
                 let (eob_wc, rate_wc) = c::ref_optimize_txb(
-                    tx_size, tx_type, &mut qc_c, &mut dqc_c, &tcoeff, eob, &dequant, rdmult,
-                    dc_sign_ctx, txb_skip_ctx, sharpness, sc, &txb_skip, &base_eob, &base, &eob_extra,
-                    &dc_sign, &lps, &eob_c,
+                    tx_size,
+                    tx_type,
+                    &mut qc_c,
+                    &mut dqc_c,
+                    &tcoeff,
+                    eob,
+                    &dequant,
+                    rdmult,
+                    dc_sign_ctx,
+                    txb_skip_ctx,
+                    sharpness,
+                    sc,
+                    &txb_skip,
+                    &base_eob,
+                    &base,
+                    &eob_extra,
+                    &dc_sign,
+                    &lps,
+                    &eob_c,
                 );
 
                 // Rust.
@@ -121,8 +136,19 @@ fn optimize_txb_round_trip_identical() {
                     eob: &eob_c,
                 };
                 let r = optimize_txb(
-                    tx_size, tx_type, &mut qc_r, &mut dqc_r, &tcoeff, eob, dequant, rdmult,
-                    dc_sign_ctx, txb_skip_ctx, sharpness, sc, &t,
+                    tx_size,
+                    tx_type,
+                    &mut qc_r,
+                    &mut dqc_r,
+                    &tcoeff,
+                    eob,
+                    dequant,
+                    rdmult,
+                    dc_sign_ctx,
+                    txb_skip_ctx,
+                    sharpness,
+                    sc,
+                    &t,
                 );
 
                 let ctx = format!("ts={tx_size} tt={tx_type} eob={eob} sharp={sharpness}");

@@ -50,7 +50,14 @@ use aom_bench::{EncodeCell, ToggleKnobs};
 use aom_sys_ref as c;
 
 /// Mirror-tile (same recipe as `s4cov_hd_speed_axis::mirror_tile`).
-fn mirror_tile(base: &EncodeCell, label: &str, w: usize, h: usize, cq: i32, speed: i32) -> EncodeCell {
+fn mirror_tile(
+    base: &EncodeCell,
+    label: &str,
+    w: usize,
+    h: usize,
+    cq: i32,
+    speed: i32,
+) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);
         if m < n { m } else { 2 * n - 1 - m }
@@ -178,7 +185,11 @@ fn is_1080p_arm_straddle_byte_matches() {
             let (v, d, note, ms) = measure(&cell);
             println!(
                 "  {w}x{h} ({}) cq{CQ} cpu{speed}: {v:?} delta {d:+} [{ms} ms]{}",
-                if w.min(h) >= 1080 { ">=1080p" } else { "<1080p " },
+                if w.min(h) >= 1080 {
+                    ">=1080p"
+                } else {
+                    "<1080p "
+                },
                 if note.is_empty() {
                     String::new()
                 } else {
@@ -243,6 +254,9 @@ fn above_720p_speed_axis_byte_matches() {
             }
         }
     }
-    println!("  KB-36 above-720p band: {}/{rows} byte-exact", rows - bad.len());
+    println!(
+        "  KB-36 above-720p band: {}/{rows} byte-exact",
+        rows - bad.len()
+    );
     assert!(bad.is_empty(), "{KB36_HINT}: {bad:?}");
 }

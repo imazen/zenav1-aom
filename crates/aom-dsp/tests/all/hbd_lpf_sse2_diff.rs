@@ -84,8 +84,7 @@ fn hbd_lpf_v3_matches_real_sse2_kernels() {
                     let mut buf = vec![0u16; PITCH * ROWS];
                     // Structured positions: for each of the 4 positions of the
                     // edge segment, draw a profile and fill its tap range.
-                    let kinds: [u32; 4] =
-                        [rng.upto(4), rng.upto(4), rng.upto(4), rng.upto(4)];
+                    let kinds: [u32; 4] = [rng.upto(4), rng.upto(4), rng.upto(4), rng.upto(4)];
                     let (kmin, kmax) = match width {
                         4 => (-8i32, 8),
                         6 => (-8, 8),

@@ -121,7 +121,11 @@ fn leb128(mut v: usize) -> Vec<u8> {
 fn reassemble(bootstrap: &[u8], frame_payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     for (ty, hdr, payload) in walk(bootstrap) {
-        let p: &[u8] = if ty == OBU_FRAME { frame_payload } else { &payload };
+        let p: &[u8] = if ty == OBU_FRAME {
+            frame_payload
+        } else {
+            &payload
+        };
         out.extend_from_slice(&hdr);
         out.extend_from_slice(&leb128(p.len()));
         out.extend_from_slice(p);
@@ -241,37 +245,223 @@ fn arms() -> Vec<Arm> {
 fn single_knob_arms() -> Vec<(&'static str, ToggleKnobs)> {
     let d = ToggleKnobs::default();
     vec![
-        ("enable_rect_partitions", ToggleKnobs { enable_rect_partitions: !d.enable_rect_partitions, ..d }),
-        ("enable_ab_partitions", ToggleKnobs { enable_ab_partitions: !d.enable_ab_partitions, ..d }),
-        ("enable_1to4_partitions", ToggleKnobs { enable_1to4_partitions: !d.enable_1to4_partitions, ..d }),
-        ("min_partition_size_px", ToggleKnobs { min_partition_size_px: 16, ..d }),
-        ("max_partition_size_px", ToggleKnobs { max_partition_size_px: 32, ..d }),
-        ("enable_intra_edge_filter", ToggleKnobs { enable_intra_edge_filter: !d.enable_intra_edge_filter, ..d }),
-        ("enable_filter_intra", ToggleKnobs { enable_filter_intra: !d.enable_filter_intra, ..d }),
-        ("enable_smooth_intra", ToggleKnobs { enable_smooth_intra: !d.enable_smooth_intra, ..d }),
-        ("enable_paeth_intra", ToggleKnobs { enable_paeth_intra: !d.enable_paeth_intra, ..d }),
-        ("enable_cfl_intra", ToggleKnobs { enable_cfl_intra: !d.enable_cfl_intra, ..d }),
-        ("enable_directional_intra", ToggleKnobs { enable_directional_intra: !d.enable_directional_intra, ..d }),
-        ("enable_diagonal_intra", ToggleKnobs { enable_diagonal_intra: !d.enable_diagonal_intra, ..d }),
-        ("enable_angle_delta", ToggleKnobs { enable_angle_delta: !d.enable_angle_delta, ..d }),
-        ("enable_tx64", ToggleKnobs { enable_tx64: !d.enable_tx64, ..d }),
-        ("enable_rect_tx", ToggleKnobs { enable_rect_tx: !d.enable_rect_tx, ..d }),
-        ("enable_flip_idtx", ToggleKnobs { enable_flip_idtx: !d.enable_flip_idtx, ..d }),
-        ("use_intra_dct_only", ToggleKnobs { use_intra_dct_only: !d.use_intra_dct_only, ..d }),
-        ("use_intra_default_tx_only", ToggleKnobs { use_intra_default_tx_only: !d.use_intra_default_tx_only, ..d }),
-        ("reduced_tx_type_set", ToggleKnobs { reduced_tx_type_set: !d.reduced_tx_type_set, ..d }),
-        ("enable_tx_size_search", ToggleKnobs { enable_tx_size_search: !d.enable_tx_size_search, ..d }),
-        ("cdf_update_mode", ToggleKnobs { cdf_update_mode: 0, ..d }),
-        ("disable_trellis_quant", ToggleKnobs { disable_trellis_quant: 1, ..d }),
-        ("coeff_cost_upd_freq", ToggleKnobs { coeff_cost_upd_freq: 1, ..d }),
-        ("mode_cost_upd_freq", ToggleKnobs { mode_cost_upd_freq: 1, ..d }),
-        ("enable_palette", ToggleKnobs { enable_palette: !d.enable_palette, ..d }),
-        ("enable_intrabc", ToggleKnobs { enable_intrabc: !d.enable_intrabc, ..d }),
-        ("disable_tx_stats_prune", ToggleKnobs { disable_tx_stats_prune: !d.disable_tx_stats_prune, ..d }),
-        ("delta_lf_mode", ToggleKnobs { delta_lf_mode: !d.delta_lf_mode, ..d }),
-        ("qm", ToggleKnobs { qm: Some((5, 9)), ..d }),
-        ("deltaq_mode2", ToggleKnobs { deltaq_mode2: !d.deltaq_mode2, ..d }),
-        ("deltaq_mode3", ToggleKnobs { deltaq_mode3: !d.deltaq_mode3, ..d }),
+        (
+            "enable_rect_partitions",
+            ToggleKnobs {
+                enable_rect_partitions: !d.enable_rect_partitions,
+                ..d
+            },
+        ),
+        (
+            "enable_ab_partitions",
+            ToggleKnobs {
+                enable_ab_partitions: !d.enable_ab_partitions,
+                ..d
+            },
+        ),
+        (
+            "enable_1to4_partitions",
+            ToggleKnobs {
+                enable_1to4_partitions: !d.enable_1to4_partitions,
+                ..d
+            },
+        ),
+        (
+            "min_partition_size_px",
+            ToggleKnobs {
+                min_partition_size_px: 16,
+                ..d
+            },
+        ),
+        (
+            "max_partition_size_px",
+            ToggleKnobs {
+                max_partition_size_px: 32,
+                ..d
+            },
+        ),
+        (
+            "enable_intra_edge_filter",
+            ToggleKnobs {
+                enable_intra_edge_filter: !d.enable_intra_edge_filter,
+                ..d
+            },
+        ),
+        (
+            "enable_filter_intra",
+            ToggleKnobs {
+                enable_filter_intra: !d.enable_filter_intra,
+                ..d
+            },
+        ),
+        (
+            "enable_smooth_intra",
+            ToggleKnobs {
+                enable_smooth_intra: !d.enable_smooth_intra,
+                ..d
+            },
+        ),
+        (
+            "enable_paeth_intra",
+            ToggleKnobs {
+                enable_paeth_intra: !d.enable_paeth_intra,
+                ..d
+            },
+        ),
+        (
+            "enable_cfl_intra",
+            ToggleKnobs {
+                enable_cfl_intra: !d.enable_cfl_intra,
+                ..d
+            },
+        ),
+        (
+            "enable_directional_intra",
+            ToggleKnobs {
+                enable_directional_intra: !d.enable_directional_intra,
+                ..d
+            },
+        ),
+        (
+            "enable_diagonal_intra",
+            ToggleKnobs {
+                enable_diagonal_intra: !d.enable_diagonal_intra,
+                ..d
+            },
+        ),
+        (
+            "enable_angle_delta",
+            ToggleKnobs {
+                enable_angle_delta: !d.enable_angle_delta,
+                ..d
+            },
+        ),
+        (
+            "enable_tx64",
+            ToggleKnobs {
+                enable_tx64: !d.enable_tx64,
+                ..d
+            },
+        ),
+        (
+            "enable_rect_tx",
+            ToggleKnobs {
+                enable_rect_tx: !d.enable_rect_tx,
+                ..d
+            },
+        ),
+        (
+            "enable_flip_idtx",
+            ToggleKnobs {
+                enable_flip_idtx: !d.enable_flip_idtx,
+                ..d
+            },
+        ),
+        (
+            "use_intra_dct_only",
+            ToggleKnobs {
+                use_intra_dct_only: !d.use_intra_dct_only,
+                ..d
+            },
+        ),
+        (
+            "use_intra_default_tx_only",
+            ToggleKnobs {
+                use_intra_default_tx_only: !d.use_intra_default_tx_only,
+                ..d
+            },
+        ),
+        (
+            "reduced_tx_type_set",
+            ToggleKnobs {
+                reduced_tx_type_set: !d.reduced_tx_type_set,
+                ..d
+            },
+        ),
+        (
+            "enable_tx_size_search",
+            ToggleKnobs {
+                enable_tx_size_search: !d.enable_tx_size_search,
+                ..d
+            },
+        ),
+        (
+            "cdf_update_mode",
+            ToggleKnobs {
+                cdf_update_mode: 0,
+                ..d
+            },
+        ),
+        (
+            "disable_trellis_quant",
+            ToggleKnobs {
+                disable_trellis_quant: 1,
+                ..d
+            },
+        ),
+        (
+            "coeff_cost_upd_freq",
+            ToggleKnobs {
+                coeff_cost_upd_freq: 1,
+                ..d
+            },
+        ),
+        (
+            "mode_cost_upd_freq",
+            ToggleKnobs {
+                mode_cost_upd_freq: 1,
+                ..d
+            },
+        ),
+        (
+            "enable_palette",
+            ToggleKnobs {
+                enable_palette: !d.enable_palette,
+                ..d
+            },
+        ),
+        (
+            "enable_intrabc",
+            ToggleKnobs {
+                enable_intrabc: !d.enable_intrabc,
+                ..d
+            },
+        ),
+        (
+            "disable_tx_stats_prune",
+            ToggleKnobs {
+                disable_tx_stats_prune: !d.disable_tx_stats_prune,
+                ..d
+            },
+        ),
+        (
+            "delta_lf_mode",
+            ToggleKnobs {
+                delta_lf_mode: !d.delta_lf_mode,
+                ..d
+            },
+        ),
+        (
+            "qm",
+            ToggleKnobs {
+                qm: Some((5, 9)),
+                ..d
+            },
+        ),
+        (
+            "deltaq_mode2",
+            ToggleKnobs {
+                deltaq_mode2: !d.deltaq_mode2,
+                ..d
+            },
+        ),
+        (
+            "deltaq_mode3",
+            ToggleKnobs {
+                deltaq_mode3: !d.deltaq_mode3,
+                ..d
+            },
+        ),
     ]
 }
 
@@ -376,7 +566,9 @@ fn armed_tools_round_trip_through_the_c_decoder() {
     let dav1d = std::env::var("AOM_DAV1D_BIN").ok();
     eprintln!(
         "=== armed-tool decode gate (dav1d leg: {}) ===",
-        dav1d.as_deref().unwrap_or("OFF — set AOM_DAV1D_BIN to enable")
+        dav1d
+            .as_deref()
+            .unwrap_or("OFF — set AOM_DAV1D_BIN to enable")
     );
     let mut cells_run = 0usize;
     for &(label, w, h, ox, oy, cq, speed) in CELLS {
@@ -385,9 +577,7 @@ fn armed_tools_round_trip_through_the_c_decoder() {
             let bootstrap = match arm.boot {
                 Boot::Screen(p, i) => cell.c_encode_screen(p, i),
                 Boot::Qm(lo, hi) => cell.c_encode_qm(lo, hi),
-                Boot::DeltaQ(n) => {
-                    cell.c_encode_ctrls(&[(AV1E_SET_DELTAQ_MODE, n)])
-                }
+                Boot::DeltaQ(n) => cell.c_encode_ctrls(&[(AV1E_SET_DELTAQ_MODE, n)]),
                 Boot::Plain => cell.c_encode(),
             };
             assert!(
@@ -439,12 +629,7 @@ fn armed_tools_round_trip_through_the_c_decoder() {
                 "{label}/{}: luma differs between the C decoder and the port \
                  decoder ({} of {} samples)",
                 arm.knob,
-                p_dec
-                    .y
-                    .iter()
-                    .zip(&c_dec.y)
-                    .filter(|(a, b)| a != b)
-                    .count(),
+                p_dec.y.iter().zip(&c_dec.y).filter(|(a, b)| a != b).count(),
                 p_dec.y.len()
             );
             let dbg = |a: &[u16], b: &[u16], w: usize| -> String {
@@ -479,7 +664,12 @@ fn armed_tools_round_trip_through_the_c_decoder() {
                 let path = dir.join(format!("{}.obu", arm.knob.replace('+', "_")));
                 std::fs::write(&path, &stream).expect("write obu");
                 let out = std::process::Command::new(bin)
-                    .args(["-i".as_ref(), path.as_os_str(), "-o".as_ref(), "/dev/null".as_ref()])
+                    .args([
+                        "-i".as_ref(),
+                        path.as_os_str(),
+                        "-o".as_ref(),
+                        "/dev/null".as_ref(),
+                    ])
                     .output()
                     .unwrap_or_else(|e| panic!("running {bin}: {e}"));
                 assert!(
@@ -544,7 +734,8 @@ fn nonrd_estimate_arm_palette_round_trips_through_the_c_decoder() {
     let mut palette_leaves = 0u64;
     for &(cq, speed) in &[(12i32, 9i32), (40, 9), (60, 9), (40, 8)] {
         let label = format!("scc196_cq{cq}_s{speed}");
-        let cell = EncodeCell::real_content(&label, SCREEN_VEC, Some((196, 196, 480, 180)), cq, speed);
+        let cell =
+            EncodeCell::real_content(&label, SCREEN_VEC, Some((196, 196, 480, 180)), cq, speed);
         let bootstrap = cell.c_encode_ctrls(&[TUNE_CONTENT_SCREEN, PALETTE_ON]);
         assert!(!bootstrap.is_empty(), "{label}: C bootstrap encode failed");
 
@@ -554,20 +745,21 @@ fn nonrd_estimate_arm_palette_round_trips_through_the_c_decoder() {
         palette_leaves += stats[1];
         let stream = reassemble(&bootstrap, &frame);
 
-        let c_dec = std::panic::catch_unwind(|| {
-            aom_sys_ref::ref_decode_av1_kf(&stream, cell.w, cell.h)
-        })
-        .unwrap_or_else(|_| {
-            panic!(
-                "{label}: the REAL C decoder REJECTED the port's nonrd-palette stream \
+        let c_dec =
+            std::panic::catch_unwind(|| aom_sys_ref::ref_decode_av1_kf(&stream, cell.w, cell.h))
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{label}: the REAL C decoder REJECTED the port's nonrd-palette stream \
                  ({} B frame payload, {} palette leaves). The estimate arm's palette \
                  writeback produced a non-conformant bitstream — the KB-29 class.",
-                frame.len(),
-                stats[1]
-            )
-        });
+                        frame.len(),
+                        stats[1]
+                    )
+                });
         let p_dec = aom_decode::frame::decode_frame_obus(&stream).unwrap_or_else(|e| {
-            panic!("{label}: the C decoder accepted the stream but the PORT decoder rejected it: {e}")
+            panic!(
+                "{label}: the C decoder accepted the stream but the PORT decoder rejected it: {e}"
+            )
         });
         assert!(
             p_dec.y == c_dec.y && p_dec.u == c_dec.u && p_dec.v == c_dec.v,
@@ -581,7 +773,10 @@ fn nonrd_estimate_arm_palette_round_trips_through_the_c_decoder() {
         );
         ran += 1;
     }
-    assert_eq!(ran, 4, "the nonrd palette decode leg did not run every cell");
+    assert_eq!(
+        ran, 4,
+        "the nonrd palette decode leg did not run every cell"
+    );
     // Non-vacuity: a clean decode of a stream with NO palette block in it would
     // say nothing about the palette writeback.
     assert!(

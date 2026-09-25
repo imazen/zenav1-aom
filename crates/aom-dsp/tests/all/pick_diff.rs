@@ -96,11 +96,30 @@ fn compute_stats_lowbd_matches_c() {
                     let mut m = vec![0i64; win2];
                     let mut h = vec![0i64; win2 * win2];
                     pick::compute_stats(
-                        win, &dgd16, 0, &src16, h_start, h_end, v_start, v_end, stride, stride,
-                        &mut m, &mut h, downsampled,
+                        win,
+                        &dgd16,
+                        0,
+                        &src16,
+                        h_start,
+                        h_end,
+                        v_start,
+                        v_end,
+                        stride,
+                        stride,
+                        &mut m,
+                        &mut h,
+                        downsampled,
                     );
                     let (cm, ch) = c::ref_compute_stats(
-                        win, &dgd8, &src8, h_start, h_end, v_start, v_end, stride, stride,
+                        win,
+                        &dgd8,
+                        &src8,
+                        h_start,
+                        h_end,
+                        v_start,
+                        v_end,
+                        stride,
+                        stride,
                         downsampled,
                     );
                     assert_eq!(m, cm, "M case{case} {rw}x{rh} win{win} ds{downsampled}");
@@ -138,8 +157,8 @@ fn compute_stats_highbd_matches_c() {
                     let mut m = vec![0i64; win2];
                     let mut h = vec![0i64; win2 * win2];
                     pick::compute_stats_highbd(
-                        win, &dgd, 0, &src, h_start, h_end, v_start, v_end, stride, stride,
-                        &mut m, &mut h, bd,
+                        win, &dgd, 0, &src, h_start, h_end, v_start, v_end, stride, stride, &mut m,
+                        &mut h, bd,
                     );
                     let (cm, ch) = c::ref_compute_stats_highbd(
                         win, &dgd, &src, h_start, h_end, v_start, v_end, stride, stride, bd,
@@ -296,7 +315,14 @@ fn selfguided_flt_producer_matches_c() {
     let mut rng = Rng(0x57A7_5EED_0005);
     let eps = [0usize, 4, 9, 10, 13, 14, 15];
     for case in 0..24 {
-        for &(w, h) in &[(32usize, 32usize), (64, 64), (24, 40), (16, 8), (13, 9), (33, 17)] {
+        for &(w, h) in &[
+            (32usize, 32usize),
+            (64, 64),
+            (24, 40),
+            (16, 8),
+            (13, 9),
+            (33, 17),
+        ] {
             for &ep in &eps {
                 for &(bd, highbd) in &[(8, false), (8, true), (10, true), (12, true)] {
                     let margin = 4usize;
@@ -378,8 +404,19 @@ fn wiener_solver_invariants() {
             let mut m = vec![0i64; win2];
             let mut h = vec![0i64; win2 * win2];
             pick::compute_stats(
-                win, &dgd, 0, &src, margin, margin + rw, margin, margin + rh, stride, stride,
-                &mut m, &mut h, false,
+                win,
+                &dgd,
+                0,
+                &src,
+                margin,
+                margin + rw,
+                margin,
+                margin + rh,
+                stride,
+                stride,
+                &mut m,
+                &mut h,
+                false,
             );
             let mut a = [0i32; 7];
             let mut b = [0i32; 7];

@@ -802,8 +802,14 @@ mod imp {
             2 => vgetq_lane_s64::<0>(s64v(a[1])),
             _ => vgetq_lane_s64::<1>(s64v(a[1])),
         };
-        let lo = vsetq_lane_s64::<1>(pick((IMM >> 2) & 3), vsetq_lane_s64::<0>(pick(IMM & 3), vdupq_n_s64(0)));
-        let hi = vsetq_lane_s64::<1>(pick((IMM >> 6) & 3), vsetq_lane_s64::<0>(pick((IMM >> 4) & 3), vdupq_n_s64(0)));
+        let lo = vsetq_lane_s64::<1>(
+            pick((IMM >> 2) & 3),
+            vsetq_lane_s64::<0>(pick(IMM & 3), vdupq_n_s64(0)),
+        );
+        let hi = vsetq_lane_s64::<1>(
+            pick((IMM >> 6) & 3),
+            vsetq_lane_s64::<0>(pick((IMM >> 4) & 3), vdupq_n_s64(0)),
+        );
         [back64(lo), back64(hi)]
     }
     /// `vpsignw` — per lane: `b < 0` -> `-a`, `b == 0` -> 0, `b > 0` -> `a`.
@@ -1100,19 +1106,28 @@ mod imp {
     #[inline]
     #[target_feature(enable = "neon")]
     pub fn _mm256_shuffle_epi32<const IMM: i32>(a: __m256i) -> __m256i {
-        [_mm_shuffle_epi32::<IMM>(a[0]), _mm_shuffle_epi32::<IMM>(a[1])]
+        [
+            _mm_shuffle_epi32::<IMM>(a[0]),
+            _mm_shuffle_epi32::<IMM>(a[1]),
+        ]
     }
     /// `vpshuflw` ymm.
     #[inline]
     #[target_feature(enable = "neon")]
     pub fn _mm256_shufflelo_epi16<const IMM: i32>(a: __m256i) -> __m256i {
-        [_mm_shufflelo_epi16::<IMM>(a[0]), _mm_shufflelo_epi16::<IMM>(a[1])]
+        [
+            _mm_shufflelo_epi16::<IMM>(a[0]),
+            _mm_shufflelo_epi16::<IMM>(a[1]),
+        ]
     }
     /// `vpshufhw` ymm.
     #[inline]
     #[target_feature(enable = "neon")]
     pub fn _mm256_shufflehi_epi16<const IMM: i32>(a: __m256i) -> __m256i {
-        [_mm_shufflehi_epi16::<IMM>(a[0]), _mm_shufflehi_epi16::<IMM>(a[1])]
+        [
+            _mm_shufflehi_epi16::<IMM>(a[0]),
+            _mm_shufflehi_epi16::<IMM>(a[1]),
+        ]
     }
 
     /// `vpextrw` — extract i16 lane `IMM`, zero-extended to i32.

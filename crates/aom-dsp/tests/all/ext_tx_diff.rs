@@ -5,8 +5,8 @@
 //! composed `write_tx_type` emits identical bytes for the in-set cases.
 
 use aom_dsp::entropy::enc::OdEcEnc;
-use aom_sys_ref as c;
 use aom_dsp::txb::{ext_tx_derive, write_tx_type};
+use aom_sys_ref as c;
 
 #[test]
 fn ext_tx_derivation_exhaustive() {
@@ -26,13 +26,19 @@ fn ext_tx_derivation_exhaustive() {
                                 let w = c::ref_ext_tx_derive(
                                     tx_size, is_inter, reduced, tx_type, use_fi, fi_mode, mode,
                                 );
-                                assert_eq!(got.set_type, w[0], "set_type ts={tx_size} inter={is_inter} red={reduced}");
+                                assert_eq!(
+                                    got.set_type, w[0],
+                                    "set_type ts={tx_size} inter={is_inter} red={reduced}"
+                                );
                                 assert_eq!(got.num, w[1], "num ts={tx_size} tt={tx_type}");
                                 assert_eq!(got.eset, w[2], "eset ts={tx_size} inter={is_inter}");
                                 assert_eq!(got.square, w[3], "square ts={tx_size}");
                                 assert_eq!(got.symb, w[4], "symb ts={tx_size} tt={tx_type}");
                                 assert_eq!(got.used, w[5], "used ts={tx_size} tt={tx_type}");
-                                assert_eq!(got.intra_dir, w[6], "intra_dir fi={use_fi} fim={fi_mode} m={mode}");
+                                assert_eq!(
+                                    got.intra_dir, w[6],
+                                    "intra_dir fi={use_fi} fim={fi_mode} m={mode}"
+                                );
                             }
                         }
                     }
@@ -101,7 +107,10 @@ fn write_tx_type_emits_expected_symbol() {
                     aom_dsp::entropy::cdf::write_symbol(&mut enc_b, d.symb, &mut cdf_b, n);
                     let bytes_b = enc_b.done().to_vec();
 
-                    assert_eq!(bytes_a, bytes_b, "bytes ts={tx_size} inter={is_inter} tt={tx_type}");
+                    assert_eq!(
+                        bytes_a, bytes_b,
+                        "bytes ts={tx_size} inter={is_inter} tt={tx_type}"
+                    );
                     assert_eq!(cdf_a, cdf_b, "cdf adapt ts={tx_size} tt={tx_type}");
                 }
             }

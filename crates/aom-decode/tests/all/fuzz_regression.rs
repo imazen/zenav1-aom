@@ -93,11 +93,21 @@ fn fuzz_regression_seeds_never_report_an_internal_error() {
         if !path.is_file() {
             continue;
         }
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_owned();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_owned();
         let input = fs::read(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
         for (entry_name, res) in [
-            ("decode_frame_obus", decode_frame_obus_with(&input, &config).map(|_| ())),
-            ("decode_frames", decode_frames_with(&input, &config).map(|_| ())),
+            (
+                "decode_frame_obus",
+                decode_frame_obus_with(&input, &config).map(|_| ()),
+            ),
+            (
+                "decode_frames",
+                decode_frames_with(&input, &config).map(|_| ()),
+            ),
         ] {
             if let Err(e) = res {
                 assert_ne!(
@@ -151,7 +161,9 @@ fn out_of_range_header_syntax_is_malformed_and_names_the_field() {
     assert_eq!(err.category(), "malformed", "got {err}");
     let msg = err.to_string();
     assert!(
-        msg.contains("num_y_points") || msg.contains("num_cb_points") || msg.contains("num_cr_points"),
+        msg.contains("num_y_points")
+            || msg.contains("num_cb_points")
+            || msg.contains("num_cr_points"),
         "the rejection must name the out-of-range field, got: {msg}"
     );
 }
@@ -191,7 +203,10 @@ fn truncated_header_is_reported_as_truncated_not_malformed() {
         "no prefix of the seed was reported as `truncated` — the truncated/malformed \
          split is not reachable, so the distinction is decorative"
     );
-    eprintln!("{saw_truncated} of {} prefixes reported truncated", full.len() - 1);
+    eprintln!(
+        "{saw_truncated} of {} prefixes reported truncated",
+        full.len() - 1
+    );
 }
 
 // ---- the invariant the chroma guards rest on -------------------------------
@@ -220,8 +235,11 @@ fn block_invalid_chroma_sizes_occur_only_at_422_and_440() {
             }
         }
     }
-    assert!(!holes.is_empty(), "the table has no BLOCK_INVALID entries at all — the guards \
-        that reject them, and this test, are then testing nothing");
+    assert!(
+        !holes.is_empty(),
+        "the table has no BLOCK_INVALID entries at all — the guards \
+        that reject them, and this test, are then testing nothing"
+    );
     for &(bsize, ss_x, ss_y) in &holes {
         assert!(
             (ss_x, ss_y) == (1, 0) || (ss_x, ss_y) == (0, 1),
@@ -232,8 +250,16 @@ fn block_invalid_chroma_sizes_occur_only_at_422_and_440() {
     // 4:2:0 and 4:4:4, the two configurations the decoder is exercised on
     // everywhere else, must be hole-free.
     for bsize in 0..BLOCK_SIZES_ALL {
-        assert_ne!(get_plane_block_size(bsize, 1, 1), 255, "4:2:0 bsize {bsize}");
-        assert_ne!(get_plane_block_size(bsize, 0, 0), 255, "4:4:4 bsize {bsize}");
+        assert_ne!(
+            get_plane_block_size(bsize, 1, 1),
+            255,
+            "4:2:0 bsize {bsize}"
+        );
+        assert_ne!(
+            get_plane_block_size(bsize, 0, 0),
+            255,
+            "4:4:4 bsize {bsize}"
+        );
     }
     eprintln!("{} BLOCK_INVALID entries, all at (1,0)/(0,1)", holes.len());
 }

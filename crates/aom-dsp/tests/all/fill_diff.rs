@@ -3,8 +3,8 @@
 //! the `base_cost[4..7]` trellis-diff and `lps_cost` cumulation/diff fixups —
 //! must be integer-identical.
 
-use aom_sys_ref as c;
 use aom_dsp::txb::fill_lv_map_coeff_cost;
+use aom_sys_ref as c;
 
 struct Rng(u64);
 impl Rng {
@@ -54,7 +54,11 @@ fn fill_coeff_costs_identical() {
 
         assert_eq!(got.txb_skip[..], wts[..], "txb_skip");
         assert_eq!(got.base_eob[..], wbe[..], "base_eob");
-        assert_eq!(got.base[..], wb[..], "base (incl [4..7] trellis-diff fixup)");
+        assert_eq!(
+            got.base[..],
+            wb[..],
+            "base (incl [4..7] trellis-diff fixup)"
+        );
         assert_eq!(got.eob_extra[..], wee[..], "eob_extra");
         assert_eq!(got.dc_sign[..], wds[..], "dc_sign");
         assert_eq!(got.lps[..], wl[..], "lps (incl cumulation + diff fixup)");
