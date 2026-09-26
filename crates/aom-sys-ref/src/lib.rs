@@ -15831,6 +15831,57 @@ extern "C" {
         bck_offset: i32,
         bd: i32,
     );
+    fn shim_masked_compound_inter_predictor(
+        src0: *const u8,
+        src_stride0: i32,
+        src1: *const u8,
+        src_stride1: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        subpel_x0: i32,
+        subpel_y0: i32,
+        subpel_x1: i32,
+        subpel_y1: i32,
+        filter_x: i32,
+        filter_y: i32,
+        comp_type: i32,
+        wedge_index: i32,
+        wedge_sign: i32,
+        mask_type: i32,
+        bsize: i32,
+        ssx: i32,
+        ssy: i32,
+        seg_mask: *mut u8,
+        build_seg_mask: i32,
+    );
+    fn shim_highbd_masked_compound_inter_predictor(
+        src0: *const u16,
+        src_stride0: i32,
+        src1: *const u16,
+        src_stride1: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        subpel_x0: i32,
+        subpel_y0: i32,
+        subpel_x1: i32,
+        subpel_y1: i32,
+        filter_x: i32,
+        filter_y: i32,
+        comp_type: i32,
+        wedge_index: i32,
+        wedge_sign: i32,
+        mask_type: i32,
+        bsize: i32,
+        ssx: i32,
+        ssy: i32,
+        seg_mask: *mut u8,
+        build_seg_mask: i32,
+        bd: i32,
+    );
 }
 
 /// Reference libaom `inter_predictor` (reconinter.h:255) — the unscaled lowbd
@@ -15975,6 +16026,131 @@ pub fn ref_highbd_compound_inter_predictor(
             use_dist_wtd as i32,
             fwd_offset,
             bck_offset,
+            bd as i32,
+        )
+    }
+    dst
+}
+
+/// Reference libaom MASKED-compound predictor — `av1_make_masked_inter_predictor`
+/// and `build_masked_compound_no_round` (reconinter.c:629/:602). Each ref
+/// convolves into its OWN `CONV_BUF` (`do_average = 0`), then
+/// `aom_lowbd_blend_a64_d16_mask` blends them through the luma-resolution mask:
+/// `av1_get_compound_type_mask` (wedge codebook) or `seg_mask`
+/// (`av1_build_compound_diffwtd_mask_d16`, built on luma / reused on chroma).
+///
+/// `seg_mask` is caller-owned luma-resolution scratch (`xd->seg_mask`): for
+/// `comp_type == COMPOUND_DIFFWTD` the shim builds it when `build_seg_mask`
+/// (luma) and reads it as-is otherwise (chroma). `bsize` is `mi->bsize` (the
+/// `mask_stride` / wedge-codebook key); `ssx`/`ssy` are the plane subsampling.
+/// Returns the `w`×`h` blended block (u8, dst stride `w`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_masked_compound_inter_predictor(
+    src0: RefCompoundSrc<u8>,
+    src1: RefCompoundSrc<u8>,
+    w: usize,
+    h: usize,
+    subpel_x0: usize,
+    subpel_y0: usize,
+    subpel_x1: usize,
+    subpel_y1: usize,
+    filter_x: usize,
+    filter_y: usize,
+    comp_type: i32,
+    wedge_index: i32,
+    wedge_sign: i32,
+    mask_type: i32,
+    bsize: usize,
+    ssx: bool,
+    ssy: bool,
+    seg_mask: &mut [u8],
+    build_seg_mask: bool,
+) -> Vec<u8> {
+    ref_init();
+    let mut dst = vec![0u8; w * h];
+    unsafe {
+        shim_masked_compound_inter_predictor(
+            src0.src.as_ptr().add(src0.off),
+            src0.stride as i32,
+            src1.src.as_ptr().add(src1.off),
+            src1.stride as i32,
+            dst.as_mut_ptr(),
+            w as i32,
+            w as i32,
+            h as i32,
+            subpel_x0 as i32,
+            subpel_y0 as i32,
+            subpel_x1 as i32,
+            subpel_y1 as i32,
+            filter_x as i32,
+            filter_y as i32,
+            comp_type,
+            wedge_index,
+            wedge_sign,
+            mask_type,
+            bsize as i32,
+            ssx as i32,
+            ssy as i32,
+            seg_mask.as_mut_ptr(),
+            build_seg_mask as i32,
+        )
+    }
+    dst
+}
+
+/// High-bit-depth twin of [`ref_masked_compound_inter_predictor`]: real
+/// `highbd_inter_predictor` and `aom_highbd_blend_a64_d16_mask`. `src*`/`dst`
+/// are u16 samples. Returns `w`×`h` u16.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_masked_compound_inter_predictor(
+    src0: RefCompoundSrc<u16>,
+    src1: RefCompoundSrc<u16>,
+    w: usize,
+    h: usize,
+    subpel_x0: usize,
+    subpel_y0: usize,
+    subpel_x1: usize,
+    subpel_y1: usize,
+    filter_x: usize,
+    filter_y: usize,
+    comp_type: i32,
+    wedge_index: i32,
+    wedge_sign: i32,
+    mask_type: i32,
+    bsize: usize,
+    ssx: bool,
+    ssy: bool,
+    seg_mask: &mut [u8],
+    build_seg_mask: bool,
+    bd: u32,
+) -> Vec<u16> {
+    ref_init();
+    let mut dst = vec![0u16; w * h];
+    unsafe {
+        shim_highbd_masked_compound_inter_predictor(
+            src0.src.as_ptr().add(src0.off),
+            src0.stride as i32,
+            src1.src.as_ptr().add(src1.off),
+            src1.stride as i32,
+            dst.as_mut_ptr(),
+            w as i32,
+            w as i32,
+            h as i32,
+            subpel_x0 as i32,
+            subpel_y0 as i32,
+            subpel_x1 as i32,
+            subpel_y1 as i32,
+            filter_x as i32,
+            filter_y as i32,
+            comp_type,
+            wedge_index,
+            wedge_sign,
+            mask_type,
+            bsize as i32,
+            ssx as i32,
+            ssy as i32,
+            seg_mask.as_mut_ptr(),
+            build_seg_mask as i32,
             bd as i32,
         )
     }

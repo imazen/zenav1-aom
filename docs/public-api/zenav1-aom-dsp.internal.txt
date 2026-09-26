@@ -13,14 +13,14 @@
 #   pub types (struct/enum/trait/alias)         1
 #   pub consts/statics                          6
 #   free functions                             63
-#   inherent methods                           28
-#   trait roster entries (type × trait)        49
+#   inherent methods                           29
+#   trait roster entries (type × trait)        50
 #   auto-trait-complete types                   1
 #
 # per-module pub lines:
-#   aom_dsp                         105
+#   aom_dsp                         106
 
-## items (79 lines)
+## items (80 lines)
 
 pub const aom_dsp::transform::cospi::COS_BIT_MIN: i32
 pub const aom_dsp::transform::cospi::NEW_INV_SQRT2: i32
@@ -41,6 +41,7 @@ pub fn aom_dsp::entropy::partition::MbModeInfoKf::assert_fields_are_eq(&self)
 pub fn aom_dsp::entropy::partition::MiNbrKf::assert_fields_are_eq(&self)
 pub fn aom_dsp::entropy::partition::PaletteNbrKf::assert_fields_are_eq(&self)
 pub fn aom_dsp::entropy::partition::TxMode::assert_fields_are_eq(&self)
+pub fn aom_dsp::inter::MaskedCompound::assert_fields_are_eq(&self)
 pub fn aom_dsp::inter::compound::CompoundType::assert_fields_are_eq(&self)
 pub fn aom_dsp::inter::compound::DiffwtdMaskType::assert_fields_are_eq(&self)
 pub fn aom_dsp::inter::compound::DistWtdWeights::assert_fields_are_eq(&self)
@@ -102,7 +103,7 @@ pub static aom_dsp::transform::cospi::COSPI_ARR_DATA: [[i32; 64]; 4]
 pub static aom_dsp::transform::cospi::SINPI_ARR_DATA: [[i32; 5]; 4]
 pub struct aom_dsp::restore::wiener::WienerScratch
 
-## trait impls (48 types)
+## trait impls (49 types)
 
 aom_dsp::census::Leaf: TrivialClone
 aom_dsp::convolve::compound::CompoundConvolveParams: TrivialClone
@@ -135,6 +136,7 @@ aom_dsp::entropy::partition::MiNbrKf: TrivialClone
 aom_dsp::entropy::partition::PaletteNbrKf: TrivialClone
 aom_dsp::entropy::partition::TxMode: TrivialClone
 aom_dsp::inter::CompoundRefPlane<'a>: TrivialClone
+aom_dsp::inter::MaskedCompound: TrivialClone
 aom_dsp::inter::compound::CompoundType: TrivialClone
 aom_dsp::inter::compound::DiffwtdMaskType: TrivialClone
 aom_dsp::inter::compound::DistWtdWeights: TrivialClone

@@ -79,10 +79,21 @@ Read that as:
      on `compound-refs.obu`), `default_cdfs_diff` (9 tables), `dv_ref_diff`'s
      compound arm (1,800 cases), `inter_pred_diff::compound_facade_matches_c`
      (504 cases). Group-1 masked compound is still refused by name.
-   - **4b (NEXT):** masked compound — `comp_group_idx = 1`, the wedge +
-     diff-weighted mask builders routing into the same two-ref predictor.
-     `masked-compound.obu` pins the refusal it flips. If a wedge/mask kernel is
-     missing, stop and document it rather than writing it blind.
+   - **4b (LANDED 2026-09-25):** masked compound — `comp_group_idx = 1`. The
+     wedge codebook + diffwtd mask builders and the lowbd/highbd d16 mask
+     blends all already existed and were C-diffed, so this was routing, not a
+     new kernel: `read_compound_type_info`'s masked fields are retained into a
+     `MaskedCompound` descriptor; `build_masked_compound_inter_predictor` keeps
+     each ref's unrounded `d16` in its OWN buffer (the shared-`dst16` +
+     `do_average` group-0 path is preserved via the extracted
+     `convolve_one_compound_ref`), fetches the wedge codebook mask or builds
+     `seg_mask` on luma only (`!plane`, per `reconinter.c:655`), and blends via
+     `lowbd_blend_a64_d16_mask`/`highbd_blend_a64_d16_mask` with chroma
+     subsampling through `d16_mask_at`. Byte-gated:
+     `masked_compound_decode_envelope` (byte-exact vs `aom_codec_av1_dx` on
+     `masked-compound.obu`) and `inter_pred_diff::masked_compound_facade_
+     matches_c` (1,260 blocks × luma+chroma vs the real C masked assembly).
+     The `masked-compound` named refusal is gone under the feature.
 
 Stop after any step and hand back if a step needs a NEW kernel rather than routing to an
 existing one — the point of this handoff is that the kernels exist; discovering one is

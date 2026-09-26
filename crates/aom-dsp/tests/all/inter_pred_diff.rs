@@ -489,8 +489,8 @@ fn blend_a64_masks_match_c() {
 // the compound-specific code path (per-ref `do_average`, the shared `dst16`
 // CONV_BUF, the avg-vs-dist-wtd combine, the need_x/need_y kernel dispatch)
 // on top of two already-locked primitives (border gather, subpel derivation
-// shared verbatim with the single-ref facade). Masked compound is step 4b and
-// is intentionally not exercised.
+// shared verbatim with the single-ref facade). Masked compound (step 4b) is
+// exercised below by `masked_compound_facade_matches_c`.
 
 /// The geometry `build_compound_inter_predictor`'s unscaled arm derives for one
 /// reference — `(gx, gy, b_w, b_h, interior, subpel_x, subpel_y)` from the block
@@ -837,4 +837,417 @@ fn compound_facade_matches_c() {
         }
     }
     assert!(cases > 400, "compound harness too thin: {cases} cases");
+}
+
+// ===================================================================
+// Masked compound (wedge + diff-weighted) — experimental-video step 4b.
+//
+// `masked_compound_facade_matches_c` drives `build_masked_compound_inter_predictor`
+// (the Rust port of `av1_make_masked_inter_predictor` + `build_masked_compound_
+// no_round`) against the real C masked assembly (`ref_masked_compound_inter_
+// predictor` / `ref_highbd_masked_compound_inter_predictor`): two `inter_
+// predictor` gathers into separate CONV_BUFs, the `av1_get_compound_type_mask`/
+// `av1_build_compound_diffwtd_mask_d16` mask, and `aom_*_blend_a64_d16_mask`.
+//
+// The new logic under test (the individual kernels are byte-locked separately):
+//   * the two SEPARATE d16 intermediates (vs group-0's shared buffer + in-place
+//     do_average combine);
+//   * the mask is LUMA-resolution (`mask_stride = block_size_wide[mi->bsize]`) —
+//     the chroma call subsamples it through `d16_mask_at`'s `subw`/`subh`;
+//   * `COMPOUND_DIFFWTD` builds `seg_mask` only on luma (`is_luma`) and the
+//     chroma call reuses it — the test runs luma then chroma over one shared
+//     `seg_mask` to exercise that threading;
+//   * `COMPOUND_WEDGE` refetches the codebook mask each plane.
+// ===================================================================
+
+/// The masked-compound `mi->interinter_comp` descriptor under test, mapped to
+/// the shim's `(comp_type, wedge_index, wedge_sign, mask_type)` ints.
+#[derive(Clone, Copy)]
+enum MaskedCase {
+    Wedge { index: usize, sign: usize },
+    Diffwtd { inv: bool },
+}
+
+impl MaskedCase {
+    /// `(comp_type, wedge_index, wedge_sign, mask_type)` — COMPOUND_WEDGE = 2,
+    /// COMPOUND_DIFFWTD = 3; mask_type 0 = DIFFWTD_38 / 1 = DIFFWTD_38_INV.
+    fn params(self) -> (i32, i32, i32, i32) {
+        match self {
+            MaskedCase::Wedge { index, sign } => (2, index as i32, sign as i32, 0),
+            MaskedCase::Diffwtd { inv } => (3, 0, 0, inv as i32),
+        }
+    }
+    /// The [`aom_dsp::inter::MaskedCompound`] the Rust predictor consumes.
+    fn port(self) -> aom_dsp::inter::MaskedCompound {
+        use aom_dsp::inter::compound::DiffwtdMaskType;
+        match self {
+            MaskedCase::Wedge { index, sign } => {
+                aom_dsp::inter::MaskedCompound::Wedge { index, sign }
+            }
+            MaskedCase::Diffwtd { inv } => aom_dsp::inter::MaskedCompound::Diffwtd {
+                mask_type: if inv {
+                    DiffwtdMaskType::Diffwtd38Inv
+                } else {
+                    DiffwtdMaskType::Diffwtd38
+                },
+            },
+        }
+    }
+}
+
+/// Drive one plane of a masked-compound block on both sides and assert the
+/// blended output matches byte-exactly. `is_luma`/`build_seg_mask` is the luma
+/// arm (builds the diffwtd mask); the chroma arm passes `is_luma=false` and the
+/// already-built `seg_mask`/`seg_mask_c`.
+#[allow(clippy::too_many_arguments)]
+fn masked_plane(
+    rng: &mut Rng,
+    comp: MaskedCase,
+    bd: u32,
+    // block dims + origin + subsampling for THIS plane
+    w: usize,
+    h: usize,
+    blk_x: usize,
+    blk_y: usize,
+    ss_x: usize,
+    ss_y: usize,
+    ref_w: usize,
+    ref_h: usize,
+    filter_x: usize,
+    filter_y: usize,
+    r0: CompRef,
+    r1: CompRef,
+    luma_bsize: usize,
+    is_luma: bool,
+    seg_mask: &mut [u8],
+    seg_mask_c: &mut [u8],
+) {
+    let stride = ref_w;
+    let plane0: Vec<u16> = (0..stride * ref_h)
+        .map(|_| (rng.next() % (1u64 << bd)) as u16)
+        .collect();
+    let plane1: Vec<u16> = (0..stride * ref_h)
+        .map(|_| (rng.next() % (1u64 << bd)) as u16)
+        .collect();
+    let sf = ScaleFactors::for_frame(ref_w as i32, ref_h as i32, ref_w as i32, ref_h as i32);
+    assert!(!sf.is_scaled());
+    let (ct, wi, ws, mt) = comp.params();
+
+    // ---- Rust port ----
+    let mut dst = vec![0u16; w * h];
+    aom_dsp::inter::build_masked_compound_inter_predictor(
+        [
+            CompoundRefPlane {
+                plane: &plane0,
+                stride,
+                w: ref_w,
+                h: ref_h,
+                sf: &sf,
+                mv: (r0.mv_row, r0.mv_col),
+                raw_mv: (r0.mv_row, r0.mv_col),
+            },
+            CompoundRefPlane {
+                plane: &plane1,
+                stride,
+                w: ref_w,
+                h: ref_h,
+                sf: &sf,
+                mv: (r1.mv_row, r1.mv_col),
+                raw_mv: (r1.mv_row, r1.mv_col),
+            },
+        ],
+        &mut dst,
+        0,
+        w,
+        blk_x,
+        blk_y,
+        w,
+        h,
+        ss_x,
+        ss_y,
+        filter_x,
+        filter_y,
+        bd,
+        comp.port(),
+        luma_bsize,
+        is_luma,
+        seg_mask,
+    );
+
+    // ---- C oracle: per-ref border gather at the Rust-derived geometry ----
+    let (gx0, gy0, bw0, bh0, int0, sx0, sy0) =
+        unscaled_geom(blk_x, blk_y, r0.mv_row, r0.mv_col, w, h, ss_x, ss_y);
+    let (gx1, gy1, bw1, bh1, int1, sx1, sy1) =
+        unscaled_geom(blk_x, blk_y, r1.mv_row, r1.mv_col, w, h, ss_x, ss_y);
+
+    if bd > 8 {
+        let mut s0 = vec![0u16; bw0 * bh0];
+        build_mc_border_highbd(&plane0, stride, ref_w, ref_h, gx0, gy0, bw0, bh0, &mut s0);
+        let mut s1 = vec![0u16; bw1 * bh1];
+        build_mc_border_highbd(&plane1, stride, ref_w, ref_h, gx1, gy1, bw1, bh1, &mut s1);
+        let c = aom_sys_ref::ref_highbd_masked_compound_inter_predictor(
+            RefCompoundSrc {
+                src: &s0,
+                off: int0,
+                stride: bw0,
+            },
+            RefCompoundSrc {
+                src: &s1,
+                off: int1,
+                stride: bw1,
+            },
+            w,
+            h,
+            sx0,
+            sy0,
+            sx1,
+            sy1,
+            filter_x,
+            filter_y,
+            ct,
+            wi,
+            ws,
+            mt,
+            luma_bsize,
+            ss_x != 0,
+            ss_y != 0,
+            seg_mask_c,
+            is_luma,
+            bd,
+        );
+        for i in 0..w * h {
+            assert_eq!(
+                dst[i], c[i],
+                "highbd masked diverged at {i} (bd {bd}, comp {ct}, {w}x{h}@({blk_x},{blk_y}) \
+                 ss=({ss_x},{ss_y}) luma={is_luma} mv0=({},{})/mv1=({},{}))",
+                r0.mv_row, r0.mv_col, r1.mv_row, r1.mv_col
+            );
+        }
+    } else {
+        let p0: Vec<u8> = plane0.iter().map(|&v| v as u8).collect();
+        let p1: Vec<u8> = plane1.iter().map(|&v| v as u8).collect();
+        let s0 = ref_build_mc_border(&p0, stride, ref_w, ref_h, gx0, gy0, bw0, bh0);
+        let s1 = ref_build_mc_border(&p1, stride, ref_w, ref_h, gx1, gy1, bw1, bh1);
+        let c = aom_sys_ref::ref_masked_compound_inter_predictor(
+            RefCompoundSrc {
+                src: &s0,
+                off: int0,
+                stride: bw0,
+            },
+            RefCompoundSrc {
+                src: &s1,
+                off: int1,
+                stride: bw1,
+            },
+            w,
+            h,
+            sx0,
+            sy0,
+            sx1,
+            sy1,
+            filter_x,
+            filter_y,
+            ct,
+            wi,
+            ws,
+            mt,
+            luma_bsize,
+            ss_x != 0,
+            ss_y != 0,
+            seg_mask_c,
+            is_luma,
+        );
+        for i in 0..w * h {
+            assert_eq!(
+                dst[i], c[i] as u16,
+                "lowbd masked diverged at {i} (comp {ct}, {w}x{h}@({blk_x},{blk_y}) \
+                 ss=({ss_x},{ss_y}) luma={is_luma} mv0=({},{})/mv1=({},{}))",
+                r0.mv_row, r0.mv_col, r1.mv_row, r1.mv_col
+            );
+        }
+    }
+}
+
+/// One masked-compound block, both planes: the LUMA call builds/fetches the
+/// mask (`is_luma`/`build_seg_mask` true) and the CHROMA call (4:2:0, ss=1,1)
+/// reuses it — exercising the luma-resolution `seg_mask` threading and the
+/// `d16_mask_at` 2x2 subsample.
+#[allow(clippy::too_many_arguments)]
+fn masked_case(
+    rng: &mut Rng,
+    comp: MaskedCase,
+    bd: u32,
+    luma_bsize: usize,
+    blk_x: usize,
+    blk_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+    r0: CompRef,
+    r1: CompRef,
+    ref_w: usize,
+    ref_h: usize,
+) {
+    use aom_dsp::blocksize::{BLOCK_SIZE_HIGH, BLOCK_SIZE_WIDE};
+    let lw = BLOCK_SIZE_WIDE[luma_bsize] as usize;
+    let lh = BLOCK_SIZE_HIGH[luma_bsize] as usize;
+    // The diffwtd seg_mask is luma-resolution (mask_stride * luma_h bytes);
+    // wedge blocks never touch it. Shared across luma + chroma.
+    let mut seg_mask = vec![0u8; lw * lh];
+    let mut seg_mask_c = vec![0u8; lw * lh];
+
+    // LUMA — full-res, is_luma (builds the diffwtd seg_mask / fetches wedge).
+    masked_plane(
+        rng,
+        comp,
+        bd,
+        lw,
+        lh,
+        blk_x,
+        blk_y,
+        0,
+        0,
+        ref_w,
+        ref_h,
+        filter_x,
+        filter_y,
+        r0,
+        r1,
+        luma_bsize,
+        true,
+        &mut seg_mask,
+        &mut seg_mask_c,
+    );
+    // The luma diffwtd build must match C's — the chroma reuse below is only a
+    // valid comparison if both sides carry the identical seg_mask.
+    if matches!(comp, MaskedCase::Diffwtd { .. }) {
+        assert_eq!(
+            seg_mask, seg_mask_c,
+            "bsize {luma_bsize} bd {bd}: luma diffwtd seg_mask diverged from C"
+        );
+    }
+
+    // CHROMA (4:2:0) — half-res, is_luma=false reuses the luma mask; the
+    // `d16_mask_at` subw/subh path subsamples it.
+    masked_plane(
+        rng,
+        comp,
+        bd,
+        lw >> 1,
+        lh >> 1,
+        blk_x >> 1,
+        blk_y >> 1,
+        1,
+        1,
+        ref_w >> 1,
+        ref_h >> 1,
+        filter_x,
+        filter_y,
+        r0,
+        r1,
+        luma_bsize,
+        false,
+        &mut seg_mask,
+        &mut seg_mask_c,
+    );
+}
+
+/// The masked-compound predictor byte-matches the real C two-ref masked loop —
+/// `av1_make_masked_inter_predictor` + `build_masked_compound_no_round` —
+/// across wedge and both diffwtd signs, luma and subsampled chroma, several
+/// wedge-capable block sizes, all three bit depths, and the sub-pel dispatch
+/// arms.
+#[test]
+fn masked_compound_facade_matches_c() {
+    let mut rng = Rng(0x5eed_1a7e_5eed_1a7e);
+    let ref_w = 96usize;
+    let ref_h = 80usize;
+
+    // Wedge-capable luma bsizes (BLOCK_8X8..32X32 + 8X32/32X8) — index/label is
+    // the `bsize` enum value; blk origin picked to stay inside the 96x80 ref.
+    let bsizes: &[usize] = &[3, 5, 6, 8, 9, 18, 19];
+
+    let comp_variants: &[MaskedCase] = &[
+        MaskedCase::Wedge { index: 0, sign: 0 },
+        MaskedCase::Wedge { index: 5, sign: 1 },
+        MaskedCase::Wedge { index: 15, sign: 0 },
+        MaskedCase::Diffwtd { inv: false },
+        MaskedCase::Diffwtd { inv: true },
+    ];
+
+    // (mv0, mv1) covering copy/x/y/2-d dispatch + an edge-going pair.
+    let mvpairs: &[(CompRef, CompRef)] = &[
+        (
+            CompRef {
+                mv_row: 8,
+                mv_col: 8,
+                seed: 1,
+            },
+            CompRef {
+                mv_row: -8,
+                mv_col: 16,
+                seed: 2,
+            },
+        ),
+        (
+            CompRef {
+                mv_row: 11,
+                mv_col: 7,
+                seed: 3,
+            },
+            CompRef {
+                mv_row: -5,
+                mv_col: -9,
+                seed: 4,
+            },
+        ),
+        (
+            CompRef {
+                mv_row: 5,
+                mv_col: 5,
+                seed: 5,
+            },
+            CompRef {
+                mv_row: 8,
+                mv_col: 19,
+                seed: 6,
+            },
+        ),
+        (
+            CompRef {
+                mv_row: -13,
+                mv_col: 8,
+                seed: 7,
+            },
+            CompRef {
+                mv_row: 29,
+                mv_col: -16,
+                seed: 8,
+            },
+        ),
+    ];
+
+    let filters: &[(usize, usize)] = &[(0, 0), (1, 2), (2, 0)];
+
+    let mut cases = 0u32;
+    for &bd in &[8u32, 10, 12] {
+        for &bsize in bsizes {
+            for &comp in comp_variants {
+                for &(fx, fy) in filters {
+                    for &(r0, r1) in mvpairs {
+                        // blk origin: keep the luma block inside the ref for the
+                        // interior cases; the off-edge pair exercises borders.
+                        let (bx, by) = (8, 6);
+                        masked_case(
+                            &mut rng, comp, bd, bsize, bx, by, fx, fy, r0, r1, ref_w, ref_h,
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        cases > 600,
+        "masked-compound harness too thin: {cases} cases"
+    );
 }

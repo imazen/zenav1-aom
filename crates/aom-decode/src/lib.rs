@@ -1166,7 +1166,8 @@ pub(crate) struct InterCdfs {
     /// average-group vs masked-group selector (masked_compound_used only).
     comp_group_idx: [[u16; 3]; 6],
     /// `compound_type_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(MASKED_COMPOUND_TYPES=2)):
-    /// wedge-vs-diffwtd inside the masked group (step 4b; read for syntax sync).
+    /// wedge-vs-diffwtd inside the masked group (consumed by the step-4b masked
+    /// predictor).
     compound_type: [[u16; 3]; 22],
     single_ref: [[[u16; 3]; 6]; 3],
     newmv: [[u16; 3]; 6],
@@ -3944,9 +3945,9 @@ impl<'c> TileKf<'c> {
         // codes these. `comp_group_idx` selects average/dist-wtd (group 0) vs
         // masked (group 1); within group 0, `compound_idx` picks dist-wtd vs
         // plain average. Group 1 is the wedge/diffwtd masked family — the
-        // syntax is consumed for sync (a conformant read of every symbol C
-        // reads) then refused by name until step 4b lands the mask kernels.
-        let (comp_group_idx, compound_idx, _comp_type, _wedge_index, _wedge_sign, _mask_type) =
+        // mask payload (comp_type + wedge_index/sign or mask_type) feeds the
+        // masked predictor below.
+        let (comp_group_idx, compound_idx, comp_type, wedge_index, wedge_sign, mask_type) =
             if is_compound {
                 let masked_compound_used = comp_allowed && inter.enable_masked_compound;
                 let cgi_ctx = ep::get_comp_group_idx_context(
@@ -3991,13 +3992,28 @@ impl<'c> TileKf<'c> {
                 // Non-compound defaults (C seeds comp_group_idx=0, compound_idx=1).
                 (0, 1, 0, 0, 0, 0)
             };
-        if is_compound && comp_group_idx != 0 {
-            self.mark_unsupported(
-                "inter: masked compound (wedge/diffwtd) not yet supported in this \
-                 decode envelope",
-            );
-            return;
-        }
+        // Masked compound (`comp_group_idx == 1`): `comp_type` picks the wedge
+        // codebook mask (`COMPOUND_WEDGE` = 2, with wedge_index/wedge_sign) or
+        // the diff-weighted `seg_mask` (`COMPOUND_DIFFWTD` = 3, with mask_type).
+        let masked: Option<aom_dsp::inter::MaskedCompound> = if is_compound && comp_group_idx != 0 {
+            const COMPOUND_WEDGE: i32 = 2;
+            Some(if comp_type == COMPOUND_WEDGE {
+                aom_dsp::inter::MaskedCompound::Wedge {
+                    index: wedge_index as usize,
+                    sign: wedge_sign as usize,
+                }
+            } else {
+                aom_dsp::inter::MaskedCompound::Diffwtd {
+                    mask_type: if mask_type != 0 {
+                        aom_dsp::inter::compound::DiffwtdMaskType::Diffwtd38Inv
+                    } else {
+                        aom_dsp::inter::compound::DiffwtdMaskType::Diffwtd38
+                    },
+                }
+            })
+        } else {
+            None
+        };
         // `av1_dist_wtd_comp_weight_assign` (reconinter.c:669): compound_idx==0
         // -> distance-weighted offsets from the pair's order-hint distances;
         // compound_idx==1 (or !is_compound) -> the plain 8/8 average.
@@ -4348,6 +4364,16 @@ impl<'c> TileKf<'c> {
         let blk_x = (mi_col * 4) as usize;
         let blk_y = (mi_row * 4) as usize;
         let dst_off = blk_y * self.stride + blk_x;
+        // Masked compound: a `COMPOUND_DIFFWTD` `seg_mask` is built on luma
+        // (`!conv_params.plane`, reconinter.c:655) and reused subsampled by the
+        // chroma planes — keep one luma-resolution scratch across the block's
+        // luma + both chroma masked blends. Wedge refetches the codebook mask
+        // per plane and never touches it.
+        let mut seg_mask = if masked.is_some() {
+            vec![0u8; bw_px * bh_px]
+        } else {
+            Vec::new()
+        };
         // Luma MC: WARPED_CAUSAL affine warp (av1_warp_plane) with a valid local
         // model; else translational. OBMC uses translational here (its overlap
         // blend runs after, below). Luma block is always >= 8 -> passes
@@ -4389,22 +4415,46 @@ impl<'c> TileKf<'c> {
                 bh_px,
                 &mut self.wide_rect,
                 |dst, stride| {
-                    aom_dsp::inter::build_compound_inter_predictor(
-                        refs,
-                        dst,
-                        0,
-                        stride,
-                        blk_x,
-                        blk_y,
-                        bw_px,
-                        bh_px,
-                        0,
-                        0,
-                        filter_x,
-                        filter_y,
-                        cfg.bd as u32,
-                        comp_weights,
-                    );
+                    if let Some(comp) = masked {
+                        // Masked (wedge/diffwtd): each ref to its own d16
+                        // buffer, then blend via the luma-res mask.
+                        aom_dsp::inter::build_masked_compound_inter_predictor(
+                            refs,
+                            dst,
+                            0,
+                            stride,
+                            blk_x,
+                            blk_y,
+                            bw_px,
+                            bh_px,
+                            0,
+                            0,
+                            filter_x,
+                            filter_y,
+                            cfg.bd as u32,
+                            comp,
+                            bsize,
+                            true,
+                            &mut seg_mask,
+                        );
+                    } else {
+                        aom_dsp::inter::build_compound_inter_predictor(
+                            refs,
+                            dst,
+                            0,
+                            stride,
+                            blk_x,
+                            blk_y,
+                            bw_px,
+                            bh_px,
+                            0,
+                            0,
+                            filter_x,
+                            filter_y,
+                            cfg.bd as u32,
+                            comp_weights,
+                        );
+                    }
                 },
             );
         } else if let Some(wm) = warp_luma.filter(|_| !sf.is_scaled()) {
@@ -4596,22 +4646,47 @@ impl<'c> TileKf<'c> {
                     bh_uv,
                     &mut self.wide_rect,
                     |dst, stride| {
-                        aom_dsp::inter::build_compound_inter_predictor(
-                            refs,
-                            dst,
-                            0,
-                            stride,
-                            uv_org_x,
-                            uv_org_y,
-                            bw_uv,
-                            bh_uv,
-                            ss_x,
-                            ss_y,
-                            filter_x,
-                            filter_y,
-                            cfg.bd as u32,
-                            comp_weights,
-                        );
+                        if let Some(comp) = masked {
+                            // Chroma masked: chroma dims + subsampling; the
+                            // mask stays luma-resolution (`sb_type`/`mask_stride`
+                            // from `bsize`, seg_mask already built on luma).
+                            aom_dsp::inter::build_masked_compound_inter_predictor(
+                                refs,
+                                dst,
+                                0,
+                                stride,
+                                uv_org_x,
+                                uv_org_y,
+                                bw_uv,
+                                bh_uv,
+                                ss_x,
+                                ss_y,
+                                filter_x,
+                                filter_y,
+                                cfg.bd as u32,
+                                comp,
+                                bsize,
+                                false,
+                                &mut seg_mask,
+                            );
+                        } else {
+                            aom_dsp::inter::build_compound_inter_predictor(
+                                refs,
+                                dst,
+                                0,
+                                stride,
+                                uv_org_x,
+                                uv_org_y,
+                                bw_uv,
+                                bh_uv,
+                                ss_x,
+                                ss_y,
+                                filter_x,
+                                filter_y,
+                                cfg.bd as u32,
+                                comp_weights,
+                            );
+                        }
                     },
                 );
             }
