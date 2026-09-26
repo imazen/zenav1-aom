@@ -70,7 +70,7 @@ rayon = ["zenav1-aom-dsp/rayon"]
 # declare it, and a `--workspace` build unifies it on, so the harness still
 # runs. NOT a never-disabled feature: `cargo build -p zenav1-aom-encode`
 # genuinely hides them (E0603), which is the whole point.
-__internals = ["trace-env"]
+__internals = ["trace-env", "zenav1-aom-dsp/__internals"]
 trace-env = ["zenav1-aom-dsp/trace-env"]
 
 [dev-dependencies]

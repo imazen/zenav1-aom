@@ -9,7 +9,7 @@ pub mod cfl;
 mod cfl_simd;
 pub mod dir;
 mod dir_simd;
-pub mod edge;
+internal_mods!(edge);
 mod edge_simd;
 mod filter_simd;
 mod simd;

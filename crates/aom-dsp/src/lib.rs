@@ -37,6 +37,15 @@
 #![allow(rustdoc::private_intra_doc_links)]
 #![forbid(unsafe_code)]
 
+/// `internal_mods!(a, b)` declares modules that are `pub` only under the
+/// default-off `__internals` feature and `pub(crate)` otherwise — the crate's
+/// implementation surface, reachable by the differential harnesses and by
+/// nothing a consumer builds.
+#[cfg(feature = "__internals")]
+macro_rules! internal_mods { ($($m:ident),* $(,)?) => { $(pub mod $m;)* }; }
+#[cfg(not(feature = "__internals"))]
+macro_rules! internal_mods { ($($m:ident),* $(,)?) => { $(pub(crate) mod $m;)* }; }
+
 pub mod blocksize;
 pub mod cdef;
 pub mod census;

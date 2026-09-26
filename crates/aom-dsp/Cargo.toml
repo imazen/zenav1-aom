@@ -74,6 +74,13 @@ census = []
 # harness. DEFAULT OFF: a published crate never reads the environment on a
 # trace path; a host installs traces through `aom_dsp::trace::install`.
 trace-env = []
+# Expose the implementation modules that only the differential harnesses use
+# (`intra::edge`, `restore::wiener`, the transform's 1-D primitives). Default
+# OFF: consumers see the kernels the encoder/decoder call; the harnesses
+# (`tests/all`, aom-bench, the encode/decode `__internals`) turn it on. The
+# same pattern as zenav1-aom-encode / -decode; measured 2026-09-25 that no
+# consumer crate reaches any of the gated paths.
+__internals = []
 rayon = ["dep:rayon"]
 
 [dev-dependencies]
@@ -93,3 +100,12 @@ archmage = { version = "0.9.27", features = ["testable_dispatch"] }
 # default-off `__internals` feature (see docs/public-api/) and are not rendered.
 [package.metadata.docs.rs]
 all-features = false
+
+# The consolidated harness needs `__internals`; `tests/internals_feature_guard.rs`
+# is deliberately NOT gated so a `-p` run without the feature fails loudly
+# instead of reporting green with no gates run (KB-42). cargo resolves
+# `name = "all"` to tests/all.rs unless the path is explicit.
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+required-features = ["__internals"]

@@ -59,7 +59,7 @@ whereat = ["dep:whereat"]
 # silently empty -- that is the KB-42 failure mode and it is what makes a
 # `required-features` target safe to use here.
 # Harness builds also keep the env front door for the divergence traces.
-__internals = ["trace-env"]
+__internals = ["trace-env", "zenav1-aom-dsp/__internals"]
 trace-env = ["zenav1-aom-dsp/trace-env"]
 
 [dev-dependencies]

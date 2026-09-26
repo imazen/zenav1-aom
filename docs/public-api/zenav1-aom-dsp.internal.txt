@@ -1,5 +1,5 @@
 # zenav1-aom-dsp public API — doc(hidden) items and excluded-feature surface
-# excluded features: (none)
+# excluded features: __internals
 # (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
 # Encodings: crate-name prefix stripped; auto traits collapse to a
 # count + exceptions; trait impls collapse to one roster line per
@@ -9,15 +9,23 @@
 
 ## summary
 #
-#   free functions                              1
-#   inherent methods                           25
-#   trait roster entries (type × trait)        46
+#   pub modules                                 7
+#   pub types (struct/enum/trait/alias)         1
+#   pub consts/statics                          6
+#   free functions                             63
+#   inherent methods                           28
+#   trait roster entries (type × trait)        48
+#   auto-trait-complete types                   1
 #
 # per-module pub lines:
-#   aom_dsp                          26
+#   aom_dsp                         105
 
-## items (26 lines)
+## items (79 lines)
 
+pub const aom_dsp::transform::cospi::COS_BIT_MIN: i32
+pub const aom_dsp::transform::cospi::NEW_INV_SQRT2: i32
+pub const aom_dsp::transform::cospi::NEW_SQRT2: i32
+pub const aom_dsp::transform::cospi::NEW_SQRT2_BITS: i32
 pub fn aom_dsp::cdef::cdef_find_dir_took_simd_path(&[u16], usize, i32) -> bool
 pub fn aom_dsp::census::Counts::assert_fields_are_eq(&self)
 pub fn aom_dsp::census::Leaf::assert_fields_are_eq(&self)
@@ -38,14 +46,63 @@ pub fn aom_dsp::inter::compound::DiffwtdMaskType::assert_fields_are_eq(&self)
 pub fn aom_dsp::inter::compound::DistWtdWeights::assert_fields_are_eq(&self)
 pub fn aom_dsp::inter::scale::ScaleFactors::assert_fields_are_eq(&self)
 pub fn aom_dsp::inter::warp::WarpedMotionParams::assert_fields_are_eq(&self)
+pub fn aom_dsp::intra::edge::edge_filter_strength(i32, i32, i32, i32) -> i32
+pub fn aom_dsp::intra::edge::filter_intra_edge(&mut [u8], usize, i32)
+pub fn aom_dsp::intra::edge::highbd_filter_intra_edge(&mut [u16], usize, i32)
+pub fn aom_dsp::intra::edge::highbd_filter_intra_edge_at(&mut [u16], usize, usize, i32)
+pub fn aom_dsp::intra::edge::highbd_upsample_intra_edge(&mut [u16], usize, usize, u8)
+pub fn aom_dsp::intra::edge::upsample_intra_edge(&mut [u8], usize, usize)
+pub fn aom_dsp::intra::edge::use_upsample(i32, i32, i32, i32) -> i32
 pub fn aom_dsp::quant::QuantTuning::assert_fields_are_eq(&self)
 pub fn aom_dsp::quant::QuantizerSettings::assert_fields_are_eq(&self)
+pub fn aom_dsp::restore::wiener::WienerScratch::clone(&self) -> aom_dsp::restore::wiener::WienerScratch
+pub fn aom_dsp::restore::wiener::WienerScratch::default() -> aom_dsp::restore::wiener::WienerScratch
+pub fn aom_dsp::restore::wiener::WienerScratch::new() -> Self
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_into<P: aom_dsp::restore::pick::LrPixel>(&[P], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32, &mut aom_dsp::restore::wiener::WienerScratch)
+pub fn aom_dsp::restore::wiener::wiener_convolve_add_src_scalar(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
 pub fn aom_dsp::trace::Focus::assert_fields_are_eq(&self)
 pub fn aom_dsp::trace::Trace::assert_fields_are_eq(&self)
+pub fn aom_dsp::transform::av1_fadst16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fadst4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fadst8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::fdct]
+pub fn aom_dsp::transform::av1_fdct64(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fdct8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::txfm1d_gen]
+pub fn aom_dsp::transform::av1_fidentity16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fidentity32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fidentity4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_fidentity8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iadst16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_iadst4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iadst8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct64(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_idct8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::inv_txfm1d_gen]
+pub fn aom_dsp::transform::av1_iidentity16(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iidentity32(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iidentity4(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::av1_iidentity8(&[i32], &mut [i32], i32, &[i8]) [also: aom_dsp::transform::special]
+pub fn aom_dsp::transform::clamp_value(i32, i8) -> i32 [also: aom_dsp::transform::fdct]
+pub fn aom_dsp::transform::half_btf(i32, i32, i32, i32, i32) -> i32 [also: aom_dsp::transform::fdct]
 pub fn aom_dsp::txb::ExtTxDeriv::assert_fields_are_eq(&self)
 pub fn aom_dsp::txb::TxClass::assert_fields_are_eq(&self)
+pub mod aom_dsp::intra::edge
+pub mod aom_dsp::restore::wiener
+pub mod aom_dsp::transform::cospi
+pub mod aom_dsp::transform::fdct
+pub mod aom_dsp::transform::inv_txfm1d_gen
+pub mod aom_dsp::transform::special
+pub mod aom_dsp::transform::txfm1d_gen
+pub static aom_dsp::transform::cospi::COSPI_ARR_DATA: [[i32; 64]; 4]
+pub static aom_dsp::transform::cospi::SINPI_ARR_DATA: [[i32; 5]; 4]
+pub struct aom_dsp::restore::wiener::WienerScratch
 
-## trait impls (46 types)
+## trait impls (47 types)
 
 aom_dsp::census::Leaf: TrivialClone
 aom_dsp::convolve::compound::CompoundConvolveParams: TrivialClone
@@ -90,6 +147,11 @@ aom_dsp::quant::PlaneQuantRows<'a>: TrivialClone
 aom_dsp::quant::QuantTuning: TrivialClone
 aom_dsp::quant::QuantizerSettings: TrivialClone
 aom_dsp::restore::pick::LrSearchSf: TrivialClone
+aom_dsp::restore::wiener::WienerScratch: Clone, Default
 aom_dsp::trace::Focus: TrivialClone
 aom_dsp::trace::Trace: TrivialClone
 aom_dsp::txb::TxClass: TrivialClone
+
+## auto traits
+
+1 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe

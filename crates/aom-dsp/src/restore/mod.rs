@@ -16,4 +16,4 @@
 pub mod frame;
 pub mod pick;
 pub mod sgr;
-pub mod wiener;
+internal_mods!(wiener);

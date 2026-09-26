@@ -1,5 +1,43 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom. Landings before 2026-09-08 are in `docs/archive/STATUS_2026-07-14_to_2026-09-04.md` (moved 2026-09-25; nothing rewritten).
 
+## Production prep: publishable, linted, documented, decluttered (2026-09-25, `maint/prod-prep`)
+
+Five landings on one branch, each behind the full landing gate in a clean worktree:
+
+- **Publish metadata + policy** (`a647137`): readme/keywords/categories + docs.rs block
+  on the four published crates; `cargo publish --dry-run -p zenav1-aom-dsp` reaches
+  Uploading; tarballs 5.4 / 1.0 / 6.3 MB + the facade. `deny.toml` measured over the
+  93-package graph (all permissive; our AGPL branch allowed per published crate only;
+  `cc`/`cmake` banned from the published path); `cargo audit` clean. CHANGELOG
+  rewritten for the cycle. `just deny` in the gate + a CI job.
+- **Docs** (`f8a7bd8`): the 130 undocumented items on the encode/decode consumer
+  surfaces documented; `#![warn(missing_docs)]` on both (default build);
+  rustdoc warnings on the published crates 36/11/54 -> 0; `just doc-check`
+  (`-D warnings`) in the gate + a CI job.
+- **Clippy** (`18e0bb7`): 866 -> 0 with `-D warnings` over every target. Per-crate
+  policy allows name the lints that fight a line-for-line C port (each with its
+  reason); `--fix` for the machine-applicable rest; ~70 hand fixes; dead code deleted
+  or `cfg(test)`. Both nextest passes 1548/1548 after the rewrites — byte identity
+  held. `just clippy` in the gate + a CI job.
+- **Declutter** (`0230285`): STATUS.md 408 -> 67 KB (older cycles archived verbatim),
+  CONTRIBUTING.md, README developer section = the gate, `handoff/` and
+  `coverage-audit/` under `docs/`, the integration review archived as a dated record,
+  docs index refreshed.
+- **dsp internals gate** (this landing): `zenav1-aom-dsp` gains the same default-off
+  `__internals` feature as encode/decode. `intra::edge`, `restore::wiener` and the
+  transform's 1-D primitives (`cospi`, `fdct`, `txfm1d_gen`, `special`,
+  `inv_txfm1d_gen` + their root re-exports) are `pub(crate)` without it — measured:
+  no consumer crate reaches any of them; the differentials do. Default surface 62 ->
+  56 modules, 596 -> 535 free functions (649 at the start of the day). The
+  inter/convolve kernel families stay public on purpose: `feat/experimental-video`
+  is routing the decoder through them now. `tests/all` requires the feature and
+  `tests/internals_feature_guard.rs` fails loudly without it (the KB-42 pattern).
+
+Not done, stated: the remaining ~165 dsp free functions used only by the crate's own
+tests sit inside modules that consumers also use, so they need per-item work or
+in-crate test moves — deferred until after the first crates.io publish fixes the
+contract. `rust-version` is not set (untested MSRV; CI runs stable 1.98).
+
 ## Merged to main; branches pruned; the tree is rustfmt-clean and gated (2026-09-25)
 
 `perf/gate3-txfm-i16-batch` fast-forwarded `origin/main` `1434bc3` -> `75b5abc` (171
