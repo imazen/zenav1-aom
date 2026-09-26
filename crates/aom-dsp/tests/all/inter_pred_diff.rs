@@ -18,7 +18,7 @@
 
 use aom_dsp::inter::{
     blend_a64_hmask, blend_a64_vmask, build_inter_predictor, build_mc_border, get_obmc_mask,
-    inter_predictor,
+    inter_predictor, scale::ScaleFactors,
 };
 use aom_sys_ref::{
     ref_blend_a64_hmask, ref_blend_a64_vmask, ref_build_mc_border, ref_get_obmc_mask,
@@ -283,9 +283,30 @@ fn smoke_build_inter_predictor() {
     let (blk_x, blk_y) = (40usize, 24usize);
     let dst_stride = w;
     let mut dst = vec![0u16; w * h];
+    let identity_sf =
+        ScaleFactors::for_frame(ref_w as i32, ref_h as i32, ref_w as i32, ref_h as i32);
     build_inter_predictor(
-        &ref_plane, ref_stride, ref_w, ref_h, &mut dst, 0, dst_stride, blk_x, blk_y, w, h, 0, 0, 0,
-        0, 0, 0, 8,
+        &ref_plane,
+        ref_stride,
+        ref_w,
+        ref_h,
+        &mut dst,
+        0,
+        dst_stride,
+        blk_x,
+        blk_y,
+        w,
+        h,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        8,
+        &identity_sf,
     );
     for y in 0..h {
         for x in 0..w {
@@ -311,11 +332,61 @@ fn smoke_build_inter_predictor() {
         let dst_stride = w;
         let mut dst = vec![0u16; w * h];
         build_inter_predictor(
-            &ref_plane, ref_stride, ref_w, ref_h, &mut dst, 0, dst_stride, bx, by, w, h, mvr, mvc,
-            ssx, ssy, 0, 0, 8,
+            &ref_plane,
+            ref_stride,
+            ref_w,
+            ref_h,
+            &mut dst,
+            0,
+            dst_stride,
+            bx,
+            by,
+            w,
+            h,
+            mvr,
+            mvc,
+            mvr,
+            mvc,
+            ssx,
+            ssy,
+            0,
+            0,
+            8,
+            &identity_sf,
         );
         for &v in &dst {
             assert!(v <= 255, "lowbd predictor out of range: {v}");
+        }
+    }
+
+    // (3) Scaled reference (`av1_is_scaled`): the predictor routes through
+    // convolve_2d_scale — exercise both directions at both depths. ref_w/ref_h
+    // are the plane's VALID dims; the buffer stays 128x96 either way.
+    for &(rw, rh) in &[(64usize, 48usize), (256usize, 192usize)] {
+        let sf = ScaleFactors::for_frame(rw as i32, rh as i32, ref_w as i32, ref_h as i32);
+        assert!(sf.is_scaled(), "sf should be scaled for {rw}x{rh}");
+        let big = rw > ref_w;
+        let buf_w = if big { rw } else { ref_w };
+        let buf_h = if big { rh } else { ref_h };
+        let big_plane: Vec<u16> = (0..buf_w * buf_h).map(|_| rng.byte() as u16).collect();
+        for &bd in &[8u32, 10, 12] {
+            for &(w, h, bx, by, mvr, mvc) in &[
+                (16usize, 16usize, 8usize, 8usize, 3i32, -5i32),
+                (8, 4, 100, 60, -13, 21),
+            ] {
+                let mut dst = vec![0u16; w * h];
+                build_inter_predictor(
+                    &big_plane, buf_w, rw, rh, &mut dst, 0, w, bx, by, w, h, mvr, mvc, mvr, mvc, 0,
+                    0, 0, 0, bd, &sf,
+                );
+                let cap = (1u32 << bd) - 1;
+                for &v in &dst {
+                    assert!(
+                        v as u32 <= cap,
+                        "scaled predictor out of range: {v} (bd {bd})"
+                    );
+                }
+            }
         }
     }
 }

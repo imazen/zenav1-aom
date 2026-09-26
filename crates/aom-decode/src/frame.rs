@@ -457,6 +457,14 @@ struct InterParseCtx {
     lf_mode_deltas: [i8; 2],
     gm_ref: [WarpedMotionParams; 7],
     skip_mode_refs_allowed: bool,
+    /// Bound refs' LUMA crop dims (`ref_frame_idx` order, `LAST..ALTREF`) —
+    /// seed for `read_frame_size_with_refs`'s `found_ref` arm
+    /// (`setup_frame_size_with_refs`, decodeframe.c:2074): an inter frame may
+    /// take its dimensions from a referenced frame instead of coding them.
+    /// 0 for an unbound slot, so a `found_ref` on it produces 0 dims, which
+    /// `parse_frame_header_ext` rejects as C's "Invalid frame size".
+    ref_crop_w: [i32; 7],
+    ref_crop_h: [i32; 7],
 }
 
 /// `default_warp_params` (identity; diagonal `1 << WARPEDMODEL_PREC_BITS`).
@@ -608,6 +616,13 @@ fn parse_frame_header_ext(
         cfg.ref_global_motion = ic.gm_ref;
         cfg.skip_mode_allowed = ic.skip_mode_refs_allowed;
         cfg.derive_skip_mode_allowed = true;
+        // `setup_frame_size_with_refs`'s `found_ref` inputs (decodeframe.c:2074):
+        // the bound refs' luma dims feed `read_frame_size_with_refs` (render
+        // dims are unused by the decode path — render == crop here).
+        cfg.frame_size_with_refs.ref_y_crop_width = ic.ref_crop_w;
+        cfg.frame_size_with_refs.ref_y_crop_height = ic.ref_crop_h;
+        cfg.frame_size_with_refs.ref_render_width = ic.ref_crop_w;
+        cfg.frame_size_with_refs.ref_render_height = ic.ref_crop_h;
     }
 
     // Two-phase header parse for coded-lossless. `read_uncompressed_header` gates
@@ -635,6 +650,17 @@ fn parse_frame_header_ext(
     // downscaled mi grid (composed with the coded-lossless re-parse).
     let superres_denom = probe.frame_size.scale_denominator;
     let superres = crate::superres::superres_scaled(superres_denom);
+    // `experimental-video` (step 3): a `frame_size_override` frame's real dims
+    // (explicitly coded, or taken from a bound ref via `found_ref`) differ from
+    // the sequence max, so the seed `tile_info` — built on the seq-max mi grid
+    // — over-sizes the tile caps exactly like a superres grid does; re-parse on
+    // the real mi grid the same way. The probe's own `frame_size` is already
+    // correct (it precedes the tile info and `cfg.frame_size_with_refs` was
+    // seeded above), so it supplies the dims for the re-parse.
+    let size_override = cfg!(feature = "experimental-video")
+        && (probe.frame_size.superres_upscaled_width != s.max_frame_width
+            || probe.frame_size.superres_upscaled_height != s.max_frame_height);
+    let regrid = superres || size_override;
     // Under superres the probe's full (upscaled-width) tile_info is OVER-SIZED, so
     // every field the probe reads after it — the quant params included — comes off
     // a shifted bit position and is garbage. `coded_lossless` MUST therefore be
@@ -645,14 +671,18 @@ fn parse_frame_header_ext(
     // is a single 64-wide superblock, was the first stream to trip this). So when
     // superres is active, parse a probe on the downscaled grid FIRST and reuse it as
     // the final header (re-parsing only if it turns out to be coded-lossless).
-    let sr_probe = superres.then(|| {
+    let sr_probe = regrid.then(|| {
         let coded_w = crate::superres::coded_frame_width(
             probe.frame_size.superres_upscaled_width,
             superres_denom,
         );
         let mut cfg_sr = cfg.clone();
-        cfg_sr.superres_scaled = true;
-        cfg_sr.tile_info = tile_limits(mi_dim(coded_w), mi_rows, mib_size_log2);
+        cfg_sr.superres_scaled = superres;
+        cfg_sr.tile_info = tile_limits(
+            mi_dim(coded_w),
+            mi_dim(probe.frame_size.superres_upscaled_height),
+            mib_size_log2,
+        );
         let mut rb_sr = ReadBitBuffer::new(payload);
         let p_sr = read_uncompressed_header(&mut rb_sr, &cfg_sr);
         (cfg_sr, p_sr, rb_sr)
@@ -793,12 +823,33 @@ fn parse_frame_header_ext(
     // driver (see `allow_intrabc` in the KfTileConfig below), not rejected:
     // intrabc luma is an integer block copy from the already-decoded region and
     // chroma reuses the scaled DV (integer copy or a 2-tap bilinear at half-pel).
+    // `frame_size_override` (a frame whose dims differ from the sequence max —
+    // the mechanism a scaled-reference stream uses, `experimental-video` step 3)
+    // is refused by name without the feature. With it, C's own conformance
+    // bounds apply instead (setup_frame_size / setup_frame_size_with_refs,
+    // decodeframe.c:2035+): explicit override dims may not EXCEED the sequence
+    // max, and a `found_ref`-derived size may not be 0 (unbound slot) — both
+    // surface as C's AOM_CODEC_CORRUPT_FRAME, i.e. Malformed.
+    #[cfg(not(feature = "experimental-video"))]
     if p.frame_size.superres_upscaled_width != s.max_frame_width
         || p.frame_size.superres_upscaled_height != s.max_frame_height
     {
         return Err(DecodeError::UnsupportedFeature(
             "frame_size_override (frame != sequence max dims)",
         ));
+    }
+    #[cfg(feature = "experimental-video")]
+    {
+        if p.frame_size.superres_upscaled_width > s.max_frame_width
+            || p.frame_size.superres_upscaled_height > s.max_frame_height
+        {
+            return Err(DecodeError::Malformed(
+                "frame dimensions larger than sequence max (non-conformant)".into(),
+            ));
+        }
+        if p.frame_size.superres_upscaled_width <= 0 || p.frame_size.superres_upscaled_height <= 0 {
+            return Err(DecodeError::Malformed("Invalid frame size".into()));
+        }
     }
     // Superres (SuperresDenom in [9,16]) IS in the envelope: the frame is coded
     // at a reduced width and upscaled back to the full UpscaledWidth
@@ -1433,11 +1484,20 @@ fn build_inter_parse_ctx(
         // PRIMARY_REF_NONE -> setup_past_independence defaults.
         (KF_REF_DELTAS, KF_MODE_DELTAS, [IDENTITY_GM; 7])
     };
+    // `setup_frame_size_with_refs`'s ref-dim inputs (pbi->ref_y_crop_width etc.)
+    // — bound slots' luma crop dims; the render dims are unused by the port's
+    // decode path (render == crop here).
+    let ref_crop_w: [i32; 7] =
+        std::array::from_fn(|i| bound[i].as_deref().map_or(0, |s| s.frame.width as i32));
+    let ref_crop_h: [i32; 7] =
+        std::array::from_fn(|i| bound[i].as_deref().map_or(0, |s| s.frame.height as i32));
     Ok(Some(InterParseCtx {
         lf_ref_deltas: lf_r,
         lf_mode_deltas: lf_m,
         gm_ref: gm,
         skip_mode_refs_allowed: sm,
+        ref_crop_w,
+        ref_crop_h,
     }))
 }
 
@@ -1624,6 +1684,38 @@ fn decode_inter_tile_payload(
             }
         }
     }
+    // `av1_setup_scale_factors_for_frame` per bound ref (decodeframe.c:1153)
+    // — LUMA-dim scale factors against this frame's dims; an out-of-spec ratio
+    // stays `is_valid() == false`. `setup_frame_size_with_refs` then requires at
+    // least one bound ref with a valid size — C reports
+    // "Referenced frame has invalid size" (AOM_CODEC_CORRUPT_FRAME) there; the
+    // honest mirror is Malformed. An invalid-but-bound ref that no block
+    // references is inert; a block that DOES reference one takes the unscaled
+    // path, exactly like C (`av1_is_scaled` is false on an invalid sf).
+    let this_w = p.frame_size.superres_upscaled_width;
+    let this_h = p.frame_size.superres_upscaled_height;
+    let ref_sf: [aom_dsp::inter::scale::ScaleFactors; 7] = std::array::from_fn(|i| {
+        bound[i].as_deref().map_or_else(
+            || aom_dsp::inter::scale::ScaleFactors::for_frame(this_w, this_h, this_w, this_h),
+            |s| {
+                aom_dsp::inter::scale::ScaleFactors::for_frame(
+                    s.frame.width as i32,
+                    s.frame.height as i32,
+                    this_w,
+                    this_h,
+                )
+            },
+        )
+    });
+    let has_valid_ref_frame = bound
+        .iter()
+        .enumerate()
+        .any(|(i, b)| b.is_some() && ref_sf[i].is_valid());
+    if !has_valid_ref_frame {
+        return Err(DecodeError::Malformed(
+            "inter: referenced frame has invalid size".into(),
+        ));
+    }
     let inter = crate::InterFrameCfg {
         refs,
         ref_frame_sign_bias: sign_bias,
@@ -1631,6 +1723,7 @@ fn decode_inter_tile_payload(
         tpl_cells: tpl_cells.as_deref(),
         tpl_stride: ((cfg.mi_cols + 1) >> 1) as usize,
         tpl_cur_offset,
+        ref_sf,
         allow_high_precision_mv: p.allow_high_precision_mv,
         cur_frame_force_integer_mv: p.cur_frame_force_integer_mv,
         interp_filter: p.interp_filter,
@@ -2151,12 +2244,17 @@ fn build_tile_cfg(seq: &SequenceHeaderObu, p: &FrameHeaderObu) -> KfTileConfig {
     // strides, and per-block reconstruction are sized to it. Height is never
     // scaled (superres is horizontal only). For unscaled frames
     // `coded_frame_width` returns the width unchanged, so this is a no-op.
+    //
+    // `mi_rows`/`mi_cols` are the FRAME's mi grid (setup_frame_size): the
+    // upscaled height and the coded width of THIS frame — under
+    // `experimental-video` a `frame_size_override` can make them smaller than
+    // the sequence max; without it they always equal the sequence max.
     let coded_width = crate::superres::coded_frame_width(
         p.frame_size.superres_upscaled_width,
         p.frame_size.scale_denominator,
     );
     KfTileConfig {
-        mi_rows: mi_dim(s.max_frame_height),
+        mi_rows: mi_dim(p.frame_size.superres_upscaled_height),
         mi_cols: mi_dim(coded_width),
         bd: c.bit_depth,
         monochrome: c.monochrome,

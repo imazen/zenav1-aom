@@ -38,6 +38,52 @@ tests sit inside modules that consumers also use, so they need per-item work or
 in-crate test moves — deferred until after the first crates.io publish fixes the
 contract. `rust-version` is not set (untested MSRV; CI runs stable 1.98).
 
+## `experimental-video` step 3: scaled references routed through `convolve_2d_scale` (2026-09-25, branch `feat/experimental-video`)
+
+Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md` step 3: with `experimental-video` ON
+an inter frame whose bound ref has different luma crop dims decodes
+**byte-exact** against the pinned C oracle in both scale directions; OFF keeps
+the named refusal `frame_size_override (frame != sequence max dims)`.
+
+**The routing.** `aom-decode/src/frame.rs` lifts the `frame_size_override`
+gate under the feature (keeping the C bounds checks — dims <= sequence max,
+nonzero), seeds `frame_size_with_refs` from the bound refs' crop dims so
+`found_ref` resolution runs like C's `setup_frame_size_with_refs`, computes
+`InterFrameCfg::ref_sf` (one `ScaleFactors` per bound ref, C's
+`av1_setup_scale_factors_for_frame`) and rejects the frame as malformed when
+no bound ref is a valid size (`valid_ref_frame_size`). `build_tile_cfg`'s
+`mi_rows` now uses the frame's actual height instead of the sequence maximum —
+the old seq-max value over-allocated the MI grid for size-override frames.
+`aom_dsp::inter::build_inter_predictor` takes the raw (coded) MV alongside the
+UMV-clamped MV plus `&ScaleFactors`; scaled refs dispatch to
+`scaled_inter_predictor`, which mirrors `dec_calc_subpel_params`'s scaled arm
+(q10 sub-pel positions, per-sample `x_step_qn`/`y_step_qn`, `SCALE_EXTRA_OFF`
+border, `AOM_LEFT_TOP_MARGIN_SCALED` clamps, always-on scaled border pad via
+`build_mc_border`/`build_mc_border_highbd`) and then calls the already-locked
+`convolve::scaled::{convolve_2d_scale, highbd_convolve_2d_scale}` kernels.
+Warped prediction is disabled on scaled refs in both places C disables it:
+`motion_mode_ceiling` (symbol read — WARPED_CAUSAL never offered) and the
+`warp_luma`/`warp_chroma` apply-sites (`av1_allow_warp`'s `is_scaled` recheck),
+so scaled blocks take the translational path. Compound refs still refuse by
+name in both build states.
+
+**Coverage.** New gate `aom-bench/tests/all/scaled_ref_decode_envelope.rs`:
+three committed OBU fixtures (generated with `aomenc --resize-mode=1`,
+provenance in the file doc), each C-decoded through
+`ref_decode_av1_stream_frame_opt` against PINNED per-frame dims — the shim
+panics on a dims mismatch, so a port geometry error cannot hide behind
+`is_scaled`. Feature ON: `scaled-ref-down` (128² KEY + five 64² inters
+referencing the 2×-larger ref), `scaled-ref-up` (64² KEY + four 128² inters
+referencing the 2×-smaller ref) and `frame-size-override` (resized KEY) all
+**byte-exact vs `aom_codec_av1_dx`** — 12/12 shown frames. Feature OFF: each
+refuses `frame_size_override` by name. The aom-decode
+`unsupported_refusals::scaled_reference_frame_refused_by_name` pin flips to
+decode-success under the feature (1/6/5 shown frames), and
+`inter_pred_diff.rs` gained scaled smoke coverage at bd8/10/12 in both
+directions. Larger exploratory streams (512²↔256²) were byte-exact end-to-end
+during development.
+
+
 ## `experimental-video` step 2: highbd sub-pel MC routed through the u16 convolve kernels (2026-09-25, branch `feat/experimental-video`)
 
 Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md` step 2: with `experimental-video` ON a

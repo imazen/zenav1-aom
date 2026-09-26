@@ -1097,6 +1097,14 @@ pub struct InterFrameCfg<'r> {
     /// ref-mv list); a non-identity ref is guarded (a later chunk — every target
     /// through 16x18 is identity-GM).
     pub gm_wmtype: [u8; 7],
+    /// `xd->block_ref_scale_factors[ref]` (`av1_setup_scale_factors_for_frame`)
+    /// — per-bound-ref LUMA scale factors, indexed `LAST(1)..ALTREF(7)` minus 1
+    /// like `refs` (identity where the slot is unbound). Computed in
+    /// `decode_inter_tile_payload` once the parsed frame dims are known; an
+    /// out-of-spec ratio stays `is_valid() == false`, which the payload decoder
+    /// turns into a `Malformed` before any block reads it
+    /// (`setup_frame_size_with_refs`'s `has_valid_ref_frame` check).
+    pub ref_sf: [aom_dsp::inter::scale::ScaleFactors; 7],
     /// This frame's `order_hint`.
     pub order_hint: i32,
 }
@@ -2833,8 +2841,11 @@ impl<'c> TileKf<'c> {
         // ref1 != INTRA_FRAME (0) and !has_second_ref (ref1 <= INTRA_FRAME).
         if is_motion_variation_allowed_bsize(bsize) && is_inter_mode && ref1 < 0 {
             let npr = self.num_proj_ref(mi_row, mi_col, bsize, ref0);
-            if npr >= 1 && inter.allow_warped_motion && !inter.cur_frame_force_integer_mv {
-                // && !av1_is_scaled: single unscaled LAST ref -> not scaled.
+            if npr >= 1
+                && inter.allow_warped_motion
+                && !inter.cur_frame_force_integer_mv
+                && !inter.ref_sf[ref0 as usize - 1].is_scaled()
+            {
                 return 2; // WARPED_CAUSAL
             }
             return 1; // OBMC_CAUSAL
@@ -2924,11 +2935,14 @@ impl<'c> TileKf<'c> {
                 bh,
                 nmv_r,
                 nmv_c,
+                nb.mv0_row,
+                nb.mv0_col,
                 0,
                 0,
                 nb_filter_x,
                 nb_filter_y,
                 self.cfg.bd as u32,
+                &inter.ref_sf[nb.ref_frame0 as usize - 1],
             );
             // Blend the top `overlap` rows of the block's own predictor with the
             // neighbour strip (build_obmc_inter_pred_above -> aom_blend_a64_vmask).
@@ -2996,11 +3010,14 @@ impl<'c> TileKf<'c> {
                         bh_c,
                         cr,
                         cc,
+                        nb.mv0_row,
+                        nb.mv0_col,
                         ss_x,
                         ss_y,
                         nb_filter_x,
                         nb_filter_y,
                         self.cfg.bd as u32,
+                        &inter.ref_sf[nb.ref_frame0 as usize - 1],
                     );
                     dst.with_wide_rect(
                         dst_off_c,
@@ -3088,11 +3105,14 @@ impl<'c> TileKf<'c> {
                 bh,
                 nmv_r,
                 nmv_c,
+                nb.mv0_row,
+                nb.mv0_col,
                 0,
                 0,
                 nb_filter_x,
                 nb_filter_y,
                 self.cfg.bd as u32,
+                &inter.ref_sf[nb.ref_frame0 as usize - 1],
             );
             let plane_row = (rel_mi_row * 4) as usize;
             let dst_off = ((mi_row * 4) as usize + plane_row) * self.stride + (mi_col * 4) as usize;
@@ -3158,11 +3178,14 @@ impl<'c> TileKf<'c> {
                         bh_c,
                         cr,
                         cc,
+                        nb.mv0_row,
+                        nb.mv0_col,
                         ss_x,
                         ss_y,
                         nb_filter_x,
                         nb_filter_y,
                         self.cfg.bd as u32,
+                        &inter.ref_sf[nb.ref_frame0 as usize - 1],
                     );
                     dst.with_wide_rect(
                         dst_off_c,
@@ -3953,14 +3976,17 @@ impl<'c> TileKf<'c> {
             ));
             return;
         };
+        // `xd->block_ref_scale_factors[0]` — the bound ref's luma scale factors.
+        let sf = &inter.ref_sf[(ref0 - 1) as usize];
         let blk_x = (mi_col * 4) as usize;
         let blk_y = (mi_row * 4) as usize;
         let dst_off = blk_y * self.stride + blk_x;
         // Luma MC: WARPED_CAUSAL affine warp (av1_warp_plane) with a valid local
         // model; else translational. OBMC uses translational here (its overlap
         // blend runs after, below). Luma block is always >= 8 -> passes
-        // av1_init_warp_params' per-plane size gate.
-        if let Some(wm) = warp_luma {
+        // av1_init_warp_params' per-plane size gate. `av1_allow_warp` also gates
+        // on `!av1_is_scaled(sf)` — a scaled ref falls back to translational.
+        if let Some(wm) = warp_luma.filter(|_| !sf.is_scaled()) {
             self.recon.with_wide_rect(
                 dst_off,
                 self.stride,
@@ -4052,11 +4078,14 @@ impl<'c> TileKf<'c> {
                         bh_px,
                         cmv_row,
                         cmv_col,
+                        mv_row,
+                        mv_col,
                         0,
                         0,
                         filter_x,
                         filter_y,
                         cfg.bd as u32,
+                        sf,
                     );
                 },
             );
@@ -4113,8 +4142,10 @@ impl<'c> TileKf<'c> {
                         };
                         // Per-plane clamp for this covered sub-block (C's sub8x8
                         // predictor runs dec_calc_subpel_params per b4 with the
-                        // block's shared luma edges + the b4 dims).
-                        let (smv_r, smv_c) = clamp_mv_to_umv_border_plane(
+                        // block's shared luma edges + the b4 dims). `(smv_r,
+                        // smv_c)` stays the RAW coded MV — the scaled-MC arm
+                        // reads it instead.
+                        let (csmv_r, csmv_c) = clamp_mv_to_umv_border_plane(
                             smv_r,
                             smv_c,
                             mi_row,
@@ -4151,6 +4182,8 @@ impl<'c> TileKf<'c> {
                                         byu,
                                         b4_w,
                                         b4_h,
+                                        csmv_r,
+                                        csmv_c,
                                         smv_r,
                                         smv_c,
                                         ss_x,
@@ -4158,6 +4191,7 @@ impl<'c> TileKf<'c> {
                                         filter_x,
                                         filter_y,
                                         cfg.bd as u32,
+                                        sf,
                                     );
                                 },
                             );
@@ -4190,8 +4224,9 @@ impl<'c> TileKf<'c> {
                 );
                 let doff = uv_org_y * self.stride_uv + uv_org_x;
                 // Chroma warp only when the (subsampled) plane block is >= 8 in both
-                // dims (av1_init_warp_params); otherwise translational.
-                let warp_chroma = warp_luma.filter(|_| bw_uv >= 8 && bh_uv >= 8);
+                // dims (av1_init_warp_params); otherwise translational. Same
+                // `av1_allow_warp` scale gate as luma.
+                let warp_chroma = warp_luma.filter(|_| bw_uv >= 8 && bh_uv >= 8 && !sf.is_scaled());
                 if let Some(wm) = warp_chroma {
                     for (dst, src) in [(&mut self.recon_u, &last.u), (&mut self.recon_v, &last.v)] {
                         dst.with_wide_rect(
@@ -4288,11 +4323,14 @@ impl<'c> TileKf<'c> {
                                     bh_uv,
                                     cmv_row_uv,
                                     cmv_col_uv,
+                                    mv_row,
+                                    mv_col,
                                     ss_x,
                                     ss_y,
                                     filter_x,
                                     filter_y,
                                     cfg.bd as u32,
+                                    sf,
                                 );
                             },
                         );

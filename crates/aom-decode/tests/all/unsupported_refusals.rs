@@ -21,6 +21,11 @@
 //! - `frame-size-override.obu` — aomenc `--resize-mode` stream: the coded
 //!   frame size differs from the sequence max, tripping the
 //!   `frame_size_override` gate (the scaled-reference family's front door).
+//! - `scaled-ref-down.obu` / `scaled-ref-up.obu` — aomenc `--resize-mode=1`
+//!   streams (respectively `--resize-denominator=16 --resize-kf-denominator=8`
+//!   and the inverse, `--enable-order-hint=0 --lag-in-frames=0
+//!   --auto-alt-ref=0 --enable-fwd-kf=0` to keep refs single): the first inter
+//!   frame references a 2x-larger / 2x-smaller ref — the scaled-MC path.
 //! - `highbd-nonzero-mv.obu` — 3-frame 64x64 bd10 stream,
 //!   `aomenc --ivf --obu --codec=av1 --profile=0 --bit-depth=10
 //!   --input-bit-depth=8 --end-usage=q --cq-level=30 --cpu-used=4
@@ -32,6 +37,8 @@ use aom_decode::frame::decode_frames;
 
 const COMPOUND_STREAM: &[u8] = include_bytes!("../data/inter/compound-refs.obu");
 const SCALED_STREAM: &[u8] = include_bytes!("../data/inter/frame-size-override.obu");
+const SCALED_DOWN_STREAM: &[u8] = include_bytes!("../data/inter/scaled-ref-down.obu");
+const SCALED_UP_STREAM: &[u8] = include_bytes!("../data/inter/scaled-ref-up.obu");
 const HIGHBD_MV_STREAM: &[u8] = include_bytes!("../data/inter/highbd-nonzero-mv.obu");
 
 /// Evidence for the pin's premise: `stream` is CONFORMANT — the in-process
@@ -94,9 +101,37 @@ fn compound_reference_blocks_refused_by_name() {
 
 #[test]
 fn scaled_reference_frame_refused_by_name() {
-    // OFF: named refusal at the frame_size_override gate. ON: identical until
-    // step 3 routes scaled references.
-    assert_refused_by_name(SCALED_STREAM, "frame_size_override", &[(51, 51)]);
+    if aom_decode::EXPERIMENTAL_VIDEO {
+        // Step 3 routed scaled references: all three fixtures now decode
+        // end-to-end. `SCALED_STREAM` is a resized KEY frame (KEY + the
+        // frame_size_override mechanism alone); the up/down streams each code
+        // an inter frame referencing a 2x-larger / 2x-smaller ref —
+        // byte-exactness vs the C oracle is pinned by aom-bench's
+        // scaled_ref_decode_envelope.
+        for (name, stream, n) in [
+            ("frame-size-override", SCALED_STREAM, 1usize),
+            ("scaled-ref-down", SCALED_DOWN_STREAM, 6),
+            ("scaled-ref-up", SCALED_UP_STREAM, 5),
+        ] {
+            let frames = decode_frames(stream)
+                .unwrap_or_else(|e| panic!("experimental-video on: {name} must decode, got {e:?}"));
+            assert_eq!(frames.len(), n, "{name}: shown-frame count");
+        }
+    } else {
+        for (stream, dims) in [
+            (SCALED_STREAM, &[(51, 51)][..]),
+            (
+                SCALED_DOWN_STREAM,
+                &[(128, 128), (64, 64), (64, 64), (64, 64), (64, 64), (64, 64)][..],
+            ),
+            (
+                SCALED_UP_STREAM,
+                &[(64, 64), (128, 128), (128, 128), (128, 128), (128, 128)][..],
+            ),
+        ] {
+            assert_refused_by_name(stream, "frame_size_override", dims);
+        }
+    }
 }
 
 #[test]

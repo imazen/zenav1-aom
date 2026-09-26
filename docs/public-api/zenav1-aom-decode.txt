@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-decode.txt 259 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,experimental-video,trace-env,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
+# files: zenav1-aom-decode.txt 260 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,experimental-video,trace-env,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
 # arch-unique surface: (none — portable on every target)
 
 ## summary
@@ -16,7 +16,7 @@
 #   pub consts/statics                         28
 #   free functions                             20
 #   inherent methods                           15
-#   struct fields                             143
+#   struct fields                             144
 #   enum variants                              16
 #   trait roster entries (type × trait)        61
 #   auto-trait-complete types                  15
@@ -24,9 +24,9 @@
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_decode                      238
+#   aom_decode                      239
 
-## items (240 lines)
+## items (241 lines)
 
 pub mod aom_decode
 pub mod aom_decode::frame
@@ -139,6 +139,7 @@ pub aom_decode::InterFrameCfg::interp_filter: i32
 pub aom_decode::InterFrameCfg::order_hint: i32
 pub aom_decode::InterFrameCfg::ref_frame_side: [i8; 8]
 pub aom_decode::InterFrameCfg::ref_frame_sign_bias: [i8; 8]
+pub aom_decode::InterFrameCfg::ref_sf: [aom_dsp::inter::scale::ScaleFactors; 7]
 pub aom_decode::InterFrameCfg::reference_mode_select: bool
 pub aom_decode::InterFrameCfg::refs: [core::option::Option<&'r aom_decode::RefFrame>; 7]
 pub aom_decode::InterFrameCfg::skip_mode_present: bool

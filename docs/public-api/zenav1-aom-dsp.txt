@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1817 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 127 lines (72 hidden + 89 excluded-feature)
+# files: zenav1-aom-dsp.txt 1820 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 127 lines (72 hidden + 89 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 8
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        97
 #   pub consts/statics                        204
 #   pub macros                                  4
-#   free functions                            535
+#   free functions                            538
 #   inherent methods                          107
 #   struct fields                             707
 #   enum variants                              37
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            8
-#   aom_dsp                        1739
+#   aom_dsp                        1742
 
-## items (1738 lines)
+## items (1741 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1273,10 +1273,13 @@ pub fn aom_dsp::inter::warp::highbd_warp_affine(&[i32; 6], &[u16], usize, usize,
 pub fn aom_dsp::inter::warp::warp_affine(&[i32; 6], &[u16], usize, usize, usize, &mut [u16], usize, usize, i32, i32, usize, usize, usize, usize, i16, i16, i16, i16)
 pub fn aom_dsp::inter::blend_a64_hmask(&mut [u16], usize, usize, &[u16], usize, usize, &[u8], usize, usize)
 pub fn aom_dsp::inter::blend_a64_vmask(&mut [u16], usize, usize, &[u16], usize, usize, &[u8], usize, usize)
-pub fn aom_dsp::inter::build_inter_predictor(&[u16], usize, usize, usize, &mut [u16], usize, usize, usize, usize, usize, usize, i32, i32, usize, usize, usize, usize)
+pub fn aom_dsp::inter::build_inter_predictor(&[u16], usize, usize, usize, &mut [u16], usize, usize, usize, usize, usize, usize, i32, i32, i32, i32, usize, usize, usize, usize, u32, &aom_dsp::inter::scale::ScaleFactors)
 pub fn aom_dsp::inter::build_mc_border(&[u16], usize, usize, usize, i32, i32, usize, usize, &mut [u8])
+pub fn aom_dsp::inter::build_mc_border_highbd(&[u16], usize, usize, usize, i32, i32, usize, usize, &mut [u16])
 pub fn aom_dsp::inter::get_obmc_mask(usize) -> &'static [u8]
+pub fn aom_dsp::inter::highbd_inter_predictor(&[u16], usize, usize, &mut [u16], usize, usize, usize, usize, usize, usize, usize, u32)
 pub fn aom_dsp::inter::inter_predictor(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize, usize, usize)
+pub fn aom_dsp::inter::single_ref_rounds(u32) -> (i32, i32)
 pub mod aom_dsp::intra
 pub mod aom_dsp::intra::cfl
 pub struct aom_dsp::intra::cfl::CflCtx
