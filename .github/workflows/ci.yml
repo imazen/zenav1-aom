@@ -209,11 +209,24 @@ jobs:
         uses: actions/cache@v6
         with:
           path: conformance/data
-          key: conformance-intra-${{ runner.os }}-${{ hashFiles('upstream/test/test-data.sha1') }}-v1
-      - name: Provision conformance corpus (intra scope)
-        run: python3 xtask/conformance.py --fetch --scope intra
+          # Both scopes land in conformance/data here, so this leg gets its own
+          # key namespace — the shared `conformance-intra-…-v1` key is already
+          # populated intra-only (cache keys are immutable once saved), and
+          # reusing it would re-fetch the inter vectors on every run.
+          key: conformance-intra-inter-${{ runner.os }}-${{ hashFiles('upstream/test/test-data.sha1') }}-v1
+      - name: Provision conformance corpus (intra + inter scopes)
+        run: |
+          python3 xtask/conformance.py --fetch --scope intra
+          python3 xtask/conformance.py --fetch --scope inter
       - name: Test workspace (experimental-video on)
         run: cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast --features zenav1-aom-decode/experimental-video
+      # The inter conformance gate (conformance_inter) runs inside the suite
+      # above, but a passing test's captured output is hidden by nextest. This
+      # re-run surfaces just that test's tally so the log proves the inter
+      # vectors were exercised non-vacuously (not skipped-by-name). Fast: it
+      # reuses the already-built test binary and runs a single filter match.
+      - name: Inter conformance tally (non-vacuous inter gate)
+        run: cargo nextest run --cargo-profile test-fast -p zenav1-aom-decode --features "experimental-video __internals" --test all conformance_inter --success-output immediate
 
   # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate, WORKSPACE-WIDE.
   #
