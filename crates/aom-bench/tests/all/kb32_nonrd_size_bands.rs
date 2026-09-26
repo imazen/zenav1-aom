@@ -431,56 +431,54 @@ fn localize_leaf_mode(w: usize, h: usize, cq: i32, speed: i32) -> Option<(i32, i
             .blocks
             .iter()
             .find(|b| b.mi_row == rb.mi_row && b.mi_col == rb.mi_col)
-        {
-            if ob.bsize != rb.bsize
+            && (ob.bsize != rb.bsize
                 || ob.info.y_mode != rb.info.y_mode
                 || ob.info.angle_delta_y != rb.info.angle_delta_y
                 || ob.info.use_filter_intra != rb.info.use_filter_intra
                 || ob.tx_size != rb.tx_size
                 || ob.info.uv_mode != rb.info.uv_mode
                 || ob.txbs != rb.txbs
-                || ob.txbs_uv != rb.txbs_uv
-            {
-                println!(
-                    ">>> FIRST LEAF MISMATCH at mi({},{}): real bsize={} y_mode={} \
+                || ob.txbs_uv != rb.txbs_uv)
+        {
+            println!(
+                ">>> FIRST LEAF MISMATCH at mi({},{}): real bsize={} y_mode={} \
                      adly={} fi={} tx={} uv={} | port bsize={} y_mode={} adly={} \
                      fi={} tx={} uv={}",
-                    rb.mi_row,
-                    rb.mi_col,
+                rb.mi_row,
+                rb.mi_col,
+                rb.bsize,
+                rb.info.y_mode,
+                rb.info.angle_delta_y,
+                rb.info.use_filter_intra,
+                rb.tx_size,
+                rb.info.uv_mode,
+                ob.bsize,
+                ob.info.y_mode,
+                ob.info.angle_delta_y,
+                ob.info.use_filter_intra,
+                ob.tx_size,
+                ob.info.uv_mode,
+            );
+            assert_eq!(
+                (
                     rb.bsize,
-                    rb.info.y_mode,
                     rb.info.angle_delta_y,
                     rb.info.use_filter_intra,
                     rb.tx_size,
-                    rb.info.uv_mode,
+                    rb.info.uv_mode
+                ),
+                (
                     ob.bsize,
-                    ob.info.y_mode,
                     ob.info.angle_delta_y,
                     ob.info.use_filter_intra,
                     ob.tx_size,
-                    ob.info.uv_mode,
-                );
-                assert_eq!(
-                    (
-                        rb.bsize,
-                        rb.info.angle_delta_y,
-                        rb.info.use_filter_intra,
-                        rb.tx_size,
-                        rb.info.uv_mode
-                    ),
-                    (
-                        ob.bsize,
-                        ob.info.angle_delta_y,
-                        ob.info.use_filter_intra,
-                        ob.tx_size,
-                        ob.info.uv_mode
-                    ),
-                    "{w}x{h} s{speed}: the first leaf mismatch moved something \
+                    ob.info.uv_mode
+                ),
+                "{w}x{h} s{speed}: the first leaf mismatch moved something \
                      OTHER than y_mode — the residual is no longer purely the \
                      estimate arm's mode choice"
-                );
-                return Some((rb.info.y_mode, ob.info.y_mode));
-            }
+            );
+            return Some((rb.info.y_mode, ob.info.y_mode));
         }
     }
     panic!("{w}x{h} s{speed}: payloads differ but every shared leaf agrees");

@@ -69,12 +69,6 @@ pub fn ext_tx_set_type(tx_size: usize, is_inter: bool, reduced: bool) -> usize {
     EXT_TX_SET_LOOKUP[is_inter as usize][(sqr == TX_16X16) as usize] as usize
 }
 
-/// `get_ext_tx_set`: CDF set index (`eset`); -1 / 0 for DCT-only.
-pub(crate) fn ext_tx_set(tx_size: usize, is_inter: bool, reduced: bool) -> i32 {
-    let st = ext_tx_set_type(tx_size, is_inter, reduced);
-    EXT_TX_SET_INDEX[is_inter as usize][st]
-}
-
 /// Derived signaling parameters (mirror of the C harness): set type, symbol
 /// arity `num`, CDF set `eset`, `square_tx_size`, transmitted `symb`, `used`
 /// flag, and the intra direction used to index the intra CDF.

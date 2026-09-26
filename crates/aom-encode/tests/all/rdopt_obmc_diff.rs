@@ -65,7 +65,7 @@ fn aligned_tiling(rng: &mut Rng, len: usize, sizes: &[i32], pick: &[usize]) -> V
             .copied()
             .filter(|&b| {
                 let s = sizes[b] as usize;
-                p % s == 0 && p + s <= len
+                p.is_multiple_of(s) && p + s <= len
             })
             .collect();
         let b = choices[(rng.next() as usize) % choices.len()];
@@ -119,7 +119,7 @@ fn calc_target_weighted_pred_matches_c() {
         let mut grid_bsize: Vec<i32> = vec![3; rows * cols];
         let grid_ref0: Vec<i32> = (0..rows * cols)
             .map(|_| {
-                if rng.next() % 3 == 0 {
+                if rng.next().is_multiple_of(3) {
                     0
                 } else {
                     rng.range(1, 8)

@@ -317,9 +317,9 @@ fn nn_propagate_input_multiple_of_8(
     // equal to final hidden layer" — i.e. only when this call consumed EVERY
     // input, else the remainder loop below applies the ReLU.
     let clip = !is_output_layer && n_proc == tot;
-    if num_out % 8 == 0 {
+    if num_out.is_multiple_of(8) {
         nn_propagate_8to8(inputs, weights, bias, n_proc, tot, num_out, out, clip);
-    } else if num_out % 4 == 0 {
+    } else if num_out.is_multiple_of(4) {
         nn_propagate_8to4(inputs, weights, bias, n_proc, tot, num_out, out, clip);
     } else {
         nn_propagate_8to1(inputs, weights, bias, n_proc, tot, num_out, out, clip);
@@ -394,7 +394,7 @@ pub(crate) fn nn_predict_avx2_order(
             } else {
                 &b[..num_inputs]
             };
-            if num_inputs % 8 == 0 {
+            if num_inputs.is_multiple_of(8) {
                 nn_propagate_input_multiple_of_8(
                     inp,
                     lw,
@@ -424,7 +424,7 @@ pub(crate) fn nn_predict_avx2_order(
                 }
                 // `out_temp = bias_is_considered ? output_nodes : layer_bias`.
                 let remaining = num_inputs % 8;
-                if remaining % 4 == 0 && num_out % 4 == 0 {
+                if remaining.is_multiple_of(4) && num_out.is_multiple_of(4) {
                     // The 4to8 / 4to4 arms: both accumulate `(m0+m1)+(m2+m3)`
                     // per row, so one helper covers the pair.
                     let mut base = 0usize;
@@ -456,7 +456,7 @@ pub(crate) fn nn_predict_avx2_order(
                         }
                         base += 4;
                     }
-                } else if remaining % 4 == 0 {
+                } else if remaining.is_multiple_of(4) {
                     for o in 0..num_out {
                         let mut total = [0.0f32; 4];
                         total[0] = if bias_is_considered { scratch[o] } else { lb[o] };

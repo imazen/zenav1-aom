@@ -1718,7 +1718,7 @@ thread_local! {
     /// for the reuse-safety argument. The fn never nests, so a single pool is
     /// total.
     static NONRD_SCRATCH: std::cell::RefCell<(Vec<(usize, usize)>, Vec<i16>)> =
-        std::cell::RefCell::new((Vec::new(), Vec::new()));
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
 }
 
 #[allow(clippy::too_many_arguments)]

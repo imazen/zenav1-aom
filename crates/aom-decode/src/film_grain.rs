@@ -1225,10 +1225,10 @@ pub fn add_film_grain_stop(
     const ROWS_PER_POLL: usize = 64;
     let mut out_y = vec![0u16; d_w * d_h];
     for r in 0..d_h {
-        if r % ROWS_PER_POLL == 0 {
-            if let Some(s) = stop {
-                s.check()?;
-            }
+        if r % ROWS_PER_POLL == 0
+            && let Some(s) = stop
+        {
+            s.check()?;
         }
         for c in 0..d_w {
             out_y[r * d_w + c] = luma[r * luma_stride + c];
@@ -1240,10 +1240,10 @@ pub fn add_film_grain_stop(
         out_u = vec![0u16; src_cw * src_ch];
         out_v = vec![0u16; src_cw * src_ch];
         for r in 0..src_ch {
-            if r % ROWS_PER_POLL == 0 {
-                if let Some(s) = stop {
-                    s.check()?;
-                }
+            if r % ROWS_PER_POLL == 0
+                && let Some(s) = stop
+            {
+                s.check()?;
             }
             for c in 0..src_cw {
                 out_u[r * src_cw + c] = cb[r * chroma_stride + c];

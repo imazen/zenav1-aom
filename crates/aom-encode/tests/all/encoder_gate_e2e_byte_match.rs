@@ -152,7 +152,7 @@ fn noise_content(r: usize, c: usize) -> u8 {
 fn ab_top_split_bottom_flat(r: usize, c: usize) -> u8 {
     if r < 32 {
         let period = if c < 32 { 4 } else { 6 };
-        if (r / period + c / period) % 2 == 0 {
+        if (r / period + c / period).is_multiple_of(2) {
             80
         } else {
             176
@@ -164,7 +164,7 @@ fn ab_top_split_bottom_flat(r: usize, c: usize) -> u8 {
 fn ab_top_flat_bottom_split(r: usize, c: usize) -> u8 {
     if r >= 32 {
         let period = if c < 32 { 4 } else { 6 };
-        if (r / period + c / period) % 2 == 0 {
+        if (r / period + c / period).is_multiple_of(2) {
             80
         } else {
             176
@@ -176,7 +176,7 @@ fn ab_top_flat_bottom_split(r: usize, c: usize) -> u8 {
 fn ab_left_split_right_flat(r: usize, c: usize) -> u8 {
     if c < 32 {
         let period = if r < 32 { 4 } else { 6 };
-        if (r / period + c / period) % 2 == 0 {
+        if (r / period + c / period).is_multiple_of(2) {
             80
         } else {
             176
@@ -188,7 +188,7 @@ fn ab_left_split_right_flat(r: usize, c: usize) -> u8 {
 fn ab_left_flat_right_split(r: usize, c: usize) -> u8 {
     if c >= 32 {
         let period = if r < 32 { 4 } else { 6 };
-        if (r / period + c / period) % 2 == 0 {
+        if (r / period + c / period).is_multiple_of(2) {
             80
         } else {
             176
@@ -216,8 +216,8 @@ fn ab_left_flat_right_split(r: usize, c: usize) -> u8 {
 /// (period 12): both LF axes exercised, `filter_level[0]` strong (~15 at
 /// cq58) -- the exact "15" of the `[15,6]`-shape the honest gap documents.
 fn lf_hstripes4_vstripes12(r: usize, c: usize) -> u8 {
-    let hbar = if (r / 4) % 2 == 0 { 40 } else { 200 };
-    let vbar = if (c / 12) % 2 == 0 { 0 } else { 24 };
+    let hbar = if (r / 4).is_multiple_of(2) { 40 } else { 200 };
+    let vbar = if (c / 12).is_multiple_of(2) { 0 } else { 24 };
     (hbar + vbar).clamp(0, 255) as u8
 }
 
@@ -226,8 +226,8 @@ fn lf_hstripes4_vstripes12(r: usize, c: usize) -> u8 {
 /// 128 cq58) -- a genuine both-axes-strong `[15,6]`-shape.
 fn lf_hstripes6_vstripes16_grad(r: usize, c: usize) -> u8 {
     let grad = 18 + r * 90 / 256;
-    let hbar = if (r / 6) % 2 == 0 { 0 } else { 80 };
-    let vbar = if (c / 16) % 2 == 0 { 0 } else { 30 };
+    let hbar = if (r / 6).is_multiple_of(2) { 0 } else { 80 };
+    let vbar = if (c / 16).is_multiple_of(2) { 0 } else { 30 };
     (grad as i32 + hbar + vbar).clamp(0, 255) as u8
 }
 
@@ -235,8 +235,8 @@ fn lf_hstripes6_vstripes16_grad(r: usize, c: usize) -> u8 {
 /// (period 12) + gradient: `filter_level[1]` strong (`[0,15]` at cq60).
 fn lf_plaid_v4_h12_grad(r: usize, c: usize) -> u8 {
     let grad = 20 + r * 100 / 256;
-    let vbar = if (c / 4) % 2 == 0 { 0 } else { 70 };
-    let hbar = if (r / 12) % 2 == 0 { 0 } else { 22 };
+    let vbar = if (c / 4).is_multiple_of(2) { 0 } else { 70 };
+    let hbar = if (r / 12).is_multiple_of(2) { 0 } else { 22 };
     (grad as i32 + vbar + hbar).clamp(0, 255) as u8
 }
 
@@ -247,7 +247,11 @@ fn lf_radial_diagbars_noise(r: usize, c: usize) -> u8 {
     let dc = c as i32 - 64;
     let d = ((dr * dr + dc * dc) as f64).sqrt();
     let base = (200.0 - d * 2.0).clamp(0.0, 255.0) as i32;
-    let bar = if ((r + c) / 12) % 2 == 0 { 0 } else { 40 };
+    let bar = if ((r + c) / 12).is_multiple_of(2) {
+        0
+    } else {
+        40
+    };
     let noise = ((r * 131 + c * 977) % 41) as i32 - 20;
     (base + bar + noise).clamp(0, 255) as u8
 }
@@ -256,8 +260,8 @@ fn lf_radial_diagbars_noise(r: usize, c: usize) -> u8 {
 /// `filter_level[1]` (`[0,25]` at 256 cq63).
 fn lf_diag_vbars16_ripple(r: usize, c: usize) -> u8 {
     let grad = 32 + (r + c) * 150 / 256;
-    let bar = if (c / 16) % 2 == 0 { 0 } else { 45 };
-    let ripple = if (r + c) % 2 == 0 { 14 } else { -14 };
+    let bar = if (c / 16).is_multiple_of(2) { 0 } else { 45 };
+    let ripple = if (r + c).is_multiple_of(2) { 14 } else { -14 };
     (grad as i32 + bar + ripple).clamp(0, 255) as u8
 }
 
@@ -1750,7 +1754,7 @@ fn encoder_gate_e2e_multi_sb_scale() {
     for &(w, h, name, cq) in winners {
         eprintln!("--- multi-SB {w}x{h} [{name}] cq{cq} ---");
         let content = content_for(w, h, name);
-        if attempt_case_content(w, h, true, 1, 1, 2, cq, |r, c| content(r, c)) {
+        if attempt_case_content(w, h, true, 1, 1, 2, cq, content) {
             matched += 1;
         }
     }
@@ -1854,19 +1858,7 @@ fn encoder_gate_speed1_textured_allintra() {
     let mut matched = 0usize;
     for &(w, h, name, cq) in winners {
         let content = content_for(w, h, name);
-        let ok = attempt_case_content_uv(
-            w,
-            h,
-            true,
-            1,
-            1,
-            2,
-            cq,
-            1,
-            1,
-            |r, c| content(r, c),
-            |_r, _c| 128,
-        );
+        let ok = attempt_case_content_uv(w, h, true, 1, 1, 2, cq, 1, 1, content, |_r, _c| 128);
         eprintln!(
             "speed1 {name} {w}x{h} cq{cq}: {}",
             if ok { "MATCH" } else { "DIFF" }
@@ -1995,7 +1987,7 @@ fn isolate_vgrad256_cq32_cnn_partition_prune() {
 
     // lowres tier thresholds (min(256,256) < 480), from partition_cnn_weights.h
     // split_thresh_lowres / no_split_thresh_lowres, indexed by bsize_idx.
-    const SPLIT_LOWRES: [f32; 5] = [100.0, 1.890757, 2.658417, 1.450626, 1.833180];
+    const SPLIT_LOWRES: [f32; 5] = [100.0, 1.890757, 2.658417, 1.450626, 1.833_18];
     const NO_SPLIT_LOWRES: [f32; 5] = [-100.0, -4.100921, -4.564202, -5.695176, -1.483546];
 
     // The REAL qindex for vgrad-256 cq32 is 128 (confirmed: flat-256 cq32 in
@@ -2123,19 +2115,10 @@ fn encoder_gate_speed2_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        2,
-                        2,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 2, 2, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     eprintln!(
                         "speed2 {name} {w}x{h} {fmt} cq{cq}: {}",
@@ -2236,19 +2219,10 @@ fn encoder_gate_speed3_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        3,
-                        3,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 3, 3, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     eprintln!(
                         "speed3 {name} {w}x{h} {fmt} cq{cq}: {}",
@@ -2361,19 +2335,10 @@ fn encoder_gate_speed4_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        4,
-                        4,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 4, 4, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     eprintln!(
                         "speed4 {name} {w}x{h} {fmt} cq{cq}: {}",
@@ -2470,19 +2435,10 @@ fn encoder_gate_speed5_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        5,
-                        5,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 5, 5, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     eprintln!(
                         "speed5 {name} {w}x{h} {fmt} cq{cq}: {}",
@@ -2587,19 +2543,10 @@ fn encoder_gate_speed6_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        6,
-                        6,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 6, 6, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     eprintln!(
                         "speed6 {name} {w}x{h} {fmt} cq{cq}: {}",
@@ -2779,19 +2726,10 @@ fn encoder_gate_speed7_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        7,
-                        7,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 7, 7, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     eprintln!(
                         "speed7 {name} {w}x{h} {fmt} cq{cq}: {}",
@@ -3110,19 +3048,10 @@ fn encoder_gate_speed8_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = textured_content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        8,
-                        8,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 8, 8, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     let cell = format!("{name} {w}x{h} {fmt} cq{cq}");
                     eprintln!("speed8 {cell}: {}", if ok { "MATCH" } else { "DIFF" });
@@ -3168,19 +3097,10 @@ fn encoder_gate_speed9_textured_allintra() {
             for &cq in &[12i32, 32, 48, 63] {
                 for &mono in &[true, false] {
                     let content = textured_content_for(w, h, name);
-                    let ok = attempt_case_content_uv(
-                        w,
-                        h,
-                        mono,
-                        1,
-                        1,
-                        2,
-                        cq,
-                        9,
-                        9,
-                        |r, c| content(r, c),
-                        |r, c| (60 + (r * 7 + c * 3) % 80) as u8,
-                    );
+                    let ok =
+                        attempt_case_content_uv(w, h, mono, 1, 1, 2, cq, 9, 9, content, |r, c| {
+                            (60 + (r * 7 + c * 3) % 80) as u8
+                        });
                     let fmt = if mono { "mono" } else { "420" };
                     eprintln!(
                         "speed9 {name} {w}x{h} {fmt} cq{cq}: {}",
@@ -3255,14 +3175,12 @@ fn encoder_gate_speed9_vs_speed8_sf_witness() {
     let mut any_diverged = false;
     for &(sz, name, cq, mono) in candidates {
         let content = textured_content_for(sz, sz, name);
-        let cross =
-            attempt_case_content_uv(sz, sz, mono, 1, 1, 2, cq, 9, 8, |r, c| content(r, c), uv);
+        let cross = attempt_case_content_uv(sz, sz, mono, 1, 1, 2, cq, 9, 8, content, uv);
         if !cross {
             any_diverged = true;
             // The same cell must byte-match with the true speed-9 features.
             let content = textured_content_for(sz, sz, name);
-            let true_match =
-                attempt_case_content_uv(sz, sz, mono, 1, 1, 2, cq, 9, 9, |r, c| content(r, c), uv);
+            let true_match = attempt_case_content_uv(sz, sz, mono, 1, 1, 2, cq, 9, 9, content, uv);
             let fmt = if mono { "mono" } else { "420" };
             assert!(
                 true_match,
@@ -3595,12 +3513,12 @@ fn encoder_gate_real_content_speed1to4_e2e() {
         // Anti-vacuous harness control (speed 0, NOT the speed>=1 subject).
         if name == "av1-1-b8-01-size-64x64" {
             control_ok =
-                attempt_case_content_uv_sep(w, h, mono, ss_x, ss_y, 2, 20, 0, 0, &y_c, &u_c, &v_c);
+                attempt_case_content_uv_sep(w, h, mono, ss_x, ss_y, 2, 20, 0, 0, y_c, u_c, v_c);
         }
         for &cpu in &[1i32, 2, 3, 4] {
             for &cq in &[12i32, 32, 63] {
                 let ok = attempt_case_content_uv_sep(
-                    w, h, mono, ss_x, ss_y, 2, cq, cpu, cpu, &y_c, &u_c, &v_c,
+                    w, h, mono, ss_x, ss_y, 2, cq, cpu, cpu, y_c, u_c, v_c,
                 );
                 results.push((format!("{tag} cpu{cpu} cq{cq}"), ok));
             }

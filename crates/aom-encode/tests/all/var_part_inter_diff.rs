@@ -645,7 +645,7 @@ fn set_low_temp_var_flag_matches_c() {
             // The tree values straddle the shifted thresholds: `>> 8` makes the
             // 16x16 threshold tiny, so a wide uniform draw would never fire it.
             let mut vt = VarianceTree::default();
-            let mut draw = |rng: &mut Rng| match rng.below(4) {
+            let draw = |rng: &mut Rng| match rng.below(4) {
                 0 => rng.below(4) as i32,
                 1 => rng.below(64) as i32,
                 2 => rng.below(1 << 12) as i32,

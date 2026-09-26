@@ -101,11 +101,9 @@ fn txfm_func(txfm_type: i32) -> Txfm1d {
     }
 }
 
-/// `log2(n) - 2` for the transform dimensions, which are the powers of two
-/// 4..=64. `trailing_zeros` is one instruction where the `match` compiled to a
-/// comparison chain, and this runs twice per `get_*_txfm_cfg`, i.e. twice per
-/// transform.
-#[inline(always)]
+/// `log2(n) - 2` for the transform dimensions (4..=64). Test-only since the
+/// fused kernels took over the row/col config lookups.
+#[cfg(test)]
 pub(crate) fn log2_idx(n: usize) -> usize {
     debug_assert!(matches!(n, 4 | 8 | 16 | 32 | 64), "log2_idx({n})");
     n.trailing_zeros() as usize - 2
@@ -559,8 +557,9 @@ pub fn av1_fwd_txfm2d_into(
     if (tx_size == 7 || tx_size == 8) && FWD_SHIFT[tx_size] == [2, -2, 0] {
         let c = get_fwd_txfm_cfg(tx_type, tx_size);
         let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
-        if c.valid && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
-            if crate::transform::simd::try_fwd_txfm2d_rect816_fused(
+        if c.valid
+            && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1
+            && crate::transform::simd::try_fwd_txfm2d_rect816_fused(
                 c.txfm_type_col,
                 c.txfm_type_row,
                 input,
@@ -572,17 +571,18 @@ pub fn av1_fwd_txfm2d_into(
                 c.cos_bit_row as i32,
                 c.ud_flip,
                 c.lr_flip,
-            ) {
-                return;
-            }
+            )
+        {
+            return;
         }
     }
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if (tx_size == TX_4X8_IDX || tx_size == TX_8X4_IDX) && FWD_SHIFT[tx_size] == [2, -1, 0] {
         let c = get_fwd_txfm_cfg(tx_type, tx_size);
         let (cw, ch) = (TX_SIZE_WIDE[tx_size], TX_SIZE_HIGH[tx_size]);
-        if c.valid && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1 {
-            if crate::transform::simd::try_fwd_txfm2d_rect48_fused(
+        if c.valid
+            && get_rect_tx_log_ratio(cw as i64, ch as i64).abs() == 1
+            && crate::transform::simd::try_fwd_txfm2d_rect48_fused(
                 c.txfm_type_col,
                 c.txfm_type_row,
                 input,
@@ -594,9 +594,9 @@ pub fn av1_fwd_txfm2d_into(
                 c.cos_bit_row as i32,
                 c.ud_flip,
                 c.lr_flip,
-            ) {
-                return;
-            }
+            )
+        {
+            return;
         }
     }
     let cfg = get_fwd_txfm_cfg(tx_type, tx_size);

@@ -45,13 +45,9 @@ fn linsolve(n: usize, a: &mut [f64], stride: usize, b: &mut [f64], x: &mut [f64]
         while i > k {
             if a[(i - 1) * stride + k].abs() < a[i * stride + k].abs() {
                 for j in 0..n {
-                    let c = a[i * stride + j];
-                    a[i * stride + j] = a[(i - 1) * stride + j];
-                    a[(i - 1) * stride + j] = c;
+                    a.swap(i * stride + j, (i - 1) * stride + j);
                 }
-                let c = b[i];
-                b[i] = b[i - 1];
-                b[i - 1] = c;
+                b.swap(i, i - 1);
             }
             i -= 1;
         }
@@ -467,8 +463,8 @@ impl FlatBlockFinder {
         let k_ratio = 1.25;
         let k_norm = 0.08 / (32.0 * 32.0);
         let k_var = 0.005 / n as f64;
-        let nbw = (w + bs - 1) / bs;
-        let nbh = (h + bs - 1) / bs;
+        let nbw = w.div_ceil(bs);
+        let nbh = h.div_ceil(bs);
         let mut num_flat = 0i32;
         let mut flat_blocks = vec![0u8; nbw * nbh];
         // (score, index) pairs.

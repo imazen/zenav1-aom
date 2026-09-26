@@ -750,7 +750,7 @@ fn satd_lp_impl(_t: Token, coeff: &[i16], length: usize) -> i32 {
 fn satd_lp_impl_v3(_t: archmage::X64V3Token, coeff: &[i16], length: usize) -> i32 {
     use archmage::intrinsics::x86_64::*;
     // C loops `i += 16` unconditionally — a length % 16 != 0 would overread.
-    if length % 16 != 0 || coeff.len() < length {
+    if !length.is_multiple_of(16) || coeff.len() < length {
         return satd_lp(coeff, length);
     }
     let one = _mm256_set1_epi16(1);

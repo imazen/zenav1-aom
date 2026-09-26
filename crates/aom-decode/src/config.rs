@@ -61,23 +61,23 @@ impl DecodeLimits {
     pub(crate) fn check_dims(&self, width: i32, height: i32) -> Result<(), DecodeError> {
         let w = width.max(0) as u64;
         let h = height.max(0) as u64;
-        if let Some(mw) = self.max_width {
-            if w > mw as u64 {
-                return Err(DecodeError::LimitExceeded {
-                    kind: LimitKind::Width,
-                    actual: w,
-                    max: mw as u64,
-                });
-            }
+        if let Some(mw) = self.max_width
+            && w > mw as u64
+        {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::Width,
+                actual: w,
+                max: mw as u64,
+            });
         }
-        if let Some(mh) = self.max_height {
-            if h > mh as u64 {
-                return Err(DecodeError::LimitExceeded {
-                    kind: LimitKind::Height,
-                    actual: h,
-                    max: mh as u64,
-                });
-            }
+        if let Some(mh) = self.max_height
+            && h > mh as u64
+        {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::Height,
+                actual: h,
+                max: mh as u64,
+            });
         }
         let px = w.saturating_mul(h);
         let max_px = self.effective_max_pixels();
@@ -190,14 +190,14 @@ impl<'a> DecodeConfig<'a> {
     /// A no-op probe in [`AllocMode::Infallible`]. `bytes` is a generous
     /// header-derived estimate of the dominant (recon + grid) allocation.
     pub(crate) fn check_alloc_budget(&self, bytes: u64) -> Result<(), DecodeError> {
-        if let Some(max) = self.limits.max_memory_bytes {
-            if bytes > max {
-                return Err(DecodeError::LimitExceeded {
-                    kind: LimitKind::MemoryBytes,
-                    actual: bytes,
-                    max,
-                });
-            }
+        if let Some(max) = self.limits.max_memory_bytes
+            && bytes > max
+        {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::MemoryBytes,
+                actual: bytes,
+                max,
+            });
         }
         if self.alloc == AllocMode::Fallible {
             let n = usize::try_from(bytes).unwrap_or(usize::MAX);
@@ -208,16 +208,6 @@ impl<'a> DecodeConfig<'a> {
             // `probe` drops here, releasing the reservation just before the real
             // (still infallible) buffers are allocated — a tiny TOCTOU window
             // the pixel/dimension limits already bound.
-        }
-        Ok(())
-    }
-
-    /// Poll the stop token, if one is set. Returns [`DecodeError::Cancelled`]
-    /// carrying the [`enough::StopReason`] when the token requests a stop, else
-    /// `Ok(())` (no token, or "continue").
-    pub(crate) fn check_stop(&self) -> Result<(), DecodeError> {
-        if let Some(s) = self.stop {
-            s.check()?;
         }
         Ok(())
     }
@@ -237,6 +227,19 @@ impl core::fmt::Debug for DecodeConfig<'_> {
             )
             .field("alloc", &self.alloc)
             .finish()
+    }
+}
+
+impl DecodeConfig<'_> {
+    #[cfg(test)]
+    /// Poll the stop token, if one is set. Returns [`DecodeError::Cancelled`]
+    /// carrying the [`enough::StopReason`] when the token requests a stop, else
+    /// `Ok(())` (no token, or "continue").
+    pub(crate) fn check_stop(&self) -> Result<(), DecodeError> {
+        if let Some(s) = self.stop {
+            s.check()?;
+        }
+        Ok(())
     }
 }
 

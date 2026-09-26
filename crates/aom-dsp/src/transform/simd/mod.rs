@@ -189,8 +189,8 @@ pub(crate) enum InvDst<'a> {
 /// would be a move).
 fn inv_dst_reborrow<'a>(o: &'a mut InvDst<'_>) -> InvDst<'a> {
     match o {
-        InvDst::U16(s) => InvDst::U16(&mut **s),
-        InvDst::U8(s) => InvDst::U8(&mut **s),
+        InvDst::U16(s) => InvDst::U16(s),
+        InvDst::U8(s) => InvDst::U8(s),
     }
 }
 
@@ -411,7 +411,6 @@ fn run_fwd1d(
 #[allow(clippy::too_many_arguments)]
 /// The `incant!` fallback: decline to the generic two-pass driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-#[allow(clippy::too_many_arguments)]
 fn inv_rect48_fused_scalar(
     _t: archmage::ScalarToken,
     _kr: Inv1d,
@@ -1081,19 +1080,17 @@ fn inv_rect48_i16_core(
     let mut w = [_mm_setzero_si128(); 8];
     for (c, v) in w[..col_n].iter_mut().enumerate() {
         if row_n == 8 {
-            let col: &[i32; 8] = match input.get(c * 8..c * 8 + 8).and_then(|s| s.try_into().ok()) {
-                Some(a) => a,
-                None => return None,
-            };
+            let col: &[i32; 8] = input
+                .get(c * 8..c * 8 + 8)
+                .and_then(|s| s.try_into().ok())?;
             let lo = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[..4]).unwrap());
             let hi = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[4..]).unwrap());
             mx = _mm_max_epu32(mx, _mm_max_epu32(_mm_abs_epi32(lo), _mm_abs_epi32(hi)));
             *v = _mm_mulhrs_epi16(_mm_packs_epi32(lo, hi), scale);
         } else {
-            let col: &[i32; 4] = match input.get(c * 4..c * 4 + 4).and_then(|s| s.try_into().ok()) {
-                Some(a) => a,
-                None => return None,
-            };
+            let col: &[i32; 4] = input
+                .get(c * 4..c * 4 + 4)
+                .and_then(|s| s.try_into().ok())?;
             let v32 = _mm_loadu_si128(col);
             mx = _mm_max_epu32(mx, _mm_abs_epi32(v32));
             *v = _mm_mulhrs_epi16(_mm_packs_epi32(v32, v32), scale);
@@ -2327,10 +2324,9 @@ fn inv_8x8_i16_core(
     let mut mx = _mm_setzero_si128();
     let mut b = [_mm_setzero_si128(); 8];
     for (c, v) in b.iter_mut().enumerate() {
-        let col: &[i32; 8] = match input.get(c * 8..c * 8 + 8).and_then(|s| s.try_into().ok()) {
-            Some(a) => a,
-            None => return None,
-        };
+        let col: &[i32; 8] = input
+            .get(c * 8..c * 8 + 8)
+            .and_then(|s| s.try_into().ok())?;
         let lo = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[..4]).unwrap());
         let hi = _mm_loadu_si128(<&[i32; 4]>::try_from(&col[4..]).unwrap());
         mx = _mm_max_epu32(mx, _mm_max_epu32(_mm_abs_epi32(lo), _mm_abs_epi32(hi)));
@@ -3926,7 +3922,7 @@ pub(crate) fn try_inv_col_pass(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    if col_n % 8 != 0 && !(col_n == 4 && half_batch_pays(row_n)) {
+    if !col_n.is_multiple_of(8) && !(col_n == 4 && half_batch_pays(row_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
@@ -3973,7 +3969,7 @@ pub(crate) fn try_inv_row_pass(
     row_clamp: i8,
     stage_range: &[i8; 12],
 ) -> bool {
-    if row_n % 8 != 0 && !(row_n == 4 && half_batch_pays(col_n)) {
+    if !row_n.is_multiple_of(8) && !(row_n == 4 && half_batch_pays(col_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
@@ -3988,7 +3984,7 @@ pub(crate) fn try_inv_row_pass(
     // Both vector tiers run it (AVX2 and NEON — see the `prims16` docs); the
     // `scalar` arm declines, which routes back to the i32 pass below and from
     // there to the driver's own loop.
-    if row_clamp == 16 && stage_range.iter().all(|&b| b == 16) && row_n % 16 == 0 {
+    if row_clamp == 16 && stage_range.iter().all(|&b| b == 16) && row_n.is_multiple_of(16) {
         if let Some(k16) = lowbd16::inv_kernel_i16(txfm_type_row) {
             debug_assert_eq!(lowbd16::inv_kernel_i16_n(k16), col_n);
             debug_assert!((0..=2).contains(&shift0_bit));
@@ -4044,7 +4040,7 @@ fn inv_row_pass(
     row_clamp: i8,
     stage_range: &[i8; 12],
 ) -> bool {
-    debug_assert!(col_n <= 64 && (row_n % 8 == 0 || row_n == 4));
+    debug_assert!(col_n <= 64 && (row_n.is_multiple_of(8) || row_n == 4));
     if col_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
@@ -4211,7 +4207,6 @@ fn inv_row_pass_core(
 #[allow(clippy::too_many_arguments)]
 /// The `incant!` fallback: decline to the generic two-pass driver.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-#[allow(clippy::too_many_arguments)]
 fn fwd_rect816_fused_scalar(
     _t: archmage::ScalarToken,
     _kc: Fwd1d,
@@ -5424,12 +5419,12 @@ fn inv_4x4_i16_core(
     // requires — both bound to the i16 range.
     let mut cols = [_mm_setzero_si128(); 4];
     for (c, v) in cols.iter_mut().enumerate() {
-        let col: &[i32; 4] = match input.get(c * 4..c * 4 + 4) {
-            Some(s) => match s.try_into() {
+        let col: &[i32; 4] = {
+            let s = input.get(c * 4..c * 4 + 4)?;
+            match s.try_into() {
                 Ok(a) => a,
                 Err(_) => return None,
-            },
-            None => return None,
+            }
         };
         let x = _mm_loadu_si128(col);
         *v = _mm_packs_epi32(x, x);
@@ -8577,7 +8572,7 @@ pub(crate) fn try_fwd_col_pass(
     // ends stay contiguous at 4-wide (an i16 run of the source row in, a
     // 4-entry run of `buf` out), so this is the inverse COLUMN pass's shape,
     // not the row pass's gather.
-    if col_n % 8 != 0 && !(col_n == 4 && half_batch_pays(row_n)) {
+    if !col_n.is_multiple_of(8) && !(col_n == 4 && half_batch_pays(row_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
@@ -8596,7 +8591,7 @@ pub(crate) fn try_fwd_col_pass(
     // `rshift_mul` == `round_shift(_, bit)` for bit in 1..=4). Gating on them
     // rather than assuming them means a future shift table cannot silently
     // walk off either proof.
-    if col_n % 16 == 0 && (shift0 == 0 || shift0 == 2) && (0..=4).contains(&shift1_bit) {
+    if col_n.is_multiple_of(16) && (shift0 == 0 || shift0 == 2) && (0..=4).contains(&shift1_bit) {
         if let Some(k16) = lowbd16_fwd::fwd_kernel_i16(txfm_type_col) {
             debug_assert_eq!(lowbd16_fwd::fwd_kernel_i16_n(k16), row_n);
             if lowbd16_fwd::fwd_col_i16_applies(k16, input, stride, col_n, row_n, shift0)
@@ -8669,7 +8664,7 @@ fn fwd_col_pass(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
+    debug_assert!(row_n <= 64 && (col_n.is_multiple_of(8) || col_n == 4));
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
@@ -8881,7 +8876,7 @@ pub(crate) fn try_fwd_row_pass(
     // contiguous and only its STORES scatter, and it is the biggest 4-wide win
     // in the sweep (`inv_txfm_u8::04x16_dct` −36.2%). Gathers cost; scatters
     // don't.
-    if row_n % 8 != 0 || (col_n < 8 && cfg!(target_arch = "aarch64")) {
+    if !row_n.is_multiple_of(8) || (col_n < 8 && cfg!(target_arch = "aarch64")) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced();
@@ -8889,7 +8884,7 @@ pub(crate) fn try_fwd_row_pass(
     // as the column pass above: a runtime bound on the actual `buf`, so the
     // i32 column pass having produced it (or the caller having passed
     // anything at all) is irrelevant to soundness.
-    if row_n % 16 == 0 && col_n % 8 == 0 && (0..=4).contains(&shift2_bit) {
+    if row_n.is_multiple_of(16) && col_n.is_multiple_of(8) && (0..=4).contains(&shift2_bit) {
         if let Some(k16) = lowbd16_fwd::fwd_kernel_i16(txfm_type_row) {
             debug_assert_eq!(lowbd16_fwd::fwd_kernel_i16_n(k16), col_n);
             if lowbd16_fwd::fwd_row_i16_applies(k16, buf, col_n, row_n)
@@ -8947,7 +8942,7 @@ fn fwd_row_pass(
     cos_bit_row: i32,
     rect1: bool,
 ) -> bool {
-    debug_assert!(col_n <= 64 && row_n % 8 == 0);
+    debug_assert!(col_n <= 64 && row_n.is_multiple_of(8));
     if col_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
@@ -9101,7 +9096,7 @@ fn inv_col_pass(
     lr_flip: bool,
     bd: i32,
 ) -> bool {
-    debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
+    debug_assert!(row_n <= 64 && (col_n.is_multiple_of(8) || col_n == 4));
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];
@@ -9329,7 +9324,7 @@ pub(crate) fn try_inv_col_pass_u8(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    if col_n % 8 != 0 && !(col_n == 4 && half_batch_pays(row_n)) {
+    if !col_n.is_multiple_of(8) && !(col_n == 4 && half_batch_pays(row_n)) {
         return false;
     }
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
@@ -9390,7 +9385,7 @@ fn inv_col_pass_u8(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    debug_assert!(row_n <= 64 && (col_n % 8 == 0 || col_n == 4));
+    debug_assert!(row_n <= 64 && (col_n.is_multiple_of(8) || col_n == 4));
     if row_n <= 8 {
         let mut tin = [i32x8::zero(t); 8];
         let mut tout = [i32x8::zero(t); 8];

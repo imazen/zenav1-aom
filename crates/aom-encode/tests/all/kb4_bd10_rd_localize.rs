@@ -18,6 +18,7 @@
 //!      `(mi_row, mi_col, bsize)` partition decision;
 //!   2. else every shared leaf's mode/tx fields + per-txb `(eob, tx_type)`;
 //!   3. else the first divergent reconstruction pixel (coefficient VALUES).
+//!
 //! The first divergence + which field pins the divergent RD decision, which
 //! narrows the RD-cost INPUT to trace.
 //!

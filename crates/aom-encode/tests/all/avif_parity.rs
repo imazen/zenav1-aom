@@ -167,8 +167,8 @@ fn mi_dim(px: i32) -> i32 {
 /// `encoder_gate_e2e_rich_content_strong_lf`).
 fn lf_diag_vbars16_ripple(r: usize, c: usize) -> u8 {
     let grad = 32 + (r + c) * 150 / 256;
-    let bar = if (c / 16) % 2 == 0 { 0 } else { 45 };
-    let ripple = if (r + c) % 2 == 0 { 14 } else { -14 };
+    let bar = if (c / 16).is_multiple_of(2) { 0 } else { 45 };
+    let ripple = if (r + c).is_multiple_of(2) { 14 } else { -14 };
     (grad as i32 + bar + ripple).clamp(0, 255) as u8
 }
 

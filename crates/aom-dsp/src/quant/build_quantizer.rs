@@ -349,8 +349,8 @@ pub struct QuantizerSettings {
 ///   `aom_get_qmlevel_444_chroma` at 4:4:4, else `aom_get_qmlevel_allintra`.
 /// - else allintra: `aom_get_qmlevel_allintra` both.
 /// - else: `aom_get_qmlevel` both.
-/// Chroma levels evaluate at `base_qindex + {u,v}_ac_delta_q`; `v` mirrors
-/// `u` unless `separate_uv_delta_q`.
+///   Chroma levels evaluate at `base_qindex + {u,v}_ac_delta_q`; `v` mirrors
+///   `u` unless `separate_uv_delta_q`.
 ///
 /// `mono` frames take `ss_x = ss_y = 1` in C (the 4:2:0 arm computes values;
 /// the header writer never codes them for a single-plane stream).

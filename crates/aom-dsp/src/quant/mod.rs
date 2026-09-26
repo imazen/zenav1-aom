@@ -1146,7 +1146,7 @@ pub fn aom_quantize_b_adaptive_helper(
                 .clamp(i16::MIN as i32, i16::MAX as i32);
             let mut tmp = clamped as i64;
             tmp *= wt as i64;
-            let tmp32 = ((((tmp * quant[ac] as i64) >> 16) + tmp) * quant_shift[ac] as i64
+            let tmp32 = (((((tmp * quant[ac] as i64) >> 16) + tmp) * quant_shift[ac] as i64)
                 >> (16 - log_scale + AOM_QM_BITS)) as i32;
             qcoeff[rc] = (tmp32 ^ coeff_sign).wrapping_sub(coeff_sign);
             let iwt = iqm.map_or(1 << AOM_QM_BITS, |m| m[rc] as i32);

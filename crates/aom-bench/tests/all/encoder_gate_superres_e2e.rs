@@ -1086,7 +1086,7 @@ fn encoder_gate_superres_qthresh_e2e() {
     let mut bd8_bytes = Vec::new();
 
     // Derive + assert the chosen denom for one cell; byte-check bd8 engaged cells.
-    let mut run = |cell: &EncodeCell, kf_qt: i32, bd8_byte: bool, bytes: &mut Vec<RdCellResult>| {
+    let run = |cell: &EncodeCell, kf_qt: i32, bd8_byte: bool, bytes: &mut Vec<RdCellResult>| {
         let (c_tu, allow_scc, real_denom) = c_encode_and_facts(cell, 3, 63, kf_qt);
         let q = base_qindex_from_cq(cell.cq_level);
         let port_denom = i32::from(superres_denom_qthresh_key(
@@ -1222,7 +1222,7 @@ fn encoder_gate_superres_auto_e2e() {
     let mut matched = 0usize;
     let mut bd8_bytes = Vec::new();
 
-    let mut run = |cell: &EncodeCell, bd8_byte: bool, bytes: &mut Vec<RdCellResult>| {
+    let run = |cell: &EncodeCell, bd8_byte: bool, bytes: &mut Vec<RdCellResult>| {
         let (c_tu, allow_scc, real_denom) = c_encode_and_facts(cell, 4, 63, 8);
         let q = base_qindex_from_cq(cell.cq_level);
         let port_denom = i32::from(superres_denom_auto_key(

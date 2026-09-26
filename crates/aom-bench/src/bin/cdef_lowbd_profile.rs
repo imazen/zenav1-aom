@@ -1,9 +1,10 @@
+#![allow(clippy::too_many_arguments)] // C-shaped harness signatures
 //! Callgrind microbench for the bd8 CDEF lowbd lever. On a fixed CDEF-on,
 //! filter-heavy (q32-shaped) frame workload, run N iterations of EITHER:
-//!   * `u8`       — `cdef_frame_u8` directly on the u8 recon planes, or
-//!   * `delegate` — what a bd8 tile does WITHOUT the u8 kernel: widen the whole
-//!                  plane `u8 -> u16`, run the highbd `cdef_frame`, narrow the
-//!                  whole plane `u16 -> u8`.
+//! * `u8`       — `cdef_frame_u8` directly on the u8 recon planes, or
+//! * `delegate` — what a bd8 tile does WITHOUT the u8 kernel: widen the whole
+//!   plane `u8 -> u16`, run the highbd `cdef_frame`, narrow the
+//!   whole plane `u16 -> u8`.
 //!
 //! so a callgrind Ir profile compares the two directly. The delta is the
 //! whole-plane widen+narrow the u8 entry AVOIDS at the (pending) tile-plane
@@ -101,7 +102,7 @@ fn workload() -> Vec<Frame> {
         let v = mk(uvw, uvh, uv_stride);
         let ncells = (mi_rows * mi_cols) as usize;
         // filter-heavy: ~1/16 mi skip.
-        let skip: Vec<bool> = (0..ncells).map(|_| (rng.next() % 16) == 0).collect();
+        let skip: Vec<bool> = (0..ncells).map(|_| rng.next().is_multiple_of(16)).collect();
         let nvfb = (mi_rows as usize).div_ceil(16);
         let nhfb = (mi_cols as usize).div_ceil(16);
         // every unit CDEF-on, strength index cycling through nonzero levels.

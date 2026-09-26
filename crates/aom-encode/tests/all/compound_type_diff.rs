@@ -116,12 +116,12 @@ fn enable_wedge_interinter_search_matches_c() {
     let (mut trues, mut n) = (0usize, 0usize);
     for _ in 0..3000 {
         let var = rng.next() as u32;
-        let thresh = if rng.next() % 2 == 0 {
+        let thresh = if rng.next().is_multiple_of(2) {
             var.wrapping_add((rng.next() % 3) as u32).wrapping_sub(1)
         } else {
             rng.next() as u32
         };
-        let en = rng.next() % 2 == 0;
+        let en = rng.next().is_multiple_of(2);
         let got = enable_wedge_interinter_search(var, thresh, en);
         let want = cref::ref_ct_enable_wedge_interinter_search(var, thresh, en);
         assert_eq!(got, want, "interinter(var={var}, thresh={thresh}, en={en})");
@@ -137,12 +137,12 @@ fn enable_wedge_interintra_search_matches_c() {
     let (mut trues, mut n) = (0usize, 0usize);
     for _ in 0..3000 {
         let var = rng.next() as u32;
-        let thresh = if rng.next() % 2 == 0 {
+        let thresh = if rng.next().is_multiple_of(2) {
             var.wrapping_add((rng.next() % 3) as u32).wrapping_sub(1)
         } else {
             rng.next() as u32
         };
-        let en = rng.next() % 2 == 0;
+        let en = rng.next().is_multiple_of(2);
         let got = enable_wedge_interintra_search(var, thresh, en);
         let want = cref::ref_ct_enable_wedge_interintra_search(var, thresh, en);
         assert_eq!(got, want, "interintra(var={var}, thresh={thresh}, en={en})");
@@ -171,7 +171,7 @@ fn compute_valid_comp_types_matches_c() {
                         for diff_wtd in [false, true] {
                             let var = rng.next() as u32 % 4096;
                             let thresh = rng.next() as u32 % 4096;
-                            let en_wedge = rng.next() % 2 == 0;
+                            let en_wedge = rng.next().is_multiple_of(2);
                             let cfg = ValidCompTypeCfg {
                                 enable_dist_wtd_comp: dwc == 1,
                                 // The raw C integer goes to the oracle and the
@@ -330,7 +330,7 @@ fn push_comp_avg_est_rd_matches_c() {
             let mut want = top;
             // As above: land exactly on an existing entry sometimes, so the
             // insertion scan's strict `<` is exercised at its boundary.
-            let tmp_rd = if fill > 0 && rng.next() % 4 == 0 {
+            let tmp_rd = if fill > 0 && rng.next().is_multiple_of(4) {
                 top[(rng.next() as usize) % fill]
             } else {
                 i64::from(rng.range(-16, 1 << 20))
@@ -363,13 +363,13 @@ fn prune_comp_eval_using_comp_avg_est_rd_matches_c() {
             // comparison is a strict `>`, and with random values only, a
             // `>=` transcription passes (measured — that perturbation was
             // inert until this case was added).
-            let tmp_rd = if fill > 0 && rng.next() % 4 == 0 {
+            let tmp_rd = if fill > 0 && rng.next().is_multiple_of(4) {
                 top[(rng.next() as usize) % fill]
             } else {
                 i64::from(rng.range(0, 1 << 20))
             };
             // Exercise the `ref_best_rd == INT64_MAX` early-out too.
-            let ref_best_rd = if rng.next() % 4 == 0 {
+            let ref_best_rd = if rng.next().is_multiple_of(4) {
                 i64::MAX
             } else {
                 i64::from(rng.range(0, 1 << 20))
@@ -409,7 +409,7 @@ fn compute_rd_thresh_matches_c() {
     for _ in 0..5000 {
         let rdmult = rng.range(1, 1 << 16);
         let rate = rng.range(0, 1 << 18);
-        let ref_best_rd = if rng.next() % 8 == 0 {
+        let ref_best_rd = if rng.next().is_multiple_of(8) {
             i64::MAX
         } else {
             i64::from(rng.range(0, 1 << 24)) << (rng.next() % 24)
@@ -675,7 +675,7 @@ fn pick_wedge_matches_c() {
     for (bsize, bd) in cells() {
         let (bw, bh) = (BLK_W[bsize], BLK_H[bsize]);
         let n = bw * bh;
-        for iter in 0..48 {
+        for _iter in 0..48 {
             let src_stride = bw + 8;
             let src = Plane::random(&mut rng, src_stride * bh, bd);
             let p0 = Plane::random(&mut rng, n, bd);
@@ -1099,8 +1099,8 @@ fn find_comp_rd_in_stats_matches_c() {
     let (mut hits, mut n) = (0usize, 0usize);
     for _ in 0..600 {
         let cfg = CompRdReuseCfg {
-            disable_interinter_wedge_newmv_search: rng.next() % 2 == 0,
-            enable_fast_compound_mode_search: rng.next() % 2 == 0,
+            disable_interinter_wedge_newmv_search: rng.next().is_multiple_of(2),
+            enable_fast_compound_mode_search: rng.next().is_multiple_of(2),
         };
         let (probe_st, mi) = rand_pair(&mut rng);
         // A short cache with the probe entry somewhere in it, so the FIRST
@@ -1168,7 +1168,7 @@ fn save_comp_rd_search_stat_matches_c() {
             let comp = InterInterComp {
                 wedge_index: (rng.next() % 16) as usize,
                 wedge_sign: (rng.next() % 2) as usize,
-                mask_type: if rng.next() % 2 == 0 {
+                mask_type: if rng.next().is_multiple_of(2) {
                     DiffwtdMaskType::Diffwtd38
                 } else {
                     DiffwtdMaskType::Diffwtd38Inv
@@ -1289,7 +1289,7 @@ fn update_best_info_matches_c() {
         let mbmi_comp = InterInterComp {
             wedge_index: (rng.next() % 16) as usize,
             wedge_sign: (rng.next() % 2) as usize,
-            mask_type: if rng.next() % 2 == 0 {
+            mask_type: if rng.next().is_multiple_of(2) {
                 DiffwtdMaskType::Diffwtd38
             } else {
                 DiffwtdMaskType::Diffwtd38Inv
@@ -1404,7 +1404,7 @@ fn populate_reuse_comp_type_data_matches_c() {
         let mut costs = rand_costs(&mut rng);
         // One case in three leaves the winner's rate at its INT_MAX sentinel,
         // which is the "reuse produced nothing" arm.
-        if rng.next() % 3 == 0 {
+        if rng.next().is_multiple_of(3) {
             costs.rate[winner.index()] = i32::MAX;
         }
         let st = CompRdStats {
@@ -1418,7 +1418,7 @@ fn populate_reuse_comp_type_data_matches_c() {
             interinter_comp: InterInterComp {
                 wedge_index: (rng.next() % 16) as usize,
                 wedge_sign: (rng.next() % 2) as usize,
-                mask_type: if rng.next() % 2 == 0 {
+                mask_type: if rng.next().is_multiple_of(2) {
                     DiffwtdMaskType::Diffwtd38
                 } else {
                     DiffwtdMaskType::Diffwtd38Inv
@@ -1571,7 +1571,7 @@ fn check_txfm_eval_matches_c() {
                 let qindex = rng.range(0, 256);
                 // One in eight uses the INT64_MAX sentinel, which is the
                 // "no best skip RD yet" arm and skips the threshold entirely.
-                let best_skip_rd = if rng.next() % 8 == 0 {
+                let best_skip_rd = if rng.next().is_multiple_of(8) {
                     i64::MAX
                 } else {
                     i64::from(rng.range(0, 1 << 24)) << (rng.next() % 20)
@@ -1783,7 +1783,7 @@ fn prune_mode_by_skip_rd_matches_c() {
                     let source_variance = (rng.next() % (1 << 16)) as u32;
                     let qindex = rng.range(0, 256);
                     let rdmult = rng.range(1, 1 << 14);
-                    let ref_skip_rd = if rng.next() % 8 == 0 {
+                    let ref_skip_rd = if rng.next().is_multiple_of(8) {
                         i64::MAX
                     } else {
                         i64::from(rng.range(0, 1 << 24)) << (rng.next() % 16)
@@ -1794,7 +1794,7 @@ fn prune_mode_by_skip_rd_matches_c() {
                     // A free choice reaches a visible width of 3, which the
                     // `aom_sse` tiers handle differently per ISA — measured on
                     // x86 (Rosetta) after this test passed on aarch64.
-                    let mb_to_right_edge = -32 * i32::from(rng.next() % 2 == 0);
+                    let mb_to_right_edge = -32 * i32::from(rng.next().is_multiple_of(2));
                     let mb_to_bottom_edge = 0;
                     let (vw, vh) = get_txb_visible_dimensions(
                         pw,
@@ -1965,7 +1965,7 @@ fn compute_best_wedge_interintra_matches_c() {
                 bsize as i32,
                 1,
                 8,
-                &vec![0i32; MAX_WEDGE_TYPES],
+                &[0i32; MAX_WEDGE_TYPES],
                 &[0; 4],
                 &probe,
                 src_stride as i32,
@@ -2189,7 +2189,7 @@ fn compute_best_interintra_mode_matches_c() {
             // The running best the caller threads in: sometimes INT64_MAX (the
             // first mode of a loop), sometimes a value this mode may or may not
             // beat, so both arms of the accept test are reached.
-            let (best_rd_in, best_mode_in) = if rng.next() % 3 == 0 {
+            let (best_rd_in, best_mode_in) = if rng.next().is_multiple_of(3) {
                 (i64::MAX, INTERINTRA_MODES as i32)
             } else {
                 (i64::from(rng.range(1, 1 << 30)) << (rng.next() % 8), 0)

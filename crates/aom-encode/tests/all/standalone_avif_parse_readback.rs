@@ -71,7 +71,7 @@ fn strip_temporal_delimiter(stream: &[u8]) -> Vec<u8> {
 /// derived fields (loop-filter level, tx_mode) are not degenerate).
 fn content(r: usize, col: usize) -> i32 {
     let grad = 32 + (r + col) * 150 / 256;
-    let bar = if (col / 16) % 2 == 0 { 0 } else { 45 };
+    let bar = if (col / 16).is_multiple_of(2) { 0 } else { 45 };
     grad as i32 + bar
 }
 
@@ -182,8 +182,8 @@ fn run_cell(
             "{label}: zenavif-parse's independently re-derived chroma subsampling"
         );
     }
-    assert_eq!(
-        meta.still_picture, true,
+    assert!(
+        meta.still_picture,
         "{label}: a single KEY frame with no fwd-kf must read as a still picture"
     );
     // NOT asserted, deliberately: `meta.base_q_idx` (and `meta.lossless`)

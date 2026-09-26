@@ -28,6 +28,24 @@
 //! port and C do not produce identical bytes would be a meaningless timing
 //! comparison (and a correctness regression).
 
+// Clippy policy for a bit-exact C port (see docs/DIFFERENTIAL_PLAYBOOK.md): kernels
+// mirror libaom's signatures and loop shapes line for line so a differential can be
+// read against the C side, and some C float idioms are NaN-sensitive.
+#![allow(
+    clippy::too_many_arguments,   // C kernel signatures mirrored 1:1
+    clippy::needless_range_loop,  // index loops mirror the C reference line for line
+    clippy::manual_memcpy,        // explicit copy loops mirror the C reference
+    clippy::type_complexity,      // harness-facing tuples
+    clippy::neg_cmp_op_on_partial_ord, // `!(a < b)` is not `a >= b` under NaN; the CNN mirrors C
+    clippy::field_reassign_with_default, // C init-then-assign mirrors
+    clippy::chunks_exact_to_as_chunks,   // `as_chunks` is not on the pinned toolchain
+    clippy::collapsible_if,       // nested ifs mirror the C control flow, with C line refs between them
+    clippy::manual_clamp,         // C's chained min/max: `clamp` panics on inverted bounds and differs under NaN
+    clippy::manual_range_contains, // C comparison chains kept verbatim
+    clippy::excessive_precision,  // NN weight tables copied verbatim from C
+    clippy::while_let_loop,       // explicit `loop { let Some(..) = .. else { break } }` keeps the scheduler's exits readable
+    clippy::large_enum_variant    // `SbTree` variants are the partition shapes; boxing the leaf is measured slower
+)]
 #![forbid(unsafe_code)]
 
 pub mod config_perm;
@@ -1349,7 +1367,7 @@ impl EncodeCell {
                 "{}: port_encode_film_grain needs a film-grain bootstrap",
                 self.label
             );
-            let mut g = grain.clone();
+            let mut g = *grain;
             // Context fields are NOT in the grain table — set from THIS cell's
             // config, exactly as C derives them from the seq/frame header.
             g.monochrome = mono;
@@ -1943,7 +1961,7 @@ impl EncodeCell {
                 stride,
                 (w + 7) & !7,
                 (h + 7) & !7,
-                bd as u8,
+                bd,
                 sf.screen_detection_mode2_fast_detection,
             )
         };
@@ -2980,8 +2998,8 @@ impl MultiFrameEncodeCell {
             disable_cdf_update: real.prefix.disable_cdf_update,
             reduced_tx_set_used: real.reduced_tx_set_used,
             interp_filter: real.interp_filter,
-            loopfilter: real.loopfilter.clone(),
-            cdef: real.cdef.clone(),
+            loopfilter: real.loopfilter,
+            cdef: real.cdef,
         };
         let derived = derive_lowdelay_p_frame_header(&r.seq_cfg, &p);
         assemble_frame_obu_payload_single_tile(&derived, 0, &tile_bytes)
@@ -3013,7 +3031,7 @@ impl MultiFrameEncodeCell {
 /// The parsed reference facts of a 2-frame `[KEY, P]` `aomenc` stream
 /// ([`MultiFrameEncodeCell::c_encode_inter`]'s output): frame 1's OBU payload
 /// + exact header bit length, the parsed frame-1 header, and the
-/// sequence-derived [`FrameHeaderObu`] template the derive/parse paths share.
+///   sequence-derived [`FrameHeaderObu`] template the derive/parse paths share.
 pub struct Inter2FrameRef {
     /// Frame 1's whole OBU payload (header + tile bytes).
     pub f1_payload: Vec<u8>,

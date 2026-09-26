@@ -165,7 +165,7 @@ fn yuv_to_rgb8_mono_subsample_and_bd10() {
     let rgb10b = yuv_to_rgb8(&y10b, &[], &[], 8, 8, true, 0, 0, 10);
     let expect = {
         let c = 129 - 16;
-        (((298 * c + 128) >> 8) as u8).min(255)
+        ((298 * c + 128) >> 8) as u8
     };
     assert!(rgb10b.iter().all(|px| *px == [expect, expect, expect]));
 }

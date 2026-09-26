@@ -98,8 +98,12 @@ fn rand_gates(rng: &mut Rng, i: usize) -> (AdjustGates, cref::AdjustGates) {
         1 => AOM_TUNE_SSIMULACRA2,
         _ => 0,
     };
-    let sharpness = if i % 3 == 0 { 3 } else { rng.range(0, 3) };
-    let frame_is_intra = i % 5 == 0;
+    let sharpness = if i.is_multiple_of(3) {
+        3
+    } else {
+        rng.range(0, 3)
+    };
+    let frame_is_intra = i.is_multiple_of(5);
     // ARF_UPDATE / GF_UPDATE are the two update types frame_is_kf_gf_arf also
     // matches; C's FRAME_UPDATE_TYPE has KF=0, LF=1, GF=2, ARF=3, OVERLAY=4,
     // INTNL_OVERLAY=5, INTNL_ARF=6.
@@ -333,7 +337,7 @@ fn ref_mv_idx_early_breakout_matches_c() {
         let mut p_valid = [[false; REF_FRAMES]; MAX_REF_MV_SEARCH];
         for i in 0..MAX_REF_MV_SEARCH {
             for r in 0..8 {
-                let v = rng.next() % 3 != 0;
+                let v = !rng.next().is_multiple_of(3);
                 c_valid[i][r] = u8::from(v);
                 p_valid[i][r] = v;
             }

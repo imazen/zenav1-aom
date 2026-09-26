@@ -298,7 +298,7 @@ fn delta_rate_cost_matches_c() {
         // twice in 40k trials, which is a coin-flip away from a vacuous arm.
         // Draw from a mixture instead so the early exit is reached by
         // construction rather than by luck.
-        let srcrf_dist = if rng.next_u32() % 8 == 0 {
+        let srcrf_dist = if rng.next_u32().is_multiple_of(8) {
             i64::from(rng.next_u32() % 300)
         } else {
             i64::from(rng.next_u32() % 2_000_000)
@@ -830,7 +830,11 @@ fn rate_estimator_matches_c() {
             for c in qcoeff.iter_mut() {
                 if rng.next_u32() % 16 < density {
                     let mag = (rng.next_u32() % 64) as i32;
-                    *c = if rng.next_u32() % 2 == 0 { mag } else { -mag };
+                    *c = if rng.next_u32().is_multiple_of(2) {
+                        mag
+                    } else {
+                        -mag
+                    };
                 }
             }
             let eob = (rng.next_u32() as usize) % (n + 1);
@@ -974,7 +978,7 @@ fn is_alike_mv_matches_c() {
                         )
                     })
                     .collect();
-                let cand = if rng.next_u32() % 3 == 0 && count > 0 {
+                let cand = if rng.next_u32().is_multiple_of(3) && count > 0 {
                     // Deliberately near an existing centre, so level 0's exact
                     // test and levels 1/2's windows are all reachable.
                     let base = centers[(rng.next_u32() as usize) % count];
@@ -1205,7 +1209,7 @@ fn build_gop(
         for (slot, r) in ref_map_index.iter_mut().enumerate() {
             // Slot -> GOP frame, with a third of the slots left empty so the
             // `ref_map_index < 0` early return is reached.
-            *r = if rng.next_u32() % 3 == 0 {
+            *r = if rng.next_u32().is_multiple_of(3) {
                 -1
             } else {
                 ((slot + rng.next_u32() as usize) % n_frames) as i32
@@ -1278,14 +1282,14 @@ fn tpl_model_update_matches_c() {
                 }
 
                 let mut src = random_cell(&mut rng);
-                src.ref_frame_index = if rng.next_u32() % 2 == 0 {
+                src.ref_frame_index = if rng.next_u32().is_multiple_of(2) {
                     saw_single = true;
                     [(rng.next_u32() % 7) as i8, -1]
                 } else {
                     saw_compound = true;
                     [(rng.next_u32() % 7) as i8, (rng.next_u32() % 7) as i8]
                 };
-                if rng.next_u32() % 8 == 0 {
+                if rng.next_u32().is_multiple_of(8) {
                     src.ref_frame_index[0] = -1;
                     saw_early_return = true;
                 }
@@ -1948,7 +1952,7 @@ fn tpl_rdmult_setup_sb_matches_c() {
                             let prev_out: Vec<f64> = (0..n).map(|i| -1.0 - i as f64).collect();
 
                             // BLOCK_64X64 = 12 (16 mi), BLOCK_128X128 = 15 (32 mi).
-                            let (sb_size_c, sb_mi) = if rng.next_u32() % 2 == 0 {
+                            let (sb_size_c, sb_mi) = if rng.next_u32().is_multiple_of(2) {
                                 (12i32, 16i32)
                             } else {
                                 (15, 32)
@@ -1974,8 +1978,8 @@ fn tpl_rdmult_setup_sb_matches_c() {
                                 y_dc_delta_q: (rng.next_u32() % 31) as i32 - 15,
                                 rdmult_delta_qindex: (rng.next_u32() % 61) as i32 - 30,
                                 bit_depth: [8u8, 10, 12][(rng.next_u32() % 3) as usize],
-                                use_fixed_qp_offsets: rng.next_u32() % 2 == 0,
-                                is_stat_consumption_stage: rng.next_u32() % 2 == 0,
+                                use_fixed_qp_offsets: rng.next_u32().is_multiple_of(2),
+                                is_stat_consumption_stage: rng.next_u32().is_multiple_of(2),
                                 tuning: TuneMetric::Psnr,
                                 mode: EncMode::Good,
                                 sb_mi_width: sb_mi,
@@ -2258,10 +2262,10 @@ fn highbd_tpl_get_satd_cost_matches_c() {
                         tx_size,
                     );
                     assert_eq!(got, want, "bd={bd} {bw}x{bh} tx={tx_size}");
-                    if let Some(p) = prev {
-                        if p != got {
-                            saw_bd_difference = true;
-                        }
+                    if let Some(p) = prev
+                        && p != got
+                    {
+                        saw_bd_difference = true;
                     }
                     prev = Some(got);
                 }

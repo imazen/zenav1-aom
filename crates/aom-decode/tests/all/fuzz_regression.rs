@@ -136,8 +136,7 @@ fn invalid_422_chroma_subsize_is_a_typed_corrupt_frame_error() {
     let input = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let config = fuzz_config();
     let err = decode_frame_obus_with(&input, &config)
-        .err()
-        .expect("the 4:2:2 invalid-chroma-subsize POC must be REJECTED, not decoded");
+        .expect_err("the 4:2:2 invalid-chroma-subsize POC must be REJECTED, not decoded");
     assert_eq!(err.category(), "malformed", "got {err}");
     let msg = err.to_string();
     assert!(
@@ -156,8 +155,7 @@ fn out_of_range_header_syntax_is_malformed_and_names_the_field() {
     let path = regression_dir().join("decode_obus_filmgrain_num_points_oob.obu");
     let input = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let err = decode_frame_obus_with(&input, &fuzz_config())
-        .err()
-        .expect("the film-grain num_points POC must be rejected");
+        .expect_err("the film-grain num_points POC must be rejected");
     assert_eq!(err.category(), "malformed", "got {err}");
     let msg = err.to_string();
     assert!(

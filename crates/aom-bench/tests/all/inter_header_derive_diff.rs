@@ -13,6 +13,7 @@
 //!   1. the individual DERIVED (recon-independent) field values equal the parse;
 //!   2. `write_frame_header_obu(derived)` == `write_frame_header_obu(parsed)`
 //!      byte-for-byte (the whole-header serialization proof 2g rides on).
+//!
 //! Swept over cq {20,40,60,63} x {64x64, 128x128} x {mono, 4:2:0}.
 
 use aom_bench::{EncodeCell, MultiFrameEncodeCell};
@@ -248,8 +249,8 @@ fn derive_lowdelay_p_header_byte_exact_vs_aomenc() {
                     // interp_filter is the per-frame filter RD; loopfilter/cdef
                     // need the P recon.
                     interp_filter: real.interp_filter,
-                    loopfilter: real.loopfilter.clone(),
-                    cdef: real.cdef.clone(),
+                    loopfilter: real.loopfilter,
+                    cdef: real.cdef,
                 };
                 let derived = derive_lowdelay_p_frame_header(&seq_cfg, &params);
 

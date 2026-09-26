@@ -1113,7 +1113,7 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
             format!("{name} {fmt} {w}x{h}@{off_x},{off_y}")
         };
         for &cq in &[5i32, 12, 20, 32, 48, 63] {
-            let res = run_case(w, h, mono, ss_x, ss_y, 2, cq, bd, &y_c, &u_c, &v_c, 0, 0);
+            let res = run_case(w, h, mono, ss_x, ss_y, 2, cq, bd, y_c, u_c, v_c, 0, 0);
             results.push((format!("{tag} cq{cq}"), res.matched));
         }
     }
@@ -1235,33 +1235,6 @@ fn encoder_gate_real_image_e2e_kb6_repro() {
     // WRITE-ctx fix — see (1c)). This is now a FULL byte-match gate: any
     // real-content cell diverging is a regression.
     report_and_assert("KB-6 real-image e2e (30/30 promoted)", &results);
-}
-
-/// Print a per-cell map and assert an OPEN bug still reproduces. Shared by the
-/// KB-4 / KB-5 characterization repros below: a committed reproduction that is
-/// CI-green while the bug is open and FAILS (loudly, with a promote instruction)
-/// the moment a fix makes the cells byte-match — never a weakened or skipped test.
-fn assert_open_divergence(kb: &str, results: &[(String, bool)]) {
-    eprintln!("\n=== {kb} repro map (MATCH = byte-exact vs real aomenc) ===");
-    for (label, ok) in results {
-        eprintln!("  {label}: {}", if *ok { "MATCH" } else { "MISMATCH" });
-    }
-    let diverged: Vec<&String> = results
-        .iter()
-        .filter(|(_, ok)| !*ok)
-        .map(|(n, _)| n)
-        .collect();
-    eprintln!(
-        "{kb}: {}/{} cells diverge {:?}",
-        diverged.len(),
-        results.len(),
-        diverged
-    );
-    assert!(
-        !diverged.is_empty(),
-        "{kb} appears FIXED: all cells now byte-match real aomenc. Promote this repro \
-         to an asserting byte-match gate (report_and_assert) and close {kb} in CLAUDE.md."
-    );
 }
 
 /// **KB-4 bd10 non-4:2:0 chroma — byte-match gate (FIXED 2026-07-16).** At bit

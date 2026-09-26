@@ -9,8 +9,8 @@ fn mirror_tile(
     label: &str,
     w: usize,
     h: usize,
-    cq: i32,
-    speed: i32,
+    _cq: i32,
+    _speed: i32,
 ) -> EncodeCell {
     let mir = |i: usize, n: usize| {
         let m = i % (2 * n);

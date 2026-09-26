@@ -84,26 +84,20 @@ fn text_luma(r: usize, c: usize) -> u16 {
     let col_in_glyph = c % 8;
     match glyph {
         0 => {
-            if col_in_glyph < 5 && row_in_line % 2 == 0 {
+            if col_in_glyph < 5 && row_in_line.is_multiple_of(2) {
                 32
             } else {
                 235
             }
         }
         1 => {
-            if col_in_glyph % 3 == 0 || row_in_line == 3 {
+            if col_in_glyph.is_multiple_of(3) || row_in_line == 3 {
                 32
             } else {
                 235
             }
         }
-        2 => {
-            if col_in_glyph < 2 || col_in_glyph >= 6 {
-                96
-            } else {
-                235
-            }
-        }
+        2 if (!(2..6).contains(&col_in_glyph)) => 96,
         _ => 235,
     }
 }
@@ -527,7 +521,7 @@ fn many_colour_palette_blocks_are_pinned_and_are_not_this_arm() {
 #[ignore = "75 encode pairs at 64x64..256x256; the color_palette_thresh evidence"]
 fn color_palette_thresh_band_divergence_count_is_pinned() {
     c::ref_init();
-    let knobs = ToggleKnobs {
+    let _knobs = ToggleKnobs {
         enable_palette: true,
         // The reference is `--tune-content=screen` (see `c_ref`):
         // the port's screen-content decision must take that arm, not the detector.

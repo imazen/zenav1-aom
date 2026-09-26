@@ -48,9 +48,9 @@ fn make_plane(rng: &mut Rng, w: usize, h: usize, bs: usize, maxv: f64) -> Vec<u1
     for y in 0..h {
         for x in 0..w {
             let (bx, by) = (x / bs, y / bs);
-            let textured =
-                (bx.wrapping_mul(7).wrapping_add(by.wrapping_mul(13)) + (rng.0 as usize & 3)) % 3
-                    == 0;
+            let textured = (bx.wrapping_mul(7).wrapping_add(by.wrapping_mul(13))
+                + (rng.0 as usize & 3))
+                .is_multiple_of(3);
             let base = maxv * 0.5 + (x as f64 / w as f64 - 0.5) * maxv * 0.2;
             let val = if textured {
                 // Sharp checker + strong noise → high gradient, non-flat.

@@ -54,9 +54,9 @@ const EXPECTED_EXACT: &[&str] = &[
 ///   grids) await chunk 3.
 /// - 8bpc alpha (mono, all intra-in-inter, primary_ref chain): frames 0-2;
 ///   3-4 diverge deeper in the chain (under investigation, chunk 2/3).
-/// (Empty since the temporal-MV-field chunk: every track is fully exact and
-/// lives in `EXPECTED_EXACT`. Use this for partial-progress ratcheting when
-/// new, harder vectors join the corpus.)
+///   (Empty since the temporal-MV-field chunk: every track is fully exact and
+///   lives in `EXPECTED_EXACT`. Use this for partial-progress ratcheting when
+///   new, harder vectors join the corpus.)
 const EXPECTED_FRAMES: &[(&str, &[usize])] = &[];
 
 /// Raw-plane md5 in the golden layout: Y then (unless mono) U, V; cropped
@@ -85,6 +85,7 @@ fn frame_md5(fd: &FrameDecode) -> String {
 }
 
 struct TrackResult {
+    #[allow(dead_code)] // kept for the report's shape
     track: &'static str,
     /// `Err(decode error)` or per-frame `(ok, got, want)`.
     outcome: Result<Vec<(bool, String, String)>, String>,

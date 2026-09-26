@@ -200,10 +200,6 @@ pub const BSIZE_NAME: [&str; N_BSIZE] = [
     "64x16",
 ];
 
-/// `MODE_TO_ANGLE` for the directional set (0 where the mode is not
-/// directional); the same table `intra::predict_intra_high` classifies with.
-const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
-
 /// One census. All fields are counts since the last [`reset`] on this thread.
 ///
 /// Boxed by every caller ([`snapshot`] returns it that way): it is ~5 KiB and
@@ -842,6 +838,11 @@ fn note_coded_leaf_impl(leaf: &Leaf) {
         }
     });
 }
+
+/// `MODE_TO_ANGLE` for the directional set (0 where the mode is not
+/// directional); the same table `intra::predict_intra_high` classifies with.
+#[cfg(any(test, feature = "census"))]
+const MODE_TO_ANGLE: [i32; N_MODE] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
 
 #[cfg(test)]
 mod tests {

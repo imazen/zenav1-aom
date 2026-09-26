@@ -4,8 +4,8 @@
 //! KB-23 (`cnn_output_valid`: C computes the intra-CNN partition prune only at
 //! a whole-in-frame `BLOCK_64X64` root — `partition_strategy.c:142/160/227`
 //! + `partition_search.c:3340-3343` — so a superblock whose 64x64 root is not
-//! whole-in-frame prunes NOTHING anywhere inside it) was found and closed on a
-//! single grid, and its entry says so:
+//!   whole-in-frame prunes NOTHING anywhere inside it) was found and closed on a
+//!   single grid, and its entry says so:
 //!
 //! > *"the grid is one content source at cq24, bd8 4:2:0, SB64, speeds 0..4 ...
 //! > the partial-SB x speed crossing has not been swept at other bit depths,

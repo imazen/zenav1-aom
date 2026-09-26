@@ -628,7 +628,7 @@ fn pick_recursive_tx_size_type_matches_c_recursion() {
 
             let m = format!("bsize={bsize} iter={iter} q={qindex}");
             assert!(port.valid, "port invalid {m}");
-            let (fr, fd, fs, fskip) = facade.expect(&format!("facade invalid {m}"));
+            let (fr, fd, fs, fskip) = facade.unwrap_or_else(|| panic!("facade invalid {m}"));
             assert_eq!(port.rate, fr, "rate {m}");
             assert_eq!(port.dist, fd, "dist {m}");
             assert_eq!(port.sse, fs, "sse {m}");

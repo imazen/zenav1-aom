@@ -70,7 +70,6 @@ pub(crate) fn filter_intra_edge_run(p: &mut [u16], sz: usize, taps: [i32; 5]) {
     #[cfg(target_arch = "x86_64")]
     {
         incant!(filter_intra_edge_impl_x86(p, sz, taps), [v3, scalar]);
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     incant!(filter_intra_edge_impl(p, sz, taps), [neon, wasm128, scalar])
@@ -97,7 +96,7 @@ pub(crate) fn filter_intra_edge_run(p: &mut [u16], sz: usize, taps: [i32; 5]) {
 fn filter_intra_edge_impl_x86(token: Token, p: &mut [u16], sz: usize, taps: [i32; 5]) {
     use archmage::intrinsics::x86_64::*;
     let _ = token;
-    if sz > 192 || sz < 2 {
+    if !(2..=192).contains(&sz) {
         super::edge::filter_intra_edge_scalar_inplace(p, sz, taps);
         return;
     }
@@ -231,7 +230,6 @@ pub(crate) fn filter_intra_edge_at_run(buf: &mut [u16], off: usize, sz: usize, t
             filter_intra_edge_at_impl_x86(buf, off, sz, taps),
             [v3, scalar]
         );
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     filter_intra_edge_at_fallback(buf, off, sz, taps)
@@ -360,7 +358,7 @@ fn filter_intra_edge_impl_scalar(
     taps: [i32; 5],
 ) {
     let mut orig = [0i16; FILTER_SCRATCH];
-    if sz > 192 || sz < 2 {
+    if !(2..=192).contains(&sz) {
         // Out-of-envelope sizes take the original in-place rolling window.
         super::edge::filter_intra_edge_scalar_inplace(p, sz, taps);
         return;

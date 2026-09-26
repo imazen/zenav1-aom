@@ -15,13 +15,13 @@
 //!    `max_lr_unit_size`, speed_features.c:3080-3108). KB-22 recorded these as
 //!    "still unmodelled by the port ... a `--enable-restoration=1` cell at
 //!    >=720p and speed>=1 is expected to diverge". **That prediction is
-//!    wrong, and this file is the measurement that says so** — see
-//!    `lr_unit_size_bounds_track_c` (the derivation, default tier) and
-//!    `lr_unit_size_hd_speed1_e2e` (the encode, on-demand tier). The fields are
-//!    unmodelled in `aom_encode::SpeedFeatures` only; the port's loop-restoration
-//!    search takes its unit-size range from its caller, and that caller
-//!    (`aom_bench::lr_search_sf_allintra` / `..._good`) already transcribes the
-//!    whole block including both framesize arms.
+//!    > wrong, and this file is the measurement that says so** — see
+//!    > `lr_unit_size_bounds_track_c` (the derivation, default tier) and
+//!    > `lr_unit_size_hd_speed1_e2e` (the encode, on-demand tier). The fields are
+//!    > unmodelled in `aom_encode::SpeedFeatures` only; the port's loop-restoration
+//!    > search takes its unit-size range from its caller, and that caller
+//!    > (`aom_bench::lr_search_sf_allintra` / `..._good`) already transcribes the
+//!    > whole block including both framesize arms.
 //!
 //! The two e2e tests are `#[ignore]`d — an HD speed-0 encode pair costs tens of
 //! seconds — and belong to the same nightly / on-demand tier as
@@ -319,7 +319,7 @@ fn lr_unit_size_bounds_track_c() {
 
 /// The encode KB-22 predicted would diverge: `--enable-restoration=1` at
 /// >=720p and speed >= 1, with the frame's `base_qindex` placed on both sides
-/// of the `<= 96` threshold that selects the unit size.
+/// > of the `<= 96` threshold that selects the unit size.
 ///
 /// Each quality point runs TWO pairs at the same size and speed:
 /// - the restoration-ON pair (`c_encode_lr` / `port_encode_lr`), which is the

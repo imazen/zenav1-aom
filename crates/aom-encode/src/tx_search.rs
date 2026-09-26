@@ -1863,7 +1863,7 @@ pub fn search_tx_type_intra_into(
                 RUN.fetch_add(1, Ordering::Relaxed);
             }
             let t = SKIP.load(Ordering::Relaxed) + RUN.load(Ordering::Relaxed);
-            if t % 200_000 == 0 {
+            if t.is_multiple_of(200_000) {
                 aom_dsp::trace_out!(
                     "TXSKIP skip={} run={}",
                     SKIP.load(Ordering::Relaxed),
@@ -2274,7 +2274,7 @@ pub fn dist_block_px_domain_into(
             visible_cols,
             visible_rows,
         );
-        return 16 * i64::from(sse);
+        return 16 * sse;
     }
     // `recon` is a per-candidate scratch: keep the capacity and write the rows.
     // The strided arm is width-specialised (`copy_pred_rows`) because a
@@ -2325,7 +2325,7 @@ pub fn dist_block_px_domain_into(
     let (_var, sse) = aom_dsp::dist::highbd_variance(
         &src[src_off..],
         src_stride,
-        &recon,
+        recon,
         w,
         visible_cols,
         visible_rows,
@@ -2621,8 +2621,8 @@ pub fn txfm_rd_in_plane_intra(
     debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
     let mut t_above = [0i8; 32];
     let mut t_left = [0i8; 32];
-    copy_ctx(&mut t_above, &env.above_ctx, max_blocks_wide);
-    copy_ctx(&mut t_left, &env.left_ctx, max_blocks_high);
+    copy_ctx(&mut t_above, env.above_ctx, max_blocks_wide);
+    copy_ctx(&mut t_left, env.left_ctx, max_blocks_high);
     // predict_dc_only_block's zero_blk_rate ctx (tx_search.c:2055-2063): the
     // BLOCK-ORIGIN skip ctx from the PERSISTENT (pre-walk) entropy arrays —
     // shared by every txb of this block (see the
@@ -3227,7 +3227,7 @@ pub fn get_mean_dev_features(
 /// `av1_dc_quant_QTX(qindex, 0, bd) >> (bd - 8)`; normalized by the
 /// transcribed mean/std tables; one ReLU hidden layer (16) + linear output
 /// + `av1_nn_output_prec_reduce` (reduce_prec = 1 at the call site :2879);
-/// verdict per `av1_intra_tx_prune_nn_thresh_8x8`.
+///   verdict per `av1_intra_tx_prune_nn_thresh_8x8`.
 pub fn ml_predict_intra_tx_depth_prune(
     diff: &[i16],
     diff_stride: usize,
@@ -3442,6 +3442,7 @@ pub fn choose_tx_size_type_from_rd_intra(
         }
         // `enable_nn_prune_intra_tx_depths = sf && tx_size == start_tx`
         // (:3022): the NN only ever evaluates on the largest-depth walk.
+        #[allow(clippy::unnecessary_lazy_evaluations)] // the closure defers a `&mut` borrow
         let nn_ctx =
             (pol.prune_intra_tx_depths_using_nn && tx_size == start_tx).then(|| NnDepthPruneCtx {
                 outcome: &mut nn_outcome,
@@ -3463,7 +3464,7 @@ pub fn choose_tx_size_type_from_rd_intra(
         if tx_dbg_target().is_some_and(|(r, c)| r == env.mi_row && c == env.mi_col) {
             let (rt, dt) = res
                 .as_ref()
-                .map(|(s, _)| (s.rate as i64, s.dist as i64))
+                .map(|(s, _)| (s.rate, s.dist))
                 .unwrap_or((-1, -1));
             aom_dsp::trace_out!(
                 "[tx] mi({},{}) bs{} part{} mode={} fi={} fi_mode={} ad={} pal={} tx={} depth={} rd={} thresh={} ref={} bo={} rate={} dist={}",

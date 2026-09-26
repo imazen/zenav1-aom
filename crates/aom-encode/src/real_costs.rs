@@ -88,15 +88,6 @@ pub struct RealCosts {
     pub palette_costs: PaletteCosts,
 }
 
-/// A degenerate but VALID single-symbol CDF row: `cdf[0] == 0` terminates
-/// `cost_tokens_from_cdf`'s scan immediately (AOM_ICDF(0) == CDF_PROB_TOP,
-/// the real AV1 "last real entry" convention every valid CDF satisfies at
-/// its own N-1), so this is safe filler for slots the current KEY-frame-only
-/// intra search never reads (never an out-of-bounds scan).
-fn zero_cdf_row(n: usize) -> Vec<u16> {
-    vec![0u16; n]
-}
-
 /// Repack `KfFrameContext::ext_tx_1ddct` (eset 1, 7-symbol, 8-wide) and
 /// `ext_tx_dtt4` (eset 2, 5-symbol, 6-wide) into the uniform-stride
 /// `[EXT_TX_SETS_INTRA][EXT_TX_SIZES][INTRA_MODES][TX_TYPES+1]` flat layout

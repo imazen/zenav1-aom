@@ -654,7 +654,7 @@ pub struct PickFrameCfg<'a> {
     /// `rd_pick_intrabc_mode_sb` (`!mv_sf.use_intrabc ||
     /// rt_sf.use_nonrd_pick_mode`, rdopt.c:3432-3434, root #10) — so at speed
     /// >= 8 C searches nothing yet still charges every intra luma candidate
-    /// `intrabc_cost[0]` in `intra_mode_info_cost_y` (:563-564).
+    /// > `intrabc_cost[0]` in `intra_mode_info_cost_y` (:563-564).
     ///
     /// [`Self::intrabc`] models only the SEARCH. Deriving the cost gate from
     /// `intrabc.is_some()` conflates the two and under-costs the whole intra
@@ -1870,9 +1870,10 @@ fn leaf_pick_sb_modes(
             .iter()
             .enumerate()
             .flat_map(|(m, ds)| {
-                ds.iter().enumerate().filter_map(move |(d, &r)| {
-                    (r < i64::MAX / 2).then(|| format!("m{m}d{d}={r}"))
-                })
+                ds.iter()
+                    .enumerate()
+                    .filter(|(_, r)| **r < i64::MAX / 2)
+                    .map(move |(d, &r)| format!("m{m}d{d}={r}"))
             })
             .collect();
         aom_dsp::trace_out!("[ldt] leaf mi({},{}) bs{} part{} modes: {}", mi_row, mi_col, bsize, partition, tbl.join(" "));

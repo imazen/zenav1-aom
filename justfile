@@ -113,6 +113,7 @@ gate-encode:
 gate-landing:
     just upstream-check
     just fmt-check
+    just clippy
     just deny
     just doc-check
     just ci-yaml-check
@@ -348,6 +349,12 @@ fmt-check:
     cargo fmt --all --check
     cargo fmt --manifest-path apidoc/Cargo.toml --check
 
+# clippy with warnings as errors over every target, in the harness feature set
+# (the internals modules + tests). The per-crate policy allows are the lints that
+# fight a line-for-line C port (crates/*/src/lib.rs, "Clippy policy"). ~1 min warm.
+clippy:
+    cargo clippy --profile test-fast --workspace --all-targets --features zenav1-aom-encode/__internals,zenav1-aom-decode/__internals -- -D warnings
+
 # rustdoc on the four published crates with warnings as errors: broken links,
 # missing docs on the consumer surfaces (`aom-encode`/`aom-decode` carry
 # `#![warn(missing_docs)]`), bad HTML. ~40 s warm; a gate-landing step + CI job.
@@ -367,7 +374,7 @@ deny:
 # submodule. `upstream-check` fails the landing gate when the oracle tree is
 # dirty — with `ignore = dirty` in .gitmodules a root `git status` cannot see it,
 # which is how 965 lines of traces sat in the linked oracle for two weeks
-# (docs/INTEGRATION_REVIEW.md, 2026-09-24). `upstream/build/` is the oracle build
+# (docs/archive/INTEGRATION_REVIEW_2026-09-24.md, 2026-09-24). `upstream/build/` is the oracle build
 # output and is expected.
 upstream-check:
     @git -C upstream diff --quiet && git -C upstream diff --cached --quiet \

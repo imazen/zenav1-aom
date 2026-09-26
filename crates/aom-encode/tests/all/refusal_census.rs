@@ -218,7 +218,7 @@ fn the_documented_refusals_are_exactly_these() {
     let mut c = base(65, 67);
     c.bit_depth = 9;
     cases.push(("bit_depth", c));
-    let mut c = base(0, 67);
+    let c = base(0, 67);
     cases.push(("zero width", c));
     let mut c = base(65, 67);
     c.cq_level = 64;
@@ -230,7 +230,7 @@ fn the_documented_refusals_are_exactly_these() {
     c.monochrome = true;
     c.ss_y = 0;
     cases.push(("mono ss", c));
-    let mut c = base(MAX_FRAME_DIM + 1, 67);
+    let c = base(MAX_FRAME_DIM + 1, 67);
     cases.push(("width ceiling", c));
 
     let mut cells = Vec::new();

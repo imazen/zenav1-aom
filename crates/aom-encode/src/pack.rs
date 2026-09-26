@@ -322,11 +322,11 @@ pub fn kf_block_state(cfg: &PackCfg, env: &SbEncodeEnv, mib_size: i32) -> KfBloc
         // (`env.deltaq` Some => a firing delta-q mode). `delta_lf_res =
         // DEFAULT_DELTA_LF_RES` (2), `delta_lf_multi = DEFAULT_DELTA_LF_MULTI`
         // (0/single). encodeframe.c:2321-2324.
-        dlf_present: env.deltaq.map_or(false, |d| d.delta_lf_present),
+        dlf_present: env.deltaq.is_some_and(|d| d.delta_lf_present),
         dlf_multi: false,
         num_planes: if env.monochrome { 1 } else { 3 },
         dq_res: cfg.delta_q_res,
-        dlf_res: if env.deltaq.map_or(false, |d| d.delta_lf_present) {
+        dlf_res: if env.deltaq.is_some_and(|d| d.delta_lf_present) {
             DELTA_LF_RES
         } else {
             0
@@ -458,7 +458,7 @@ pub fn pack_leaf(
     // - FRAME base_qindex`. Every leaf in an SB derives the same value (shared
     // SB qindex); only the SB-root leaf actually codes it (super_block_upper_left
     // gate in write_delta_q_params_sb). `delta_lf[lf_id]` mirrors it (multi off).
-    let delta_lf_val = if env.deltaq.map_or(false, |d| d.delta_lf_present) {
+    let delta_lf_val = if env.deltaq.is_some_and(|d| d.delta_lf_present) {
         let delta_qindex = sb_current_qindex - cfg.base_qindex;
         let lfmask = !(DELTA_LF_RES - 1);
         let dlf = (delta_qindex / 4 + DELTA_LF_RES / 2) & lfmask;
@@ -980,7 +980,7 @@ pub fn pack_leaf(
         // is UNIFORM. The re-encode produced each plane's txbs in exactly this
         // order, so per-plane cursors consume them in lockstep.
         let uv_tx = av1_get_tx_size_uv(bsize, env.lossless, env.ss_x, env.ss_y);
-        let (max_bw, max_bh, mb_to_right, mb_to_bottom) = crate::tx_search::max_block_units(
+        let (max_bw, max_bh, _mb_to_right, _mb_to_bottom) = crate::tx_search::max_block_units(
             env.mi_cols,
             env.mi_rows,
             mi_col,
@@ -2220,7 +2220,7 @@ pub fn pack_tile_lr_stop(
             // the intra tables above. SB 0 reads the frame-init defaults.
             let sb_inter_costs = inter_cdfs
                 .as_deref()
-                .map(|c| crate::inter_costs::derive_inter_mode_costs(c));
+                .map(crate::inter_costs::derive_inter_mode_costs);
             // Variance-Boost delta-q per-SB quantizer rows (None = identity when
             // delta-q is off — env.rows_* — so speeds 0-9 stay byte-unchanged).
             let sb_env = if let Some(sb_real) = &sb_real {

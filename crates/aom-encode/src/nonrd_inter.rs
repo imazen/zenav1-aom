@@ -790,7 +790,7 @@ pub fn newmv_diff_bias(
             && spatial_variance < 150
             && (mv_row > 64 || mv_row < -64 || mv_col > 64 || mv_col < -64)
         {
-            return 5 * rdcost >> 2;
+            return (5 * rdcost) >> 2;
         }
         return rdcost;
     }
@@ -843,7 +843,7 @@ pub fn newmv_diff_bias(
         if bsize >= BLOCK_32X32 {
             return rdcost << 1;
         }
-        return 5 * rdcost >> 2;
+        return (5 * rdcost) >> 2;
     }
     rdcost
 }
@@ -879,13 +879,11 @@ pub fn update_thresh_freq_fact(
     best_mode_idx: usize,
     mode_offset: usize,
 ) {
-    /// `BLOCK_4X4`.
-    const BLOCK_4X4: usize = 0;
     /// `BLOCK_128X128`.
     const BLOCK_128X128: usize = 15;
 
     let thr_mode_idx = MODE_IDX[ref_frame][mode_offset];
-    let min_size = bsize.saturating_sub(3).max(BLOCK_4X4);
+    let min_size = bsize.saturating_sub(3); // BLOCK_4X4 is 0
     let max_size = (bsize + 6).min(BLOCK_128X128);
     let mut bs = min_size;
     while bs <= max_size {

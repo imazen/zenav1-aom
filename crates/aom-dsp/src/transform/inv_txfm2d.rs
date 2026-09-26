@@ -285,7 +285,6 @@ pub struct InvTxfmScratch {
 ///
 /// Each is a PRECONDITION and each is CHECKED, declining to the generic driver
 /// rather than diverging if a table moves.
-#[allow(clippy::too_many_arguments)]
 fn inv_txfm2d_add_4x4_fused(
     input: &[i32],
     output: &mut [u16],
@@ -530,7 +529,7 @@ pub fn av1_inv_txfm2d_add_into(
     // identical rather than merely equivalent-in-practice.
     let n = col_n * row_n;
     let mut stack_buf = [0i32; 64];
-    let mut buf: &mut [i32] = if n <= 64 {
+    let buf: &mut [i32] = if n <= 64 {
         &mut stack_buf[..n]
     } else {
         // Grow-only: the row pass below overwrites all `col_n * row_n`
@@ -547,8 +546,8 @@ pub fn av1_inv_txfm2d_add_into(
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let rows_done = crate::transform::simd::try_inv_row_pass(
         cfg.txfm_type_row,
-        &mod_input,
-        &mut buf,
+        mod_input,
+        buf,
         col_n,
         row_n,
         rect_type.abs() == 1,
@@ -593,7 +592,7 @@ pub fn av1_inv_txfm2d_add_into(
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let cols_done = crate::transform::simd::try_inv_col_pass(
         cfg.txfm_type_col,
-        &buf,
+        buf,
         output,
         stride,
         col_n,
@@ -834,7 +833,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
     // the column pass reads them (`remap_input`'s zero-fill stays — its
     // uncopied region IS observable).
     buf.resize(col_n * row_n, 0);
-    let mut buf = &mut buf[..];
+    let buf = &mut buf[..];
     let mut temp_in = [0i32; 64];
     let mut temp_out = [0i32; 64];
 
@@ -842,8 +841,8 @@ pub fn av1_inv_txfm2d_add_u8_into(
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let rows_done = crate::transform::simd::try_inv_row_pass(
         cfg.txfm_type_row,
-        &mod_input,
-        &mut buf,
+        mod_input,
+        buf,
         col_n,
         row_n,
         rect_type.abs() == 1,
@@ -887,7 +886,7 @@ pub fn av1_inv_txfm2d_add_u8_into(
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let cols_done = crate::transform::simd::try_inv_col_pass_u8(
         cfg.txfm_type_col,
-        &buf,
+        buf,
         output,
         stride,
         col_n,
@@ -985,25 +984,6 @@ fn iwht4x4_1_add_u8(input: &[i32], dest: &mut [u8], stride: usize) {
         dest[i + stride] = clip_pixel_add_u8(dest[i + stride], e);
         dest[i + 2 * stride] = clip_pixel_add_u8(dest[i + 2 * stride], e);
         dest[i + 3 * stride] = clip_pixel_add_u8(dest[i + 3 * stride], e);
-    }
-}
-
-/// bd8/u8 counterpart of [`av1_inverse_transform_add`] — the recon dispatch
-/// (lossless WHT vs the regular inverse 2-D transform).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn av1_inverse_transform_add_u8(
-    input: &[i32],
-    dst: &mut [u8],
-    stride: usize,
-    tx_type: usize,
-    tx_size: usize,
-    eob: usize,
-    lossless: bool,
-) {
-    if lossless {
-        av1_iwht4x4_add_u8(input, dst, stride, eob);
-    } else {
-        av1_inv_txfm2d_add_u8(input, dst, stride, tx_type, tx_size);
     }
 }
 

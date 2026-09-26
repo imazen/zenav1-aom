@@ -33,7 +33,7 @@ use aom_encode::inter_costs::{
     NEWMV_MODE_CONTEXTS, REF_CONTEXTS, REFMV_MODE_CONTEXTS, SINGLE_REF_BITS,
 };
 use aom_encode::rdopt_gate::{
-    FLAG_SKIP_INTRA_LOWVAR, ModeSkipCtx, ModeSkipVerdict, REFERENCE_MODES, init_mbmi,
+    FLAG_SKIP_INTRA_LOWVAR, ModeSkipCtx, REFERENCE_MODES, init_mbmi,
     inter_mode_search_order_independent_skip, prune_ref_frame, record_best_compound,
 };
 use aom_encode::rdopt_mv::{PredMode, ref_frame_type};
@@ -141,7 +141,7 @@ fn record_best_compound_matches_c() {
     for _ in 0..4000 {
         let seed: Vec<i64> = (0..REFERENCE_MODES)
             .map(|_| {
-                if rng.next() % 4 == 0 {
+                if rng.next().is_multiple_of(4) {
                     i64::MAX
                 } else {
                     rng.range(0, 1 << 28) as i64
@@ -243,7 +243,7 @@ fn inter_mode_search_order_independent_skip_matches_c() {
             RefSet::Full
         });
         for pm in &mut mask.pred_modes {
-            *pm = if rng.next() % 3 == 0 {
+            *pm = if rng.next().is_multiple_of(3) {
                 (rng.next() % (1 << 25)) as u32
             } else {
                 0
@@ -251,7 +251,7 @@ fn inter_mode_search_order_independent_skip_matches_c() {
         }
         for row in &mut mask.ref_combo {
             for v in row.iter_mut() {
-                *v = rng.next() % 5 == 0;
+                *v = rng.next().is_multiple_of(5);
             }
         }
         let c_mask = to_c_mask(&mask);
@@ -261,13 +261,13 @@ fn inter_mode_search_order_independent_skip_matches_c() {
         // with the flag off, which only `is_ref_frame_used_in_cache` sees.
         let cache_ptr = iter % 2 == 0 || use_cache;
         let cache_mode = rng.range(0, 25);
-        let cache_rf = if rng.next() % 2 == 0 {
+        let cache_rf = if rng.next().is_multiple_of(2) {
             (rng.range(1, 8), -1)
         } else {
             (rng.range(1, 5), rng.range(5, 8))
         };
         let ctx_common = ModeSkipCtx {
-            prune_ref_frame_mask: if rng.next() % 2 == 0 {
+            prune_ref_frame_mask: if rng.next().is_multiple_of(2) {
                 (rng.next() & 0xffff) as i32
             } else {
                 0
@@ -289,7 +289,7 @@ fn inter_mode_search_order_independent_skip_matches_c() {
             qindex: rng.range(0, 256),
             left: (iter % 7 != 0).then(|| [rng.range(-1, 8), rng.range(-1, 8)]),
             above: (iter % 8 != 0).then(|| [rng.range(-1, 8), rng.range(-1, 8)]),
-            mode_search_skip_flags: if rng.next() % 2 == 0 {
+            mode_search_skip_flags: if rng.next().is_multiple_of(2) {
                 FLAG_SKIP_INTRA_LOWVAR
             } else {
                 0
@@ -299,7 +299,7 @@ fn inter_mode_search_order_independent_skip_matches_c() {
 
         let mut base_rd = [i64::MAX; 25];
         for slot in base_rd.iter_mut() {
-            if rng.next() % 2 == 0 {
+            if rng.next().is_multiple_of(2) {
                 *slot = rng.range(1, 1 << 24) as i64;
             }
         }

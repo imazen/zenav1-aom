@@ -129,7 +129,7 @@ fn intrabc_dv_search_pinned() {
                 .iter()
                 .zip(c_frame.iter())
                 .position(|(a, b)| a != b)
-                .map_or_else(|| port_on.len().min(c_frame.len()), |i| i);
+                .unwrap_or_else(|| port_on.len().min(c_frame.len()));
             eprintln!(
                 "    PINNED: port {}B vs c {}B (delta {:+}), first differing byte {} of {}",
                 port_on.len(),
@@ -186,7 +186,7 @@ fn intrabc_dv_search_pinned() {
                 aom_decode::frame::decode_frame_obus_prefilter(&port_stream)
             });
             std::panic::set_hook(prev_hook);
-            match decoded.unwrap_or_else(|_| {
+            match decoded.unwrap_or({
                 Err(aom_decode::DecodeError::Internal(
                     "port stream decode panicked",
                 ))

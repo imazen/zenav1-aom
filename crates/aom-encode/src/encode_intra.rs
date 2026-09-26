@@ -366,16 +366,16 @@ thread_local! {
     /// alternating tx sizes. One pool per plane mirrors `XQ_POOL_*` (the two
     /// walks never nest).
     static RESIDUAL_POOL_Y: core::cell::RefCell<Vec<i16>> =
-        core::cell::RefCell::new(Vec::new());
+        const { core::cell::RefCell::new(Vec::new()) };
     static RESIDUAL_POOL_UV: core::cell::RefCell<Vec<i16>> =
-        core::cell::RefCell::new(Vec::new());
+        const { core::cell::RefCell::new(Vec::new()) };
     /// Backing storage of dropped `TxbsVec`s. A losing partition candidate's
     /// `EncodeIntraPlaneOutcome`s die by the ten-thousand per encode and each
     /// carried an exact-capacity `Vec` — pooling the buffer turns the
     /// alloc/free pair into a pop/push. Bounded (threads × 32 vecs × a leaf's
     /// txb count) and per-thread, so zero contention under tile threading.
     static TXBS_POOL: core::cell::RefCell<Vec<Vec<TxbEncode>>> =
-        core::cell::RefCell::new(Vec::new());
+        const { core::cell::RefCell::new(Vec::new()) };
 }
 
 /// A `Vec<TxbEncode>` whose allocation returns to [`TXBS_POOL`] on drop.
@@ -495,8 +495,8 @@ pub fn encode_intra_block_plane_y(
     debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
     let mut ta = [0i8; 32];
     let mut tl = [0i8; 32];
-    crate::tx_search::copy_ctx(&mut ta, &env.above_ctx, max_blocks_wide);
-    crate::tx_search::copy_ctx(&mut tl, &env.left_ctx, max_blocks_high);
+    crate::tx_search::copy_ctx(&mut ta, env.above_ctx, max_blocks_wide);
+    crate::tx_search::copy_ctx(&mut tl, env.left_ctx, max_blocks_high);
     let use_trellis = is_trellis_used(env.enable_optimize_b, env.dry_run_output_enabled);
 
     // Per-txb working buffers hoisted out of the walk (see
@@ -908,8 +908,8 @@ pub fn encode_intra_block_plane_uv(
     debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
     let mut ta = [0i8; 32];
     let mut tl = [0i8; 32];
-    crate::tx_search::copy_ctx(&mut ta, &env.above_ctx[pi], max_blocks_wide);
-    crate::tx_search::copy_ctx(&mut tl, &env.left_ctx[pi], max_blocks_high);
+    crate::tx_search::copy_ctx(&mut ta, env.above_ctx[pi], max_blocks_wide);
+    crate::tx_search::copy_ctx(&mut tl, env.left_ctx[pi], max_blocks_high);
     let use_trellis = is_trellis_used(prm.enable_optimize_b, prm.dry_run_output_enabled);
 
     // The facade's CfL state: outside cfl_rd_pick_alpha the DC-prediction

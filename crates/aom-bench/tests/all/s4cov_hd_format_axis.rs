@@ -342,7 +342,7 @@ fn above_1080p_format_axis_byte_matches() {
 /// KB-62: they were never high-bit-depth or framesize-specific, they were the
 /// rect-stage AB-reuse clone's stale tx_type_map landing in the only speed-0
 /// >=1080p cells on the grid. Earlier measurement, 2026-08-04: 6/8, the two
-/// speed-0 1920x1080 rows open as `HD_HBD_OPEN`.
+/// > speed-0 1920x1080 rows open as `HD_HBD_OPEN`.
 #[test]
 #[ignore = "8 high-bit-depth encode pairs at 1920x1072/1080 (~2 min); nightly / on-demand tier"]
 fn above_1080p_high_bitdepth_byte_matches_where_interpretable() {

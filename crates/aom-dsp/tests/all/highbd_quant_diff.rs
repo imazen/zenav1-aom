@@ -80,7 +80,7 @@ fn highbd_quantize_b_differential() {
                 // emits something else (CI aarch64 legs 2026-09-25: C gives
                 // 0 where x86 gives 1064067850). Real coefficients stay
                 // below 2^26 (KB-ARM-FLOAT root #3).
-                if rng.next() % 64 == 0 && cfg!(target_arch = "x86_64") {
+                if rng.next().is_multiple_of(64) && cfg!(target_arch = "x86_64") {
                     coeff[0] = i32::MIN;
                     coeff[n / 3] = i32::MAX;
                     coeff[2 * n / 3] = -(1 << 27);

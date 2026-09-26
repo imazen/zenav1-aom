@@ -857,7 +857,7 @@ fn filter_block_plane_opt(
             // chroma — chroma's dual arm additionally requires an even row).
             let nseg = if (y & 3) == 0 && y + 3 < y_range && min_dim >= 16 {
                 4
-            } else if (plane == 0 || y % 2 == 0) && y + 1 < y_range && min_dim >= 8 {
+            } else if (plane == 0 || y.is_multiple_of(2)) && y + 1 < y_range && min_dim >= 8 {
                 2
             } else {
                 1
@@ -901,7 +901,7 @@ fn filter_block_plane_opt(
             }
             let nseg = if (x & 3) == 0 && x + 3 < x_range && min_dim >= 16 {
                 4
-            } else if (plane == 0 || x % 2 == 0) && x + 1 < x_range && min_dim >= 8 {
+            } else if (plane == 0 || x.is_multiple_of(2)) && x + 1 < x_range && min_dim >= 8 {
                 2
             } else {
                 1
@@ -1295,7 +1295,7 @@ fn filter_block_plane_u8_opt(
             }
             let nseg = if (y & 3) == 0 && y + 3 < y_range && min_dim >= 16 {
                 4
-            } else if (plane == 0 || y % 2 == 0) && y + 1 < y_range && min_dim >= 8 {
+            } else if (plane == 0 || y.is_multiple_of(2)) && y + 1 < y_range && min_dim >= 8 {
                 2
             } else {
                 1
@@ -1338,7 +1338,7 @@ fn filter_block_plane_u8_opt(
             }
             let nseg = if (x & 3) == 0 && x + 3 < x_range && min_dim >= 16 {
                 4
-            } else if (plane == 0 || x % 2 == 0) && x + 1 < x_range && min_dim >= 8 {
+            } else if (plane == 0 || x.is_multiple_of(2)) && x + 1 < x_range && min_dim >= 8 {
                 2
             } else {
                 1

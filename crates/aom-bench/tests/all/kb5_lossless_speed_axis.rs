@@ -67,7 +67,7 @@ fn textured_cell(
             // pseudo-noise term — enough coefficient energy that qindex 0 codes
             // real EOBs rather than all-skip.
             let ramp = 32 + (r + col) * 160 / (w + h);
-            let tex = ((r % 3) * 17 + (col % 5) * 11) as usize;
+            let tex = (r % 3) * 17 + (col % 5) * 11;
             let noise = ((r * 2654435761 + col * 40503) >> 7) % 23;
             y[r * w + col] = scale(((ramp + tex + noise) % 256) as u32);
         }

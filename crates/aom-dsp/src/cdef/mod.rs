@@ -230,7 +230,7 @@ pub fn cdef_filter_block_16(
         );
         return;
     }
-    if block_width == 4 && block_height % 2 == 0 {
+    if block_width == 4 && block_height.is_multiple_of(2) {
         simd::cdef_filter_16_w4(
             dst,
             dst_off,
@@ -319,7 +319,7 @@ pub fn cdef_filter_block_u8(
         );
         return;
     }
-    if block_width == 4 && block_height % 2 == 0 {
+    if block_width == 4 && block_height.is_multiple_of(2) {
         simd::cdef_filter_8_w4(
             dst,
             dst_off,

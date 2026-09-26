@@ -733,7 +733,7 @@ fn accumulate_mv_stats_matches_c() {
                         // best_mv is sub-pel; mv is the full-pel version of a
                         // (possibly different) vector, which is exactly the
                         // pairing the caller passes. Keep zero reachable.
-                        let best_mv = if rng.next_u32() % 4 == 0 {
+                        let best_mv = if rng.next_u32().is_multiple_of(4) {
                             (0i16, 0i16)
                         } else {
                             (
@@ -742,7 +742,7 @@ fn accumulate_mv_stats_matches_c() {
                             )
                         };
                         let mv = (best_mv.0 >> 3, best_mv.1 >> 3);
-                        let last = if rng.next_u32() % 2 == 0 {
+                        let last = if rng.next_u32().is_multiple_of(2) {
                             best_mv
                         } else {
                             (1, 1)

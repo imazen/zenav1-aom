@@ -121,9 +121,9 @@ pub(crate) fn txb_init_levels_impl_v3(
     use archmage::intrinsics::x86_64::*;
 
     if width == 0
-        || (height == 4 && width % 4 != 0)
-        || (height == 8 && width % 4 != 0)
-        || (height == 16 && width % 2 != 0)
+        || (height == 4 && !width.is_multiple_of(4))
+        || (height == 8 && !width.is_multiple_of(4))
+        || (height == 16 && !width.is_multiple_of(2))
         || !matches!(height, 4 | 8 | 16 | 32)
     {
         crate::txb::txb_init_levels_scalar(coeff, width, height, levels);

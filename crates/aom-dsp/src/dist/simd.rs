@@ -178,7 +178,7 @@ fn block_error_impl_v3(_t: archmage::X64V3Token, coeff: &[i32], dqcoeff: &[i32])
     use archmage::intrinsics::x86_64::*;
 
     let n = coeff.len();
-    if n % 16 != 0 || n == 0 {
+    if !n.is_multiple_of(16) || n == 0 {
         return block_error_scalar_body(coeff, dqcoeff);
     }
     // C's read_coeff: two i32 ymm loads -> packs_epi32 -> lane-unscramble.
@@ -344,7 +344,7 @@ fn sum_squares_2d_i16_impl_v3(
         return _mm_cvtsi128_si32(v) as i64 as u64;
     }
 
-    if width == 4 && height % 4 == 0 {
+    if width == 4 && height.is_multiple_of(4) {
         // aom_sum_squares_2d_i16_4xn_sse2 — v_acc_q is named "q" but the op is
         // add_epi32: i32 wrapping across ALL 4-row groups, one zext fold at
         // the end.
@@ -369,13 +369,13 @@ fn sum_squares_2d_i16_impl_v3(
         return _mm_cvtsi128_si64(a64) as u64;
     }
 
-    if width == 8 && height % 4 == 0 {
+    if width == 8 && height.is_multiple_of(4) {
         // aom_sum_squares_2d_i16_nxn_sse2 at width 8 — i32 accumulate inside
         // each 4-row group, zext into i64 per group. C's row loads are
         // ALIGNED (`xx_load_128` == movdqa): real callers hand it a
         // 16-byte-aligned buffer with stride % 8 == 0. Anything else takes
         // the scalar path — the C dispatcher itself would fault there.
-        if (src.as_ptr() as usize) % 16 != 0 || src_stride % 8 != 0 {
+        if !(src.as_ptr() as usize).is_multiple_of(16) || !src_stride.is_multiple_of(8) {
             return crate::dist::sum_squares_2d_i16_scalar_ref(src, src_stride, width, height);
         }
         let mask = _mm_set1_epi64x(MASK64);
@@ -399,7 +399,7 @@ fn sum_squares_2d_i16_impl_v3(
         return _mm_cvtsi128_si64(acc_q) as u64;
     }
 
-    if width % 16 == 0 && height % 4 == 0 {
+    if width.is_multiple_of(16) && height.is_multiple_of(4) {
         // aom_sum_squares_2d_i16_nxn_avx2 — 16 columns per iteration, i32
         // accumulate within a 4-row group, zext into i64 per group. Row
         // slices chunked to &[i16; 16] keep every load check-free.
@@ -548,7 +548,7 @@ fn block_error_lp_impl_v3(
         // folded pairwise in i32 (wrapping), zero-extended into i64. C's
         // loop condition is `i < block_size` stepping 64 — a size not
         // divisible by 64 would overread there; the port declines instead.
-        if n % 64 != 0 {
+        if !n.is_multiple_of(64) {
             return block_error_lp(coeff, dqcoeff, block_size);
         }
         let c32 = coeff[..n].as_chunks::<16>().0;

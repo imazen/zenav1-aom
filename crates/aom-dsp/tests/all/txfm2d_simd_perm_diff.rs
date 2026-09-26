@@ -111,14 +111,14 @@ fn inv_spike(k: usize, i: usize, len: usize) -> i32 {
         0 => B,  // all +bound
         1 => -B, // all -bound
         2 => {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 B
             } else {
                 -B
             }
         } // alternating
         3 => {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 -B
             } else {
                 B
@@ -151,7 +151,7 @@ fn inv_spike_gate(k: usize, i: usize) -> i32 {
         1 => -4096,
         2 => 4097, // one over -> decline
         _ => {
-            if i % 4 == 0 {
+            if i.is_multiple_of(4) {
                 4096
             } else {
                 -3500
@@ -171,7 +171,7 @@ fn inv_spike_gate8(k: usize, i: usize) -> i32 {
         3 => 2347, // Dct8->Dct8's exact bound
         4 => 2348, // one over Dct8->Dct8
         _ => {
-            if i % 8 == 0 {
+            if i.is_multiple_of(8) {
                 2348
             } else {
                 -700
@@ -191,7 +191,7 @@ fn inv_spike_gate48(k: usize, i: usize) -> i32 {
         2 => 3283, // over the tightest bound -> decline at 8x4 adst4 cols
         3 => 8000, // accepted by some pairs only
         _ => {
-            if i % 4 == 0 {
+            if i.is_multiple_of(4) {
                 6205
             } else {
                 -6000
@@ -215,7 +215,7 @@ fn inv_spike_gate16(k: usize, i: usize) -> i32 {
         5 => -11584, // 16x16 Idtx->Idtx exact edge — that pair only
         6 => 11585,  // over every 16x16 bound
         _ => {
-            if i % 4 == 0 {
+            if i.is_multiple_of(4) {
                 16385 // over even the widest rect bound (16384) -> all decline
             } else {
                 -1721 // inside every bound except none — all accept
@@ -232,14 +232,14 @@ fn fwd_spike_bd8(k: usize, i: usize) -> i16 {
         0 => 255,
         1 => -255,
         2 => {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 255
             } else {
                 -255
             }
         }
         _ => {
-            if (i * 7 + i / 5) % 3 == 0 {
+            if (i * 7 + i / 5).is_multiple_of(3) {
                 -255
             } else {
                 255
@@ -254,7 +254,7 @@ fn fwd_spike(k: usize, i: usize) -> i16 {
         0 => i16::MAX,
         1 => i16::MIN,
         2 => {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 i16::MAX
             } else {
                 i16::MIN
@@ -280,7 +280,7 @@ fn fwd_spike_gate(k: usize, i: usize) -> i16 {
         1 => -512,
         2 => 513, // one over both bounds -> decline
         4 => {
-            if i % 4 == 0 {
+            if i.is_multiple_of(4) {
                 511 // inside both bounds -> accept at the 8x8 edge
             } else {
                 -300
@@ -291,7 +291,7 @@ fn fwd_spike_gate(k: usize, i: usize) -> i16 {
         7 => 1024, // just over -> decline
         8 => -1024,
         9 => {
-            if i % 8 == 0 {
+            if i.is_multiple_of(8) {
                 1023 // inside the rect48 bound -> accept there
             } else {
                 -513 // over the 4x4/8x8 bounds -> decline there
@@ -307,14 +307,14 @@ fn fwd_spike_gate(k: usize, i: usize) -> i16 {
         17 => 1448,  // one over 16x8 DCT->IDTX (1447) -> decline that pair
         18 => -1606, // under 16x8 ADST->IDTX (1605) -> decline
         19 => {
-            if i % 3 == 0 {
+            if i.is_multiple_of(3) {
                 567 // inside 8x16 DCT->ADST (567), over DCT->DCT/ADST->DCT (511)
             } else {
                 0
             }
         }
         _ => {
-            if i % 4 == 0 {
+            if i.is_multiple_of(4) {
                 512 // over the 8x8 bound -> decline there, accept at the 4x4 edge
             } else {
                 -300

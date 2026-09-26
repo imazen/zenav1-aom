@@ -143,7 +143,7 @@ pub(crate) fn filter_intra_predict_high_impl(
             // lane k = output k; ascending j is the scalar loop's own order.
             let mut acc = i32x8::splat(t, p[0]) * tv[0];
             for j in 1..7 {
-                acc = acc + i32x8::splat(t, p[j]) * tv[j];
+                acc += i32x8::splat(t, p[j]) * tv[j];
             }
             let v = ((acc + eight).shr_arithmetic_const::<4>())
                 .max(zero)

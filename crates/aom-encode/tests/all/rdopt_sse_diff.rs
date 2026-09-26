@@ -175,12 +175,12 @@ fn prune_zero_mv_with_sse_matches_c() {
             let mut gm = [0i32; 8];
             let mut best = [0u32; 8];
             for r in 0..8 {
-                gm[r] = if rng.next() % 4 == 0 {
+                gm[r] = if rng.next().is_multiple_of(4) {
                     rng.range(2, 4)
                 } else {
                     0
                 };
-                best[r] = if rng.next() % 4 == 0 {
+                best[r] = if rng.next().is_multiple_of(4) {
                     NO_SINGLE_SSE
                 } else {
                     rng.range(0, 1 << 22) as u32

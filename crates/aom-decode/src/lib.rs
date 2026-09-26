@@ -160,11 +160,29 @@
 //! to the C decoder: byte-identical reconstruction planes, lockstep CDF arenas,
 //! and per-leaf mode-info equality.
 
+// Clippy policy for a bit-exact C port (see docs/DIFFERENTIAL_PLAYBOOK.md): kernels
+// mirror libaom's signatures and loop shapes line for line so a differential can be
+// read against the C side, and some C float idioms are NaN-sensitive.
+#![allow(
+    clippy::too_many_arguments,   // C kernel signatures mirrored 1:1
+    clippy::needless_range_loop,  // index loops mirror the C reference line for line
+    clippy::manual_memcpy,        // explicit copy loops mirror the C reference
+    clippy::type_complexity,      // harness-facing tuples
+    clippy::neg_cmp_op_on_partial_ord, // `!(a < b)` is not `a >= b` under NaN; the CNN mirrors C
+    clippy::field_reassign_with_default, // C init-then-assign mirrors
+    clippy::chunks_exact_to_as_chunks,   // `as_chunks` is not on the pinned toolchain
+    clippy::collapsible_if,       // nested ifs mirror the C control flow, with C line refs between them
+    clippy::manual_clamp,         // C's chained min/max: `clamp` panics on inverted bounds and differs under NaN
+    clippy::manual_range_contains, // C comparison chains kept verbatim
+    clippy::excessive_precision,  // NN weight tables copied verbatim from C
+    clippy::while_let_loop,       // explicit `loop { let Some(..) = .. else { break } }` keeps the scheduler's exits readable
+    clippy::large_enum_variant    // `SbTree` variants are the partition shapes; boxing the leaf is measured slower
+)]
 // The docs deliberately link implementation items that live behind the default-off
 // `__internals` feature (or are `pub(crate)`): the links resolve for a harness build
 // and read as plain code for a consumer. `just doc-check` runs with `-D warnings`.
 #![allow(rustdoc::private_intra_doc_links)]
-#![warn(missing_docs)]
+#![cfg_attr(not(feature = "__internals"), warn(missing_docs))]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
@@ -183,8 +201,6 @@ use enough::StopReason;
 whereat::define_at_crate_info!();
 
 pub mod frame;
-
-/// Byte-exact AV1 film-grain synthesis (post-reconstruction output stage).
 
 // ---------------------------------------------------------------------------
 // INTERNALS. `frame` above, plus the `config`/`error` re-exports, are THE public
@@ -2330,11 +2346,11 @@ impl<'c> TileKf<'c> {
             // token once per superblock row, so a long decode is cancellable
             // within bounded work. `None` (Unstoppable) compiles to nothing;
             // cancellation poisons the walk exactly like the `corrupt` channel.
-            if let Some(s) = stop {
-                if let Err(r) = s.check() {
-                    self.cancelled = Some(r);
-                    return;
-                }
+            if let Some(s) = stop
+                && let Err(r) = s.check()
+            {
+                self.cancelled = Some(r);
+                return;
             }
             self.left_e = [[0; 32]; 3]; // av1_zero_left_context per SB row (all planes)
             self.left_p = [0; 32];
@@ -4011,7 +4027,7 @@ impl<'c> TileKf<'c> {
                             b4_h as i32,
                             ss_x,
                             ss_y,
-                            &cfg,
+                            cfg,
                         );
                         let bxu = uv_org_x + x;
                         let byu = uv_org_y + y;
@@ -4072,7 +4088,7 @@ impl<'c> TileKf<'c> {
                     bh_uv as i32,
                     ss_x,
                     ss_y,
-                    &cfg,
+                    cfg,
                 );
                 let doff = uv_org_y * self.stride_uv + uv_org_x;
                 // Chroma warp only when the (subsampled) plane block is >= 8 in both
@@ -6707,11 +6723,11 @@ pub fn decode_frame_tiles_kf_ctx(
     for (tile_idx, tb) in tiles.iter().enumerate() {
         // Poll at each tile boundary too (SB-row polling in `decode_one_tile`
         // gives finer granularity within a tile).
-        if let Some(s) = stop {
-            if let Err(r) = s.check() {
-                t.cancelled = Some(r);
-                break;
-            }
+        if let Some(s) = stop
+            && let Err(r) = s.check()
+        {
+            t.cancelled = Some(r);
+            break;
         }
         let mut dec = OdEcDec::new(tb.bytes);
         // `av1/decoder/decodeframe.c`: `r->allow_update_cdf = allow_update_cdf`
@@ -6773,11 +6789,11 @@ pub fn decode_frame_tiles_inter(
     }
     let mut saved: Option<Box<FrameContexts>> = None;
     for (tile_idx, tb) in tiles.iter().enumerate() {
-        if let Some(s) = stop {
-            if let Err(r) = s.check() {
-                t.cancelled = Some(r);
-                break;
-            }
+        if let Some(s) = stop
+            && let Err(r) = s.check()
+        {
+            t.cancelled = Some(r);
+            break;
         }
         let mut dec = OdEcDec::new(tb.bytes);
         dec.allow_update_cdf = !cfg.disable_cdf_update;
@@ -6914,7 +6930,7 @@ fn mi_size_high_log2(bsize: usize) -> usize {
 fn skip_u4x4_pred_in_obmc(bsize: usize, ss_x: usize, ss_y: usize, dir: i32) -> bool {
     // BLOCK_4X4 = 0, BLOCK_4X8 = 1, BLOCK_8X4 = 2 (enums.h).
     let bsize_plane = get_plane_block_size(bsize, ss_x, ss_y);
-    matches!(bsize_plane, 0 | 1 | 2) && dir == 0
+    matches!(bsize_plane, 0..=2) && dir == 0
 }
 
 /// `clamp_mv_to_umv_border_sb` (reconinter.h:343) with the caller's explicit

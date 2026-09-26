@@ -271,7 +271,7 @@ fn pack_node(n: Option<(i32, i32)>) -> u64 {
 }
 
 fn unpack_node(v: u64) -> Option<(i32, i32)> {
-    (v != FOCUS_NONE).then(|| ((v >> 32) as u32 as i32, v as u32 as i32))
+    (v != FOCUS_NONE).then_some(((v >> 32) as u32 as i32, v as u32 as i32))
 }
 
 static FLAGS: AtomicU32 = AtomicU32::new(0);

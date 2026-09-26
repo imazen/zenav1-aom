@@ -154,13 +154,6 @@ impl Plane {
             RefPixelsMut::Low(&mut self.lo)
         }
     }
-    fn clone_of(&self) -> Self {
-        Plane {
-            lo: self.lo.clone(),
-            hi: self.hi.clone(),
-            hbd: self.hbd,
-        }
-    }
     fn same_as(&self, other: &Self) -> bool {
         self.lo == other.lo && self.hi == other.hi
     }
@@ -301,7 +294,7 @@ fn build_wedge_from_buf_plane_matches_c() {
                         let comp = InterInterComp {
                             wedge_index: (rng.next() % 16) as usize,
                             wedge_sign: (rng.next() % 2) as usize,
-                            mask_type: if rng.next() % 2 == 0 {
+                            mask_type: if rng.next().is_multiple_of(2) {
                                 DiffwtdMaskType::Diffwtd38
                             } else {
                                 DiffwtdMaskType::Diffwtd38Inv

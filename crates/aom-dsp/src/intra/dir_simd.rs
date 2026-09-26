@@ -127,7 +127,6 @@ pub(crate) fn z2_left_gather(
             z2_left_gather_x86(dst, stride, bw, bh, ld, pad, dx, dy, frac_y, up_left),
             [v3, scalar]
         );
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     incant!(
@@ -867,7 +866,6 @@ pub(crate) fn z2_above_run(
             z2_above_run_impl(dst, stride, bw, bh, edge, pad, dx, frac_x, up),
             [v3, scalar]
         );
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     z2_above_run_scalar(dst, stride, bw, bh, edge, pad, dx, frac_x, up);
@@ -1043,7 +1041,6 @@ pub(crate) fn z1_rows(
             z1_rows_impl(dst, stride, bw, bh, edge, pad, dx, up),
             [v3, scalar]
         );
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     super::dir::z1_high_scalar(
@@ -1080,7 +1077,6 @@ pub(crate) fn z1_rows_u8e(
             z1_rows_u8e_impl(dst, stride, bw, bh, edge, pad, dx, up),
             [v3, scalar]
         );
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -1379,7 +1375,7 @@ fn z3_cols_impl(
             } else {
                 // Rows are active while base + r*base_inc < max_base_y.
                 // Same pow2 shift — `base_inc` is `1 << up`.
-                bh.min((((max_base_y - base) as usize + base_inc - 1) >> up) as usize)
+                bh.min(((max_base_y - base) as usize + base_inc - 1) >> up)
             };
         }
         let mut r0 = 0usize;
@@ -1556,7 +1552,6 @@ pub(crate) fn z3_cols(
             z3_cols_impl(dst, stride, bw, bh, edge, pad, dy, up),
             [v3, scalar]
         );
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     z3_cols_body_scalar(dst, stride, bw, bh, edge, pad, dy, up);

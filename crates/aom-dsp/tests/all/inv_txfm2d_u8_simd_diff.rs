@@ -147,14 +147,14 @@ fn inv_spike(k: usize, i: usize, len: usize) -> i32 {
         0 => B,
         1 => -B,
         2 => {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 B
             } else {
                 -B
             }
         }
         3 => {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 -B
             } else {
                 B
@@ -430,8 +430,8 @@ fn inv_txfm2d_add_u8_i32_arm_simd_bit_identical_to_scalar_at_every_tier() {
 ///   * tx_size 17 = 16x64 (row idx 2, all four classes valid) → valid iff DCT;
 ///   * tx_size 15 = 8x32  (row idx 1, all four classes valid) → valid iff
 ///     DCT or IDTX.
-/// Together those identify `vtx == 0` exactly — which is the whole predicate
-/// the arm split rests on.
+///     Together those identify `vtx == 0` exactly — which is the whole predicate
+///     the arm split rests on.
 #[test]
 fn vtx_tab_matches_public_validity() {
     assert_eq!((W[17], H[17]), (16, 64));

@@ -433,7 +433,10 @@ pub fn synth_i420(w: usize, h: usize, content: Content) -> Vec<u8> {
     if content == Content::Screen {
         return synth_i420_screen(w, h, &SCREEN);
     }
-    assert!(w % 2 == 0 && h % 2 == 0, "even dimensions only");
+    assert!(
+        w.is_multiple_of(2) && h.is_multiple_of(2),
+        "even dimensions only"
+    );
     let (cw, ch) = (w / 2, h / 2);
     let mut out = vec![0u8; w * h + 2 * cw * ch];
 
@@ -504,7 +507,10 @@ pub fn synth_i420(w: usize, h: usize, content: Content) -> Vec<u8> {
 /// purpose: the axis under study is luma structure, and holding chroma fixed
 /// across all three contents keeps the census comparison one-dimensional.
 pub fn synth_i420_photo(w: usize, h: usize, p: &PhotoParams) -> Vec<u8> {
-    assert!(w % 2 == 0 && h % 2 == 0, "even dimensions only");
+    assert!(
+        w.is_multiple_of(2) && h.is_multiple_of(2),
+        "even dimensions only"
+    );
     let (cw, ch) = (w / 2, h / 2);
     let mut out = vec![0u8; w * h + 2 * cw * ch];
     for y in 0..h {
@@ -664,7 +670,10 @@ fn glyph_ink(g: u32, i: usize, j: usize, gp: usize, ink_q8: i32) -> bool {
 /// `glyph_px` grid of glyphs from the alphabet). Antialiasing, when enabled,
 /// pulls the pixels of an ink run's boundary one step toward the background.
 pub fn synth_i420_screen(w: usize, h: usize, p: &ScreenParams) -> Vec<u8> {
-    assert!(w % 2 == 0 && h % 2 == 0, "even dimensions only");
+    assert!(
+        w.is_multiple_of(2) && h.is_multiple_of(2),
+        "even dimensions only"
+    );
     assert!(p.n_levels >= 2 && p.glyph_px >= 2 && p.panel_px >= p.glyph_px);
     let (cw, ch) = (w / 2, h / 2);
     let mut out = vec![0u8; w * h + 2 * cw * ch];

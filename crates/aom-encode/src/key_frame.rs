@@ -95,11 +95,11 @@
 //!   detector-negative frames by the margin gate / `screen_likelihood`
 //!   hint, decided by C's own two-pass trial rule, never run under the
 //!   `LibaomExact` default.
-//! Both formerly-pinned speed classes are CLOSED (2026-09-12): the
-//! speed >= 7 VBP class was the phase-2 repack's unconditional ALLINTRA
-//! rdmult-modifier fold (KB-55), and `--enable-cdef=1` at speed >= 4 was
-//! `sf.cdef_pick_method` never being set past LVL1 — the LVL3/LVL4/FROM_Q
-//! arms existed but were unreachable (KB-56).
+//!   Both formerly-pinned speed classes are CLOSED (2026-09-12): the
+//!   speed >= 7 VBP class was the phase-2 repack's unconditional ALLINTRA
+//!   rdmult-modifier fold (KB-55), and `--enable-cdef=1` at speed >= 4 was
+//!   `sf.cdef_pick_method` never being set past LVL1 — the LVL3/LVL4/FROM_Q
+//!   arms existed but were unreachable (KB-56).
 //!
 //! # Post-filter composition (CDEF + loop restoration together)
 //!
@@ -553,7 +553,7 @@ pub const SCM_TRIAL_HINT_MIN: f32 = 0.10;
 /// The built-in nomination margin for the zenaom SCM trial: run the trial
 /// when the screen detector's raw score — `(count_palette - count_photo/16)
 /// * 2560`, positive past `area` — is merely POSITIVE (`count_palette * 16 >
-/// count_photo`). Measured on the `zenaom_scm_trial` probe matrix: C's own
+///   count_photo`). Measured on the `zenaom_scm_trial` probe matrix: C's own
 /// trial wins on cells scoring as low as 3.9% of the positive threshold
 /// (256x256, 64x64 UI patch: `psnr_diff/palette_ratio = 6.0 > 4`), so any
 /// fractional-threshold gate misses real flips; pure photographic noise
@@ -561,7 +561,6 @@ pub const SCM_TRIAL_HINT_MIN: f32 = 0.10;
 /// remaining false-positive class — flat-but-legible content like clear
 /// sky — is exactly what palette codes well anyway. Detector-positive
 /// content skips the trial entirely (C's own guard).
-
 /// Everything [`encode_key_frame`] needs that is not the pixels.
 ///
 /// The field set is deliberately the CLI-equivalent one
@@ -1393,7 +1392,7 @@ const ESTIMATE_BYTES_PER_PADDED_SAMPLE: u64 = 16;
 /// 4:2:0), 6 = 11..27 (4:2:0), 33 (4:4:4 at 1024²), 9 = 5..11. The full-RD
 /// band (<= 5) keeps winner/tx-type maps the fast bands drop. Bounds with a
 /// >= 1.28x per-cell margin: 56 + chroma term below for <= 5, 32 + chroma
-/// for >= 6.
+/// > for >= 6.
 #[allow(non_snake_case)]
 const fn ESTIMATE_LEAF_BYTES_PER_PIXEL(cpu_used: i32) -> u64 {
     if cpu_used <= 5 { 56 } else { 32 }
@@ -3707,17 +3706,16 @@ pub fn encode_key_frame_with(
     // Optional phase timing (AOM_TIME_PHASES=1): names the serial-vs-parallel
     // split the threading work is measured against. aom_dsp::trace_out! only.
     let phase_timing = aom_dsp::trace_on!(aom_dsp::trace::Trace::TimePhases);
-    #[allow(unused_assignments)]
-    let mut phase_t = std::time::Instant::now();
+    let phase_t = std::cell::Cell::new(std::time::Instant::now());
     macro_rules! phase_mark {
         ($name:literal) => {
             if phase_timing {
                 aom_dsp::trace_out!(
                     "[phase] {:<18} {:>8.1} ms",
                     $name,
-                    phase_t.elapsed().as_secs_f64() * 1e3
+                    phase_t.get().elapsed().as_secs_f64() * 1e3
                 );
-                phase_t = std::time::Instant::now();
+                phase_t.set(std::time::Instant::now());
             }
         };
     }
@@ -3775,7 +3773,7 @@ pub fn encode_key_frame_with(
         cfg.threads
     })
     .max(1)
-    .min((n_tile_rows as usize).max(1));
+    .min(n_tile_rows.max(1));
     if n_workers <= 1 {
         for &(r0, c0, r1, c1, n_tr, n_tc) in &tile_grid {
             env.tile_row_start = r0;
@@ -3811,8 +3809,8 @@ pub fn encode_key_frame_with(
             }
         }
     } else {
-        let n_tr = n_tile_rows as usize;
-        let n_tc = n_tile_cols as usize;
+        let n_tr = n_tile_rows;
+        let n_tc = n_tile_cols;
         // Band bounds per tile-row, in PLANE elements. Tile rows partition
         // the mi grid, and their starts are SB-aligned, so `r*4 >> ss_y`
         // chroma rows also partition exactly. The LAST band runs to the end
@@ -4485,8 +4483,8 @@ pub fn encode_key_frame_with(
         // Same row-band model as phase 1: the repack re-encodes each tile from
         // the source into recon2 with the same tile-bounded read footprint, so
         // disjoint `split_at_mut` bands of recon2 give sound `&mut` regions.
-        let n_tr = n_tile_rows as usize;
-        let n_tc = n_tile_cols as usize;
+        let n_tr = n_tile_rows;
+        let n_tc = n_tile_cols;
         let band_y: Vec<(usize, usize)> = (0..n_tr)
             .map(|tr| {
                 let t = &tile_grid[tr * n_tc];

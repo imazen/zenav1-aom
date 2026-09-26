@@ -243,7 +243,7 @@ fn superres_color_byte_identical_to_c() {
         for &(bd, ss) in &combos {
             for &denom in &denoms {
                 let usage = if (n & 1) == 0 { 0u32 } else { 2 };
-                let cdef = n % 3 == 0;
+                let cdef = n.is_multiple_of(3);
                 run_superres(w, h, bd, false, ss, 24, denom, cdef, false, usage);
                 n += 1;
             }
@@ -274,7 +274,7 @@ fn superres_lr_composed_byte_identical_to_c() {
     for &(w, h) in &sizes {
         for &(bd, ss, mono) in &combos {
             for &denom in &denoms {
-                let cdef = n % 2 == 0;
+                let cdef = n.is_multiple_of(2);
                 let f = run_superres(w, h, bd, mono, ss, 36, denom, cdef, true, 2);
                 lr_seen += f.lr_gated as u32;
                 n += 1;

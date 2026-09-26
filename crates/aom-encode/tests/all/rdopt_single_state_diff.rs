@@ -262,7 +262,7 @@ fn analyze_single_states_matches_c() {
         // `(rd >> 3) * factor` from the transposed `(rd * factor) >> 3` —
         // measured: with only the wide regime, that perturbation left this
         // test green, because the two expressions agreed on every verdict.
-        let tiny = rng.next() % 2 == 0;
+        let tiny = rng.next().is_multiple_of(2);
         let scale: i64 = if tiny { 1 } else { 1 << rng.range(0, 20) };
         let hi = if tiny { 40 } else { 1000 };
         for (m, ref_frame) in distinct_candidates(&mut rng, n_cand) {
@@ -493,7 +493,7 @@ fn skip_repeated_mv_matches_c() {
         // are reached.
         let mut c_rd = [i64::MAX; 25];
         for slot in c_rd.iter_mut() {
-            if rng.next() % 2 == 0 {
+            if rng.next().is_multiple_of(2) {
                 *slot = rng.range(1, 1 << 24) as i64;
             }
         }
@@ -621,12 +621,12 @@ fn increase_motion_mode_rd_matches_c() {
     for _ in 0..2000 {
         for best_mm in [SIMPLE_TRANSLATION, OBMC_CAUSAL, WARPED_CAUSAL] {
             for this_mm in [SIMPLE_TRANSLATION, OBMC_CAUSAL, WARPED_CAUSAL] {
-                let a = if rng.next() % 8 == 0 {
+                let a = if rng.next().is_multiple_of(8) {
                     i64::MAX
                 } else {
                     rng.range(0, 1 << 28) as i64
                 };
-                let b = if rng.next() % 8 == 0 {
+                let b = if rng.next().is_multiple_of(8) {
                     i64::MAX
                 } else {
                     rng.range(0, 1 << 28) as i64

@@ -334,8 +334,8 @@ fn superres_multitile_chroma_byte_identical_to_c() {
             (10, (1, 1)),
         ] {
             for &(w, denom, tcl) in GRID {
-                let cdef = n % 2 == 0;
-                let restoration = n % 3 == 0;
+                let cdef = n.is_multiple_of(2);
+                let restoration = n.is_multiple_of(3);
                 let usage = if (n & 1) == 0 { 0u32 } else { 2 };
                 let cell = run_cell(
                     w,

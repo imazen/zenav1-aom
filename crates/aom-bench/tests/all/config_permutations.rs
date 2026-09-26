@@ -2571,7 +2571,7 @@ const S_SB128_64: SizeCtx = SizeCtx {
 /// CLASS 6 — SB128, one full 128 superblock, sub-480p. This is where
 /// `use_square_partition_only_threshold` first becomes REACHABLE: BLOCK_128X128
 /// > BLOCK_64X64, so the rect-kill fires and HORZ/VERT are removed at the 128
-/// root for full superblocks. The pre-existing array never reaches it.
+/// > root for full superblocks. The pre-existing array never reaches it.
 const S_SB128_128: SizeCtx = SizeCtx {
     tag: "sb128_128",
     w: 128,
@@ -2633,9 +2633,9 @@ const S_SB128_576: SizeCtx = SizeCtx {
 };
 
 /// >= 480p SB128, ALIGNED — gated ONLY by the finding-B arm of
-/// `size_axis_open_divergences_pinned` (the KB-63 witness), not by the
-/// interaction cross: two more 16-row contexts would push the size-axis
-/// budget ~97 s over its 200 s ceiling.
+/// > `size_axis_open_divergences_pinned` (the KB-63 witness), not by the
+/// > interaction cross: two more 16-row contexts would push the size-axis
+/// > budget ~97 s over its 200 s ceiling.
 const S_SB128_512: SizeCtx = SizeCtx {
     tag: "sb128_512m",
     w: 512,
@@ -3636,14 +3636,14 @@ fn write_evidence_if_changed(path: &std::path::Path, data: &str) {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    if let Ok(existing) = std::fs::read_to_string(path) {
-        if strip(&existing) == strip(data) {
-            println!(
-                "  [evidence] {} unchanged (data identical; stamp/timing not rewritten)",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            );
-            return;
-        }
+    if let Ok(existing) = std::fs::read_to_string(path)
+        && strip(&existing) == strip(data)
+    {
+        println!(
+            "  [evidence] {} unchanged (data identical; stamp/timing not rewritten)",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        return;
     }
     std::fs::write(path, format!("{}{data}", evidence_provenance())).expect("write evidence TSV");
 }
@@ -4158,7 +4158,7 @@ fn run_speed_array(speed: i32, shard: usize, n_shards: usize) {
         .filter(|c| !c.exact)
         .map(|c| c.label[tag.len() + 1..].to_string())
         .collect();
-    let here: BTreeSet<String> = rows.iter().map(|r| cp::row_label(r)).collect();
+    let here: BTreeSet<String> = rows.iter().map(cp::row_label).collect();
     let expected: BTreeSet<String> = SPEED_OPEN_COMBINATIONS
         .iter()
         .filter(|(sp, l)| *sp == speed && here.contains(*l))
@@ -5070,11 +5070,11 @@ fn hbd_speed_cell(bd: u8, cq: i32, speed: i32) -> EncodeCell {
 /// 2026-07-30 only the lowbd arm was ported and the port carried a hard
 /// `assert!(env.bd == 8)` there, so **every** bd10/bd12 encode at `--cpu-used
 /// >= 8` PANICKED — on a stream real aomenc produces without complaint. It sat
-/// undiscovered because PARITY.md §A lists cpu-used 8/9 byte-identical AND
-/// bd10/bd12 byte-identical, each established on its own grid, never crossed.
-/// This test IS the crossing, and it is a byte-identity gate rather than a
-/// panic pin: a path that returns wrong pixels without panicking would be
-/// strictly worse than the assert.
+/// > undiscovered because PARITY.md §A lists cpu-used 8/9 byte-identical AND
+/// > bd10/bd12 byte-identical, each established on its own grid, never crossed.
+/// > This test IS the crossing, and it is a byte-identity gate rather than a
+/// > panic pin: a path that returns wrong pixels without panicking would be
+/// > strictly worse than the assert.
 ///
 /// THREE things were genuinely bd8-specific, two more than the old handoff
 /// message named:

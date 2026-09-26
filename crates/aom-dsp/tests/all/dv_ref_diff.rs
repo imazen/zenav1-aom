@@ -570,7 +570,7 @@ fn random_inter_case(rng: &mut Rng) -> InterCase {
         *s = (rng.next() % 2) as i8;
     }
     let allow_high_precision_mv = rng.next().is_multiple_of(2);
-    let is_integer_mv = rng.next() % 4 == 0;
+    let is_integer_mv = rng.next().is_multiple_of(4);
     InterCase {
         rf0,
         base,

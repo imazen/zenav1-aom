@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)] // C-shaped harness signatures
 //! Decode-both localizer for two key-frame streams (port vs real C): decodes
 //! each with the port decoder and finds the first divergent DECISION, not the
 //! first divergent byte — partition tree node-for-node, then per-leaf mode/tx
@@ -108,93 +109,90 @@ fn compare(a: &KfTileDecode, b: &KfTileDecode, mi_rows: i32, mi_cols: i32, sb128
     // earliest leaf-level divergence.
     let mut leaf_reported = false;
     for rb in &b.blocks {
-        match a
+        if let Some(ob) = a
             .blocks
             .iter()
             .find(|x| x.mi_row == rb.mi_row && x.mi_col == rb.mi_col && x.bsize == rb.bsize)
         {
-            Some(ob) => {
-                let i = &ob.info;
-                let j = &rb.info;
-                if ob.bsize != rb.bsize
-                    || ob.partition != rb.partition
-                    || i.y_mode != j.y_mode
-                    || i.angle_delta_y != j.angle_delta_y
-                    || i.use_filter_intra != j.use_filter_intra
-                    || i.filter_intra_mode != j.filter_intra_mode
-                    || i.uv_mode != j.uv_mode
-                    || i.angle_delta_uv != j.angle_delta_uv
-                    || i.cfl_alpha_idx != j.cfl_alpha_idx
-                    || i.cfl_joint_sign != j.cfl_joint_sign
-                    || i.palette_size != j.palette_size
-                    || i.use_intrabc != j.use_intrabc
-                    || i.dv_row != j.dv_row
-                    || i.dv_col != j.dv_col
-                    || i.skip != j.skip
-                    || ob.tx_size != rb.tx_size
-                    || ob.txbs != rb.txbs
-                    || ob.txbs_uv != rb.txbs_uv
-                {
-                    println!(
-                        ">>> FIRST LEAF MISMATCH (mi_row={}, mi_col={}):\n  a: bsize={} part={} y_mode={} adl={} fi={}/{} tx={} uv={} cfl={}/{} pal={:?} ibc={} dv=({},{}) skip={} txbs={:?} txbs_uv={:?}\n  b: bsize={} part={} y_mode={} adl={} fi={}/{} tx={} uv={} cfl={}/{} pal={:?} ibc={} dv=({},{}) skip={} txbs={:?} txbs_uv={:?}",
-                        rb.mi_row,
-                        rb.mi_col,
-                        ob.bsize,
-                        ob.partition,
-                        i.y_mode,
-                        i.angle_delta_y,
-                        i.use_filter_intra,
-                        i.filter_intra_mode,
-                        ob.tx_size,
-                        i.uv_mode,
-                        i.cfl_alpha_idx,
-                        i.cfl_joint_sign,
-                        i.palette_size,
-                        i.use_intrabc,
-                        i.dv_row,
-                        i.dv_col,
-                        i.skip,
-                        ob.txbs,
-                        ob.txbs_uv,
-                        rb.bsize,
-                        rb.partition,
-                        j.y_mode,
-                        j.angle_delta_y,
-                        j.use_filter_intra,
-                        j.filter_intra_mode,
-                        rb.tx_size,
-                        j.uv_mode,
-                        j.cfl_alpha_idx,
-                        j.cfl_joint_sign,
-                        j.palette_size,
-                        j.use_intrabc,
-                        j.dv_row,
-                        j.dv_col,
-                        j.skip,
-                        rb.txbs,
-                        rb.txbs_uv,
-                    );
-                    leaf_reported = true;
-                    // Dump the leaf sequence ending at the mismatch so the
-                    // immediately-preceding committed leaves (the ctx writers)
-                    // are visible.
-                    let idx = b
-                        .blocks
-                        .iter()
-                        .position(|x| x.mi_row == rb.mi_row && x.mi_col == rb.mi_col);
-                    if let Some(i0) = idx {
-                        let lo = i0.saturating_sub(8);
-                        for x in &b.blocks[lo..=i0] {
-                            println!(
-                                "  leaf-seq mi({},{}) bs{} part{} txbs={:?}",
-                                x.mi_row, x.mi_col, x.bsize, x.partition, x.txbs
-                            );
-                        }
+            let i = &ob.info;
+            let j = &rb.info;
+            if ob.bsize != rb.bsize
+                || ob.partition != rb.partition
+                || i.y_mode != j.y_mode
+                || i.angle_delta_y != j.angle_delta_y
+                || i.use_filter_intra != j.use_filter_intra
+                || i.filter_intra_mode != j.filter_intra_mode
+                || i.uv_mode != j.uv_mode
+                || i.angle_delta_uv != j.angle_delta_uv
+                || i.cfl_alpha_idx != j.cfl_alpha_idx
+                || i.cfl_joint_sign != j.cfl_joint_sign
+                || i.palette_size != j.palette_size
+                || i.use_intrabc != j.use_intrabc
+                || i.dv_row != j.dv_row
+                || i.dv_col != j.dv_col
+                || i.skip != j.skip
+                || ob.tx_size != rb.tx_size
+                || ob.txbs != rb.txbs
+                || ob.txbs_uv != rb.txbs_uv
+            {
+                println!(
+                    ">>> FIRST LEAF MISMATCH (mi_row={}, mi_col={}):\n  a: bsize={} part={} y_mode={} adl={} fi={}/{} tx={} uv={} cfl={}/{} pal={:?} ibc={} dv=({},{}) skip={} txbs={:?} txbs_uv={:?}\n  b: bsize={} part={} y_mode={} adl={} fi={}/{} tx={} uv={} cfl={}/{} pal={:?} ibc={} dv=({},{}) skip={} txbs={:?} txbs_uv={:?}",
+                    rb.mi_row,
+                    rb.mi_col,
+                    ob.bsize,
+                    ob.partition,
+                    i.y_mode,
+                    i.angle_delta_y,
+                    i.use_filter_intra,
+                    i.filter_intra_mode,
+                    ob.tx_size,
+                    i.uv_mode,
+                    i.cfl_alpha_idx,
+                    i.cfl_joint_sign,
+                    i.palette_size,
+                    i.use_intrabc,
+                    i.dv_row,
+                    i.dv_col,
+                    i.skip,
+                    ob.txbs,
+                    ob.txbs_uv,
+                    rb.bsize,
+                    rb.partition,
+                    j.y_mode,
+                    j.angle_delta_y,
+                    j.use_filter_intra,
+                    j.filter_intra_mode,
+                    rb.tx_size,
+                    j.uv_mode,
+                    j.cfl_alpha_idx,
+                    j.cfl_joint_sign,
+                    j.palette_size,
+                    j.use_intrabc,
+                    j.dv_row,
+                    j.dv_col,
+                    j.skip,
+                    rb.txbs,
+                    rb.txbs_uv,
+                );
+                leaf_reported = true;
+                // Dump the leaf sequence ending at the mismatch so the
+                // immediately-preceding committed leaves (the ctx writers)
+                // are visible.
+                let idx = b
+                    .blocks
+                    .iter()
+                    .position(|x| x.mi_row == rb.mi_row && x.mi_col == rb.mi_col);
+                if let Some(i0) = idx {
+                    let lo = i0.saturating_sub(8);
+                    for x in &b.blocks[lo..=i0] {
+                        println!(
+                            "  leaf-seq mi({},{}) bs{} part{} txbs={:?}",
+                            x.mi_row, x.mi_col, x.bsize, x.partition, x.txbs
+                        );
                     }
-                    break;
                 }
+                break;
             }
-            None => {}
         }
     }
     if !leaf_reported && !part_diverged {

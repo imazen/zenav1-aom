@@ -137,7 +137,6 @@ fn run(cell: &EncodeCell, knobs: &ToggleKnobs) -> Result<usize, String> {
 /// winner-mode/tx near-tie at cpu-4 (KB-10/KB-13 class; they diverge WITH OR
 /// WITHOUT the prune, since it never touches chroma or the winner-mode pass).
 /// They are not gated here to avoid coupling this sf's gate to those residuals.
-
 /// Regression guard: a SUB-480p frame at cpu-used 2 keeps the prune OFF
 /// (framesize gate), so it must stay byte-identical (the whole speed-2 envelope
 /// is unperturbed by the new framesize wiring).

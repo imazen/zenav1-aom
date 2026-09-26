@@ -249,7 +249,7 @@ fn lr_count_bits_match_write_composition() {
     for _ in 0..2000 {
         // Random wiener pair (full 7-tap and 5-tap chroma windows).
         for &win in &[WIENER_WIN, WIENER_WIN_CHROMA] {
-            let mut mk = |rng: &mut Rng| {
+            let mk = |rng: &mut Rng| {
                 let t0 = if win == WIENER_WIN_CHROMA {
                     0
                 } else {

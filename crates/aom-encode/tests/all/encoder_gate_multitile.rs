@@ -576,7 +576,7 @@ fn encoder_gate_multitile_byte_match() {
     let mut matched = 0usize;
     for (w, h, tcl, trl, cq, name, content) in &cases {
         eprintln!("--- multitile {name} {w}x{h} tiles(log2 {tcl}+{trl}) cq{cq} ---");
-        if attempt_multitile_case(*w, *h, true, 1, 1, 2, *cq, *tcl, *trl, |r, c| content(r, c)) {
+        if attempt_multitile_case(*w, *h, true, 1, 1, 2, *cq, *tcl, *trl, content) {
             matched += 1;
         }
     }
@@ -678,7 +678,7 @@ fn encoder_threaded_row_bands_match_serial() {
         let serial = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &base)
             .unwrap_or_else(|e| panic!("{name}: serial encode refused: {e}"));
         for threads in [2usize, 4] {
-            let mut cfg = base.clone();
+            let mut cfg = base;
             cfg.threads = threads;
             let got = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
                 .unwrap_or_else(|e| panic!("{name}: threads={threads} refused: {e}"));

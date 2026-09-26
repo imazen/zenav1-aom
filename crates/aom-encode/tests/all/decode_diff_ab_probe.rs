@@ -154,7 +154,7 @@ const KF_MODE_DELTAS: [i8; 2] = [0, 0];
 fn top_split_bottom_flat(r: usize, c: usize) -> u8 {
     if r < 32 {
         let period = if c < 32 { 4 } else { 6 };
-        if (r / period + c / period) % 2 == 0 {
+        if (r / period + c / period).is_multiple_of(2) {
             80
         } else {
             176
@@ -167,7 +167,7 @@ fn top_split_bottom_flat(r: usize, c: usize) -> u8 {
 fn left_flat_right_split(r: usize, c: usize) -> u8 {
     if c >= 32 {
         let period = if r < 32 { 4 } else { 6 };
-        if (r / period + c / period) % 2 == 0 {
+        if (r / period + c / period).is_multiple_of(2) {
             80
         } else {
             176

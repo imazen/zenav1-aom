@@ -243,7 +243,7 @@ fn port_encode_cdef(cell: &EncodeCell, bootstrap: &[u8]) -> Vec<u8> {
     assert!(!p.coded_lossless, "CDEF cells never run at qindex 0");
     let tiles_log2 = p.tile_info.log2_cols + p.tile_info.log2_rows;
     assert_eq!(tiles_log2, 0, "{}: single-tile envelope", cell.label);
-    let real_cdef = p.cdef.clone();
+    let real_cdef = p.cdef;
 
     let qindex = p.quant.base_qindex;
     let mut quants = Quants::zeroed();

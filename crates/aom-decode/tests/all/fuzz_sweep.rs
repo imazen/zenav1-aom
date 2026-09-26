@@ -6,7 +6,7 @@
 //!
 //! The `crates/aom-decode/fuzz/` targets need a nightly toolchain + `cargo-fuzz`
 //! + libFuzzer. This test gives the same robustness contract a home on **stable**
-//! `cargo test`, so CI enforces it on every platform without nightly:
+//!   `cargo test`, so CI enforces it on every platform without nightly:
 //!
 //!   for ANY input, `decode_frame_obus` / `decode_frames` return `Ok` / `Err(String)`
 //!   — never a panic (unwrap / expect / out-of-bounds slice / `assert!` / debug

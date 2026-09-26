@@ -34,10 +34,10 @@
 //!     give it exactly `coeff`'s sign (`(abs_dqcoeff ^ coeff_sign) - coeff_sign`,
 //!     quantize.c:77). Same sign + both `<= 2^15` gives `|diff| <= 2^15`, so
 //!     `diff * diff <= 2^30 < INT_MAX`.
-//! This is also the domain libaom's own `av1_block_error` unit test declares
-//! (`test/error_block_test.cc`: `msb = bit_depth + 8 - 1`, coeff and dqcoeff
-//! drawn with matching signs), and the same bound `aom-dsp`'s
-//! `block_error_diff.rs` already pins for its lowbd generator.
+//!     This is also the domain libaom's own `av1_block_error` unit test declares
+//!     (`test/error_block_test.cc`: `msb = bit_depth + 8 - 1`, coeff and dqcoeff
+//!     drawn with matching signs), and the same bound `aom-dsp`'s
+//!     `block_error_diff.rs` already pins for its lowbd generator.
 //!
 //! What takes an input OUT of that domain is an unrealizable quantizer
 //! parameter triple. libaom builds `(quant, quant_shift)` for the AOM_QUANT_B

@@ -299,7 +299,8 @@ fn sse_u16_u8_w4_v3(
     if h == 0 {
         return 0;
     }
-    if h % 4 != 0 || a.len() < (h - 1) * a_stride + 4 || b.len() < (h - 1) * b_stride + 4 {
+    if !h.is_multiple_of(4) || a.len() < (h - 1) * a_stride + 4 || b.len() < (h - 1) * b_stride + 4
+    {
         return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, 4, h);
     }
     let (aa, bb) = (&a[..(h - 1) * a_stride + 4], &b[..(h - 1) * b_stride + 4]);

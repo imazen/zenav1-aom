@@ -234,7 +234,7 @@ fn main() {
                             "        INTER: ref_map={:?} hp_mv={} force_int_mv={} interp={} \
                              switchable_mm={} ref_frame_mvs={} ref_mode_select={} skip_mode=[{},{}] \
                              warp={} gm_types={:?}",
-                            &p.inter_ref.ref_map_idx,
+                            p.inter_ref.ref_map_idx,
                             p.allow_high_precision_mv as u8,
                             p.cur_frame_force_integer_mv as u8,
                             p.interp_filter,

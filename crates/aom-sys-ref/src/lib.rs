@@ -4,6 +4,24 @@
 //! shipping library links against it. Symbols are declared as needed, per
 //! module, as we bring differential harnesses online.
 
+// Clippy policy for a bit-exact C port (see docs/DIFFERENTIAL_PLAYBOOK.md): kernels
+// mirror libaom's signatures and loop shapes line for line so a differential can be
+// read against the C side, and some C float idioms are NaN-sensitive.
+#![allow(
+    clippy::too_many_arguments,   // C kernel signatures mirrored 1:1
+    clippy::needless_range_loop,  // index loops mirror the C reference line for line
+    clippy::manual_memcpy,        // explicit copy loops mirror the C reference
+    clippy::type_complexity,      // harness-facing tuples
+    clippy::neg_cmp_op_on_partial_ord, // `!(a < b)` is not `a >= b` under NaN; the CNN mirrors C
+    clippy::field_reassign_with_default, // C init-then-assign mirrors
+    clippy::chunks_exact_to_as_chunks,   // `as_chunks` is not on the pinned toolchain
+    clippy::collapsible_if,       // nested ifs mirror the C control flow, with C line refs between them
+    clippy::manual_clamp,         // C's chained min/max: `clamp` panics on inverted bounds and differs under NaN
+    clippy::manual_range_contains, // C comparison chains kept verbatim
+    clippy::excessive_precision,  // NN weight tables copied verbatim from C
+    clippy::while_let_loop,       // explicit `loop { let Some(..) = .. else { break } }` keeps the scheduler's exits readable
+    clippy::large_enum_variant    // `SbTree` variants are the partition shapes; boxing the leaf is measured slower
+)]
 pub type Txfm1dFn =
     unsafe extern "C" fn(input: *const i32, output: *mut i32, cos_bit: i8, stage_range: *const i8);
 
@@ -471,7 +489,7 @@ pub fn ref_satd_lp_simd(coeff: &[i16]) -> i32 {
     #[cfg(target_arch = "x86_64")]
     {
         assert!(
-            coeff.len() % 16 == 0,
+            coeff.len().is_multiple_of(16),
             "the simd tiers require length % 16 == 0"
         );
         // Match what RTCD picks on this host — the tier libaom itself would
@@ -499,7 +517,7 @@ pub fn ref_block_error_lp_simd(coeff: &[i16], dqcoeff: &[i16]) -> i64 {
     assert_eq!(coeff.len(), dqcoeff.len());
     #[cfg(target_arch = "x86_64")]
     {
-        assert!(coeff.len() % 16 == 0);
+        assert!(coeff.len().is_multiple_of(16));
         unsafe {
             if std::arch::is_x86_feature_detected!("avx2") {
                 av1_block_error_lp_avx2(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize)
@@ -538,7 +556,10 @@ pub fn ref_quantize_lp_simd(
     let n = coeff.len();
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     {
-        assert!(n % 16 == 0, "the simd tiers require n_coeffs % 16 == 0");
+        assert!(
+            n.is_multiple_of(16),
+            "the simd tiers require n_coeffs % 16 == 0"
+        );
         assert!(n <= 256, "Aligned16 covers the lp arm's transform sizes");
         let a_coeff = Aligned16::<256>::from_slice(&{
             let mut v = vec![0i16; 256];
@@ -624,7 +645,7 @@ pub fn ref_quantize_lp_sse2(
     iscan: &[i16],
 ) -> (Vec<i16>, Vec<i16>, u16) {
     let n = coeff.len();
-    assert!(n % 16 == 0 && n <= 256);
+    assert!(n.is_multiple_of(16) && n <= 256);
     let a_coeff = Aligned16::<256>::from_slice(&{
         let mut v = vec![0i16; 256];
         v[..n].copy_from_slice(coeff);
@@ -5637,7 +5658,7 @@ pub fn ref_block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
     #[cfg(target_arch = "x86_64")]
     {
         assert_eq!(coeff.len(), dqcoeff.len());
-        assert!(coeff.len() % 16 == 0);
+        assert!(coeff.len().is_multiple_of(16));
         if std::arch::is_x86_feature_detected!("avx2") {
             let mut ssz = 0i64;
             let err = unsafe {
@@ -7237,6 +7258,7 @@ pub fn ref_quantize_fp_avx2(
     // vpermq memory operand, which does not require alignment.
     #[repr(align(32))]
     #[derive(Clone, Copy)]
+    #[allow(dead_code)] // alignment carrier: only the layout is read
     struct A32([i32; 8]);
     let mut coeff_a = vec![A32([0; 8]); n.div_ceil(8)];
     let mut qcoeff_a = vec![A32([0; 8]); n.div_ceil(8)];
@@ -10758,7 +10780,12 @@ pub fn ref_lf_frame_init_tables(
         );
     }
     (
-        lfthr.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+        lfthr
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|c| [c[0], c[1], c[2]])
+            .collect(),
         lvl,
     )
 }
@@ -11069,11 +11096,11 @@ pub fn ref_intra_cnn_run(win: &[u16], bit_depth: i32, force_cscalar: bool) -> Ve
     out
 }
 
-/// Oracle for `av1/encoder/ml.c` `av1_nn_predict_c` (+ `av1_nn_output_prec_reduce`
-/// when `reduce_prec`). `hidden_nodes` gives the per-hidden-layer node counts;
-/// `weights_flat`/`bias_flat` are the per-layer weight/bias tables concatenated
-/// in NN_CONFIG order (`weights[l][node*num_in + i]`, `bias[l][node]`; the final
-/// entry is the linear output layer). Returns the `num_outputs` logits.
+// Oracle for `av1/encoder/ml.c` `av1_nn_predict_c` (+ `av1_nn_output_prec_reduce`
+// when `reduce_prec`). `hidden_nodes` gives the per-hidden-layer node counts;
+// `weights_flat`/`bias_flat` are the per-layer weight/bias tables concatenated
+// in NN_CONFIG order (`weights[l][node*num_in + i]`, `bias[l][node]`; the final
+// entry is the linear output layer). Returns the `num_outputs` logits.
 unsafe extern "C" {
     fn shim_prune_tx_2D(
         diff: *const i16,
@@ -11918,7 +11945,6 @@ unsafe extern "C" {
 /// Reference `get_tx_mask` LUMA-INTRA arm (transcription over the REAL
 /// `av1_get_ext_tx_set_type` + REAL blockd.h used-flag tables). Returns
 /// `(allowed_tx_mask, txk_allowed)` with `txk_allowed == 16` meaning "all".
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub fn ref_get_tx_mask_intra(
     tx_size: i32,
@@ -20885,8 +20911,8 @@ pub fn ref_rdopt_handle_newmv_compound(
     ref_init();
     let (t, c, g) = (row.flat_this(), row.flat_comp(), row.flat_global());
     let mut flat = [cur_mv[0].0, cur_mv[0].1, cur_mv[1].0, cur_mv[1].1];
-    let mut snmv = vec![0i16; MAX_REF_MV_SEARCH * C_REF_FRAMES * 2];
-    let mut svalid = vec![0u8; MAX_REF_MV_SEARCH * C_REF_FRAMES];
+    let mut snmv = [0i16; MAX_REF_MV_SEARCH * C_REF_FRAMES * 2];
+    let mut svalid = [0u8; MAX_REF_MV_SEARCH * C_REF_FRAMES];
     for i in 0..MAX_REF_MV_SEARCH {
         for r in 0..C_REF_FRAMES {
             snmv[(i * C_REF_FRAMES + r) * 2] = single.mv[i][r].0;
@@ -24062,7 +24088,10 @@ pub fn ref_tpl_skip_tpl_for_frame(
 #[must_use]
 pub fn ref_tpl_is_alike_mv(cand: (i16, i16), centers: &[i16], skip_alike_starting_mv: i32) -> bool {
     ref_init();
-    assert!(centers.len() % 2 == 0, "centers must be row/col pairs");
+    assert!(
+        centers.len().is_multiple_of(2),
+        "centers must be row/col pairs"
+    );
     let r = unsafe {
         shim_tplc_is_alike_mv(
             cand.0,

@@ -145,7 +145,7 @@ pub(crate) fn inv_col_pass_u8_i16(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
-    debug_assert!(row_n <= 64 && (col_n % 16 == 0 || col_n == 4 || col_n == 8));
+    debug_assert!(row_n <= 64 && (col_n.is_multiple_of(16) || col_n == 4 || col_n == 8));
     if row_n <= 8 {
         let mut tin = [i16x16::zero(t); 8];
         let mut tout = [i16x16::zero(t); 8];
@@ -329,7 +329,7 @@ pub(crate) fn inv_row_pass_i16(
     rect1: bool,
     shift0_bit: i32,
 ) -> bool {
-    debug_assert!(row_n % 16 == 0 && row_n <= 64 && (0..=2).contains(&shift0_bit));
+    debug_assert!(row_n.is_multiple_of(16) && row_n <= 64 && (0..=2).contains(&shift0_bit));
     if col_n <= 8 {
         let mut tin = [i16x16::zero(t); 8];
         let mut tout = [i16x16::zero(t); 8];

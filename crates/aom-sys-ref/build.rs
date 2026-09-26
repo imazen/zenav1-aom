@@ -269,12 +269,10 @@ fn tool_ok(cmd: &str, arg: &str) -> bool {
 /// Pick a C compiler for the shims: prefer clang (what the shims were developed
 /// against), else the platform `cc`, else gcc.
 fn pick_c_compiler() -> Option<&'static str> {
-    for cc in ["clang", "cc", "gcc"] {
-        if tool_ok(cc, "--version") {
-            return Some(cc);
-        }
-    }
-    None
+    ["clang", "cc", "gcc"]
+        .into_iter()
+        .find(|&cc| tool_ok(cc, "--version"))
+        .map(|v| v as _)
 }
 
 /// Ensure the `upstream/` libaom submodule is checked out. Auto-init if empty;

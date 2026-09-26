@@ -386,6 +386,32 @@ jobs:
         with:
           command: check
 
+  # clippy -D warnings over every target in the harness feature set. Needs the
+  # C oracle (the harnesses link it), so it shares the linux leg's oracle cache.
+  clippy:
+    name: clippy -D warnings
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install C-oracle build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm cmake ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache libaom oracle build
+        uses: actions/cache@v6
+        with:
+          path: upstream/build
+          key: libaom-${{ runner.os }}-${{ env.LIBAOM_SHA }}-v3
+      - run: cargo build -p zenav1-aom-sys-ref
+      - run: cargo clippy --profile test-fast --workspace --all-targets --features zenav1-aom-encode/__internals,zenav1-aom-decode/__internals -- -D warnings
+
   # rustdoc with warnings as errors on the four published crates (what docs.rs
   # will build): broken intra-doc links, missing docs on the consumer surfaces.
   rustdoc:

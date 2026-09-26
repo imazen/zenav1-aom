@@ -172,7 +172,7 @@ fn random_planes(r: &mut Rng, cfg: &KeyFrameConfig) -> (Vec<u16>, Vec<u16>, Vec<
     } else {
         (1u16 << cfg.bit_depth.min(15)) - 1
     };
-    let mut mk = |n: usize, r: &mut Rng| -> Vec<u16> {
+    let mk = |n: usize, r: &mut Rng| -> Vec<u16> {
         // Length: usually exact; sometimes short, long, or empty.
         let len = match r.below(24) {
             0 => 0,

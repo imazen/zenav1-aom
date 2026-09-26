@@ -232,8 +232,8 @@ pub fn derive_lowdelay_p_frame_header(
     // --- lossless / recon-dependent loop-filter + CDEF (from sub-step 2f) ---
     out.coded_lossless = false;
     out.all_lossless = false;
-    out.loopfilter = p.loopfilter.clone();
-    out.cdef = p.cdef.clone();
+    out.loopfilter = p.loopfilter;
+    out.cdef = p.cdef;
     // restoration.enable_restoration / sb_size_128 / ss come from seq_cfg;
     // the §3 envelope codes restoration off.
 

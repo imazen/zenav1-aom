@@ -92,7 +92,7 @@ fn assert_model_eq(port: &InterModeRdModel, c: &cref::InterModeRdModelFlat, what
 fn rand_model(rng: &mut Rng) -> InterModeRdModel {
     let d = |rng: &mut Rng| (rng.range(-1 << 20, 1 << 20) as f64) / 7.0;
     InterModeRdModel {
-        ready: rng.next() % 2 == 0,
+        ready: rng.next().is_multiple_of(2),
         num: rng.range(0, 400),
         a: d(rng),
         b: d(rng),
@@ -164,12 +164,12 @@ fn inter_mode_data_push_matches_c() {
         let bsize = rng.range(0, BLOCK_SIZES_ALL as i32);
         let sse = rng.range(0, 1 << 26) as i64;
         // Half the time make dist == sse, which is one of C's two drop paths.
-        let dist = if rng.next() % 2 == 0 {
+        let dist = if rng.next().is_multiple_of(2) {
             sse
         } else {
             rng.range(0, 1 << 26) as i64
         };
-        let residue_cost = if rng.next() % 4 == 0 {
+        let residue_cost = if rng.next().is_multiple_of(4) {
             0
         } else {
             rng.range(1, 1 << 16)
@@ -259,7 +259,7 @@ fn get_est_rate_dist_matches_c() {
         let mut m = rand_model(&mut rng);
         // Drive est_ld near zero often, so the |est_ld| < 1e-2 clamp arm and
         // the negative-cost arm are both reached rather than assumed dead.
-        if rng.next() % 3 == 0 {
+        if rng.next().is_multiple_of(3) {
             m.a = 0.0;
             m.b = (rng.range(-100, 100) as f64) / 10000.0;
         }
@@ -272,7 +272,7 @@ fn get_est_rate_dist_matches_c() {
         // `round_ties_even` left this test GREEN. So a fifth of the draws are
         // built to land on .5 in `dist_mean.round()` and in
         // `((sse - dist_mean) / est_ld).round()`.
-        if rng.next() % 5 == 0 {
+        if rng.next().is_multiple_of(5) {
             m.ready = true;
             m.dist_mean = rng.range(0, 1 << 20) as f64 + 0.5;
             m.a = 0.0;
@@ -280,7 +280,7 @@ fn get_est_rate_dist_matches_c() {
             // (sse - dist_mean) / 2 is a half-integer iff sse - dist_mean is
             // an odd multiple of 1, which it is by construction here.
             sse = m.dist_mean as i64 + 1 + 2 * rng.range(0, 1 << 16) as i64;
-        } else if rng.next() % 5 == 0 {
+        } else if rng.next().is_multiple_of(5) {
             // The OTHER round: `((sse - dist_mean) / est_ld).round()`. With an
             // integer dist_mean, est_ld == 2 and an ODD gap, the quotient is an
             // exact .5. (Measured: without this family, swapping that call to
@@ -588,7 +588,7 @@ fn prune_ref_mv_idx_search_matches_c() {
         let mut c_save = [(0i16, 0i16); 4];
         let mut p_save = [[Mv::default(); 2]; MAX_REF_MV_SEARCH - 1];
         for i in 0..4 {
-            let v = if rng.next() % 3 == 0 {
+            let v = if rng.next().is_multiple_of(3) {
                 (i16::MIN, i16::MIN)
             } else {
                 (
@@ -612,7 +612,11 @@ fn prune_ref_mv_idx_search_matches_c() {
         let ref_mv_idx = rng.range(0, 3);
         let best = rng.range(-1, 3);
         let pruning_factor = rng.range(0, 3);
-        let rf = if rng.next() % 2 == 0 { (1, -1) } else { (1, 5) };
+        let rf = if rng.next().is_multiple_of(2) {
+            (1, -1)
+        } else {
+            (1, 5)
+        };
         let want_ok = cref::ref_rdopt_prune_ref_mv_idx_search(
             ref_mv_idx,
             best,
@@ -665,7 +669,7 @@ fn newmv_reduced_search_range_is_self_consistent() {
             .map(|_| {
                 let mut s = SingleNewMvRow::default();
                 for r in 0..8 {
-                    s.valid[r] = rng.next() % 3 != 0;
+                    s.valid[r] = !rng.next().is_multiple_of(3);
                     s.mv[r] = Mv::new(rng.range(-300, 300) as i16, rng.range(-300, 300) as i16);
                 }
                 s
@@ -775,11 +779,11 @@ fn handle_newmv_compound_matches_c() {
             row_max: row_min + rng.range(0, 800),
         };
         let mut c_single = cref::SingleNewMvTable::default();
-        let mut p_single = vec![SingleNewMvRow::default(); MAX_REF_MV_SEARCH];
+        let mut p_single = [SingleNewMvRow::default(); MAX_REF_MV_SEARCH];
         for i in 0..MAX_REF_MV_SEARCH {
             for r in 0..8 {
                 let v = (rng.range(-500, 500) as i16, rng.range(-500, 500) as i16);
-                let ok = rng.next() % 3 != 0;
+                let ok = !rng.next().is_multiple_of(3);
                 c_single.mv[i][r] = v;
                 c_single.valid[i][r] = ok;
                 p_single[i].mv[r] = Mv::new(v.0, v.1);

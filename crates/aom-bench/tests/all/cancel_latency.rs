@@ -264,10 +264,10 @@ fn stream_for(w: usize, h: usize) -> Vec<u8> {
     let dir = std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
         .join("tmp/zenav1-aom-cancel-cache");
     let path = dir.join(format!("photo_{w}x{h}_cq{CQ}_s{SPEED}_cdef1_lr1.obu"));
-    if let Ok(bytes) = std::fs::read(&path) {
-        if !bytes.is_empty() {
-            return bytes;
-        }
+    if let Ok(bytes) = std::fs::read(&path)
+        && !bytes.is_empty()
+    {
+        return bytes;
     }
     aom_sys_ref::ref_init();
     let cell = aom_bench::winperf::cell(w, h, CQ, SPEED, aom_bench::winperf::Content::Photo);

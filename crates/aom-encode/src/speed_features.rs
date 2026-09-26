@@ -124,7 +124,7 @@ pub const TOP_INTRA_MODEL_COUNT: i32 = 4;
 /// ported: the ladder enables the bsize-dependent "faster" step
 /// (`use_bsize_dependent_search_method = 3`, `min_dim >= 32`) only at speed
 /// >= 6, where `intrabc_search_level 1` caps the DV search at 16x16, so it is
-/// structurally unreachable there (asserted at the selection site).
+/// > structurally unreachable there (asserted at the selection site).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MvSearchMethod {
     /// `init_motion_compensation_nstep` level 0: 15 stages, 8/12 points.
@@ -1367,19 +1367,19 @@ impl SpeedFeatures {
     /// (`aom_bench::lr_search_sf_allintra` / `..._good`) transcribes that block
     /// INCLUDING both framesize arms. KB-22 recorded this as "a live gap for a
     /// >=720p `--enable-restoration=1` cell"; that was **measured and refuted**
-    /// 2026-07-31 — at 1280x720 speed 1 the port codes exactly C's restoration
-    /// unit size on both sides of the `base_qindex <= 96` threshold (128 and
-    /// 256), and the derivation is locked over speeds 0..9 and every framesize
-    /// and qindex boundary by `kb22_hd_arms::lr_unit_size_bounds_track_c`. Note
-    /// also that for ALLINTRA at `speed >= 1` the `speed >= 1` framesize block
-    /// (:3085-3093) is entirely OVERWRITTEN by the `ALLINTRA && speed >= 1`
-    /// block (:3095-3107), so the only surviving framesize term there is
-    /// `is_1440p_or_larger` — 720p is not a size at which the allintra bounds
-    /// move at all. And the
-    /// `speed >= 2` `ext_partition_eval_thresh` / `speed >= 3`
-    /// `rect_partition_eval_thresh` blocks (:2939-2973 / :2975-2985), which are already
-    /// modelled by their own consumer
-    /// (`partition_pick::ext_partition_eval_thresh_allintra_key`).
+    /// > 2026-07-31 — at 1280x720 speed 1 the port codes exactly C's restoration
+    /// > unit size on both sides of the `base_qindex <= 96` threshold (128 and
+    /// > 256), and the derivation is locked over speeds 0..9 and every framesize
+    /// > and qindex boundary by `kb22_hd_arms::lr_unit_size_bounds_track_c`. Note
+    /// > also that for ALLINTRA at `speed >= 1` the `speed >= 1` framesize block
+    /// > (:3085-3093) is entirely OVERWRITTEN by the `ALLINTRA && speed >= 1`
+    /// > block (:3095-3107), so the only surviving framesize term there is
+    /// > `is_1440p_or_larger` — 720p is not a size at which the allintra bounds
+    /// > move at all. And the
+    /// > `speed >= 2` `ext_partition_eval_thresh` / `speed >= 3`
+    /// > `rect_partition_eval_thresh` blocks (:2939-2973 / :2975-2985), which are already
+    /// > modelled by their own consumer
+    /// > (`partition_pick::ext_partition_eval_thresh_allintra_key`).
     pub fn apply_allintra_qindex_dependent(
         &mut self,
         width: usize,
@@ -2258,11 +2258,11 @@ mod tests {
     /// The same field as the 4k arm above, at a second boundary, inside a
     /// speed block — and unmodelled until 2026-08-03, which made every
     /// >= 1080p frame at `--cpu-used 6` search 4x4 partitions C had already
-    /// stopped at 8x8. It is live at exactly speed 6: speed 7 sets the same
-    /// value framesize-independently (:570), so 7, 8 and 9 cannot show it, and
-    /// below 6 the enclosing block does not run. That is a ONE-SPEED window,
-    /// which is why a speed sweep at any size below 1080 and a size sweep at
-    /// any speed other than 6 could both be green with it missing.
+    /// > stopped at 8x8. It is live at exactly speed 6: speed 7 sets the same
+    /// > value framesize-independently (:570), so 7, 8 and 9 cannot show it, and
+    /// > below 6 the enclosing block does not run. That is a ONE-SPEED window,
+    /// > which is why a speed sweep at any size below 1080 and a size sweep at
+    /// > any speed other than 6 could both be green with it missing.
     #[test]
     fn framesize_dependent_min_partition_size_1080p_arm() {
         for speed in 0..=9 {

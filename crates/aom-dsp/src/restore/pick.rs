@@ -1919,7 +1919,7 @@ fn pixel_proj_error_impl_v3<P: LrPixel>(
             // madd over interleaved (flt, d) pairs gives xq*(flt - u) without
             // forming u.
             let xi = (-xq_on * (1 << SGRPROJ_RST_BITS)) & 0xffff;
-            let xq_coeff = _mm256_set1_epi32((xq_on & 0xffff) | ((xi as i32) << 16));
+            let xq_coeff = _mm256_set1_epi32((xq_on & 0xffff) | (xi << 16));
             for i in 0..height {
                 let dr = dat_off + i * dat_stride;
                 let sr = src_off + i * src_stride;
@@ -3513,7 +3513,7 @@ fn search_selfguided_restoration(
             let bestep_ref = bestep;
             let mut ep = bestep_ref - 1;
             while ep < bestep_ref + 2 {
-                if ep >= SGRPROJ_EP_GRP1_START_IDX && ep <= SGRPROJ_EP_GRP1_END_IDX {
+                if (SGRPROJ_EP_GRP1_START_IDX..=SGRPROJ_EP_GRP1_END_IDX).contains(&ep) {
                     consider(ctx, ep, &mut bestep, &mut besterr, &mut bestxqd);
                 }
                 ep += 2;

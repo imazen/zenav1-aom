@@ -11,6 +11,7 @@
 //! never be silently empty: either `__internals` is on and the real harness ran,
 //! or this fails and says what to pass.
 #[test]
+#[allow(clippy::assertions_on_constants)] // the build-state pin is the point
 fn the_real_suite_requires_the_internals_feature() {
     assert!(
         cfg!(feature = "__internals"),

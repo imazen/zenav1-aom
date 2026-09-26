@@ -874,7 +874,7 @@ pub fn apply_variance_factor(rd: i64, factor: f64) -> i64 {
 
 use crate::mode_costs::{block_signals_txsize, tx_size_cost};
 use crate::tx_search::{
-    TxTypeSearchPolicy, TxbWinner, TxfmYrdEnv, intra_model_rd_y,
+    TxTypeSearchPolicy, TxfmYrdEnv, intra_model_rd_y,
     pick_uniform_tx_size_type_yrd_intra,
 };
 

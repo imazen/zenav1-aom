@@ -251,7 +251,7 @@ fn census(cell: &EncodeCell, w: usize, h: usize) {
     let s3 = snap();
     let w3 = watch0();
 
-    let sb = ((w + 63) / 64) * ((h + 63) / 64);
+    let sb = w.div_ceil(64) * h.div_ceil(64);
     report(
         "C bootstrap encode (UNTIMED in drv-aom)",
         s0,

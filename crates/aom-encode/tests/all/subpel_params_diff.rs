@@ -92,7 +92,7 @@ fn enc_calc_subpel_params_matches_c() {
                 let pix_col = rng.range(0, (pre_w).max(1));
                 // MVs at the coded range (`MV_UPP`/`MV_LOW` are ±(1<<14)) and
                 // small ones, so both the clamped and unclamped arms fire.
-                let big = rng.next() % 3 == 0;
+                let big = rng.next().is_multiple_of(3);
                 let span = if big { 1 << 14 } else { 64 };
                 let mv = (rng.range(-span, span) as i16, rng.range(-span, span) as i16);
                 let params = InterBlockParams::new(pix_row, pix_col, ssx, ssy);

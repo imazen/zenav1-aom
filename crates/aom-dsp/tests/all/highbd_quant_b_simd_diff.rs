@@ -235,5 +235,5 @@ fn highbd_quantize_b_simd_bit_identical_to_c_at_every_tier() {
 }
 
 fn rep_tables(rng: &mut Rng) -> bool {
-    rng.next() % 3 == 0
+    rng.next().is_multiple_of(3)
 }

@@ -36,11 +36,11 @@
 //! * the i64 `abs + rounding` add becomes `min(abs, 1<<17) + rounding` in i32:
 //!   for `abs < 2^17` the i32 math is the i64 math; for `abs >= 2^17` both
 //!   sums are `>= 2^17 - 2^15 > 32767`, so both clamp to 32767.
-//! Everything else uses lane ops with the scalar port's exact semantics
-//! (magetypes integer Mul/Sub are wrapping on every backend, matching the
-//! port's `wrapping_mul`/`wrapping_sub`; `>>` is arithmetic).
-//! `eob = 1 + max(iscan[rc])` over nonzero positions equals the scan-order
-//! maximum because `iscan` is the inverse permutation of `scan`.
+//!   Everything else uses lane ops with the scalar port's exact semantics
+//!   (magetypes integer Mul/Sub are wrapping on every backend, matching the
+//!   port's `wrapping_mul`/`wrapping_sub`; `>>` is arithmetic).
+//!   `eob = 1 + max(iscan[rc])` over nonzero positions equals the scan-order
+//!   maximum because `iscan` is the inverse permutation of `scan`.
 
 use archmage::prelude::*;
 
@@ -299,9 +299,8 @@ fn quantize_fp_impl_v3(
 ) -> u16 {
     let n = coeff.len();
     if n == 0
-        || n % 16 != 0
-        || log_scale < 0
-        || log_scale > 2
+        || !n.is_multiple_of(16)
+        || !(0..=2).contains(&log_scale)
         || iscan.len() < n
         || qcoeff.len() < n
         || dqcoeff.len() < n
@@ -619,7 +618,7 @@ fn quantize_lp_impl_v3(
 
     let n = n_coeffs;
     if n < 16
-        || n % 16 != 0
+        || !n.is_multiple_of(16)
         || coeff.len() < n
         || iscan.len() < n
         || qcoeff.len() < n

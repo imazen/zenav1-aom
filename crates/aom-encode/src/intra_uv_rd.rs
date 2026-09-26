@@ -71,7 +71,6 @@ const MI_H: [usize; 22] = [
 
 /// `UV_CFL_PRED` (enums.h).
 pub const UV_CFL_PRED: usize = 13;
-const UV_D67_PRED: usize = 8;
 
 /// `av1_get_adjusted_tx_size` (blockd.h): 64-point sizes clamp to their
 /// 32-point counterparts (chroma never uses 64-pt transforms).
@@ -617,8 +616,8 @@ pub fn txfm_rd_in_plane_uv_p(
     debug_assert!(max_blocks_wide <= 32 && max_blocks_high <= 32);
     let mut t_above = [0i8; 32];
     let mut t_left = [0i8; 32];
-    copy_row(&mut t_above, &env.above_ctx[pi], max_blocks_wide);
-    copy_row(&mut t_left, &env.left_ctx[pi], max_blocks_high);
+    copy_row(&mut t_above, env.above_ctx[pi], max_blocks_wide);
+    copy_row(&mut t_left, env.left_ctx[pi], max_blocks_high);
     // predict_dc_only_block's zero_blk_rate ctx (tx_search.c:2055-2063): the
     // BLOCK-ORIGIN skip ctx from the PERSISTENT (pre-walk) entropy arrays,
     // shared by every txb of this chroma block — same quirk as the luma walk
@@ -713,7 +712,7 @@ pub fn txfm_rd_in_plane_uv_p(
                 }
                 let mut ah = 0u64;
                 let mut lh = 0u64;
-                if txb_off >= env.ref_stride + 1 {
+                if txb_off > env.ref_stride {
                     for c in -1..(2 * txw) as isize {
                         ah = ah.wrapping_mul(31).wrapping_add(
                             recon[(txb_off as isize - env.ref_stride as isize + c) as usize]
@@ -751,7 +750,7 @@ pub fn txfm_rd_in_plane_uv_p(
                         env.disable_edge_filter
                     );
                 }
-                if txb_off >= env.ref_stride + 1 {
+                if txb_off > env.ref_stride {
                     eprint!("[pab] mi({},{}) pl{}:", env.mi_row, env.mi_col, plane);
                     for c in -1..(2 * txw) as isize {
                         eprint!(

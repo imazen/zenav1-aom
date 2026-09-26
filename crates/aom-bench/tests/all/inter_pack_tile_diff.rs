@@ -521,8 +521,8 @@ fn zero_mv_p_frame_payload_byte_exact_vs_aomenc() {
         reduced_tx_set_used: real.reduced_tx_set_used,
         // BOOTSTRAPPED (recon-dependent) — see the doc comment.
         interp_filter: real.interp_filter,
-        loopfilter: real.loopfilter.clone(),
-        cdef: real.cdef.clone(),
+        loopfilter: real.loopfilter,
+        cdef: real.cdef,
     };
     let derived = derive_lowdelay_p_frame_header(&seq_cfg, &p);
 

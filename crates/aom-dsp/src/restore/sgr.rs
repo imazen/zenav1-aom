@@ -171,13 +171,15 @@ fn integral_image_impl_v3<P: crate::restore::pick::LrPixel>(
         // the proof structurally instead.
         let mut j = 0usize;
         for ((((av1, av2), px), d1), d2) in abv1[1..]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .zip(abv2[1..].chunks_exact(4))
             .zip(srow.chunks_exact(4))
             .zip(dst1[1..].chunks_exact_mut(4))
             .zip(dst2[1..].chunks_exact_mut(4))
         {
-            let above1: &[i32; 4] = av1.try_into().unwrap();
+            let above1: &[i32; 4] = av1;
             let above1 = _mm_loadu_si128(above1);
             let above2: &[i32; 4] = av2.try_into().unwrap();
             let above2 = _mm_loadu_si128(above2);

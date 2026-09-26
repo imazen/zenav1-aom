@@ -603,7 +603,7 @@ fn encoder_gate_bd10_bd12_420() {
     // (not a copy of luma). bd10.
     let y10 = |r: usize, cc: usize| {
         let base = ((r * 12 + cc * 9) as u16) & 0x3ff;
-        let hf = if (r + cc) % 2 == 0 { 40 } else { 0 };
+        let hf = if (r + cc).is_multiple_of(2) { 40 } else { 0 };
         (base ^ (hf as u16)).min(1023)
     };
     let uv10 = |r: usize, cc: usize| (((r * 7 + cc * 5) as u16) & 0x3ff).min(1023);
@@ -613,7 +613,7 @@ fn encoder_gate_bd10_bd12_420() {
     // bd12.
     let y12 = |r: usize, cc: usize| {
         let base = ((r * 48 + cc * 36) as u16) & 0xfff;
-        let hf = if (r + cc) % 2 == 0 { 160 } else { 0 };
+        let hf = if (r + cc).is_multiple_of(2) { 160 } else { 0 };
         (base ^ (hf as u16)).min(4095)
     };
     let uv12 = |r: usize, cc: usize| (((r * 28 + cc * 20) as u16) & 0xfff).min(4095);
@@ -661,7 +661,7 @@ fn encoder_gate_bd10_bd12_multisize() {
     };
     let uv = |r: usize, cc: usize| {
         let base = ((r * 19 + cc * 29) as u16) & 0xff;
-        let hf = if (r + cc) % 3 == 0 { 11 } else { 0 };
+        let hf = if (r + cc).is_multiple_of(3) { 11 } else { 0 };
         base ^ hf
     };
     let mut results: Vec<(String, bool)> = Vec::new();

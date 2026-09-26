@@ -258,12 +258,13 @@ thread_local! {
     /// trivial. `pred`/`cpred` are only ever READ in the region the copy
     /// writes, so they need no re-zero; `residual` is re-zeroed per call (the
     /// invisible tail is consumed).
-    static IRD_SCRATCH: core::cell::RefCell<IrdScratch> =
+    static IRD_SCRATCH: core::cell::RefCell<IrdScratch> = const {
         core::cell::RefCell::new(IrdScratch {
             pred: Vec::new(),
             cpred: Vec::new(),
             residual: Vec::new(),
-        });
+        })
+    };
 }
 
 struct IrdScratch {
@@ -281,7 +282,7 @@ struct IrdScratch {
 /// later rung) or the reference read would leave the plane. `None` means the
 /// caller keeps its intra winner.
 pub fn rd_pick_inter_mode_sb(a: &InterLeafArgs, best_rd_in: i64) -> Option<InterBest> {
-    return IRD_SCRATCH.with(|c| rd_pick_inter_mode_sb_inner(a, best_rd_in, &mut *c.borrow_mut()));
+    IRD_SCRATCH.with(|c| rd_pick_inter_mode_sb_inner(a, best_rd_in, &mut c.borrow_mut()))
 }
 
 fn rd_pick_inter_mode_sb_inner(
@@ -351,7 +352,7 @@ fn rd_pick_inter_mode_sb_inner(
         pred_y,
         bw,
     );
-    let luma_sse = sse_visible(a.src_y, a.off_y, a.stride, &pred_y, bw, vis_w, vis_h);
+    let luma_sse = sse_visible(a.src_y, a.off_y, a.stride, pred_y, bw, vis_w, vis_h);
 
     // CHROMA (when this leaf is a chroma ref): C (`set_skip_txfm`,
     // tx_search.c:245-281 — and identically `model_rd_for_sb_with_curvfit`'s
@@ -460,7 +461,7 @@ fn rd_pick_inter_mode_sb_inner(
         a.src_y,
         a.off_y,
         a.stride,
-        &pred_y,
+        pred_y,
         bw,
         bh,
         vis_w,

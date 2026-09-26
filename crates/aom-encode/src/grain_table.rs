@@ -177,7 +177,7 @@ pub fn lookup(entries: &[GrainTableEntry], time_stamp: i64, out: &mut FilmGrainP
     let prev_seed = out.random_seed;
     for e in entries {
         if time_stamp >= e.start_time && time_stamp < e.end_time {
-            *out = e.params.clone();
+            *out = e.params;
             if time_stamp != 0 {
                 out.random_seed = prev_seed;
             }
@@ -198,15 +198,15 @@ pub fn write_film_grain_table(entries: &[GrainTableEntry]) -> Vec<u8> {
     // Magic (8 bytes) then a newline (aom_film_grain_table_write emits "\n").
     for e in entries {
         let p = &e.params;
-        let _ = write!(
+        let _ = writeln!(
             s,
-            "E {} {} {} {} {}\n",
+            "E {} {} {} {} {}",
             e.start_time, e.end_time, p.apply_grain as i32, p.random_seed, p.update_parameters as i32
         );
         if p.update_parameters {
-            let _ = write!(
+            let _ = writeln!(
                 s,
-                "\tp {} {} {} {} {} {} {} {} {} {} {} {}\n",
+                "\tp {} {} {} {} {} {} {} {} {} {} {} {}",
                 p.ar_coeff_lag,
                 p.ar_coeff_shift,
                 p.grain_scale_shift,

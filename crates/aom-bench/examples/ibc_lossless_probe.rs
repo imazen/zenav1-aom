@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)] // C-shaped harness signatures
 //! Scratch probe (KB-65): find cells where C's IntraBC arm actually
 //! ENGAGES at coded-lossless — `palette=0 intrabc=1` must differ from
 //! `palette=0 intrabc=0` — and check port-vs-C byte parity there.

@@ -50,9 +50,7 @@
 
 use archmage::prelude::*;
 
-use crate::cdef::{
-    cdef_dir, constrain, get_msb, CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS,
-};
+use crate::cdef::{cdef_dir, get_msb, CDEF_BSTRIDE, CDEF_VERY_LARGE, PRI_TAPS, SEC_TAPS};
 
 /// Dispatch entry used by [`crate::cdef::cdef_filter_block_16`] for width-8 blocks.
 #[allow(clippy::too_many_arguments)]
@@ -252,7 +250,10 @@ fn cdef_filter_16_w4_impl(
     enable_primary: bool,
     enable_secondary: bool,
 ) {
-    assert!(block_height % 2 == 0, "caller routes odd heights to scalar");
+    assert!(
+        block_height.is_multiple_of(2),
+        "caller routes odd heights to scalar"
+    );
     let clipping_required = enable_primary && enable_secondary;
     let s = CDEF_BSTRIDE as i32;
     let pri_taps = &PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
@@ -305,8 +306,8 @@ fn cdef_filter_16_w4_impl(
                 let p1 = load2(base - off);
                 if pri_strength != 0 {
                     let tap = i16x8::splat(token, pri_taps[k] as i16);
-                    sum = sum + tap * constrain_v(p0 - x, pri_t, pri_shift);
-                    sum = sum + tap * constrain_v(p1 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
                 if clipping_required {
                     maxv = maxv.max(i16x8::blend(p0.simd_eq(vl), zero, p0));
@@ -331,10 +332,10 @@ fn cdef_filter_16_w4_impl(
                 }
                 if sec_strength != 0 {
                     let tap = i16x8::splat(token, sec_taps[k] as i16);
-                    sum = sum + tap * constrain_v(s0 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s1 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s2 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s3 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s3 - x, sec_t, sec_shift);
                 }
             }
         }
@@ -422,8 +423,8 @@ fn cdef_filter_16_w8_impl(
                 let p1 = load(base - off);
                 if pri_strength != 0 {
                     let tap = i16x8::splat(token, pri_taps[k] as i16);
-                    sum = sum + tap * constrain_v(p0 - x, pri_t, pri_shift);
-                    sum = sum + tap * constrain_v(p1 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
                 if clipping_required {
                     maxv = maxv.max(i16x8::blend(p0.simd_eq(vl), zero, p0));
@@ -448,10 +449,10 @@ fn cdef_filter_16_w8_impl(
                 }
                 if sec_strength != 0 {
                     let tap = i16x8::splat(token, sec_taps[k] as i16);
-                    sum = sum + tap * constrain_v(s0 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s1 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s2 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s3 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s3 - x, sec_t, sec_shift);
                 }
             }
         }
@@ -651,7 +652,10 @@ fn cdef_filter_8_w4_impl(
     enable_primary: bool,
     enable_secondary: bool,
 ) {
-    assert!(block_height % 2 == 0, "caller routes odd heights to scalar");
+    assert!(
+        block_height.is_multiple_of(2),
+        "caller routes odd heights to scalar"
+    );
     let clipping_required = enable_primary && enable_secondary;
     let s = CDEF_BSTRIDE as i32;
     let pri_taps = &PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
@@ -703,8 +707,8 @@ fn cdef_filter_8_w4_impl(
                 let p1 = load2(base - off);
                 if pri_strength != 0 {
                     let tap = i16x8::splat(token, pri_taps[k] as i16);
-                    sum = sum + tap * constrain_v(p0 - x, pri_t, pri_shift);
-                    sum = sum + tap * constrain_v(p1 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
                 if clipping_required {
                     maxv = maxv.max(i16x8::blend(p0.simd_eq(vl), zero, p0));
@@ -729,10 +733,10 @@ fn cdef_filter_8_w4_impl(
                 }
                 if sec_strength != 0 {
                     let tap = i16x8::splat(token, sec_taps[k] as i16);
-                    sum = sum + tap * constrain_v(s0 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s1 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s2 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s3 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s3 - x, sec_t, sec_shift);
                 }
             }
         }
@@ -819,8 +823,8 @@ fn cdef_filter_8_w8_impl(
                 let p1 = load(base - off);
                 if pri_strength != 0 {
                     let tap = i16x8::splat(token, pri_taps[k] as i16);
-                    sum = sum + tap * constrain_v(p0 - x, pri_t, pri_shift);
-                    sum = sum + tap * constrain_v(p1 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
+                    sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
                 if clipping_required {
                     maxv = maxv.max(i16x8::blend(p0.simd_eq(vl), zero, p0));
@@ -845,10 +849,10 @@ fn cdef_filter_8_w8_impl(
                 }
                 if sec_strength != 0 {
                     let tap = i16x8::splat(token, sec_taps[k] as i16);
-                    sum = sum + tap * constrain_v(s0 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s1 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s2 - x, sec_t, sec_shift);
-                    sum = sum + tap * constrain_v(s3 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
+                    sum += tap * constrain_v(s3 - x, sec_t, sec_shift);
                 }
             }
         }

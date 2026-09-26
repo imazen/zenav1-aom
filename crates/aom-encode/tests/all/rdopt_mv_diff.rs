@@ -595,8 +595,8 @@ fn build_cur_mv_matches_c() {
                 row_max: row_min + rng.range(0, 80),
             }
         };
-        let allow_hp = rng.next() % 2 == 0;
-        let force_int = rng.next() % 4 == 0;
+        let allow_hp = rng.next().is_multiple_of(2);
+        let force_int = rng.next().is_multiple_of(4);
         for &(a, b) in &ref_pairs() {
             for m in all_modes() {
                 let Some(mode) = PredMode::from_i32(m) else {
@@ -728,7 +728,7 @@ fn is_single_newmv_valid_matches_c() {
         let mut valid = [[0u8; 8]; 3];
         for row in &mut valid {
             for v in row.iter_mut() {
-                *v = u8::from(rng.next() % 3 != 0);
+                *v = u8::from(!rng.next().is_multiple_of(3));
             }
         }
         for &(a, b) in &ref_pairs() {
@@ -773,8 +773,8 @@ fn skip_nearest_near_matches_c() {
     let mut n = 0;
     for _ in 0..800 {
         let (port_row, c_row) = rand_row(&mut rng);
-        let left = rng.next() % 4 != 0;
-        let up = rng.next() % 4 != 0;
+        let left = !rng.next().is_multiple_of(4);
+        let up = !rng.next().is_multiple_of(4);
         for m in all_modes() {
             let Some(mode) = PredMode::from_i32(m) else {
                 continue;

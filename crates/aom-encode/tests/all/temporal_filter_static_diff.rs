@@ -171,7 +171,7 @@ fn determine_block_partition_matches_c() {
             // decision boundary is at `sum / 15`. Draw across it: a range that
             // only reaches `sum / 15` merges every time and the 16x16-split arm
             // is never observed.
-            let block_mse = rng.range(0, ((total / 5).max(1).min(i64::from(i32::MAX)) as i32));
+            let block_mse = rng.range(0, (total / 5).max(1).min(i64::from(i32::MAX)) as i32);
 
             let (mut sub_c, mut mses_c) = (sub, mses);
             let (mut sub_r, mut mses_r) = (sub, mses);

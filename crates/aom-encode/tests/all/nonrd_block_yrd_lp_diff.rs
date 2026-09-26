@@ -468,7 +468,7 @@ fn block_yrd_lowbd_matches_c_walk() {
                 let diff = if iter % 3 == 0 {
                     (0..bw * bh).map(|_| rng.residual()).collect()
                 } else {
-                    correlated_residual(&mut rng, bw, bh, 20 + (iter as i32 % 5) * 30)
+                    correlated_residual(&mut rng, bw, bh, 20 + (iter % 5) * 30)
                 };
                 // Exercise the frame-edge clamps too: every third iteration
                 // truncates the walk the way `mb_to_right_edge < 0` does.
@@ -597,7 +597,7 @@ fn lp_quantize_tiers_agree_over_the_reachable_range() {
                 if fp <= 0 || d <= 0 {
                     continue;
                 }
-                let tmp_max = (32767 + r) * fp >> 16;
+                let tmp_max = ((32767 + r) * fp) >> 16;
                 for t in 1..=tmp_max {
                     let prod = t as i64 * d as i64;
                     max_prod_seen = max_prod_seen.max(prod);
@@ -919,7 +919,7 @@ fn lp_hadamard_transpose_is_load_bearing_and_only_moves_the_eob() {
     let scan = lp_scan(1);
     let (mut eob_moved, mut trials) = (0usize, 0usize);
     for iter in 0..4_000 {
-        let src = correlated_residual(&mut rng, 8, 8, 20 + (iter as i32 % 7) * 25);
+        let src = correlated_residual(&mut rng, 8, 8, 20 + (iter % 7) * 25);
         let want = c::ref_hadamard_lp(8, &src, 8);
         let mut old = vec![0i16; 64];
         pre_fix_lp_8x8(&src, 8, &mut old);

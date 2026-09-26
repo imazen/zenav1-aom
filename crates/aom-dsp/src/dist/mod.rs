@@ -30,7 +30,7 @@ pub fn sad(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: us
 
 /// `aom_sse_c`: sum of squared errors over a generic w×h region (RD distortion).
 pub fn sse(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> i64 {
-    if crate::dispatch::scalar_forced() || w % 8 != 0 {
+    if crate::dispatch::scalar_forced() || !w.is_multiple_of(8) {
         return sse_scalar(a, a_stride, b, b_stride, w, h);
     }
     archmage::incant!(

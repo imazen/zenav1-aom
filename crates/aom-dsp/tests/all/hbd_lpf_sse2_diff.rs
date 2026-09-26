@@ -77,7 +77,7 @@ fn hbd_lpf_v3_matches_real_sse2_kernels() {
     );
     let mut rng = Rng(0x_51ce_5e2d_1ff0_abcd);
     for &bd in &[8i32, 10, 12] {
-        let maxv = ((1i32 << bd) - 1) as i32;
+        let maxv = (1i32 << bd) - 1;
         for &dir in b"hv" {
             for &width in &[4u32, 6, 8, 14] {
                 for _ in 0..12_000 {

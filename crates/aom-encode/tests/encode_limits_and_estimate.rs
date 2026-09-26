@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)] // C-shaped harness signatures
 //! The encoder's resource CONTRACT: caller-supplied caps, and a side-effect-free
 //! estimate a router can decide on before committing.
 //!

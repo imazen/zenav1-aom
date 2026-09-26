@@ -324,13 +324,6 @@ pub fn y_mode_size_group(bsize: usize) -> usize {
     SIZE_GROUP_LOOKUP[bsize]
 }
 
-/// `write_intra_y_mode_nonkf` (`av1/encoder/bitstream.c`): the non-keyframe intra luma
-/// mode — `aom_write_symbol(mode, y_mode_cdf[size_group_lookup[bsize]], INTRA_MODES)`
-/// (adapted). Same symbol write as the keyframe variant on a size-group-selected CDF.
-pub(crate) fn write_intra_y_mode_nonkf(enc: &mut OdEcEnc, y_mode_cdf: &mut [u16], mode: i32) {
-    write_symbol(enc, mode, y_mode_cdf, INTRA_MODES);
-}
-
 /// `write_intra_uv_mode` (`av1/encoder/bitstream.c`): the intra chroma mode on the
 /// (cfl-allowed, y-mode)-selected CDF — `UV_INTRA_MODES` symbols when CFL is allowed,
 /// one fewer (no CFL_PRED) when not.
@@ -499,7 +492,7 @@ const MV_SUBPEL_LOW: i32 = 0;
 /// slot of every sub-CDF in the packed 69-u16 `nmv_component` blob (layout
 /// documented above).
 pub fn reset_nmv_comp_counters(cdf: &mut [u16; 69]) {
-    cdf[0 + 2] = 0; // sign (2-sym)
+    cdf[2] = 0; // sign (2-sym)
     cdf[3 + 11] = 0; // classes (11-sym)
     cdf[15 + 2] = 0; // class0 (2-sym)
     for k in 0..10 {
@@ -1714,8 +1707,8 @@ pub(crate) fn set_txfm_context_vartx(
     let sub_txs = SUB_TX_SIZE_MAP[tx_size];
     let bsw = TX_SIZE_WIDE_UNIT[sub_txs];
     let bsh = TX_SIZE_HIGH_UNIT[sub_txs];
-    let row_end = (TX_SIZE_HIGH_UNIT[tx_size] as i32).min((max_blocks_high - blk_row).max(0));
-    let col_end = (TX_SIZE_WIDE_UNIT[tx_size] as i32).min((max_blocks_wide - blk_col).max(0));
+    let row_end = TX_SIZE_HIGH_UNIT[tx_size].min((max_blocks_high - blk_row).max(0));
+    let col_end = TX_SIZE_WIDE_UNIT[tx_size].min((max_blocks_wide - blk_col).max(0));
     let mut row = 0i32;
     while row < row_end {
         let mut col = 0i32;
@@ -1731,9 +1724,9 @@ pub(crate) fn set_txfm_context_vartx(
                 blk_row + row,
                 blk_col + col,
             );
-            col += bsw as i32;
+            col += bsw;
         }
-        row += bsh as i32;
+        row += bsh;
     }
 }
 
@@ -1747,11 +1740,11 @@ pub fn tx_partition_set_contexts(
     above_ctx: &mut [u8],
     left_ctx: &mut [u8],
 ) {
-    let mi_width = MI_SIZE_WIDE[bsize] as i32;
-    let mi_height = MI_SIZE_HIGH[bsize] as i32;
+    let mi_width = MI_SIZE_WIDE[bsize];
+    let mi_height = MI_SIZE_HIGH[bsize];
     let max_tx_size = MAX_TXSIZE_RECT_LOOKUP[bsize];
-    let bh = TX_SIZE_HIGH_UNIT[max_tx_size] as i32;
-    let bw = TX_SIZE_WIDE_UNIT[max_tx_size] as i32;
+    let bh = TX_SIZE_HIGH_UNIT[max_tx_size];
+    let bw = TX_SIZE_WIDE_UNIT[max_tx_size];
     let mut idy = 0i32;
     while idy < mi_height {
         let mut idx = 0i32;
@@ -3973,7 +3966,7 @@ pub fn read_skip(dec: &mut OdEcDec, skip_cdf: &mut [u16], seg_skip_active: bool)
     read_symbol(dec, skip_cdf, 2)
 }
 
-/// `read_intra_y_mode` — inverse of [`write_intra_y_mode_kf`] / [`write_intra_y_mode_nonkf`]:
+/// `read_intra_y_mode` — inverse of [`write_intra_y_mode_kf`] / `write_intra_y_mode_nonkf`:
 /// the luma prediction mode on the caller-selected CDF (`INTRA_MODES` symbols).
 pub fn read_intra_y_mode(dec: &mut OdEcDec, y_cdf: &mut [u16]) -> i32 {
     read_symbol(dec, y_cdf, INTRA_MODES)

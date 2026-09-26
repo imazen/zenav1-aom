@@ -146,7 +146,7 @@ fn mask_says_skip_matches_c() {
     let mut trues = 0;
     let mut n = 0;
     for _ in 0..40 {
-        let mut mask = ModeSkipMask::default_for(if rng.next() % 2 == 0 {
+        let mut mask = ModeSkipMask::default_for(if rng.next().is_multiple_of(2) {
             RefSet::Full
         } else {
             RefSet::Reduced
@@ -156,7 +156,7 @@ fn mask_says_skip_matches_c() {
         }
         for row in &mut mask.ref_combo {
             for v in row.iter_mut() {
-                *v = rng.next() % 3 == 0;
+                *v = rng.next().is_multiple_of(3);
             }
         }
         let c = to_c(&mask);
@@ -558,7 +558,7 @@ fn find_top_ref_matches_c() {
             // A quarter of the slots stay INT64_MAX (reference not measured),
             // and every so often the WHOLE row does — which is the arm where
             // C skips the 110% scaling entirely.
-            *slot = if rng.next() % 4 == 0 || i % 97 == 0 {
+            *slot = if rng.next().is_multiple_of(4) || i % 97 == 0 {
                 i64::MAX
             } else {
                 rng.range(1, 1 << 30) as i64
@@ -587,7 +587,7 @@ fn in_single_ref_cutoff_matches_c() {
     for _ in 0..500 {
         let mut rd = [i64::MAX; 8];
         for slot in rd.iter_mut() {
-            *slot = if rng.next() % 5 == 0 {
+            *slot = if rng.next().is_multiple_of(5) {
                 i64::MAX
             } else {
                 rng.range(1, 1 << 20) as i64

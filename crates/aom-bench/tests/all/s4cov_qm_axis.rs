@@ -443,7 +443,7 @@ fn qm_axis_bitdepth_subsampling_qindex_byte_matches() {
 #[test]
 fn qm_axis_cells_reach_the_named_residual() {
     let cells = cells();
-    let has = |f: &dyn Fn(&EncodeCell) -> bool| cells.iter().any(|c| f(c));
+    let has = |f: &dyn Fn(&EncodeCell) -> bool| cells.iter().any(f);
     assert!(has(&|c| c.bd == 10), "bd10 must be covered");
     assert!(has(&|c| c.bd == 12), "bd12 must be covered");
     assert!(has(&|c| c.mono), "monochrome must be covered");

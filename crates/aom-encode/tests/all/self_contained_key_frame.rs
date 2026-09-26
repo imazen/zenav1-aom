@@ -180,8 +180,8 @@ fn content_sample(kind: Content, r: usize, col: usize) -> i32 {
         Content::Gradient => (32 + (r + col) * 150 / 256) as i32,
         Content::Texture => {
             let grad = 32 + (r + col) * 150 / 256;
-            let bar = if (col / 16) % 2 == 0 { 0 } else { 45 };
-            let ripple = if (r + col) % 2 == 0 { 14 } else { -14 };
+            let bar = if (col / 16).is_multiple_of(2) { 0 } else { 45 };
+            let ripple = if (r + col).is_multiple_of(2) { 14 } else { -14 };
             grad as i32 + bar + ripple
         }
         Content::Noise => {
@@ -194,7 +194,7 @@ fn content_sample(kind: Content, r: usize, col: usize) -> i32 {
             (x & 0xff) as i32
         }
         Content::Checker => {
-            if ((r / 8) + (col / 8)) % 2 == 0 {
+            if ((r / 8) + (col / 8)).is_multiple_of(2) {
                 16
             } else {
                 235
@@ -1597,8 +1597,8 @@ fn refuses_configurations_it_has_no_gate_for() {
 /// `cdef_pick_method` past `CDEF_FAST_SEARCH_LVL1`, so the port ran the LVL1
 /// strength table at every speed while C steps through LVL3 (:497, speed
 /// >= 4), LVL4 (:558, >= 6) and `CDEF_PICK_FROM_Q` (:572, >= 7 — the
-/// `av1_pick_cdef_from_qp` closed-form, ported for the fix). The CDEF-on
-/// sweep axis now covers speeds 0..9.
+/// > `av1_pick_cdef_from_qp` closed-form, ported for the fix). The CDEF-on
+/// > sweep axis now covers speeds 0..9.
 ///
 /// The neighbours bracket the remaining pins: 130x70, 200x200, 250x130,
 /// 258x258, 262x262, 263x263, 264x264, 256x256 and 320x320 are byte-exact in
@@ -1822,14 +1822,14 @@ fn probe_sc_tools_trial_gap_on_detector_negative_content() {
     fn sample(p: Probe, r: usize, col: usize) -> i32 {
         match p {
             Probe::SparseDots => {
-                if (r * 131 + col * 197) % 64 == 0 {
+                if (r * 131 + col * 197).is_multiple_of(64) {
                     40
                 } else {
                     200
                 }
             }
             Probe::ThinLines => {
-                if col % 32 == 0 {
+                if col.is_multiple_of(32) {
                     60
                 } else {
                     180
@@ -2278,7 +2278,7 @@ fn screen_content_tools_byte_match_real_aomenc() {
                     // phantom flag vs VERT_B's 3x). Screen content is exactly
                     // where the detector says allow_intrabc=1, so these cells
                     // are the only ones that can see the bug.
-                    let mut cfg_off = cfg.clone();
+                    let mut cfg_off = cfg;
                     cfg_off.enable_palette = false;
                     cfg_off.enable_intrabc = false;
                     let port_off = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg_off)

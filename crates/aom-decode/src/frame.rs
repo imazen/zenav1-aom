@@ -4,7 +4,7 @@
 //! header parsing through the validated aom-entropy readers, default
 //! FRAME_CONTEXT init by `base_qindex`, and the KEY-frame tile decode driver.
 //!
-//! ENVELOPE — the feature set `decode_tile_kf` / [`decode_frame_tiles_kf`]
+//! ENVELOPE — the feature set `decode_tile_kf` / `decode_frame_tiles_kf`
 //! models. Anything outside it is a hard [`Err`], never a mis-decode:
 //! - KEY frame, shown, not show-existing; `error_resilient` accepted.
 //! - 64x64 AND 128x128 superblocks (`use_128x128_superblock`): the
@@ -14,7 +14,7 @@
 //!   corners-in-sb SB extent. Gated by `sb128_streams_decode_byte_identical_to_c`.
 //! - ANY tile grid (`TileInfoHeader::{cols,rows}`, uniform spacing — the only
 //!   shape `AV1E_SET_TILE_COLUMNS`/`_ROWS` produces): each tile independently
-//!   decoded ([`split_tiles`] + [`decode_frame_tiles_kf`] — per-tile context
+//!   decoded ([`split_tiles`] + `decode_frame_tiles_kf` — per-tile context
 //!   resets, tile-relative neighbour availability, a fresh `KfFrameContext`
 //!   per tile) into one shared frame reconstruction. Gated by
 //!   `multi_tile_streams_decode_byte_identical_to_c`. ONE tile GROUP per
@@ -90,8 +90,7 @@
 use crate::superres;
 use crate::{
     DecodeConfig, DecodeError, FrameContexts, KfTileConfig, KfTileDecode, MI_SIZE_HIGH,
-    MI_SIZE_WIDE, MvRefCell, ReconPlane, TileBoundsKf, TileBytesKf, decode_frame_tiles_kf,
-    decode_frame_tiles_kf_ctx,
+    MI_SIZE_WIDE, MvRefCell, ReconPlane, TileBoundsKf, TileBytesKf, decode_frame_tiles_kf_ctx,
 };
 use aom_dsp::entropy::header::{
     CdefHeader, FilmGrainParams, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader,
@@ -1296,31 +1295,29 @@ fn setup_motion_field(
         }
         ref_stamp -= 1;
     }
-    if get_relative_dist(seq, ref_oh[4], cur_oh) > 0 {
-        if let Some(b) = bound[4].as_deref() {
-            if motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 0, &mut cells, stride) {
-                ref_stamp -= 1;
-            }
-        }
+    if get_relative_dist(seq, ref_oh[4], cur_oh) > 0
+        && let Some(b) = bound[4].as_deref()
+        && motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 0, &mut cells, stride)
+    {
+        ref_stamp -= 1;
     }
-    if get_relative_dist(seq, ref_oh[5], cur_oh) > 0 {
-        if let Some(b) = bound[5].as_deref() {
-            if motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 0, &mut cells, stride) {
-                ref_stamp -= 1;
-            }
-        }
+    if get_relative_dist(seq, ref_oh[5], cur_oh) > 0
+        && let Some(b) = bound[5].as_deref()
+        && motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 0, &mut cells, stride)
+    {
+        ref_stamp -= 1;
     }
-    if get_relative_dist(seq, ref_oh[6], cur_oh) > 0 && ref_stamp >= 0 {
-        if let Some(b) = bound[6].as_deref() {
-            if motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 0, &mut cells, stride) {
-                ref_stamp -= 1;
-            }
-        }
+    if get_relative_dist(seq, ref_oh[6], cur_oh) > 0
+        && ref_stamp >= 0
+        && let Some(b) = bound[6].as_deref()
+        && motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 0, &mut cells, stride)
+    {
+        ref_stamp -= 1;
     }
-    if ref_stamp >= 0 {
-        if let Some(b) = bound[1].as_deref() {
-            motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 2, &mut cells, stride);
-        }
+    if ref_stamp >= 0
+        && let Some(b) = bound[1].as_deref()
+    {
+        motion_field_projection(seq, cur_oh, mi_rows, mi_cols, b, 2, &mut cells, stride);
     }
     Some(cells)
 }
@@ -1579,8 +1576,8 @@ fn decode_frame_and_install(
 
 /// The INTER analogue of [`decode_tile_payload`]: build the shared tile config
 /// + the inter frame-level config (the SEVEN bound references + order-hint
-/// sign/side tables) and drive the inter tile decode. `base_ctx` is the
-/// primary reference's saved entropy context (`None` = qindex defaults).
+///   sign/side tables) and drive the inter tile decode. `base_ctx` is the
+///   primary reference's saved entropy context (`None` = qindex defaults).
 fn decode_inter_tile_payload(
     seq: &SequenceHeaderObu,
     p: &FrameHeaderObu,
@@ -2233,10 +2230,10 @@ fn finish_frame(
 
     let mut y = vec![0u16; width * height];
     for r in 0..height {
-        if r % CROP_ROWS_PER_POLL == 0 {
-            if let Some(s) = stop {
-                s.check()?;
-            }
+        if r % CROP_ROWS_PER_POLL == 0
+            && let Some(s) = stop
+        {
+            s.check()?;
         }
         // Widening crop: the `FrameDecode` output surface stays `u16`; a bd8
         // (`LowBd`) plane widens bit-exactly here (see `crate::plane`).
@@ -2251,10 +2248,10 @@ fn finish_frame(
     let mut u = vec![0u16; width_uv * height_uv];
     let mut v = vec![0u16; width_uv * height_uv];
     for r in 0..height_uv {
-        if r % CROP_ROWS_PER_POLL == 0 {
-            if let Some(s) = stop {
-                s.check()?;
-            }
+        if r % CROP_ROWS_PER_POLL == 0
+            && let Some(s) = stop
+        {
+            s.check()?;
         }
         t.recon_u
             .copy_row_wide(r * t.stride_uv, &mut u[r * width_uv..(r + 1) * width_uv]);

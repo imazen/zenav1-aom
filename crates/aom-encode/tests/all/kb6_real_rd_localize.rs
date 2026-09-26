@@ -18,6 +18,7 @@
 //!      `(mi_row, mi_col, bsize)` partition decision;
 //!   2. else every shared leaf's mode/tx fields + per-txb `(eob, tx_type)`;
 //!   3. else the first divergent reconstruction pixel.
+//!
 //! The first divergence + which field pins the divergent RD decision.
 //!
 //! This file is OWNED by the encoder track (KB-6); it does NOT touch the bd10
@@ -283,7 +284,7 @@ fn localize_real_speed(
         (crop_w, crop_h)
     };
     assert!(
-        off_x + w <= dw && off_y + h <= dh && off_x % 2 == 0 && off_y % 2 == 0,
+        off_x + w <= dw && off_y + h <= dh && off_x.is_multiple_of(2) && off_y.is_multiple_of(2),
         "{name}: crop {w}x{h}@{off_x},{off_y} out of bounds / not chroma-aligned"
     );
     let dcw = (dw + ss_x) >> ss_x; // full-frame chroma stride
@@ -987,8 +988,8 @@ fn task39_localize_196_partial_sb_speed() {
 
 /// Interior multi-SB (quantizer 128x128@64,64, 4 aligned SBs — no partial edge)
 /// + interior 1-SB near-ties (quantizer/film 64x64 crops). These isolate the
-/// speed>=1 INTERIOR partition/mode near-ties (KB-2/10/11/12 family) from the
-/// 196 partial-SB edge path. Report-only.
+///   speed>=1 INTERIOR partition/mode near-ties (KB-2/10/11/12 family) from the
+///   196 partial-SB edge path. Report-only.
 #[test]
 fn task39_localize_interior_speed() {
     let cells: &[(&str, i32, usize, usize, usize, usize, i32)] = &[

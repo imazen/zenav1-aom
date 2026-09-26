@@ -61,13 +61,13 @@ pub fn conv_valid(
     #[cfg(target_arch = "x86_64")]
     {
         let _ = crate::dispatch::scalar_forced();
-        return archmage::incant!(
+        archmage::incant!(
             conv_valid_impl(
                 input, in_ch, in_w, in_h, in_stride, kernel, bias, out_ch, filter, skip, output,
                 out_w, out_h,
             ),
             [v3, scalar]
-        );
+        )
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -88,7 +88,7 @@ pub fn v3_tier_active() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         let _ = crate::dispatch::scalar_forced();
-        return X64V3Token::summon().is_some();
+        X64V3Token::summon().is_some()
     }
     #[cfg(not(target_arch = "x86_64"))]
     {

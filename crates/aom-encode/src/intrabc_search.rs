@@ -827,6 +827,10 @@ pub fn sad_wxh(
     )
 }
 
+/// `MAX_MVSEARCH_STEPS` (mcomp_structs.h:19).
+#[cfg(test)]
+const MAX_MVSEARCH_STEPS: usize = 11;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1309,8 +1313,6 @@ pub fn set_mv_search_range(lim: &mut FullMvLimits, ref_row: i32, ref_col: i32) {
 // (rdopt.c:3570 `intrabc_search_level == 0`).
 // ---------------------------------------------------------------------------
 
-/// `MAX_MVSEARCH_STEPS` (mcomp_structs.h:19).
-const MAX_MVSEARCH_STEPS: usize = 11;
 /// The NSTEP config's per-stage radius (`init_motion_compensation_nstep`,
 /// mcomp.c:479, level 0 — 15 stages, `radius = max(radius*1.5+0.5, radius+1)`
 /// truncated, frozen at stage 12).
@@ -1327,21 +1329,11 @@ const NSTEP_RADII: [i32; 15] = [1, 2, 3, 5, 8, 12, 18, 27, 41, 62, 93, 140, 210,
 const NSTEP_8PT_RADII: [i32; 16] =
     [1, 2, 3, 5, 8, 12, 18, 27, 41, 62, 93, 140, 210, 210, 210, 210];
 
-/// The stage radii for the chosen NSTEP variant.
-#[inline]
-fn nstep_radii(eight_pt: bool) -> &'static [i32] {
-    if eight_pt {
-        &NSTEP_8PT_RADII
-    } else {
-        &NSTEP_RADII
-    }
-}
-
 /// One NSTEP stage's search sites (`search_site_mvs[13]`, mcomp.c:493): center
 /// + 4 axis + up to 8 tangents. For NSTEP (`eight_pt = false`): `radius <= 5`
-/// → 8 pts (tan = radius), else 12 pts (`tan = (int)(0.41*radius)`). For
-/// NSTEP_8PT (`eight_pt = true`, mcomp.c:491-494, the `level > 0` arm): ALWAYS
-/// 8 pts with `tan = radius` at every radius. Returns `(sites[(row,col); 13],
+///   → 8 pts (tan = radius), else 12 pts (`tan = (int)(0.41*radius)`). For
+///   NSTEP_8PT (`eight_pt = true`, mcomp.c:491-494, the `level > 0` arm): ALWAYS
+///   8 pts with `tan = radius` at every radius. Returns `(sites[(row,col); 13],
 /// num_search_pts)`.
 fn nstep_stage_sites(radius: i32, eight_pt: bool) -> ([(i32, i32); 13], usize) {
     let (tan, pts) = if eight_pt || radius <= 5 {
@@ -1767,7 +1759,7 @@ fn full_pixel_exhaustive(
     let (mut range, interval) = patterns[0];
     let mut best_row = start_row;
     let mut best_col = start_col;
-    if range < K_MIN_RANGE || range > K_MAX_RANGE || interval < K_MIN_INTERVAL || interval > range {
+    if !(K_MIN_RANGE..=K_MAX_RANGE).contains(&range) || interval < K_MIN_INTERVAL || interval > range {
         return (i64::MAX, start_row, start_col);
     }
     let baseline_interval_divisor = range / interval;
@@ -2436,8 +2428,9 @@ pub fn rd_pick_intrabc_mode_sb(
                 a.mv_sf.exhaustive_searches_thresh,
                 &INTRABC_MESH_PATTERNS[a.mv_sf.mesh_speed],
             );
+            // C updates `bestsme` here too; nothing reads it again in this
+            // envelope, so only the winner move is kept.
             if sme < bestsme {
-                bestsme = sme;
                 best_mv = Some((pr, pc));
             }
         }
@@ -2474,20 +2467,8 @@ pub fn rd_pick_intrabc_mode_sb(
         // Prediction into scratch (luma + chroma from the recon at the DV).
         let mut pred_y = vec![0u16; bw * bh];
         intrabc_predict_luma(recon_y, a.off_y, a.stride, fm_r, fm_c, &mut pred_y, bw, bw, bh);
-        let (cw, ch) = (bw >> a.ss_x, bh >> a.ss_y);
-        let (mut pred_u, mut pred_v) = (Vec::new(), Vec::new());
-        if !a.monochrome && a.is_chroma_ref {
-            pred_u = vec![0u16; cw * ch];
-            pred_v = vec![0u16; cw * ch];
-            intrabc_predict_chroma(
-                recon_u, a.off_uv, a.stride, dv_r, dv_c, a.ss_x, a.ss_y, &mut pred_u, cw, cw, ch,
-                i32::from(a.bd),
-            );
-            intrabc_predict_chroma(
-                recon_v, a.off_uv, a.stride, dv_r, dv_c, a.ss_x, a.ss_y, &mut pred_v, cw, cw, ch,
-                i32::from(a.bd),
-            );
-        }
+        // No chroma prediction here: the per-candidate chroma SSE loop it fed
+        // was dropped in e29e568, and the coeff arm predicts chroma itself.
 
         // Residual SSE (luma + chroma), and the luma residual for predict_skip.
         // The residual covers the FULL block (av1_subtract_plane; predict_skip's

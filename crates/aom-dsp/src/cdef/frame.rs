@@ -840,22 +840,6 @@ pub fn cdef_frame_u8(
     let _ = cdef_frame_generic(y, y_stride, u, v, uv_stride, p, None);
 }
 
-/// [`cdef_frame_u8`] with a cooperative stop token polled once per 64-pixel
-/// filter-block row — the lowbd twin of [`cdef_frame_stop`], and the one every
-/// 8-bit decode takes.
-pub(crate) fn cdef_frame_u8_stop(
-    y: &mut [u8],
-    y_stride: usize,
-    u: &mut [u8],
-    v: &mut [u8],
-    uv_stride: usize,
-    p: &CdefFrameParams,
-    stop: Option<&dyn enough::Stop>,
-) -> Result<(), enough::StopReason> {
-    debug_assert_eq!(p.bit_depth, 8, "cdef_frame_u8_stop is the bd8 lowbd path");
-    cdef_frame_generic(y, y_stride, u, v, uv_stride, p, stop)
-}
-
 /// The pixel-type-generic CDEF frame walk backing both [`cdef_frame`] (`u16`,
 /// highbd) and [`cdef_frame_u8`] (`u8`, lowbd bd8). See [`CdefPixel`].
 fn cdef_frame_generic<P: CdefPixel>(

@@ -257,7 +257,7 @@ fn wiener_impl_v3<P: crate::restore::pick::LrPixel>(
 ) {
     use archmage::intrinsics::x86_64::*;
     assert!(
-        w >= 8 && w <= MAX_SB_SIZE,
+        (8..=MAX_SB_SIZE).contains(&w),
         "wiener: restoration-unit width {w} outside 8..={MAX_SB_SIZE} — the SIMD path \
          loads 8 lanes at a time and `temp` is strided by MAX_SB_SIZE"
     );

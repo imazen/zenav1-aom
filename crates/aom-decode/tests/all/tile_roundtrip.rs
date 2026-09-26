@@ -72,7 +72,7 @@ use aom_dsp::entropy::partition::{
 };
 use aom_dsp::intra::cfl::{CflCtx, cfl_predict_block, cfl_store_tx};
 use aom_dsp::intra::predict_intra_high;
-use aom_dsp::quant::{SEG_LVL_ALT_Q, SEG_LVL_SKIP, Segmentation, av1_get_qindex};
+use aom_dsp::quant::{SEG_LVL_ALT_Q, SEG_LVL_SKIP, Segmentation};
 use aom_dsp::txb::{CDF_ARENA_LEN, ext_tx_set_type, get_txb_ctx, write_coeffs_txb_full};
 use aom_encode::{QuantKind, QuantParams, xform_quant};
 
@@ -444,6 +444,7 @@ struct Mirror<'a> {
     mi_uv: Vec<i8>,
     /// The mirror's own current-frame segment-id map (the encoder-side
     /// `cm->cur_frame->seg_map` the spatial prediction reads).
+    #[allow(dead_code)] // kept for the report's shape
     seg_map: Vec<u8>,
     /// The mirror's own CfL store, fed from ITS reconstruction feedback.
     cfl: CflCtx,
