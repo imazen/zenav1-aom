@@ -36,9 +36,16 @@
 //!   `8x2` chroma strips exercise this;
 //! - out-of-frame reference reads via edge replication (`build_mc_border`).
 //!
+//! - **scaled references** (added `experimental-video` step 3): when `sf`
+//!   (`aom-dsp/src/inter/scale.rs`) is non-identity for the bound ref,
+//!   [`build_inter_predictor`] routes to [`scaled_inter_predictor`] —
+//!   `dec_calc_subpel_params`'s scaled branch (q10 position/step per output
+//!   sample, margin clamp) + the always-on border pad +
+//!   [`crate::convolve::scaled::convolve_2d_scale`] /
+//!   `highbd_convolve_2d_scale` at both depths.
+//!
 //! **NOT** handled (asserted / documented, for later chunks):
-//! - compound / masked / warp prediction, and the scaled reference path
-//!   (`av1_convolve_2d_scale`);
+//! - compound / masked / warp prediction;
 //! - IntraBC's 2-tap bilinear filter (`av1_intrabc_filter_params`).
 //!
 //! Highbd (bd 10/12) IS handled since the `experimental-video` step-2 landing:
@@ -124,16 +131,15 @@ static SUB_PEL_FILTERS_4SMOOTH: [[i16; 8]; 16] = [
     [0, 0, 2, 34, 62, 30, 0, 0],
 ];
 
-/// Select the subpel kernel row for filter `ftype` (0 = regular, 1 = smooth,
-/// 2 = sharp) and direction phase `subpel`. When `use4` is set the block's side
-/// in this direction is `<= 4`, so libaom's
-/// `av1_get_interp_filter_params_with_block_size` selects the 4-tap table
-/// (`av1_interp_4tap`: regular/sharp -> `av1_sub_pel_filters_4`, smooth ->
-/// `av1_sub_pel_filters_4smooth`); otherwise the 8-tap table from
-/// [`crate::convolve`]. Both are 8-wide, so callers run the same convolution loop.
+/// The full 16-row kernel table for filter `ftype` (0 = regular, 1 = smooth,
+/// 2 = sharp) — `av1_interp_4tap` when `use4` (block side `<= 4`), else
+/// `av1_interp_filter_params_list`. Both are stored 8-wide (`SUBPEL_TAPS`,
+/// zero-padded for the 4-tap tables), so callers run the same convolution loop.
+/// [`kernel`] indexes a row; [`crate::convolve::scaled::convolve_2d_scale`]
+/// re-selects rows per output sample and takes the table whole.
 #[inline]
-fn kernel(ftype: usize, subpel: usize, use4: bool) -> &'static [i16; 8] {
-    let table: &[[i16; 8]; 16] = if use4 {
+fn kernel_table(ftype: usize, use4: bool) -> &'static [[i16; 8]; 16] {
+    if use4 {
         match ftype {
             0 | 2 => &SUB_PEL_FILTERS_4,
             1 => &SUB_PEL_FILTERS_4SMOOTH,
@@ -146,8 +152,19 @@ fn kernel(ftype: usize, subpel: usize, use4: bool) -> &'static [i16; 8] {
             2 => &crate::convolve::SUB_PEL_FILTERS_8SHARP,
             _ => panic!("aom-inter: unsupported InterpFilter {ftype} (0/1/2 only)"),
         }
-    };
-    &table[subpel & 15]
+    }
+}
+
+/// Select the subpel kernel row for filter `ftype` (0 = regular, 1 = smooth,
+/// 2 = sharp) and direction phase `subpel`. When `use4` is set the block's side
+/// in this direction is `<= 4`, so libaom's
+/// `av1_get_interp_filter_params_with_block_size` selects the 4-tap table
+/// (`av1_interp_4tap`: regular/sharp -> `av1_sub_pel_filters_4`, smooth ->
+/// `av1_sub_pel_filters_4smooth`); otherwise the 8-tap table from
+/// [`crate::convolve`]. Both are 8-wide, so callers run the same convolution loop.
+#[inline]
+fn kernel(ftype: usize, subpel: usize, use4: bool) -> &'static [i16; 8] {
+    &kernel_table(ftype, use4)[subpel & 15]
 }
 
 /// `av1_convolve_2d_sr_c` (lowbd, SR: round_0 = 3, round_1 = 11, bits = 0) with a
@@ -605,6 +622,17 @@ pub fn highbd_inter_predictor(
 /// - `bd`: bit depth — `is_cur_buf_hbd(xd)`. `bd == 8` runs the u8 scratch +
 ///   lowbd kernels; `bd > 8` gathers into a u16 scratch via
 ///   [`build_mc_border_highbd`] and filters through [`highbd_inter_predictor`].
+/// - `sf`: the bound reference's `struct scale_factors`
+///   (`av1_setup_scale_factors_for_frame`, keyed on the LUMA crop dims of ref and
+///   current frame — the same `sf` serves every plane). When `sf.is_scaled()`
+///   (`experimental-video` step 3) the predictor routes to
+///   [`scaled_inter_predictor`] — `dec_calc_subpel_params`'s scaled branch +
+///   `convolve_2d_scale` / `highbd_convolve_2d_scale`.
+/// - `raw_mv_row`,`raw_mv_col`: the block's coded, unclamped MV, same units as
+///   `mv_row`,`mv_col`. C's scaled arm reads `src_mv` for the source position
+///   BEFORE the umv clamp lands; the applied `mv` only feeds `scaled_mv`, which
+///   is dead in the scaled arm (see [`scaled_inter_predictor`]). Ignored when
+///   `sf` is unscaled.
 ///
 /// # Sub-pel derivation (`dec_calc_subpel_params`, decodeframe.c:620-648)
 /// The luma 1/8-pel MV is scaled to this plane's q4 (1/16-pel) grid by
@@ -631,12 +659,22 @@ pub fn build_inter_predictor(
     h: usize,
     mv_row: i32,
     mv_col: i32,
+    raw_mv_row: i32,
+    raw_mv_col: i32,
     ss_x: usize,
     ss_y: usize,
     filter_x: usize,
     filter_y: usize,
     bd: u32,
+    sf: &scale::ScaleFactors,
 ) {
+    if sf.is_scaled() {
+        scaled_inter_predictor(
+            ref_plane, ref_stride, ref_w, ref_h, dst, dst_off, dst_stride, blk_x, blk_y, w, h,
+            raw_mv_row, raw_mv_col, ss_x, ss_y, filter_x, filter_y, bd, sf,
+        );
+        return;
+    }
     // `w <= 4` / `h <= 4` are handled: [`inter_predictor`] selects the 4-tap
     // kernel per direction (av1_get_interp_filter_params_with_block_size). The
     // 4-tap tables are stored 8-wide with zero outer taps, so the border margin
@@ -744,6 +782,181 @@ pub fn build_inter_predictor(
         &scratch, interior, b_w, &mut tmp, w, w, h, subpel_x, subpel_y, filter_x, filter_y,
     );
 
+    for y in 0..h {
+        for x in 0..w {
+            dst[dst_off + y * dst_stride + x] = tmp[y * w + x] as u16;
+        }
+    }
+}
+
+/// `AOM_BORDER_IN_PIXELS` (`aom_scale/yv12config.h:32`) — the reference buffers'
+/// declared border. The scaled path's position clamp allows reads into the
+/// border on the top/left even when the visible region doesn't reach it.
+const AOM_BORDER_IN_PIXELS: i32 = 288;
+
+/// `dec_calc_subpel_params` scaled branch (decodeframe.c:575-618) +
+/// `extend_mc_border` (:526) + `av1_convolve_2d_scale` /
+/// `av1_highbd_convolve_2d_scale` — the `av1_is_scaled(sf)` arm of
+/// [`build_inter_predictor`], reached when the bound reference's dims differ
+/// from the current frame's (`experimental-video` step 3).
+///
+/// `mv_row`/`mv_col` here are the block's coded, **unclamped** MV (luma
+/// 1/8-pel): C's scaled arm reads `src_mv` for the source position before the
+/// umv clamp lands. The clamped MV only feeds `scaled_mv`/`subpel_*_mv`, which
+/// in turn only decide `x_pad`/`y_pad` — and that decision is vacuous under
+/// scale: the outer gate (`is_scaled || scaled_mv || misaligned dims`) is
+/// already true, and the inner check `sf->x_step_q4 != SUBPEL_SHIFTS` compares
+/// a Q10 step (>= 64 at any valid scale) against 16, so both pads are always
+/// on. `scaled_mv` is therefore dead in this arm and `av1_scale_mv` /
+/// `clamp_mv_to_umv_border_sb` are not run.
+#[allow(clippy::too_many_arguments)]
+fn scaled_inter_predictor(
+    ref_plane: &[u16],
+    ref_stride: usize,
+    ref_w: usize,
+    ref_h: usize,
+    dst: &mut [u16],
+    dst_off: usize,
+    dst_stride: usize,
+    blk_x: usize,
+    blk_y: usize,
+    w: usize,
+    h: usize,
+    mv_row: i32,
+    mv_col: i32,
+    ss_x: usize,
+    ss_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+    bd: u32,
+    sf: &scale::ScaleFactors,
+) {
+    use crate::convolve::scaled::{
+        convolve_2d_scale, highbd_convolve_2d_scale, ScaleConvolveParams,
+    };
+    const SCALE_SUBPEL_BITS: i32 = 10;
+    const SCALE_SUBPEL_MASK: i32 = (1 << SCALE_SUBPEL_BITS) - 1;
+    /// `SCALE_EXTRA_OFF` (aom_filter.h:32): `(1 << SCALE_EXTRA_BITS) / 2`.
+    const SCALE_EXTRA_OFF: i32 = 32;
+    /// `AOM_LEFT_TOP_MARGIN_SCALED(ss)` (reconinter.h:29-32).
+    fn left_top_margin_scaled(ss: i32) -> i32 {
+        ((AOM_BORDER_IN_PIXELS >> ss) - AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS
+    }
+    debug_assert!(ss_x <= 1 && ss_y <= 1);
+
+    // Source position in the reference's q10 grid (decodeframe.c:581-594).
+    let orig_x = ((blk_x as i32) << SUBPEL_BITS) + (mv_col << (1 - ss_x as i32));
+    let orig_y = ((blk_y as i32) << SUBPEL_BITS) + (mv_row << (1 - ss_y as i32));
+    let mut pos_x = sf.scaled_x(orig_x) + SCALE_EXTRA_OFF;
+    let mut pos_y = sf.scaled_y(orig_y) + SCALE_EXTRA_OFF;
+    let top = -left_top_margin_scaled(ss_y as i32);
+    let left = -left_top_margin_scaled(ss_x as i32);
+    let bottom = ((ref_h as i32) + AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS;
+    let right = ((ref_w as i32) + AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS;
+    pos_y = pos_y.clamp(top, bottom);
+    pos_x = pos_x.clamp(left, right);
+
+    let subpel_x = pos_x & SCALE_SUBPEL_MASK;
+    let subpel_y = pos_y & SCALE_SUBPEL_MASK;
+    let xs = sf.x_step_q4;
+    let ys = sf.y_step_q4;
+
+    // Reference block bounds, then the always-on scaled pad (see doc above):
+    // x0 -= AOM_INTERP_EXTEND - 1, x1 += AOM_INTERP_EXTEND per axis.
+    let mut bx0 = pos_x >> SCALE_SUBPEL_BITS;
+    let mut by0 = pos_y >> SCALE_SUBPEL_BITS;
+    let mut bx1 = ((pos_x + (w as i32 - 1) * xs) >> SCALE_SUBPEL_BITS) + 1;
+    let mut by1 = ((pos_y + (h as i32 - 1) * ys) >> SCALE_SUBPEL_BITS) + 1;
+    bx0 -= AOM_INTERP_EXTEND - 1;
+    bx1 += AOM_INTERP_EXTEND;
+    by0 -= AOM_INTERP_EXTEND - 1;
+    by1 += AOM_INTERP_EXTEND;
+    let b_w = (bx1 - bx0) as usize;
+    let b_h = (by1 - by0) as usize;
+    // `*pre = mc_buf + y_pad*(AOM_INTERP_EXTEND-1)*b_w + x_pad*(AOM_INTERP_EXTEND-1)`.
+    let interior = (AOM_INTERP_EXTEND as usize - 1) * (b_w + 1);
+
+    let (round_0, round_1) = single_ref_rounds(bd);
+    let cp = ScaleConvolveParams {
+        round_0,
+        round_1,
+        is_compound: false,
+        do_average: false,
+        use_dist_wtd_comp_avg: false,
+        fwd_offset: 0,
+        bck_offset: 0,
+    };
+    let x_table = kernel_table(filter_x, w <= 4);
+    let y_table = kernel_table(filter_y, h <= 4);
+
+    if bd > 8 {
+        let mut scratch = vec![0u16; b_w * b_h];
+        build_mc_border_highbd(
+            ref_plane,
+            ref_stride,
+            ref_w,
+            ref_h,
+            bx0,
+            by0,
+            b_w,
+            b_h,
+            &mut scratch,
+        );
+        highbd_convolve_2d_scale(
+            &scratch,
+            interior,
+            b_w,
+            &mut dst[dst_off..],
+            dst_stride,
+            &mut [],
+            0,
+            w,
+            h,
+            x_table,
+            y_table,
+            SUBPEL_TAPS,
+            subpel_x,
+            xs,
+            subpel_y,
+            ys,
+            &cp,
+            bd,
+        );
+        return;
+    }
+
+    let mut scratch = vec![0u8; b_w * b_h];
+    build_mc_border(
+        ref_plane,
+        ref_stride,
+        ref_w,
+        ref_h,
+        bx0,
+        by0,
+        b_w,
+        b_h,
+        &mut scratch,
+    );
+    let mut tmp = vec![0u8; w * h];
+    convolve_2d_scale(
+        &scratch,
+        interior,
+        b_w,
+        &mut tmp,
+        w,
+        &mut [],
+        0,
+        w,
+        h,
+        x_table,
+        y_table,
+        SUBPEL_TAPS,
+        subpel_x,
+        xs,
+        subpel_y,
+        ys,
+        &cp,
+    );
     for y in 0..h {
         for x in 0..w {
             dst[dst_off + y * dst_stride + x] = tmp[y * w + x] as u16;

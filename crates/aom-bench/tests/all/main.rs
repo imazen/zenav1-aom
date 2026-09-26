@@ -76,6 +76,7 @@ mod s4cov_hd_speed_axis;
 mod s4cov_partial_sb_axis;
 mod s4cov_qm_axis;
 mod sb128_e2e;
+mod scaled_ref_decode_envelope;
 mod svt_interop_decode_gate;
 mod toggles_rd_close;
 mod tx_stats_prune_e2e;
