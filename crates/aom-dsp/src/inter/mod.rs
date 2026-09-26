@@ -37,9 +37,14 @@
 //! - out-of-frame reference reads via edge replication (`build_mc_border`).
 //!
 //! **NOT** handled (asserted / documented, for later chunks):
-//! - highbd (bd 10/12), compound / masked / OBMC / warp prediction, and the scaled
-//!   reference path (`av1_convolve_2d_scale`);
+//! - compound / masked / warp prediction, and the scaled reference path
+//!   (`av1_convolve_2d_scale`);
 //! - IntraBC's 2-tap bilinear filter (`av1_intrabc_filter_params`).
+//!
+//! Highbd (bd 10/12) IS handled since the `experimental-video` step-2 landing:
+//! [`build_inter_predictor`]'s `bd` argument dispatches to
+//! [`highbd_inter_predictor`] + [`build_mc_border_highbd`], the u16 twins that
+//! call the `highbd_convolve_*_sr` kernels in [`crate::convolve::highbd`].
 //!
 //! # Differential coverage
 //! `tests/inter_pred_diff.rs` locks the facade + convolution against the **real C**
@@ -352,8 +357,9 @@ pub fn inter_predictor(
 /// (`dst`, tightly packed, stride `b_w`) from reference plane `reff` (frame origin,
 /// `ref_w`×`ref_h`, stride `ref_stride`), replicating the frame edge for any part of
 /// the requested `[gx, gx + b_w) × [gy, gy + b_h)` region that lies outside the
-/// plane. `gx`/`gy` may be negative. Bit-exact port of the C body (values are lowbd,
-/// so u16 samples truncate losslessly to the u8 scratch libaom's convolvers consume).
+/// plane. `gx`/`gy` may be negative. Bit-exact port of the C body (the lowbd
+/// instantiation — samples truncate to the u8 scratch the lowbd convolvers
+/// consume; the `bd > 8` twin is [`build_mc_border_highbd`]).
 #[allow(clippy::too_many_arguments)]
 pub fn build_mc_border(
     reff: &[u16],
@@ -419,7 +425,169 @@ pub fn build_mc_border(
     }
 }
 
-/// Single-ref translational inter predictor for one plane, lowbd (bd = 8), unscaled.
+/// `highbd_build_mc_border` (decodeframe.c, the `is_highbd` instantiation of the
+/// `BUILD_MC_BORDER` body) — the u16 twin of [`build_mc_border`]: the same
+/// edge-replicated gather, but samples pass through untruncated. Used by the
+/// `bd > 8` arm of [`build_inter_predictor`].
+#[allow(clippy::too_many_arguments)]
+pub fn build_mc_border_highbd(
+    reff: &[u16],
+    ref_stride: usize,
+    ref_w: usize,
+    ref_h: usize,
+    gx: i32,
+    gy: i32,
+    b_w: usize,
+    b_h: usize,
+    dst: &mut [u16],
+) {
+    let w = ref_w as i32;
+    let h = ref_h as i32;
+    let x = gx;
+    let mut y = gy;
+    let mut row: i32 = if y >= h {
+        h - 1
+    } else if y > 0 {
+        y
+    } else {
+        0
+    };
+    for by in 0..b_h {
+        let mut left = if x < 0 { (-x) as usize } else { 0 };
+        if left > b_w {
+            left = b_w;
+        }
+        let mut right = if x + b_w as i32 > w {
+            (x + b_w as i32 - w) as usize
+        } else {
+            0
+        };
+        if right > b_w {
+            right = b_w;
+        }
+        let copy = b_w - left - right;
+        let row_base = row as usize * ref_stride;
+        let dst_row = by * b_w;
+        if left > 0 {
+            let v = reff[row_base]; // ref_row[0]
+            for i in 0..left {
+                dst[dst_row + i] = v;
+            }
+        }
+        if copy > 0 {
+            let sstart = row_base + (x + left as i32) as usize; // ref_row + x + left
+            for i in 0..copy {
+                dst[dst_row + left + i] = reff[sstart + i];
+            }
+        }
+        if right > 0 {
+            let v = reff[row_base + (ref_w - 1)]; // ref_row[w-1]
+            for i in 0..right {
+                dst[dst_row + left + copy + i] = v;
+            }
+        }
+        y += 1;
+        if y > 0 && y < h {
+            row += 1;
+        }
+    }
+}
+
+/// `get_conv_params_no_round(.., is_compound = 0, .., bd)` (convolve.h:157) —
+/// the decoder's `(round_0, round_1)` pair for a SINGLE-REFERENCE convolve at
+/// bit depth `bd`. `round_0` is `ROUND0_BITS` and `round_1` its complement
+/// `2 * FILTER_BITS - round_0`, except at bd 12 where the horizontal
+/// intermediate's `int16` range overflows and both shift up
+/// (`intbufrange > 16`). bd 8/10 -> `(3, 11)`, bd 12 -> `(5, 9)`.
+pub fn single_ref_rounds(bd: u32) -> (i32, i32) {
+    let mut round_0 = ROUND0_BITS;
+    let mut round_1 = 2 * FILTER_BITS - round_0;
+    let intbufrange = bd as i32 + FILTER_BITS - round_0 + 2;
+    if intbufrange > 16 {
+        round_0 += intbufrange - 16;
+        round_1 -= intbufrange - 16;
+    }
+    (round_0, round_1)
+}
+
+/// `highbd_inter_predictor` (reconinter.h:310 -> `av1_highbd_convolve_2d_facade`,
+/// convolve.c:752) — the `bd > 8` twin of [`inter_predictor`]: the same
+/// `need_x`/`need_y` dispatch onto the u16 [`crate::convolve`] kernels
+/// `highbd_convolve_{x,y,2d}_sr`. Filter-table and per-direction 4-tap
+/// (`w`/`h <= 4`) selection are shared with the lowbd facade via [`kernel()`];
+/// the rounding pair is [`single_ref_rounds`].
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_inter_predictor(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x: usize,
+    subpel_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+    bd: u32,
+) {
+    let need_x = subpel_x != 0;
+    let need_y = subpel_y != 0;
+    let use4_x = w <= 4;
+    let use4_y = h <= 4;
+    let (round_0, round_1) = single_ref_rounds(bd);
+    if !need_x && !need_y {
+        // aom_highbd_convolve_copy: plain block copy, no rounding.
+        for y in 0..h {
+            for x in 0..w {
+                dst[y * dst_stride + x] = src[src_off + y * src_stride + x];
+            }
+        }
+    } else if need_x && !need_y {
+        crate::convolve::highbd::highbd_convolve_x_sr(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            w,
+            h,
+            kernel(filter_x, subpel_x, use4_x),
+            round_0,
+            bd,
+        );
+    } else if !need_x && need_y {
+        crate::convolve::highbd::highbd_convolve_y_sr(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            w,
+            h,
+            kernel(filter_y, subpel_y, use4_y),
+            bd,
+        );
+    } else {
+        crate::convolve::highbd::highbd_convolve_2d_sr(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            w,
+            h,
+            kernel(filter_x, subpel_x, use4_x),
+            kernel(filter_y, subpel_y, use4_y),
+            round_0,
+            round_1,
+            bd,
+        );
+    }
+}
+
+/// Single-ref translational inter predictor for one plane, unscaled
+/// (`av1_build_inter_predictor`: lowbd or `is_cur_buf_hbd` highbd by `bd`).
 ///
 /// Reproduces the decoder chain `dec_calc_subpel_params` (unscaled branch,
 /// decodeframe.c:620) + `extend_mc_border`/`build_mc_border` + `inter_predictor`.
@@ -434,6 +602,9 @@ pub fn build_mc_border(
 /// - `mv_row`,`mv_col`: block MV in 1/8-pel **luma** units.
 /// - `ss_x`,`ss_y`: plane subsampling (0,0 luma; 1,1 chroma-420).
 /// - `filter_x`,`filter_y`: InterpFilter type (0/1/2) per direction.
+/// - `bd`: bit depth — `is_cur_buf_hbd(xd)`. `bd == 8` runs the u8 scratch +
+///   lowbd kernels; `bd > 8` gathers into a u16 scratch via
+///   [`build_mc_border_highbd`] and filters through [`highbd_inter_predictor`].
 ///
 /// # Sub-pel derivation (`dec_calc_subpel_params`, decodeframe.c:620-648)
 /// The luma 1/8-pel MV is scaled to this plane's q4 (1/16-pel) grid by
@@ -464,6 +635,7 @@ pub fn build_inter_predictor(
     ss_y: usize,
     filter_x: usize,
     filter_y: usize,
+    bd: u32,
 ) {
     // `w <= 4` / `h <= 4` are handled: [`inter_predictor`] selects the 4-tap
     // kernel per direction (av1_get_interp_filter_params_with_block_size). The
@@ -495,11 +667,7 @@ pub fn build_inter_predictor(
 
     // Zero sub-pel phase in both directions: C's `inter_predictor` routes to
     // `aom_convolve_copy` (`aom_highbd_convolve_copy` above bd8) — a pure
-    // edge-replicated copy with NO filtering, valid at every bit depth. The
-    // u8-scratch filter path below truncates >8-bit samples, so this arm is
-    // also what keeps bd10/12 inter MC exact for integer-pel motion (the
-    // sub-pel highbd filter path is guarded by the caller until the highbd
-    // convolve kernels land).
+    // edge-replicated copy with NO filtering, valid at every bit depth.
     if !pad_x && !pad_y {
         for row in 0..h as i32 {
             // Edge-replicated source row/col (build_mc_border's clamp).
@@ -522,6 +690,40 @@ pub fn build_inter_predictor(
     let b_w = w + if pad_x { extra } else { 0 };
     let b_h = h + if pad_y { extra } else { 0 };
 
+    let interior = (my as usize) * b_w + mx as usize;
+
+    if bd > 8 {
+        // is_cur_buf_hbd: u16 border gather + the highbd convolve kernels,
+        // writing the predictor straight into `dst` (no u8 truncation).
+        let mut scratch = vec![0u16; b_w * b_h];
+        build_mc_border_highbd(
+            ref_plane,
+            ref_stride,
+            ref_w,
+            ref_h,
+            gx,
+            gy,
+            b_w,
+            b_h,
+            &mut scratch,
+        );
+        highbd_inter_predictor(
+            &scratch,
+            interior,
+            b_w,
+            &mut dst[dst_off..],
+            dst_stride,
+            w,
+            h,
+            subpel_x,
+            subpel_y,
+            filter_x,
+            filter_y,
+            bd,
+        );
+        return;
+    }
+
     // Gather the bordered region into a u8 scratch (edge-replicated for OOB), then
     // run the facade and scatter u8 -> u16 dst.
     let mut scratch = vec![0u8; b_w * b_h];
@@ -536,7 +738,6 @@ pub fn build_inter_predictor(
         b_h,
         &mut scratch,
     );
-    let interior = (my as usize) * b_w + mx as usize;
 
     let mut tmp = vec![0u8; w * h];
     inter_predictor(

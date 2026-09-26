@@ -76,8 +76,14 @@ fn scaled_reference_frame_refused_by_name() {
 
 #[test]
 fn highbd_nonzero_mv_refused_by_name() {
-    // OFF: named refusal. ON: identical until step 2 routes highbd sub-pel MC
-    // — that landing replaces this arm with decode-success (byte-exactness is
-    // pinned by aom-bench's highbd_inter_decode_envelope against the oracle).
-    assert_refused_by_name(HIGHBD_MV_STREAM, "above bd8");
+    if aom_decode::EXPERIMENTAL_VIDEO {
+        // Step 2 routed highbd sub-pel MC: the fixture now decodes end-to-end.
+        // Byte-exactness vs the C oracle is pinned by aom-bench's
+        // highbd_inter_decode_envelope.
+        let frames = decode_frames(HIGHBD_MV_STREAM)
+            .expect("experimental-video on: a nonzero-MV bd10 stream must decode");
+        assert_eq!(frames.len(), 2, "expected KEY + P, got {}", frames.len());
+    } else {
+        assert_refused_by_name(HIGHBD_MV_STREAM, "above bd8");
+    }
 }

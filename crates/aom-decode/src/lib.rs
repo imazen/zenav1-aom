@@ -2928,6 +2928,7 @@ impl<'c> TileKf<'c> {
                 0,
                 nb_filter_x,
                 nb_filter_y,
+                self.cfg.bd as u32,
             );
             // Blend the top `overlap` rows of the block's own predictor with the
             // neighbour strip (build_obmc_inter_pred_above -> aom_blend_a64_vmask).
@@ -2999,6 +3000,7 @@ impl<'c> TileKf<'c> {
                         ss_y,
                         nb_filter_x,
                         nb_filter_y,
+                        self.cfg.bd as u32,
                     );
                     dst.with_wide_rect(
                         dst_off_c,
@@ -3090,6 +3092,7 @@ impl<'c> TileKf<'c> {
                 0,
                 nb_filter_x,
                 nb_filter_y,
+                self.cfg.bd as u32,
             );
             let plane_row = (rel_mi_row * 4) as usize;
             let dst_off = ((mi_row * 4) as usize + plane_row) * self.stride + (mi_col * 4) as usize;
@@ -3159,6 +3162,7 @@ impl<'c> TileKf<'c> {
                         ss_y,
                         nb_filter_x,
                         nb_filter_y,
+                        self.cfg.bd as u32,
                     );
                     dst.with_wide_rect(
                         dst_off_c,
@@ -3930,13 +3934,12 @@ impl<'c> TileKf<'c> {
 
         // --- motion compensation (predict phase; NO entropy reads) ---
         let (cmv_row, cmv_col) = clamp_mv_to_umv_border(mv_row, mv_col, mi_row, mi_col, bsize, cfg);
-        // Above bd8 only the INTEGER-pel (zero-subpel, convolve-copy) MC path
-        // is depth-exact — the sub-pel filter chain runs on a u8 scratch and
-        // would truncate >8-bit samples. Conservatively require a fully zero
-        // MV (a nonzero integer-pel MV is fine in principle, but the chroma
-        // phase derivation differs per subsampling; widen when highbd subpel
-        // convolve lands). Fail-loud, never corrupt (bd10/12 envelope:
-        // zero-MV NEARESTMV per the animated-AVIF census).
+        // Above bd8, nonzero-MV (sub-pel or integer-pel) motion compensation is
+        // an `experimental-video` tool: without the feature the block is refused
+        // by name; with it, `build_inter_predictor` dispatches to the u16
+        // highbd convolve kernels (u8 scratch would truncate >8-bit samples).
+        // Fail-loud, never corrupt.
+        #[cfg(not(feature = "experimental-video"))]
         if cfg.bd > 8 && (cmv_row != 0 || cmv_col != 0) {
             self.mark_unsupported("inter: sub/nonzero-pel MC above bd8 not yet supported");
             return;
@@ -3965,26 +3968,66 @@ impl<'c> TileKf<'c> {
                 bh_px,
                 &mut self.wide_rect,
                 |dst, stride| {
-                    aom_dsp::inter::warp::warp_affine(
-                        &wm.wmmat,
-                        &last.y,
-                        last.width,
-                        last.height,
-                        last.stride,
-                        dst,
-                        0,
-                        stride,
-                        blk_x as i32,
-                        blk_y as i32,
-                        bw_px,
-                        bh_px,
-                        0,
-                        0,
-                        wm.alpha,
-                        wm.beta,
-                        wm.gamma,
-                        wm.delta,
-                    );
+                    if cfg.bd > 8 {
+                        // is_cur_buf_hbd: the general u16 affine kernel
+                        // (av1_highbd_warp_affine_c) — the bd8 `warp_affine`
+                        // specialization would round-clip at 8 bits.
+                        let (round_0, round_1) = aom_dsp::inter::single_ref_rounds(cfg.bd as u32);
+                        let cp = aom_dsp::inter::warp::WarpConvolveParams {
+                            round_0,
+                            round_1,
+                            is_compound: false,
+                            do_average: false,
+                            use_dist_wtd_comp_avg: false,
+                            fwd_offset: 0,
+                            bck_offset: 0,
+                        };
+                        let mut dst16 = vec![0u16; bw_px * bh_px];
+                        aom_dsp::inter::warp::highbd_warp_affine(
+                            &wm.wmmat,
+                            &last.y,
+                            last.width,
+                            last.height,
+                            last.stride,
+                            dst,
+                            stride,
+                            &mut dst16,
+                            bw_px,
+                            blk_x as i32,
+                            blk_y as i32,
+                            bw_px,
+                            bh_px,
+                            0,
+                            0,
+                            cfg.bd as u32,
+                            &cp,
+                            wm.alpha,
+                            wm.beta,
+                            wm.gamma,
+                            wm.delta,
+                        );
+                    } else {
+                        aom_dsp::inter::warp::warp_affine(
+                            &wm.wmmat,
+                            &last.y,
+                            last.width,
+                            last.height,
+                            last.stride,
+                            dst,
+                            0,
+                            stride,
+                            blk_x as i32,
+                            blk_y as i32,
+                            bw_px,
+                            bh_px,
+                            0,
+                            0,
+                            wm.alpha,
+                            wm.beta,
+                            wm.gamma,
+                            wm.delta,
+                        );
+                    }
                 },
             );
         } else {
@@ -4013,6 +4056,7 @@ impl<'c> TileKf<'c> {
                         0,
                         filter_x,
                         filter_y,
+                        cfg.bd as u32,
                     );
                 },
             );
@@ -4113,6 +4157,7 @@ impl<'c> TileKf<'c> {
                                         ss_y,
                                         filter_x,
                                         filter_y,
+                                        cfg.bd as u32,
                                     );
                                 },
                             );
@@ -4156,26 +4201,64 @@ impl<'c> TileKf<'c> {
                             bh_uv,
                             &mut self.wide_rect,
                             |d, stride| {
-                                aom_dsp::inter::warp::warp_affine(
-                                    &wm.wmmat,
-                                    src,
-                                    last.width_uv,
-                                    last.height_uv,
-                                    last.stride_uv,
-                                    d,
-                                    0,
-                                    stride,
-                                    uv_org_x as i32,
-                                    uv_org_y as i32,
-                                    bw_uv,
-                                    bh_uv,
-                                    ss_x,
-                                    ss_y,
-                                    wm.alpha,
-                                    wm.beta,
-                                    wm.gamma,
-                                    wm.delta,
-                                );
+                                if cfg.bd > 8 {
+                                    let (round_0, round_1) =
+                                        aom_dsp::inter::single_ref_rounds(cfg.bd as u32);
+                                    let cp = aom_dsp::inter::warp::WarpConvolveParams {
+                                        round_0,
+                                        round_1,
+                                        is_compound: false,
+                                        do_average: false,
+                                        use_dist_wtd_comp_avg: false,
+                                        fwd_offset: 0,
+                                        bck_offset: 0,
+                                    };
+                                    let mut dst16 = vec![0u16; bw_uv * bh_uv];
+                                    aom_dsp::inter::warp::highbd_warp_affine(
+                                        &wm.wmmat,
+                                        src,
+                                        last.width_uv,
+                                        last.height_uv,
+                                        last.stride_uv,
+                                        d,
+                                        stride,
+                                        &mut dst16,
+                                        bw_uv,
+                                        uv_org_x as i32,
+                                        uv_org_y as i32,
+                                        bw_uv,
+                                        bh_uv,
+                                        ss_x,
+                                        ss_y,
+                                        cfg.bd as u32,
+                                        &cp,
+                                        wm.alpha,
+                                        wm.beta,
+                                        wm.gamma,
+                                        wm.delta,
+                                    );
+                                } else {
+                                    aom_dsp::inter::warp::warp_affine(
+                                        &wm.wmmat,
+                                        src,
+                                        last.width_uv,
+                                        last.height_uv,
+                                        last.stride_uv,
+                                        d,
+                                        0,
+                                        stride,
+                                        uv_org_x as i32,
+                                        uv_org_y as i32,
+                                        bw_uv,
+                                        bh_uv,
+                                        ss_x,
+                                        ss_y,
+                                        wm.alpha,
+                                        wm.beta,
+                                        wm.gamma,
+                                        wm.delta,
+                                    );
+                                }
                             },
                         );
                     }
@@ -4209,6 +4292,7 @@ impl<'c> TileKf<'c> {
                                     ss_y,
                                     filter_x,
                                     filter_y,
+                                    cfg.bd as u32,
                                 );
                             },
                         );
