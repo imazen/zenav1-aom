@@ -6195,7 +6195,7 @@ impl KfFrameContext {
     /// (index `nsymbs` within the row). Run when a frame's end-of-frame
     /// context is saved (`REFRESH_FRAME_CONTEXT_BACKWARD`), so forward CDF
     /// inheritance restarts the update-rate ramp exactly as C does. Rows whose
-    /// array length exceeds `nsymbs + 1` (uv_mode[0], partition, tx_size[0],
+    /// array length exceeds `nsymbs + 1` (`uv_mode[0]`, partition, `tx_size[0]`,
     /// inter_ext_tx sets, palette colour-index sizes) reset at their true
     /// per-row `nsymbs`, mirroring C's RESET_CDF_COUNTER_STRIDE arms.
     pub fn reset_cdf_counters(&mut self) {

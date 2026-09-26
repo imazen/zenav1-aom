@@ -4,7 +4,87 @@
 
 ### [Unreleased]
 
-### Fixed
+The 2026-09-08 → 2026-09-25 cycle: the encoder became a backend zenavif can select
+by default, and the repository was made publishable. Bit-exactness against libaom
+v3.14.1 holds on every gate throughout; nothing below changes a byte of any
+default-envelope stream.
+
+#### Added
+
+- **Tile threading** (`KeyFrameConfig::threads`, default 1; `0` = auto): phase-1
+  tile-row bands over `split_at_mut`, no `unsafe`, byte-identical to serial.
+  Against a multithreaded libaom `aomenc`: 1.097x at 4 threads, 0.988x at 8.
+  Opt-in `rayon` feature runs the workers on a host-shared pool.
+- **Runtime diagnostic traces** (`aom_dsp::trace`): `Trace`/`Focus` kinds,
+  `install`/`clear`, an output sink, and the `trace_on!`/`trace_focus!`/`trace_out!`
+  site macros. The published crates no longer read environment variables on any
+  trace path; `install_from_env()` and the default-off `trace-env` feature map the
+  documented `AOM_*` names onto the API for harnesses.
+- **`KeyFrameMode::{LibaomExact, Zenaom}`** — the first opt-in deviation from
+  libaom (the screen-content trial, margin-gated). `LibaomExact` is the default and
+  byte-exact.
+- Every harness-only RD/tune/tool knob is reachable from `encode_key_frame`
+  (tune IQ/SSIMULACRA2, QM, sharpness, chroma delta-q, delta-q modes, delta-lf,
+  adaptive CDEF, the C8–C11 coding-tool toggles, film grain, superres), each
+  byte-gated against a matched oracle with a decode round-trip.
+- `KeyFrameConfig::estimate()` is speed-, chroma- and thread-aware and bounds the
+  measured peak on a 22-cell grid with 1.34x..3.21x slack (KB-69).
+- Publication hygiene: `readme`/`keywords`/`categories` on the four published
+  crates, a `cargo-deny` policy (licences, advisories, no C toolchain on the
+  published path), `.git-blame-ignore-revs`, `rustfmt --check` and `cargo deny`
+  CI jobs, and the crates.io publishability scan in `apidoc/`.
+
+#### Changed
+
+- **Public API surface**: `zenav1-aom-encode` exposes `key_frame` (+ config/error
+  types) by default — 258 items, down from ~4,300 — with every implementation
+  module behind the default-off `__internals` feature; `zenav1-aom-decode` the same
+  pattern; every `pub` type on the `key_frame` surface is `#[non_exhaustive]` with
+  constructors/builders. `zenav1-aom-dsp` dropped 53 free functions that had no
+  caller outside the crate. Snapshots in `docs/public-api/` are enforced by CI.
+- **Encode time** at the shipping cell (1024², cq27, `--cpu-used 3`): 1.94x libaom
+  → 1.38x single-threaded, via ~60 byte-identical kernel landings (fused i16
+  whole-block transforms, u8 lowbd paths, HOG gradient cache, trellis
+  monomorphisation, allocation pooling).
+- **Peak memory** at 1024² `--cpu-used 0` on noise content: 222 MB → 66.7 MB
+  (`origin/main` before the cycle: 54.5 MB); the pack-replay lever keeps only what
+  the pack reads (KB-69).
+- The C-oracle instrumentation is versioned (`docs/upstream-instrumentation/`) with
+  `just upstream-instrument` / `upstream-pristine`; the landing gate refuses a
+  dirty oracle, and the oracle build stamp digests the submodule's working tree.
+- `just gate-landing` now runs `upstream-check`, `fmt-check`, both nextest dispatch
+  modes, the census, whereat and public-API checks; CI runs the workspace suites
+  under nextest and triggers on `perf/**`, `fix/**`, `feat/**`, `integrate/**`,
+  `maint/**` pushes as well as `main`.
+- The whole tree is `rustfmt`-formatted in one commit (listed in
+  `.git-blame-ignore-revs`).
+
+#### Fixed
+
+- KB-53..KB-68: the remaining byte divergences across the tune bundle, QM,
+  `--intra-dct-only`, `--deltaq-mode`, CDEF pick/adaptive, the HBD intra-CNN
+  window, `tx_type_map` ordering on SB128, coded-lossless IntraBC conformance,
+  and real screen content (`screen_512` byte-identical). 549/549 standalone cells
+  and 164/164 codec-corpus images are byte-identical.
+- KB-69: the peak-memory estimate under-stated the measured peak by up to 3.2x.
+- KB-70: the first aarch64 CI runs surfaced ten harness contracts that assumed
+  x86 kernels or `_c`'s undefined-behaviour domain; six fixed on principle, the
+  five encode-level `_c`-chain tests assert on the forced-scalar ARM leg until NEON
+  oracle shims exist.
+- A 32-bit x86 build break (an arch-gated module re-export) and three aarch64-only
+  scratch examples that broke every x86-64 `--workspace` build.
+
+#### Known limitations
+
+- Inter (video) decode is a bounded envelope: single reference, lowbd sub-pel,
+  zero-MV above bd8. Wider inter support lands behind the `experimental-video`
+  feature (`docs/HANDOFF-EXPERIMENTAL-VIDEO.md`).
+- The encoder is still-image (ALLINTRA KEY frame) only.
+
+### Previous entries
+
+
+#### Fixed (pre-2026-09-08)
 
 - **Four more un-pollable decode windows, and a cancellation bar that no longer
   gates absolute wall time on hardware the project does not choose** (CLAUDE.md

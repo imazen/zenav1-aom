@@ -374,6 +374,18 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo fmt --manifest-path apidoc/Cargo.toml --check
 
+  # Dependency policy: deny.toml (licences, advisories, no C toolchain on the
+  # published path). Seconds; fails ahead of the differential legs.
+  cargo-deny:
+    name: cargo deny (licences, advisories, bans)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   public-api:
     name: public API surface + crates.io publishability
     runs-on: ubuntu-latest

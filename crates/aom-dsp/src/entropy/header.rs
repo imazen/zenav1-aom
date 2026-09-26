@@ -2143,7 +2143,7 @@ pub fn read_restoration_mode(
 /// inverse of [`write_global_motion_params`]: the warp type (IDENTITY/TRANSLATION/
 /// ROTZOOM/AFFINE), then the model coefficients, each a subexp value relative to
 /// `ref_params` at the coded precision (reversing the per-coefficient precision shift +
-/// offset). ROTZOOM derives wmmat[4]=-wmmat[3], wmmat[5]=wmmat[2].
+/// offset). ROTZOOM derives `wmmat[4] = -wmmat[3]`, `wmmat[5] = wmmat[2]`.
 pub fn read_global_motion_params(
     rb: &mut ReadBitBuffer,
     ref_params: &WarpedMotionParams,

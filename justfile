@@ -113,6 +113,7 @@ gate-encode:
 gate-landing:
     just upstream-check
     just fmt-check
+    just deny
     just ci-yaml-check
     just test-next
     just test-next-scalar
@@ -345,6 +346,11 @@ fmt:
 fmt-check:
     cargo fmt --all --check
     cargo fmt --manifest-path apidoc/Cargo.toml --check
+
+# Dependency policy (deny.toml): licences, advisories, no C toolchain on the
+# published path, no unknown registries. ~5 s; a gate-landing step and a CI job.
+deny:
+    cargo deny check
 
 # ---------------------------------------------------------------------------
 # C-oracle instrumentation (docs/upstream-instrumentation/README.md).

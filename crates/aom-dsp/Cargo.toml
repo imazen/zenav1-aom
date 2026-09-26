@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Consolidated DSP kernels for the aom-rs bit-exact libaom v3.14.1 port: transform, quant, txb, cdef, restore, intra, loopfilter, dist, inter, convolve, recon, dispatch, and the MSAC entropy coder — each a module under this crate."
+readme = "README.md"
+keywords = ["av1", "libaom", "codec", "simd", "dsp"]
+categories = ["multimedia::encoding", "multimedia::video", "compression"]
 
 # Keep snapshot docs, the apidoc runner and repo-local session files
 # out of the published crate.
@@ -85,3 +88,8 @@ zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
 # mechanism that DOES cover ARM, since the `AOM_FORCE_SCALAR` pin cannot (see
 # `src/dispatch/mod.rs`) — actually load-bearing on aarch64.
 archmage = { version = "0.9.27", features = ["testable_dispatch"] }
+
+# docs.rs builds the default surface; the implementation modules stay behind the
+# default-off `__internals` feature (see docs/public-api/) and are not rendered.
+[package.metadata.docs.rs]
+all-features = false

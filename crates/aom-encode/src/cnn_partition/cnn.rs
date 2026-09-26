@@ -24,8 +24,8 @@
 
 use super::weights as w;
 
-/// `CNN_OUT_BUF_SIZE` — branch_0[20] + branch_1[16] + branch_2[320] +
-/// branch_3[1280].
+/// `CNN_OUT_BUF_SIZE` — `branch_0[20] + branch_1[16] + branch_2[320] +`
+/// `branch_3[1280]`.
 pub const CNN_OUT_BUF_SIZE: usize = 1636;
 
 /// One convolution layer of the cascade (square filter + square stride).

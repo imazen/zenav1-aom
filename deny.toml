@@ -1,0 +1,77 @@
+# cargo-deny policy — `just deny` locally, the `cargo-deny` CI job on every push.
+#
+# MEASURED 2026-09-25 over the resolved graph of the four published crates plus
+# the harnesses: 93 third-party packages, every one under a permissive licence
+# (MIT / Apache-2.0 / BSD / Zlib / Unlicense / CC0 / Unicode-3.0) except two of
+# our own sibling crates (zenavif-parse MPL-2.0, zenavif-serialize BSD-3-Clause)
+# that only the harnesses pull in. `cargo audit` reports no advisories.
+#
+# The published crates are AGPL-3.0-only OR LicenseRef-Imazen-Commercial; that
+# is the workspace licence, not a dependency, so it is not in the allow list.
+
+[graph]
+all-features = false
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "wasm32-unknown-unknown",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+# Our own crates carry the dual AGPL/commercial licence. `private.ignore` covers
+# the `publish = false` harnesses; the four published crates are checked like
+# any other package, so their AGPL branch is allowed per crate — never globally,
+# so a third-party AGPL dependency would still be rejected.
+private = { ignore = true }
+exceptions = [
+    { crate = "zenav1-aom", allow = ["AGPL-3.0-only"] },
+    { crate = "zenav1-aom-dsp", allow = ["AGPL-3.0-only"] },
+    { crate = "zenav1-aom-decode", allow = ["AGPL-3.0-only"] },
+    { crate = "zenav1-aom-encode", allow = ["AGPL-3.0-only"] },
+]
+
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace (the harnesses' dev-deps) carry no
+# version requirement and are not wildcards in the crates.io sense.
+allow-wildcard-paths = true
+highlight = "all"
+# Nothing on the published path may pull a C toolchain or a build script that
+# compiles C: the C oracle is a dev-dependency of the harnesses only.
+deny = [
+    { crate = "cc", reason = "published crates must build with no C toolchain; the libaom oracle is dev-only" },
+    { crate = "cmake", reason = "published crates must build with no C toolchain; the libaom oracle is dev-only" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# zenavif-serialize is pinned by git rev as a dev-dependency of the encode and
+# decode harnesses (container read-back in the round-trip gates); it never
+# reaches a published crate's dependency graph.
+[sources.allow-org]
+github = ["imazen"]

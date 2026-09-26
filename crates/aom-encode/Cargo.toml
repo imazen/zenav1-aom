@@ -5,6 +5,9 @@ edition = "2024"
 license.workspace = true
 repository.workspace = true
 description = "Encoder composition layer for aom-rs: av1_xform_quant (forward transform + quantize + entropy context), bit-exact vs libaom."
+readme = "README.md"
+keywords = ["av1", "libaom", "encoder", "avif", "video"]
+categories = ["multimedia::encoding", "multimedia::video", "compression"]
 
 # Keep snapshot docs, the apidoc runner and repo-local session files
 # out of the published crate.
@@ -115,3 +118,8 @@ zenavif-parse = "0.6.2"
 name = "all"
 path = "tests/all/main.rs"
 required-features = ["__internals"]
+
+# docs.rs builds the default surface; the implementation modules stay behind the
+# default-off `__internals` feature (see docs/public-api/) and are not rendered.
+[package.metadata.docs.rs]
+all-features = false

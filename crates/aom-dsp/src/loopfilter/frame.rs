@@ -253,7 +253,7 @@ pub struct LfParams {
     /// `lf.sharpness_level` (0..=7).
     pub sharpness: i32,
     pub mode_ref_delta_enabled: bool,
-    /// `lf.ref_deltas[REF_FRAMES]` ([0] = INTRA_FRAME).
+    /// `lf.ref_deltas[REF_FRAMES]` (`[0]` = INTRA_FRAME).
     pub ref_deltas: [i8; REF_FRAMES],
     /// `lf.mode_deltas[MAX_MODE_LF_DELTAS]`.
     pub mode_deltas: [i8; MAX_MODE_LF_DELTAS],

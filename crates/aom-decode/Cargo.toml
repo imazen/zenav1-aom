@@ -6,6 +6,9 @@ license.workspace = true
 # Inherited so the optional `whereat` feature can link located errors to the repo.
 repository.workspace = true
 description = "Decoder composition layer for aom-rs: KEY-frame luma tile reconstruction driver (partition walk + per-leaf mode-info/coeff decode + intra predict + inverse transform), roundtrip-pinned to the byte-identical-to-C writers."
+readme = "README.md"
+keywords = ["av1", "libaom", "decoder", "avif", "video"]
+categories = ["multimedia::encoding", "multimedia::video", "compression"]
 
 # Keep snapshot docs, the apidoc runner and repo-local session files
 # out of the published crate.
@@ -76,3 +79,8 @@ zenav1-aom-encode = { path = "../aom-encode", features = ["__internals"] }
 name = "all"
 path = "tests/all/main.rs"
 required-features = ["__internals"]
+
+# docs.rs builds the default surface; the implementation modules stay behind the
+# default-off `__internals` feature (see docs/public-api/) and are not rendered.
+[package.metadata.docs.rs]
+all-features = false

@@ -2190,7 +2190,7 @@ pub struct IntrabcBest {
     pub dv_col: i32,
     /// The ref DV the mode-rate was computed against — the PACK must write
     /// `diff = dv - dv_ref` (bitstream.c write_intrabc_info uses the STORED
-    /// search-time ref stack, mbmi_ext_frame->ref_mv_stack[0].this_mv).
+    /// search-time ref stack, `mbmi_ext_frame->ref_mv_stack[0].this_mv`).
     pub dv_ref_row: i32,
     pub dv_ref_col: i32,
     /// The winning arm: true = skip_txfm (no residual coded).
