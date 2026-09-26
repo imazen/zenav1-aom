@@ -94,6 +94,39 @@ Read that as:
      `masked-compound.obu`) and `inter_pred_diff::masked_compound_facade_
      matches_c` (1,260 blocks × luma+chroma vs the real C masked assembly).
      The `masked-compound` named refusal is gone under the feature.
+   - **4 close-out (LANDED 2026-09-25):** the conformance corpus's INTER scope
+     (`python3 xtask/conformance.py --fetch --scope inter` — the 5 vectors
+     `av1-1-b8-05-mv`, `-06-mfmv`, `-22-svc-L{1,2}T{1,2}`) run feature-on in
+     `crates/aom-decode/tests/all/conformance_inter.rs`
+     (`inter_conformance_vectors_pinned_outcomes`). The tally is **0 byte-exact,
+     5 refused-by-name, 0 diverged** — all five stop at a named envelope
+     boundary, never corrupt:
+     - `05-mv`, `06-mfmv` → `"inter: non-identity global motion not supported
+       in this decode envelope"` (`aom-decode/src/lib.rs` ~:3660).
+     - `22-svc-L{1,2}T{1,2}` → `"partial tile group (multiple tile groups per
+       frame not supported)"` (`aom-decode/src/frame.rs` ~:285).
+
+     Both are reachable inter tools → `docs/COVERAGE_QUEUE.md` T3 rows. The
+     test pins each vector's outcome (`Outcome::ByteExact` arm ready) so a
+     future feature that un-refuses a vector — or a regression that re-refuses
+     one — is loud; it skips-by-name when the corpus is not fetched and
+     feature-off (CI provisions only `--scope intra`).
+
+**Which "warp" refuses — precisely.** Local WARPED_CAUSAL (per-block
+`motion_mode = 2`) is NOT refused — it is implemented end-to-end:
+`motion_mode_ceiling` (`lib.rs:2958`) returns the WARP ceiling for a
+single-ref block with `num_proj_ref >= 1 && allow_warped_motion &&
+!cur_frame_force_integer_mv && !ref_scaled`, and the block runs
+`find_projection` + `warp_affine`/`highbd_warp_affine` (`aom-dsp/src/inter/
+warp.rs`). Compound blocks never read WARPED_CAUSAL — matching C
+(`blockd.h:1487` `is_motion_variation_allowed_compound = !has_second_ref`),
+so compound-warp is unreachable, not a gap. The warp case that DOES refuse by
+name is **global warped motion**: a reference carrying a non-identity
+global-motion model (`gm_wmtype[ref] != IDENTITY` — GM_ROT_ZOOM / GM_AFFINE /
+horz-trapezoid) refuses at `lib.rs:3660` (`"non-identity global motion"`),
+because `find_inter_mv_refs` hardcodes the IDENTITY base MV and has no
+`is_global_mv_block` gating yet. That is the global-warp path, not a step in
+this handoff — recorded, not implemented.
 
 Stop after any step and hand back if a step needs a NEW kernel rather than routing to an
 existing one — the point of this handoff is that the kernels exist; discovering one is

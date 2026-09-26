@@ -38,6 +38,53 @@ tests sit inside modules that consumers also use, so they need per-item work or
 in-crate test moves — deferred until after the first crates.io publish fixes the
 contract. `rust-version` is not set (untested MSRV; CI runs stable 1.98).
 
+## `experimental-video` step 4 close-out: the inter conformance scope measured + pinned (2026-09-25, branch `feat/experimental-video`)
+
+Step 4's definition of done included the conformance corpus's INTER scope
+under the feature. Fetched `python3 xtask/conformance.py --fetch --scope
+inter` — the 5 inter vectors (`av1-1-b8-05-mv`, `-06-mfmv`,
+`-22-svc-L{1,2}T{1,2}`) — and ran them feature-on. Per-vector tally,
+`inter_conformance_vectors_pinned_outcomes` (`crates/aom-decode/tests/all/
+conformance_inter.rs`):
+
+| bucket | count | vectors |
+|---|---|---|
+| byte-exact vs golden MD5 | 0 | — |
+| refused by name | 5 | all |
+| diverged | 0 | — |
+
+No divergence: every vector stops at a named envelope boundary, never
+corrupts. The two reachable inter-tool boundaries (both now `docs/
+COVERAGE_QUEUE.md` T3 rows):
+
+- `05-mv`, `06-mfmv` → `"inter: non-identity global motion not supported in
+  this decode envelope"` (`crates/aom-decode/src/lib.rs` ~:3660,
+  `inter.gm_wmtype[ref] != 0`). A reference carrying a ROTZOOM/AFFINE global
+  model needs the real global-MV base + `is_global_mv_block` gating.
+- `22-svc-L{1,2}T{1,2}` → `"partial tile group (multiple tile groups per frame
+  not supported)"` (`crates/aom-decode/src/frame.rs` ~:285). SVC frames split
+  tiles across >1 tile-group OBU (`--num-tile-groups>1`); the per-tile-group
+  decode loop is a later step.
+
+**The gate.** `conformance_inter.rs` pins each fetched vector's outcome —
+`Outcome::ByteExact` (decode + byte-compare vs `aom_codec_av1_dx` per frame AND
+vs the shipped golden `.ivf.md5`) or `Outcome::Refused(name-substring)` — so
+both directions are loud: a vector that un-refuses when a feature lands forces
+the pin to flip to `ByteExact`, and a byte-exact vector that regresses fails.
+A byte DIVERGENCE or a PANIC is never a pinned outcome — always a hard fail.
+It **skips-by-name** when no inter vector is fetched (CI provisions only
+`--scope intra`, so the gate is a local/dev-time pin until the inter scope is
+provisioned) and feature-off (the inter envelope is an `experimental-video`
+contract; feature-off these streams are not a supported surface).
+
+**Warp, stated precisely** (correcting the loose "warp prediction refused"):
+local WARPED_CAUSAL (`motion_mode = 2`) is implemented, not refused — single
+ref, unscaled, `num_proj_ref >= 1 && allow_warped_motion` per
+`motion_mode_ceiling`; compound is never WARPED_CAUSAL (matches C
+`blockd.h:1487`). The refused warp case is **global** warped motion — the
+non-identity global-motion model refusal above. Full mechanism in
+`docs/HANDOFF-EXPERIMENTAL-VIDEO.md` "Which warp refuses".
+
 ## `experimental-video` step 4b: masked compound (wedge / diff-weighted) routed through the two-buffer mask blend (2026-09-25, branch `feat/experimental-video`)
 
 Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md` step 4, second landing — the masked

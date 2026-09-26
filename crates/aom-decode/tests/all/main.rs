@@ -37,6 +37,7 @@ mod chroma_facades_cdiff;
 mod common;
 mod config_permutations_decode;
 mod conformance_corpus;
+mod conformance_inter;
 mod disable_cdf_update_diff;
 mod film_grain_diff;
 mod fuzz_regression;
