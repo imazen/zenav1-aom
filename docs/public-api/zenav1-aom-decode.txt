@@ -6,17 +6,17 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-decode.txt 257 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,trace-env,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
+# files: zenav1-aom-decode.txt 259 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,experimental-video,trace-env,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
 # arch-unique surface: (none — portable on every target)
 
 ## summary
 #
 #   pub modules                                 2
 #   pub types (struct/enum/trait/alias)        16
-#   pub consts/statics                         27
+#   pub consts/statics                         28
 #   free functions                             20
 #   inherent methods                           15
-#   struct fields                             142
+#   struct fields                             143
 #   enum variants                              16
 #   trait roster entries (type × trait)        61
 #   auto-trait-complete types                  15
@@ -24,9 +24,9 @@
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_decode                      236
+#   aom_decode                      238
 
-## items (238 lines)
+## items (240 lines)
 
 pub mod aom_decode
 pub mod aom_decode::frame
@@ -199,6 +199,7 @@ pub aom_decode::KfTileDecode::saved_ctx: core::option::Option<alloc::boxed::Box<
 pub aom_decode::KfTileDecode::stride: usize
 pub aom_decode::KfTileDecode::stride_uv: usize
 pub aom_decode::KfTileDecode::tree: alloc::vec::Vec<i8>
+pub aom_decode::KfTileDecode::unsupported: core::option::Option<&'static str>
 pub aom_decode::KfTileDecode::width: usize
 pub aom_decode::KfTileDecode::width_uv: usize
 pub struct aom_decode::MvRefCell
@@ -233,6 +234,7 @@ pub const aom_decode::BLOCK_SIZE_HIGH: [i32; 22]
 pub const aom_decode::BLOCK_SIZE_WIDE: [i32; 22]
 pub const aom_decode::DC_PRED: i32
 pub const aom_decode::DEFAULT_MAX_DECODE_PIXELS: u64
+pub const aom_decode::EXPERIMENTAL_VIDEO: bool
 pub const aom_decode::MAX_TXSIZE_RECT_LOOKUP: [usize; 22]
 pub const aom_decode::MI_SIZE_HIGH: [i32; 22]
 pub const aom_decode::MI_SIZE_WIDE: [i32; 22]

@@ -49,6 +49,13 @@ whereat = { version = "0.1.5", optional = true }
 default = ["avx512"]
 avx512 = ["zenav1-aom-dsp/avx512"]
 whereat = ["dep:whereat"]
+# EXPERIMENTAL inter-prediction extensions (docs/HANDOFF-EXPERIMENTAL-VIDEO.md):
+# routes the decoder at the highbd sub-pel, scaled-reference and compound
+# kernels that already exist — C-differential-verified — in aom-dsp. DEFAULT
+# OFF and byte-inert on the default envelope: with it off, those three families
+# still refuse by name (DecodeError::UnsupportedFeature); what decodes
+# byte-exactly today never moves behind the flag.
+experimental-video = []
 # Exposes this crate's implementation modules (film_grain, plane, superres, qm)
 # as `pub`. DEFAULT OFF: the public API is `frame` + the config/error types, which
 # is measured -- zenavif, the only external consumer, uses exactly those.

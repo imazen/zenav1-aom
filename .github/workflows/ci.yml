@@ -176,6 +176,45 @@ jobs:
       - name: Cancellation latency (isolated timing gate, scalar pin)
         run: "cargo test --profile test-fast -p zenav1-aom-bench --test all -- --ignored --test-threads 1 --nocapture cancel_latency::"
 
+  # EXPERIMENTAL-VIDEO-ON leg (docs/HANDOFF-EXPERIMENTAL-VIDEO.md): the
+  # default-off `experimental-video` feature routes the decoder at the
+  # already-C-verified highbd sub-pel / scaled-reference / compound kernels.
+  # Nothing in the default run compiles those paths, so without this leg the
+  # flag could rot — and a rot there reads as a byte-inert violation of the
+  # default envelope the flag is sworn not to touch. Same shape as
+  # `test-linux`, one different invocation (the `just test-next-video` recipe).
+  test-linux-experimental-video:
+    name: linux differential (x86-64, experimental-video)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install C-oracle build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm cmake ninja-build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Cache libaom oracle build
+        uses: actions/cache@v6
+        with:
+          path: upstream/build
+          key: libaom-${{ runner.os }}-${{ env.LIBAOM_SHA }}-v3
+      - name: Build C libaom oracle (cargo-driven)
+        run: cargo build -p zenav1-aom-sys-ref
+      - name: Cache conformance corpus
+        uses: actions/cache@v6
+        with:
+          path: conformance/data
+          key: conformance-intra-${{ runner.os }}-${{ hashFiles('upstream/test/test-data.sha1') }}-v1
+      - name: Provision conformance corpus (intra scope)
+        run: python3 xtask/conformance.py --fetch --scope intra
+      - name: Test workspace (experimental-video on)
+        run: cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast --features zenav1-aom-decode/experimental-video
+
   # AARCH64 DIFFERENTIAL — the NEON tier's byte-identity gate, WORKSPACE-WIDE.
   #
   # Added 2026-07-25 with the transform NEON landing. Until then the ONLY ARM leg

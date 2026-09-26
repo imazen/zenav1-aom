@@ -42,3 +42,6 @@ avx512 = [
 ]
 decode = ["dep:zenav1-aom-decode"]
 encode = ["dep:zenav1-aom-encode"]
+# The decoder's `experimental-video` inter extensions (docs/
+# HANDOFF-EXPERIMENTAL-VIDEO.md) — implies `decode`; meaningless without it.
+experimental-video = ["decode", "zenav1-aom-decode/experimental-video"]

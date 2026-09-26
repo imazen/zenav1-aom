@@ -1674,6 +1674,9 @@ fn decode_inter_tile_payload(
         p.context_update_tile_id,
         stop,
     );
+    if let Some(name) = t.unsupported {
+        return Err(DecodeError::UnsupportedFeature(name));
+    }
     if let Some(reason) = t.corrupt {
         return Err(reason.into());
     }
@@ -2119,6 +2122,9 @@ fn decode_tile_payload(
     // `context_update_tile_id` tile's end-of-frame adapted CDFs ride out on
     // `t.saved_ctx` for the multi-frame driver (single-frame callers ignore it).
     let t = decode_frame_tiles_kf_ctx(&tiles, &cfg, 0, None, p.context_update_tile_id, stop);
+    if let Some(name) = t.unsupported {
+        return Err(DecodeError::UnsupportedFeature(name));
+    }
     if let Some(reason) = t.corrupt {
         return Err(reason.into());
     }

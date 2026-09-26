@@ -38,6 +38,52 @@ tests sit inside modules that consumers also use, so they need per-item work or
 in-crate test moves — deferred until after the first crates.io publish fixes the
 contract. `rust-version` is not set (untested MSRV; CI runs stable 1.98).
 
+## `experimental-video` step 1: the default-off feature is scaffolded and conformant-but-unsupported tools refuse by name (2026-09-25, branch `feat/experimental-video`)
+
+Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md`: `zenav1-aom-decode` gains
+`experimental-video` (default OFF, forwarded by the `zenav1-aom` facade with an
+implied `decode`). Nothing is routed yet — that is the point of the scaffold:
+the flag compiles the same code either way and the default envelope is
+byte-inert under it, which the third workspace leg now proves every push.
+
+**The typed `unsupported` channel.** `TileKf`/`KfTileDecode` carry
+`unsupported: Option<&'static str>` alongside `corrupt`, drained in `frame.rs`
+as `DecodeError::UnsupportedFeature`. `mark_corrupt`/`mark_unsupported` are
+first-reason-wins across both channels and `is_corrupt` tests both, so the
+re-entrant guards unwind identically — only the surfaced category differs.
+Every conformant-but-out-of-envelope inter guard moved off `mark_corrupt`:
+the three named handoff refusals (compound references, highbd sub/nonzero-pel
+MC, `frame_size_override` — the last already `UnsupportedFeature` at
+`frame.rs`) plus segmentation / skip_mode / delta-q / tx_mode ONLY_4X4 /
+non-identity global motion / BILINEAR interp filter / non-uniform var-tx.
+Genuinely malformed input (out-of-range or inconsistent ref coding,
+unavailable reference slots, invalid chroma/partition sizes) stays
+`Malformed` — the compound guard was split so its folded range-check no
+longer mislabels bad streams as unsupported or vice versa.
+
+**Pins, not just code.** `tests/data/inter/` commits three sub-2 KB OBU
+fixtures verified conformant by the pinned `aomdec` (a 4-frame compound
+stream — blend content wins compound RD — a `--resize-mode`
+frame-size-override stream, and a bd10 nonzero-MV stream; generation recipes
+in the test header). `tests/all/unsupported_refusals.rs` asserts each is
+refused BY NAME (`UnsupportedFeature` containing the family name), panics on
+`Ok` with an instruction to flip the arm when its step lands, and runs in
+both build states. `aom_decode::EXPERIMENTAL_VIDEO` is the pub const
+harnesses branch on — a test crate's own `cfg!(feature)` cannot see the
+workspace-unified flag, so the crate self-reports (recorded in the API
+snapshot).
+
+**Gate shape changed.** `just test-next-video` is the feature-on workspace
+nextest recipe (`--features zenav1-aom-decode/experimental-video`, the
+unifying invocation), now a `gate-landing` step, and a third linux
+differential leg (`test-linux-experimental-video`) in CI.
+
+Gates at landing: `just gate-landing` — test-next **1551/1551**,
+test-next-scalar **1551/1551**, test-next-video (feature ON) **1551/1551** —
+identical counts across legs = the byte-inert contract — plus fmt-check,
+ci-yaml-check, census-gate, test-whereat, api-doc-check, upstream pristine
+`03087864`.
+
 ## Merged to main; branches pruned; the tree is rustfmt-clean and gated (2026-09-25)
 
 `perf/gate3-txfm-i16-batch` fast-forwarded `origin/main` `1434bc3` -> `75b5abc` (171
