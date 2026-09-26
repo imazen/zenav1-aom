@@ -455,3 +455,63 @@ the bisected estimate regression, which is the user's call.
 ### Commits landed on the branch (local only, not pushed)
 
 Listed in `git log`; each names its gate. Nothing was pushed, rebased or merged.
+
+---
+
+## Follow-up 2026-09-25: two API-surface flags from another reviewer, measured
+
+### Flag A — "`zenav1-aom-encode`: 77 pub mods, 3,974 items in the semver contract; the only out-of-workspace consumer uses three of them"
+
+**Stale by fifteen days, and the number comes from the wrong feature set.** The
+`__internals` gate landed on 2026-09-10 (`impl_mods!`: every implementation module is
+`pub` only under the default-OFF `__internals` feature, `pub(crate)` otherwise; the
+public-API snapshots are enforced by `api-doc-check` in `gate-landing` and CI). At HEAD
+the default-feature snapshot `docs/public-api/zenav1-aom-encode.txt` is **2 pub modules,
+28 types, 24 free functions, 258 item lines**; the 77-80-module / ~4k-item figure is
+`zenav1-aom-encode.internal.txt`, i.e. what a consumer sees only by opting into
+`__internals`. zenavif's actual imports, measured: `key_frame::encode_key_frame`,
+`KeyFramePlanes{,::new}`, `KeyFrameConfig{,::allintra_speed}` — the `key_frame` module
+and nothing else, exactly the surface the gate keeps. Residual, stated: a cargo feature
+is a convention, not a hard boundary — a consumer *can* enable `__internals`. The
+double-underscore name and the snapshot split document it as non-contract; that is the
+accepted practice and no further action is proposed.
+
+### Flag B — "`zenav1-aom-dsp`: 330 of 569 public free fns have no external caller; differential tests live in `tests/`, so everything they touch had to be public — move them in-crate and most of the surface closes"
+
+**Confirmed in substance, larger than stated, and the proposed fix is not the right
+one for this repo.** Measured at HEAD by classifying every `pub fn` in the default
+snapshot against every consumer's source (`aom-encode`, `aom-decode`, `aom-bench`,
+`zenav1-aom`, zenavif) and against the crate's own tests:
+
+| class | count |
+|---|---|
+| called from a consumer crate's `src` (must stay `pub`: separate crates) | 312 |
+| called only from `aom-dsp`'s own `tests/` or `aom-dsp-bench` | 230 |
+| called only from *other* crates' `tests/` | 12 |
+| referenced nowhere outside `aom-dsp/src` | 53 |
+
+So 295 of 607 (49 %) are test-only or unreferenced, close to the reviewer's 58 %. The
+**53 unreferenced ones needed no test moves at all** and are `pub(crate)` as of this
+landing (52 definitions + their `pub use` re-exports; one, `trace::focus`, is reached
+through the exported `trace_focus!` macro and had to stay public — the compiler found
+it, the textual census did not). Snapshot: free functions 649 -> 596.
+
+**Why not "move the tests in-crate":** (1) the repo already has the mechanism for this
+exact problem — the `__internals` feature gate `aom-decode`/`aom-encode` use — and
+CLAUDE.md records why the tests live in `tests/`: 320 integration binaries were
+consolidated into 7 on 2026-09-09 and nextest runs them as one pool; folding 122
+differential files into the lib's `#[cfg(test)]` would put every C-oracle-linked
+differential into ONE test binary whose rebuild is paid on every `src` edit, and would
+invert the KB-42 rule that `--lib` is not a gate. (2) Half the 230 sit in modules that
+also export consumer-used items (`entropy::partition` 97 used / 62 test-only,
+`entropy::header` 22 / 34, `txb` 28 / 12), so the closure would be per-item, not
+per-file. **What closes most of it cheaply:** eight modules have ZERO consumer use —
+`transform` (26 fns), `convolve` + `convolve::{compound,highbd,scaled}` (18),
+`intra::edge` (7), `inter::scale`, `restore::wiener` — and can go behind an `aom-dsp`
+`__internals` feature at module level with the encode crate's `impl_mods!` pattern
+(the tests and `aom-bench` enable it; `aom-encode`/`aom-decode` do not). That is ~65 of
+the 230 for a one-file change per module and zero test moves. The remaining ~165 are
+per-item inside shared modules and are the reviewer's "most of the surface" only if
+someone accepts a per-item visibility macro or in-crate test moves for those modules;
+neither is worth doing before the crates are published for the first time (nothing is on
+crates.io yet, so the contract is still free to shrink later).

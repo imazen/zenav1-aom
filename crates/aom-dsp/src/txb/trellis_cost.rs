@@ -41,7 +41,7 @@ fn br_cost(level: i32, lps: &[i32]) -> i32 {
 /// `get_br_cost_with_diff`: returns the base-range cost and accumulates the
 /// trellis `diff` (cost of coding `level-1` instead of `level`).
 #[inline]
-pub fn br_cost_with_diff(level: i32, lps: &[i32], diff: &mut i32) -> i32 {
+pub(crate) fn br_cost_with_diff(level: i32, lps: &[i32], diff: &mut i32) -> i32 {
     let base_range = (level - 1 - NUM_BASE_LEVELS).min(COEFF_BASE_RANGE);
     let mut golomb_bits = 0;
     if level <= COEFF_BASE_RANGE + 1 + NUM_BASE_LEVELS {

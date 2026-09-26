@@ -17,7 +17,7 @@
 /// Scalar transcription of `av1_calc_indices_dim1/_dim2` (`_c`,
 /// k_means_template.h). Also the `AOM_FORCE_SCALAR` tier and the tail for a
 /// non-multiple-of-16 `n`.
-pub fn calc_indices_c(
+pub(crate) fn calc_indices_c(
     data: &[i16],
     centroids: &[i16],
     indices: &mut [u8],

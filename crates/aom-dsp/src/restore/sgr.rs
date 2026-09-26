@@ -1131,7 +1131,7 @@ pub fn selfguided_restoration<P: crate::restore::pick::LrPixel>(
 
 /// `av1_decode_xq` (restoration.c): the projection weights from the coded
 /// `xqd` per the parameter set's radii.
-pub fn decode_xq(xqd: &[i32; 2], ep: usize) -> [i32; 2] {
+pub(crate) fn decode_xq(xqd: &[i32; 2], ep: usize) -> [i32; 2] {
     let (rads, _) = SGR_PARAMS[ep];
     if rads[0] == 0 {
         [0, (1 << SGRPROJ_PRJ_BITS) - xqd[1]]

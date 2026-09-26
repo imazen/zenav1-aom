@@ -128,7 +128,7 @@ fn inv_recenter_nonneg(r: u16, v: u16) -> u16 {
 
 /// `inv_recenter_finite_nonneg` (aom_dsp/recenter.h): inverse-recenter a
 /// value `v` in `[0, n-1]` around a reference `r` also in `[0, n-1]`.
-pub fn inv_recenter_finite_nonneg(n: u16, r: u16, v: u16) -> u16 {
+pub(crate) fn inv_recenter_finite_nonneg(n: u16, r: u16, v: u16) -> u16 {
     if (r << 1) <= n {
         inv_recenter_nonneg(r, v)
     } else {
@@ -138,7 +138,7 @@ pub fn inv_recenter_finite_nonneg(n: u16, r: u16, v: u16) -> u16 {
 
 /// `read_primitive_quniform` (aom_dsp/binary_codes_reader.c): quasi-uniform
 /// value in `[0, n-1]` on the arithmetic coder.
-pub fn read_primitive_quniform(dec: &mut OdEcDec, n: u16) -> u16 {
+pub(crate) fn read_primitive_quniform(dec: &mut OdEcDec, n: u16) -> u16 {
     if n <= 1 {
         return 0;
     }
@@ -154,7 +154,7 @@ pub fn read_primitive_quniform(dec: &mut OdEcDec, n: u16) -> u16 {
 
 /// `read_primitive_subexpfin` (aom_dsp/binary_codes_reader.c): finite
 /// subexponential code for a symbol in `[0, n-1]` with parameter `k`.
-pub fn read_primitive_subexpfin(dec: &mut OdEcDec, n: u16, k: u16) -> u16 {
+pub(crate) fn read_primitive_subexpfin(dec: &mut OdEcDec, n: u16, k: u16) -> u16 {
     let mut i: i32 = 0;
     let mut mk: i32 = 0;
     loop {
@@ -172,14 +172,14 @@ pub fn read_primitive_subexpfin(dec: &mut OdEcDec, n: u16, k: u16) -> u16 {
 }
 
 /// `aom_read_primitive_refsubexpfin` (aom_dsp/binary_codes_reader.c).
-pub fn read_primitive_refsubexpfin(dec: &mut OdEcDec, n: u16, k: u16, r: u16) -> u16 {
+pub(crate) fn read_primitive_refsubexpfin(dec: &mut OdEcDec, n: u16, k: u16, r: u16) -> u16 {
     inv_recenter_finite_nonneg(n, r, read_primitive_subexpfin(dec, n, k))
 }
 
 /// `read_wiener_filter` (decodeframe.c): the three coded taps per direction
 /// (tap 0 skipped/zeroed for the 5-tap chroma window), centre = `-2 * sum`,
 /// symmetric mirror in slots 4..6, slot 7 zero. Updates `ref` in place.
-pub fn read_wiener_filter(
+pub(crate) fn read_wiener_filter(
     dec: &mut OdEcDec,
     wiener_win: usize,
     r: &mut WienerInfoLr,
@@ -235,7 +235,7 @@ pub fn read_wiener_filter(
 
 /// `read_sgrproj_filter` (decodeframe.c): the 4-bit `ep` then the projection
 /// weights, coded per the parameter set's radii. Updates `ref` in place.
-pub fn read_sgrproj_filter(dec: &mut OdEcDec, r: &mut SgrprojInfoLr) -> SgrprojInfoLr {
+pub(crate) fn read_sgrproj_filter(dec: &mut OdEcDec, r: &mut SgrprojInfoLr) -> SgrprojInfoLr {
     let ep = read_literal(dec, SGRPROJ_PARAMS_BITS);
     let rad = SGR_PARAMS_R[ep as usize];
     let mut s = SgrprojInfoLr { ep, xqd: [0; 2] };
@@ -349,7 +349,7 @@ pub const RESTORATION_UNIT_OFFSET: i32 = 8;
 
 /// `av1_lr_count_units` (restoration.c): units along one axis — round the
 /// plane size to nearest (a right/bottom unit may extend to 150%), min 1.
-pub fn lr_count_units(unit_size: i32, plane_size: i32) -> i32 {
+pub(crate) fn lr_count_units(unit_size: i32, plane_size: i32) -> i32 {
     ((plane_size + (unit_size >> 1)) / unit_size).max(1)
 }
 
@@ -475,7 +475,7 @@ fn recenter_nonneg(r: u16, v: u16) -> u16 {
 /// `recenter_finite_nonneg` (aom_dsp/recenter.h): forward recentering of a
 /// value `v` in `[0, n-1]` around a reference `r` also in `[0, n-1]` —
 /// inverse of [`inv_recenter_finite_nonneg`].
-pub fn recenter_finite_nonneg(n: u16, r: u16, v: u16) -> u16 {
+pub(crate) fn recenter_finite_nonneg(n: u16, r: u16, v: u16) -> u16 {
     if (r << 1) <= n {
         recenter_nonneg(r, v)
     } else {
@@ -485,7 +485,7 @@ pub fn recenter_finite_nonneg(n: u16, r: u16, v: u16) -> u16 {
 
 /// `write_primitive_quniform` (aom_dsp/binary_codes_writer.c): quasi-uniform
 /// code for `v` in `[0, n-1]`.
-pub fn write_primitive_quniform(enc: &mut OdEcEnc, n: u16, v: u16) {
+pub(crate) fn write_primitive_quniform(enc: &mut OdEcEnc, n: u16, v: u16) {
     if n <= 1 {
         return;
     }
@@ -500,7 +500,7 @@ pub fn write_primitive_quniform(enc: &mut OdEcEnc, n: u16, v: u16) {
 }
 
 /// `count_primitive_quniform` (aom_dsp/binary_codes_writer.c).
-pub fn count_primitive_quniform(n: u16, v: u16) -> i32 {
+pub(crate) fn count_primitive_quniform(n: u16, v: u16) -> i32 {
     if n <= 1 {
         return 0;
     }
@@ -515,7 +515,7 @@ pub fn count_primitive_quniform(n: u16, v: u16) -> i32 {
 
 /// `write_primitive_subexpfin` (aom_dsp/binary_codes_writer.c): finite
 /// subexponential code for `v` in `[0, n-1]` with parameter `k`.
-pub fn write_primitive_subexpfin(enc: &mut OdEcEnc, n: u16, k: u16, v: u16) {
+pub(crate) fn write_primitive_subexpfin(enc: &mut OdEcEnc, n: u16, k: u16, v: u16) {
     let mut i: i32 = 0;
     let mut mk: i32 = 0;
     loop {
@@ -538,7 +538,7 @@ pub fn write_primitive_subexpfin(enc: &mut OdEcEnc, n: u16, k: u16, v: u16) {
 }
 
 /// `count_primitive_subexpfin` (aom_dsp/binary_codes_writer.c).
-pub fn count_primitive_subexpfin(n: u16, k: u16, v: u16) -> i32 {
+pub(crate) fn count_primitive_subexpfin(n: u16, k: u16, v: u16) -> i32 {
     let mut count: i32 = 0;
     let mut i: i32 = 0;
     let mut mk: i32 = 0;
@@ -561,7 +561,7 @@ pub fn count_primitive_subexpfin(n: u16, k: u16, v: u16) -> i32 {
 }
 
 /// `aom_write_primitive_refsubexpfin` (aom_dsp/binary_codes_writer.c).
-pub fn write_primitive_refsubexpfin(enc: &mut OdEcEnc, n: u16, k: u16, r: u16, v: u16) {
+pub(crate) fn write_primitive_refsubexpfin(enc: &mut OdEcEnc, n: u16, k: u16, r: u16, v: u16) {
     write_primitive_subexpfin(enc, n, k, recenter_finite_nonneg(n, r, v));
 }
 
@@ -574,7 +574,7 @@ pub fn count_primitive_refsubexpfin(n: u16, k: u16, r: u16, v: u16) -> i32 {
 /// `write_wiener_filter` (av1/encoder/bitstream.c): the three coded taps per
 /// direction (tap 0 skipped for the 5-tap chroma window), delta-coded against
 /// `ref`, which is updated in place.
-pub fn write_wiener_filter(
+pub(crate) fn write_wiener_filter(
     enc: &mut OdEcEnc,
     wiener_win: usize,
     w: &WienerInfoLr,
@@ -653,7 +653,7 @@ pub fn count_wiener_bits(wiener_win: usize, w: &WienerInfoLr, r: &WienerInfoLr) 
 /// `write_sgrproj_filter` (av1/encoder/bitstream.c): the 4-bit `ep` then the
 /// projection weights coded per the parameter set's radii, delta-coded
 /// against `ref`, which is updated in place.
-pub fn write_sgrproj_filter(enc: &mut OdEcEnc, s: &SgrprojInfoLr, r: &mut SgrprojInfoLr) {
+pub(crate) fn write_sgrproj_filter(enc: &mut OdEcEnc, s: &SgrprojInfoLr, r: &mut SgrprojInfoLr) {
     write_literal(enc, s.ep, SGRPROJ_PARAMS_BITS);
     let rad = SGR_PARAMS_R[s.ep as usize];
     let n0 = (SGRPROJ_PRJ_MAX0 - SGRPROJ_PRJ_MIN0 + 1) as u16;

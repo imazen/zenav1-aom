@@ -118,7 +118,7 @@ pub fn variance_u16_simd(
 ///
 /// `dqcoeff` is sliced to `coeff.len()` so a short `dqcoeff` panics exactly
 /// where the indexed form panicked.
-pub fn block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
+pub(crate) fn block_error_simd(coeff: &[i32], dqcoeff: &[i32]) -> (i64, i64) {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
         block_error_impl(coeff, dqcoeff),
@@ -241,7 +241,12 @@ fn block_error_impl_v3(_t: archmage::X64V3Token, coeff: &[i32], dqcoeff: &[i32])
 /// bug-compatible with real `aomenc` even where it does wrap (`i16::MIN`
 /// pairs). See `_v3` for the per-shape semantics.
 #[inline]
-pub fn sum_squares_2d_i16_simd(src: &[i16], src_stride: usize, width: usize, height: usize) -> u64 {
+pub(crate) fn sum_squares_2d_i16_simd(
+    src: &[i16],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
     let _ = crate::dispatch::scalar_forced(); // one-time AOM_FORCE_SCALAR pin
     incant!(
         sum_squares_2d_i16_impl(src, src_stride, width, height),

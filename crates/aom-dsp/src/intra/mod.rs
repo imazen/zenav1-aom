@@ -620,7 +620,7 @@ pub fn build_non_directional_intra_high(
 /// values written are therefore identical to predicting into a tight scratch and
 /// copying the block back, which is what the two-slice form above does.
 #[allow(clippy::too_many_arguments)]
-pub fn build_non_directional_intra_high_in_place(
+pub(crate) fn build_non_directional_intra_high_in_place(
     buf: &mut [u16],
     off: usize,
     stride: usize,
@@ -1154,7 +1154,7 @@ pub fn build_directional_intra_high(
 /// touches the destination.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-pub fn build_directional_intra_high_in_place(
+pub(crate) fn build_directional_intra_high_in_place(
     buf: &mut [u16],
     off: usize,
     stride: usize,
@@ -1576,7 +1576,7 @@ pub fn build_filter_intra_high(
 /// scratch plus the assembled edges — never the destination.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-pub fn build_filter_intra_high_in_place(
+pub(crate) fn build_filter_intra_high_in_place(
     buf: &mut [u16],
     off: usize,
     stride: usize,
@@ -1763,7 +1763,7 @@ fn assemble_nd_edges_u8(recon: &[u8], g: &NdEdge, above_row: &mut [u8], left_col
 /// bd8 lowbd twin of [`build_non_directional_intra_high`] (DC / SMOOTH* / PAETH).
 /// Assembles `u8` edges then runs the C-verified non-directional [`predict`].
 #[allow(clippy::too_many_arguments)]
-pub fn build_non_directional_intra_u8(
+pub(crate) fn build_non_directional_intra_u8(
     recon: &[u8],
     ref_off: usize,
     ref_stride: usize,
@@ -1997,7 +1997,7 @@ fn assemble_dir_edges_u8(recon: &[u8], g: &DirEdge, above_data: &mut [u8], left_
 /// edges (corner filter / edge low-pass / upsample) then dispatches through
 /// [`dr_predict_u8`]. `bd` fixed at 8.
 #[allow(clippy::too_many_arguments)]
-pub fn build_directional_intra_u8(
+pub(crate) fn build_directional_intra_u8(
     recon: &[u8],
     ref_off: usize,
     ref_stride: usize,
@@ -2182,7 +2182,7 @@ fn filter_intra_predict_u8(
 /// bd8 lowbd twin of [`build_filter_intra_high`]. Assembles `u8` edges (above,
 /// left and corner all needed) then runs [`filter_intra_predict_u8`].
 #[allow(clippy::too_many_arguments)]
-pub fn build_filter_intra_u8(
+pub(crate) fn build_filter_intra_u8(
     recon: &[u8],
     ref_off: usize,
     ref_stride: usize,

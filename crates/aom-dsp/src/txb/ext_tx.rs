@@ -70,7 +70,7 @@ pub fn ext_tx_set_type(tx_size: usize, is_inter: bool, reduced: bool) -> usize {
 }
 
 /// `get_ext_tx_set`: CDF set index (`eset`); -1 / 0 for DCT-only.
-pub fn ext_tx_set(tx_size: usize, is_inter: bool, reduced: bool) -> i32 {
+pub(crate) fn ext_tx_set(tx_size: usize, is_inter: bool, reduced: bool) -> i32 {
     let st = ext_tx_set_type(tx_size, is_inter, reduced);
     EXT_TX_SET_INDEX[is_inter as usize][st]
 }

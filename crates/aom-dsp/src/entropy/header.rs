@@ -336,7 +336,7 @@ fn ceil_power_of_two(value: i32, n: u32) -> i32 {
 /// `wb_write_uniform` (`av1/encoder/bitstream.c`): the uncompressed-header form of
 /// `write_uniform` — a value `v` in `[0, n)` coded in `l-1` or `l` bits where
 /// `l = get_unsigned_bits(n)` and `m = (1 << l) - n`.
-pub fn wb_write_uniform(wb: &mut WriteBitBuffer, n: i32, v: i32) {
+pub(crate) fn wb_write_uniform(wb: &mut WriteBitBuffer, n: i32, v: i32) {
     let l = get_unsigned_bits(n as u32);
     if l == 0 {
         return;
@@ -397,7 +397,7 @@ impl Default for TileInfoHeader {
 /// `write_tile_info_max_tile`: uniform-spacing flag, then either the unary
 /// log2-cols/rows increments (uniform) or the per-tile `wb_write_uniform` sizes
 /// (explicit).
-pub fn write_tile_info_max_tile(wb: &mut WriteBitBuffer, t: &TileInfoHeader) {
+pub(crate) fn write_tile_info_max_tile(wb: &mut WriteBitBuffer, t: &TileInfoHeader) {
     let mut width_sb = ceil_power_of_two(t.mi_cols, t.mib_size_log2);
     let mut height_sb = ceil_power_of_two(t.mi_rows, t.mib_size_log2);
     wb.write_bit(t.uniform_spacing as u32);
@@ -2212,7 +2212,7 @@ pub fn read_global_motion_params(
 
 /// `read_global_motion` — inverse of [`write_global_motion`]: the seven per-reference
 /// warp models.
-pub fn read_global_motion(
+pub(crate) fn read_global_motion(
     rb: &mut ReadBitBuffer,
     ref_global_motion: &[WarpedMotionParams; 7],
     allow_hp: bool,
@@ -3034,7 +3034,7 @@ pub fn read_sequence_header_obu(rb: &mut ReadBitBuffer) -> SequenceHeaderObu {
 /// `read_ext_tile_info` — inverse of [`write_ext_tile_info`] (large-scale tile mode):
 /// consume the byte alignment, then (multi-tile) the context-update-tile-id +
 /// tile-size-bytes fields. Returns `(context_update_tile_id, tile_size_bytes_minus_1)`.
-pub fn read_ext_tile_info(rb: &mut ReadBitBuffer, rows: usize, cols: usize) -> (i32, i32) {
+pub(crate) fn read_ext_tile_info(rb: &mut ReadBitBuffer, rows: usize, cols: usize) -> (i32, i32) {
     rb.byte_align();
     if rows * cols > 1 {
         (rb.read_literal(2), rb.read_literal(2))

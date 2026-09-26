@@ -34,7 +34,7 @@ pub static COSPI_ARR_DATA: [[i32; 64]; 4] = [
 
 /// Equivalent of libaom `cospi_arr(n)`: returns the row for `cos_bit == n`.
 #[inline]
-pub fn cospi_arr(n: i32) -> &'static [i32; 64] {
+pub(crate) fn cospi_arr(n: i32) -> &'static [i32; 64] {
     &COSPI_ARR_DATA[(n - COS_BIT_MIN) as usize]
 }
 
@@ -49,7 +49,7 @@ pub static SINPI_ARR_DATA: [[i32; 5]; 4] = [
 
 /// Equivalent of libaom `sinpi_arr(n)`.
 #[inline]
-pub fn sinpi_arr(n: i32) -> &'static [i32; 5] {
+pub(crate) fn sinpi_arr(n: i32) -> &'static [i32; 5] {
     &SINPI_ARR_DATA[(n - COS_BIT_MIN) as usize]
 }
 

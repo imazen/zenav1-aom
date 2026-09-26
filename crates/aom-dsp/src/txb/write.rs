@@ -26,7 +26,7 @@ const TXS_SQR_UP: [usize; 19] = [0, 1, 2, 3, 4, 1, 1, 2, 2, 3, 3, 4, 4, 2, 2, 3,
 
 /// `get_txsize_entropy_ctx`.
 #[inline]
-pub fn txsize_entropy_ctx(tx_size: usize) -> usize {
+pub(crate) fn txsize_entropy_ctx(tx_size: usize) -> usize {
     (TXS_SQR[tx_size] + TXS_SQR_UP[tx_size] + 1) >> 1
 }
 
@@ -55,7 +55,7 @@ pub const CDF_ARENA_LEN: usize = 4045;
 /// inheriting the context via `primary_ref_frame` restarts the update-rate
 /// ramp — carrying the counters adapts too slowly and drifts off C within a
 /// few frames (found by the animated-AVIF alpha-track chain, 2026-07-23).
-pub fn reset_arena_cdf_counters(cdfs: &mut [u16]) {
+pub(crate) fn reset_arena_cdf_counters(cdfs: &mut [u16]) {
     // (offset, rows, nsymbs, stride) per segment — the layout constants above.
     const SEGS: [(usize, usize, usize); 13] = [
         (A_TXB_SKIP, 5 * 13, 2),

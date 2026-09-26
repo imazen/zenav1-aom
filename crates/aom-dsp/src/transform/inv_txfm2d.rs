@@ -991,7 +991,7 @@ fn iwht4x4_1_add_u8(input: &[i32], dest: &mut [u8], stride: usize) {
 /// bd8/u8 counterpart of [`av1_inverse_transform_add`] — the recon dispatch
 /// (lossless WHT vs the regular inverse 2-D transform).
 #[allow(clippy::too_many_arguments)]
-pub fn av1_inverse_transform_add_u8(
+pub(crate) fn av1_inverse_transform_add_u8(
     input: &[i32],
     dst: &mut [u8],
     stride: usize,

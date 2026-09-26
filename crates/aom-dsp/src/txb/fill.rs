@@ -145,7 +145,7 @@ pub fn fill_lv_map_coeff_cost(
 /// needs, vs. the synthetic-but-valid random tables used for pack-glue-only
 /// verification). `txs_ctx` is [`crate::txb::txsize_entropy_ctx`]`(tx_size)`
 /// (0..=4); `plane_type` is 0 (luma) or 1 (chroma).
-pub fn fill_lv_map_coeff_cost_from_arena(
+pub(crate) fn fill_lv_map_coeff_cost_from_arena(
     arena: &[u16],
     txs_ctx: usize,
     plane_type: usize,
@@ -188,7 +188,7 @@ pub fn fill_lv_map_coeff_cost_from_arena(
 /// 0 -- real AV1 never reads `eob_cost[ctx][eob_pt-1]` past `eob_pt-1 < nsy`
 /// for tx sizes that select this `eob_multi_size` (`get_eob_pos_token`'s
 /// range is bounded by the tx size's own coefficient count).
-pub fn fill_eob_cost_from_arena(
+pub(crate) fn fill_eob_cost_from_arena(
     arena: &[u16],
     eob_multi_size: usize,
     plane_type: usize,

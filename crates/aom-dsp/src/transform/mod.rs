@@ -14,7 +14,8 @@ pub mod special;
 pub mod txfm1d_gen;
 pub mod txfm2d;
 
-pub use fdct::{av1_fdct4, clamp_value, half_btf, round_shift};
+pub(crate) use fdct::round_shift;
+pub use fdct::{av1_fdct4, clamp_value, half_btf};
 pub use inv_txfm1d_gen::{
     av1_iadst16, av1_iadst8, av1_idct16, av1_idct32, av1_idct4, av1_idct64, av1_idct8,
 };

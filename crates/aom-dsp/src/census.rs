@@ -569,7 +569,12 @@ pub fn snapshot() -> Box<Counts> {
 /// `tx_size` are that function's own arguments, and the classification here is
 /// the same branch it takes.
 #[inline(always)]
-pub fn note_intra_pred(mode: usize, angle_delta: i32, use_filter_intra: bool, tx_size: usize) {
+pub(crate) fn note_intra_pred(
+    mode: usize,
+    angle_delta: i32,
+    use_filter_intra: bool,
+    tx_size: usize,
+) {
     #[cfg(feature = "census")]
     {
         let _ = note_intra_pred_impl(mode, angle_delta, use_filter_intra, tx_size);
@@ -625,7 +630,7 @@ fn note_intra_pred_impl(mode: usize, angle_delta: i32, use_filter_intra: bool, t
 
 /// One forward 2-D transform.
 #[inline(always)]
-pub fn note_fwd_txfm(tx_type: usize, tx_size: usize) {
+pub(crate) fn note_fwd_txfm(tx_type: usize, tx_size: usize) {
     #[cfg(feature = "census")]
     {
         if tx_type < N_TX_TYPE && tx_size < N_TX_SIZE {
@@ -643,7 +648,7 @@ pub fn note_fwd_txfm(tx_type: usize, tx_size: usize) {
 /// unmeasured — "assume it matches the forward mix" is exactly the kind of
 /// claim this file exists to replace with a number.
 #[inline(always)]
-pub fn note_inv_txfm(tx_type: usize, tx_size: usize) {
+pub(crate) fn note_inv_txfm(tx_type: usize, tx_size: usize) {
     #[cfg(feature = "census")]
     {
         if tx_type < N_TX_TYPE && tx_size < N_TX_SIZE {
@@ -687,7 +692,7 @@ pub fn note_plane_intra_pred(plane: usize, tx_size: usize) {
 /// `predict_intra_high` count can ever include because CFL does not route
 /// through it.
 #[inline(always)]
-pub fn note_cfl_predict(tx_size: usize) {
+pub(crate) fn note_cfl_predict(tx_size: usize) {
     #[cfg(feature = "census")]
     {
         if tx_size < N_TX_SIZE {

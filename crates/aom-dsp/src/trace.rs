@@ -305,7 +305,7 @@ pub fn clear() {
 
 /// Read the documented `AOM_*` names and [`install`] them. The harness front
 /// door; a host that wants env control calls this once at startup.
-pub fn install_from_env() {
+pub(crate) fn install_from_env() {
     install(TraceConfig::from_env());
 }
 

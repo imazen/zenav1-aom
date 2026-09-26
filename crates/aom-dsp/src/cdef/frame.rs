@@ -843,7 +843,7 @@ pub fn cdef_frame_u8(
 /// [`cdef_frame_u8`] with a cooperative stop token polled once per 64-pixel
 /// filter-block row — the lowbd twin of [`cdef_frame_stop`], and the one every
 /// 8-bit decode takes.
-pub fn cdef_frame_u8_stop(
+pub(crate) fn cdef_frame_u8_stop(
     y: &mut [u8],
     y_stride: usize,
     u: &mut [u8],

@@ -327,7 +327,7 @@ pub fn y_mode_size_group(bsize: usize) -> usize {
 /// `write_intra_y_mode_nonkf` (`av1/encoder/bitstream.c`): the non-keyframe intra luma
 /// mode — `aom_write_symbol(mode, y_mode_cdf[size_group_lookup[bsize]], INTRA_MODES)`
 /// (adapted). Same symbol write as the keyframe variant on a size-group-selected CDF.
-pub fn write_intra_y_mode_nonkf(enc: &mut OdEcEnc, y_mode_cdf: &mut [u16], mode: i32) {
+pub(crate) fn write_intra_y_mode_nonkf(enc: &mut OdEcEnc, y_mode_cdf: &mut [u16], mode: i32) {
     write_symbol(enc, mode, y_mode_cdf, INTRA_MODES);
 }
 
@@ -1683,7 +1683,7 @@ pub fn write_tx_size_vartx(
 /// partition_search.c:559-562 gates it on `if (dry_run)`) — so the pack's
 /// `inter_tx_size` is unaffected and this port updates contexts only.
 #[allow(clippy::too_many_arguments)]
-pub fn set_txfm_context_vartx(
+pub(crate) fn set_txfm_context_vartx(
     bsize: usize,
     inter_tx_size: &[usize; 16],
     mb_to_right_edge: i32,
@@ -4724,7 +4724,7 @@ pub fn read_delta_lflevel(dec: &mut OdEcDec, delta_lf_cdf: &mut [u16]) -> i32 {
 
 /// `av1_neg_deinterleave` (`av1/common/seg_common.c`): inverse of [`neg_interleave`] —
 /// recover the segment id from its recentred code.
-pub fn neg_deinterleave(diff: i32, ref_: i32, max: i32) -> i32 {
+pub(crate) fn neg_deinterleave(diff: i32, ref_: i32, max: i32) -> i32 {
     if ref_ == 0 {
         return diff;
     }

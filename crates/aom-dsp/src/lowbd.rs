@@ -121,7 +121,7 @@ pub fn narrow_u16_to_u8(src: &[u16]) -> Vec<u8> {
 
 /// `u16 -> u8` narrow into an existing buffer — [`narrow_u16_to_u8`] without
 /// the allocation.
-pub fn narrow_u16_to_u8_into(src: &[u16], dst: &mut [u8]) {
+pub(crate) fn narrow_u16_to_u8_into(src: &[u16], dst: &mut [u8]) {
     for (d, s) in dst.iter_mut().zip(src.iter()) {
         *d = (*s).min(255) as u8;
     }

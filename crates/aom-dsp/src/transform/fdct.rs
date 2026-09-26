@@ -25,7 +25,7 @@ pub fn half_btf(w0: i32, in0: i32, w1: i32, in1: i32, bit: i32) -> i32 {
 /// libaom `round_shift(value, bit)` — bit-exact. (Not used by fdct4; provided
 /// for the rest of the transform family.)
 #[inline]
-pub fn round_shift(value: i64, bit: i32) -> i32 {
+pub(crate) fn round_shift(value: i64, bit: i32) -> i32 {
     debug_assert!(bit >= 1);
     ((value + (1i64 << (bit - 1))) >> bit) as i32
 }

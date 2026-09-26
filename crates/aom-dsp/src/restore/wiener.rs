@@ -31,7 +31,7 @@ const SUBPEL_TAPS: usize = 8;
 const MAX_SB_SIZE: usize = 128;
 
 /// `get_conv_params_wiener` (av1/common/convolve.h): `(round_0, round_1)`.
-pub fn conv_params_wiener(bd: i32) -> (i32, i32) {
+pub(crate) fn conv_params_wiener(bd: i32) -> (i32, i32) {
     let mut round_0 = 3; // WIENER_ROUND0_BITS
     let mut round_1 = 2 * FILTER_BITS - round_0;
     let intbufrange = bd + FILTER_BITS - round_0 + 2;

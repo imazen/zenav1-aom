@@ -18,10 +18,9 @@ pub use tables::nz_map_ctx_offset;
 mod scan;
 pub use scan::{iscan, scan, SCAN_ORDERS};
 mod write;
-pub use write::{
-    reset_arena_cdf_counters, txsize_entropy_ctx, write_coeffs_txb, write_coeffs_txb_full,
-    CDF_ARENA_LEN,
-};
+pub(crate) use write::reset_arena_cdf_counters;
+pub(crate) use write::txsize_entropy_ctx;
+pub use write::{write_coeffs_txb, write_coeffs_txb_full, CDF_ARENA_LEN};
 mod read;
 pub use read::{dequant_txb, read_coeffs_txb, read_coeffs_txb_full, tx_scale};
 mod cost;
@@ -31,20 +30,21 @@ pub use cost::{
 mod prob_cost;
 pub use prob_cost::{cost_symbol, cost_tokens_from_cdf};
 mod fill;
+pub(crate) use fill::fill_eob_cost_from_arena;
+pub(crate) use fill::fill_lv_map_coeff_cost_from_arena;
 pub use fill::{
-    fill_coeff_cost_set_from_arena, fill_eob_cost_from_arena, fill_lv_map_coeff_cost,
-    fill_lv_map_coeff_cost_from_arena, CoeffCostSet, LvMapCoeffCost,
+    fill_coeff_cost_set_from_arena, fill_lv_map_coeff_cost, CoeffCostSet, LvMapCoeffCost,
 };
 mod ext_tx;
+pub(crate) use ext_tx::ext_tx_set;
 pub use ext_tx::{
-    ext_tx_derive, ext_tx_set, ext_tx_set_type, fill_tx_type_costs, get_tx_type_cost, read_tx_type,
+    ext_tx_derive, ext_tx_set_type, fill_tx_type_costs, get_tx_type_cost, read_tx_type,
     write_tx_type, ExtTxDeriv, TxTypeCosts, EXT_TX_SETS_INTER, EXT_TX_SETS_INTRA, EXT_TX_SIZES,
     INTRA_MODES, TX_TYPES,
 };
 mod trellis_cost;
-pub use trellis_cost::{
-    br_cost_with_diff, coeff_cost_eob, coeff_cost_general, two_coeff_cost_simple,
-};
+pub(crate) use trellis_cost::br_cost_with_diff;
+pub use trellis_cost::{coeff_cost_eob, coeff_cost_general, two_coeff_cost_simple};
 mod optimize;
 pub use optimize::{
     optimize_txb, optimize_txb_qm, optimize_txb_qm_scratch, optimize_txb_scratch, OptimizeResult,
