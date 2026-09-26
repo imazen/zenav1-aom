@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1820 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 127 lines (72 hidden + 89 excluded-feature)
+# files: zenav1-aom-dsp.txt 1847 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 128 lines (73 hidden + 89 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 8
 
 ## summary
 #
 #   pub modules                                56
-#   pub types (struct/enum/trait/alias)        97
-#   pub consts/statics                        204
+#   pub types (struct/enum/trait/alias)        98
+#   pub consts/statics                        212
 #   pub macros                                  4
-#   free functions                            538
+#   free functions                            544
 #   inherent methods                          107
-#   struct fields                             707
+#   struct fields                             718
 #   enum variants                              37
-#   trait roster entries (type × trait)       278
-#   auto-trait-complete types                  86
+#   trait roster entries (type × trait)       280
+#   auto-trait-complete types                  87
 #   auto-trait exceptions                       4
 #
 # per-module pub lines:
 #   (root)                            8
-#   aom_dsp                        1742
+#   aom_dsp                        1768
 
-## items (1741 lines)
+## items (1767 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -317,7 +317,13 @@ pub mod aom_dsp::entropy::default_cdfs
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_ANGLE_DELTA: [[u16; 8]; 8]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_CFL_ALPHA: [[u16; 17]; 6]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_CFL_SIGN: [u16; 9]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMPOUND_IDX: [[u16; 3]; 6]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMPOUND_TYPE: [[u16; 3]; 22]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMP_BWDREF: [[[u16; 3]; 2]; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMP_GROUP_IDX: [[u16; 3]; 6]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMP_INTER: [[u16; 3]; 5]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMP_REF: [[[u16; 3]; 3]; 3]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_COMP_REF_TYPE: [[u16; 3]; 5]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_DELTA_LF: [u16; 5]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_DELTA_LF_MULTI: [[u16; 5]; 4]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_DELTA_Q: [u16; 5]
@@ -328,6 +334,7 @@ pub const aom_dsp::entropy::default_cdfs::DEFAULT_FILTER_INTRA: [[u16; 3]; 22]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_FILTER_INTRA_MODE: [u16; 6]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTERINTRA: [[u16; 3]; 4]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTERINTRA_MODE: [[u16; 5]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTER_COMPOUND_MODE: [[u16; 9]; 8]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTER_EXT_TX: [[[u16; 17]; 4]; 4]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTRABC: [u16; 3]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_INTRA_INTER: [[u16; 3]; 4]
@@ -353,6 +360,7 @@ pub const aom_dsp::entropy::default_cdfs::DEFAULT_SKIP_MODE: [[u16; 3]; 3]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_SWITCHABLE_INTERP: [[u16; 4]; 16]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_SWITCHABLE_RESTORE: [u16; 4]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_TX_SIZE: [[[u16; 4]; 3]; 4]
+pub const aom_dsp::entropy::default_cdfs::DEFAULT_UNI_COMP_REF: [[[u16; 3]; 3]; 3]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_UV_MODE: [[[u16; 15]; 13]; 2]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_WEDGE_IDX: [[u16; 17]; 22]
 pub const aom_dsp::entropy::default_cdfs::DEFAULT_WEDGE_INTERINTRA: [[u16; 3]; 22]
@@ -363,6 +371,8 @@ pub static aom_dsp::entropy::default_cdfs::DEFAULT_COEFF_ARENA: [[u16; 4045]; 4]
 pub mod aom_dsp::entropy::dv_ref
 pub struct aom_dsp::entropy::dv_ref::DvNbr
 pub aom_dsp::entropy::dv_ref::DvNbr::bsize: usize
+pub aom_dsp::entropy::dv_ref::DvNbr::comp_group_idx: i32
+pub aom_dsp::entropy::dv_ref::DvNbr::compound_idx: i32
 pub aom_dsp::entropy::dv_ref::DvNbr::mode: i32
 pub aom_dsp::entropy::dv_ref::DvNbr::mv0_col: i32
 pub aom_dsp::entropy::dv_ref::DvNbr::mv0_row: i32
@@ -379,7 +389,9 @@ pub aom_dsp::entropy::dv_ref::DvTileBounds::mi_col_start: i32
 pub aom_dsp::entropy::dv_ref::DvTileBounds::mi_row_end: i32
 pub aom_dsp::entropy::dv_ref::DvTileBounds::mi_row_start: i32
 pub struct aom_dsp::entropy::dv_ref::InterMvRefs
+pub aom_dsp::entropy::dv_ref::InterMvRefs::comp_stack: [(i32, i32); 8]
 pub aom_dsp::entropy::dv_ref::InterMvRefs::global_mv: (i32, i32)
+pub aom_dsp::entropy::dv_ref::InterMvRefs::global_mv1: (i32, i32)
 pub aom_dsp::entropy::dv_ref::InterMvRefs::mode_context: i32
 pub aom_dsp::entropy::dv_ref::InterMvRefs::near: (i32, i32)
 pub aom_dsp::entropy::dv_ref::InterMvRefs::nearest: (i32, i32)
@@ -409,14 +421,16 @@ pub trait aom_dsp::entropy::dv_ref::DvGrid
 pub fn aom_dsp::entropy::dv_ref::DvGrid::get(&self, i32, i32) -> aom_dsp::entropy::dv_ref::DvNbr
 pub fn aom_dsp::entropy::dv_ref::assign_and_validate_dv((i32, i32), (i32, i32), i32, i32, i32, i32, i32, i32, usize, aom_dsp::entropy::dv_ref::DvTileBounds, i32, bool, i32, i32, i32) -> core::option::Option<(i32, i32)>
 pub fn aom_dsp::entropy::dv_ref::find_dv_ref_mvs(i32, i32, usize, usize, bool, bool, aom_dsp::entropy::dv_ref::DvTileBounds, i32, i32, i32, impl aom_dsp::entropy::dv_ref::DvGrid) -> (i32, i32, i32, i32)
-pub fn aom_dsp::entropy::dv_ref::find_inter_mv_refs(i32, i32, i32, usize, usize, bool, bool, aom_dsp::entropy::dv_ref::DvTileBounds, i32, i32, i32, bool, core::option::Option<&aom_dsp::entropy::dv_ref::TplField<'_>>, (i32, i32), i32, [i8; 8], bool, bool, impl aom_dsp::entropy::dv_ref::DvGrid) -> aom_dsp::entropy::dv_ref::InterMvRefs
+pub fn aom_dsp::entropy::dv_ref::find_inter_mv_refs([i32; 2], i32, i32, usize, usize, bool, bool, aom_dsp::entropy::dv_ref::DvTileBounds, i32, i32, i32, bool, core::option::Option<&aom_dsp::entropy::dv_ref::TplField<'_>>, [(i32, i32); 2], [i32; 2], [i8; 8], bool, bool, impl aom_dsp::entropy::dv_ref::DvGrid) -> aom_dsp::entropy::dv_ref::InterMvRefs
 pub fn aom_dsp::entropy::dv_ref::find_ref_dv(i32, i32, i32) -> (i32, i32)
 pub fn aom_dsp::entropy::dv_ref::find_samples(&impl aom_dsp::entropy::dv_ref::DvGrid, &aom_dsp::entropy::dv_ref::DvTileBounds, i32, i32, i32, i32, i32, i32, i32, usize, i32, bool, bool) -> aom_dsp::entropy::dv_ref::WarpSamples
 pub fn aom_dsp::entropy::dv_ref::get_mv_projection(i32, i32, i32, i32) -> (i32, i32)
 pub fn aom_dsp::entropy::dv_ref::has_overlappable_neighbors(&impl aom_dsp::entropy::dv_ref::DvGrid, i32, i32, i32, i32, usize, bool, bool, impl core::ops::function::Fn(&aom_dsp::entropy::dv_ref::DvNbr) -> bool) -> bool
 pub fn aom_dsp::entropy::dv_ref::is_dv_valid(i32, i32, i32, i32, usize, aom_dsp::entropy::dv_ref::DvTileBounds, i32, bool, i32, i32, i32) -> bool
+pub fn aom_dsp::entropy::dv_ref::is_mv_valid(i32, i32) -> bool
+pub fn aom_dsp::entropy::dv_ref::lower_mv_precision(&mut i32, &mut i32, bool, bool)
 pub fn aom_dsp::entropy::dv_ref::select_samples(&mut aom_dsp::entropy::dv_ref::WarpSamples, i32, i32, i32, i32) -> usize
-pub type aom_dsp::entropy::dv_ref::DvNbrPacked = [i32; 9]
+pub type aom_dsp::entropy::dv_ref::DvNbrPacked = [i32; 11]
 pub mod aom_dsp::entropy::enc
 pub aom_dsp::entropy::enc::OdEcEnc::allow_update_cdf: bool
 pub fn aom_dsp::entropy::enc::OdEcEnc::done(&mut self) -> &[u8]
@@ -993,6 +1007,8 @@ pub fn aom_dsp::entropy::partition::bsize_to_max_depth(usize) -> usize
 pub fn aom_dsp::entropy::partition::bsize_to_tx_size_cat(usize) -> i32
 pub fn aom_dsp::entropy::partition::coeff_cdf_q_ctx(i32) -> usize
 pub fn aom_dsp::entropy::partition::collect_neighbors_ref_counts(bool, bool, i32, i32, bool, bool, i32, i32) -> [u8; 8]
+pub fn aom_dsp::entropy::partition::compound_ref0_mode(i32) -> i32
+pub fn aom_dsp::entropy::partition::compound_ref1_mode(i32) -> i32
 pub fn aom_dsp::entropy::partition::decode_color_map_tokens(&mut aom_dsp::entropy::dec::OdEcDec<'_>, i32, usize, usize, usize, usize, &mut [[u16; 9]; 5]) -> alloc::vec::Vec<u8>
 pub fn aom_dsp::entropy::partition::delta_encode_palette_colors(&mut aom_dsp::entropy::enc::OdEcEnc, &[i32], i32, i32)
 pub fn aom_dsp::entropy::partition::depth_to_tx_size(i32, usize) -> usize
@@ -1271,11 +1287,21 @@ pub fn aom_dsp::inter::warp::find_projection(usize, &[i32], &[i32], i32, i32, i3
 pub fn aom_dsp::inter::warp::get_shear_params(&mut aom_dsp::inter::warp::WarpedMotionParams) -> bool
 pub fn aom_dsp::inter::warp::highbd_warp_affine(&[i32; 6], &[u16], usize, usize, usize, &mut [u16], usize, &mut [u16], usize, i32, i32, usize, usize, usize, usize, u32, &aom_dsp::inter::warp::WarpConvolveParams, i16, i16, i16, i16)
 pub fn aom_dsp::inter::warp::warp_affine(&[i32; 6], &[u16], usize, usize, usize, &mut [u16], usize, usize, i32, i32, usize, usize, usize, usize, i16, i16, i16, i16)
+pub struct aom_dsp::inter::CompoundRefPlane<'a>
+pub aom_dsp::inter::CompoundRefPlane::h: usize
+pub aom_dsp::inter::CompoundRefPlane::mv: (i32, i32)
+pub aom_dsp::inter::CompoundRefPlane::plane: &'a [u16]
+pub aom_dsp::inter::CompoundRefPlane::raw_mv: (i32, i32)
+pub aom_dsp::inter::CompoundRefPlane::sf: &'a aom_dsp::inter::scale::ScaleFactors
+pub aom_dsp::inter::CompoundRefPlane::stride: usize
+pub aom_dsp::inter::CompoundRefPlane::w: usize
 pub fn aom_dsp::inter::blend_a64_hmask(&mut [u16], usize, usize, &[u16], usize, usize, &[u8], usize, usize)
 pub fn aom_dsp::inter::blend_a64_vmask(&mut [u16], usize, usize, &[u16], usize, usize, &[u8], usize, usize)
+pub fn aom_dsp::inter::build_compound_inter_predictor([aom_dsp::inter::CompoundRefPlane<'_>; 2], &mut [u16], usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, u32, aom_dsp::inter::compound::DistWtdWeights)
 pub fn aom_dsp::inter::build_inter_predictor(&[u16], usize, usize, usize, &mut [u16], usize, usize, usize, usize, usize, usize, i32, i32, i32, i32, usize, usize, usize, usize, u32, &aom_dsp::inter::scale::ScaleFactors)
 pub fn aom_dsp::inter::build_mc_border(&[u16], usize, usize, usize, i32, i32, usize, usize, &mut [u8])
 pub fn aom_dsp::inter::build_mc_border_highbd(&[u16], usize, usize, usize, i32, i32, usize, usize, &mut [u16])
+pub fn aom_dsp::inter::compound_rounds(u32) -> (i32, i32)
 pub fn aom_dsp::inter::get_obmc_mask(usize) -> &'static [u8]
 pub fn aom_dsp::inter::highbd_inter_predictor(&[u16], usize, usize, &mut [u16], usize, usize, usize, usize, usize, usize, usize, u32)
 pub fn aom_dsp::inter::inter_predictor(&[u8], usize, usize, &mut [u8], usize, usize, usize, usize, usize, usize, usize)
@@ -1771,7 +1797,7 @@ pub macro aom_dsp::trace_focus!
 pub macro aom_dsp::trace_on!
 pub macro aom_dsp::trace_out!
 
-## trait impls (74 types)
+## trait impls (75 types)
 
 F: aom_dsp::entropy::dv_ref::DvNbr> aom_dsp::entropy::dv_ref::DvGrid
 aom_dsp::census::Counts: Clone, Debug, Eq, PartialEq
@@ -1820,6 +1846,7 @@ aom_dsp::entropy::partition::PaletteNbrKf: Clone, Copy, Debug, Default, Eq, Part
 aom_dsp::entropy::partition::TxMode: Clone, Copy, Debug, Eq, PartialEq
 aom_dsp::entropy::rb::ReadBitBuffer<'a>: Clone, Debug
 aom_dsp::entropy::wb::WriteBitBuffer: Clone, Debug, Default
+aom_dsp::inter::CompoundRefPlane<'a>: Clone, Copy
 aom_dsp::inter::compound::CompoundType: Clone, Copy, Debug, Eq, PartialEq
 aom_dsp::inter::compound::DiffwtdMaskType: Clone, Copy, Debug, Eq, PartialEq
 aom_dsp::inter::compound::DistWtdWeights: Clone, Copy, Debug, Eq, PartialEq
@@ -1850,7 +1877,7 @@ u8: aom_dsp::cdef::frame::CdefPixel, aom_dsp::restore::pick::LrPixel
 
 ## auto traits
 
-86 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+87 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBuf<'a>: !UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBufU8<'a>: !UnwindSafe
 aom_dsp::restore::frame::LrPlaneInput<'a>: !UnwindSafe

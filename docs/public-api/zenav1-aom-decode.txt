@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-decode.txt 260 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,experimental-video,trace-env,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
+# files: zenav1-aom-decode.txt 265 lines (supported surface) | zenav1-aom-decode.features.txt 2 added (features: avx512,experimental-video,trace-env,whereat) | zenav1-aom-decode.internal.txt 52 lines (23 hidden + 61 excluded-feature)
 # arch-unique surface: (none — portable on every target)
 
 ## summary
@@ -16,7 +16,7 @@
 #   pub consts/statics                         28
 #   free functions                             20
 #   inherent methods                           15
-#   struct fields                             144
+#   struct fields                             149
 #   enum variants                              16
 #   trait roster entries (type × trait)        61
 #   auto-trait-complete types                  15
@@ -24,9 +24,9 @@
 #
 # per-module pub lines:
 #   (root)                            2
-#   aom_decode                      239
+#   aom_decode                      244
 
-## items (241 lines)
+## items (246 lines)
 
 pub mod aom_decode
 pub mod aom_decode::frame
@@ -132,13 +132,18 @@ pub aom_decode::InterFrameCfg::allow_high_precision_mv: bool
 pub aom_decode::InterFrameCfg::allow_ref_frame_mvs: bool
 pub aom_decode::InterFrameCfg::allow_warped_motion: bool
 pub aom_decode::InterFrameCfg::cur_frame_force_integer_mv: bool
+pub aom_decode::InterFrameCfg::enable_dist_wtd_comp: bool
 pub aom_decode::InterFrameCfg::enable_dual_filter: bool
 pub aom_decode::InterFrameCfg::enable_interintra_compound: bool
+pub aom_decode::InterFrameCfg::enable_masked_compound: bool
+pub aom_decode::InterFrameCfg::enable_order_hint: bool
 pub aom_decode::InterFrameCfg::gm_wmtype: [u8; 7]
 pub aom_decode::InterFrameCfg::interp_filter: i32
 pub aom_decode::InterFrameCfg::order_hint: i32
+pub aom_decode::InterFrameCfg::order_hint_bits_minus_1: i32
 pub aom_decode::InterFrameCfg::ref_frame_side: [i8; 8]
 pub aom_decode::InterFrameCfg::ref_frame_sign_bias: [i8; 8]
+pub aom_decode::InterFrameCfg::ref_order_hints: [i32; 8]
 pub aom_decode::InterFrameCfg::ref_sf: [aom_dsp::inter::scale::ScaleFactors; 7]
 pub aom_decode::InterFrameCfg::reference_mode_select: bool
 pub aom_decode::InterFrameCfg::refs: [core::option::Option<&'r aom_decode::RefFrame>; 7]

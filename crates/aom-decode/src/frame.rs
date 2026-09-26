@@ -1734,6 +1734,20 @@ fn decode_inter_tile_payload(
         allow_warped_motion: p.allow_warped_motion,
         skip_mode_present: p.skip_mode_flag,
         enable_interintra_compound: seq.seq_header.enable_interintra_compound,
+        enable_masked_compound: seq.seq_header.enable_masked_compound,
+        enable_dist_wtd_comp: seq.seq_header.enable_dist_wtd_comp,
+        enable_order_hint: seq.seq_header.enable_order_hint,
+        order_hint_bits_minus_1: seq.seq_header.order_hint_bits_minus_1,
+        // `cm->ref_order_hints[rf]` — the bound ref's own order_hint (0 when
+        // the slot is unbound, matching C's NULL `get_ref_frame_buf` arm that
+        // reads order hint 0). Feeds the compound index ctx + dist-wtd weights.
+        ref_order_hints: std::array::from_fn(|i| {
+            if i == 0 {
+                0
+            } else {
+                bound[i - 1].as_deref().map_or(0, |s| s.frame.order_hint)
+            }
+        }),
         gm_wmtype: std::array::from_fn(|i| p.global_motion[i].wmtype),
         order_hint: cur_oh,
     };

@@ -36,6 +36,7 @@ mod armed_tools_decode_gate;
 mod bd12_dispatch_tier_agreement;
 mod cancel_latency;
 mod cnn_cache_identity;
+mod compound_decode_envelope;
 mod config_permutations;
 mod delta_lf_mode_e2e;
 mod deltaq_mode2_e2e;

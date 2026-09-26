@@ -2389,6 +2389,131 @@ void shim_find_inter_mv_refs(
   free(grid);
 }
 
+/* Facade for av1_find_mv_refs at a COMPOUND reference `rf` (rf[1] >
+ * NONE_FRAME): same synthetic MI grid as shim_find_inter_mv_refs, but passes
+ * `ref_frame = av1_ref_frame_type(rf)` (the compound-pair type index >=
+ * REF_FRAMES) so setup_ref_mv_list takes the compound arm — candidate matching
+ * is pairwise (ref_frame[0]==rf[0] && ref_frame[1]==rf[1]) and the extension
+ * runs process_compound_ref_mv_candidate + comp_list synthesis. Extracts the
+ * full pair surface: mode_context[ref_frame], ref_mv_count[ref_frame],
+ * ref_mv_stack[ref_frame][].this_mv AND .comp_mv, ref_mv_weight[ref_frame][].
+ * (C writes no global_mvs/ref_mv_list/nearest-near for compound — the decoder
+ * consumes the stack pairs directly — so those out-params are omitted.) */
+void shim_find_compound_mv_refs(
+    int rf0, int rf1, int mi_row, int mi_col, int bsize, int own_partition,
+    int up_available, int left_available, int tile_mi_row_start,
+    int tile_mi_row_end, int tile_mi_col_start, int tile_mi_col_end,
+    int frame_mi_rows, int frame_mi_cols, int mib_size, int allow_ref_frame_mvs,
+    const int8_t *sign_bias, int allow_high_precision_mv, int is_integer_mv,
+    const uint8_t *g_bsize, const int8_t *g_ref_frame0, const int8_t *g_ref_frame1,
+    const uint8_t *g_use_intrabc, const uint8_t *g_mode, const int16_t *g_mv0_row,
+    const int16_t *g_mv0_col, const int16_t *g_mv1_row, const int16_t *g_mv1_col,
+    int *out_mode_context, int *out_ref_mv_count, int *out_stack_row,
+    int *out_stack_col, int *out_comp_row, int *out_comp_col, int *out_weight) {
+  const size_t n = (size_t)DV_GRID_DIM * (size_t)DV_GRID_DIM;
+  MB_MODE_INFO *pool = (MB_MODE_INFO *)calloc(n, sizeof(MB_MODE_INFO));
+  MB_MODE_INFO **grid = (MB_MODE_INFO **)calloc(n, sizeof(MB_MODE_INFO *));
+  for (size_t i = 0; i < n; ++i) {
+    pool[i].bsize = (BLOCK_SIZE)g_bsize[i];
+    pool[i].ref_frame[0] = (MV_REFERENCE_FRAME)g_ref_frame0[i];
+    pool[i].ref_frame[1] = (MV_REFERENCE_FRAME)g_ref_frame1[i];
+    pool[i].use_intrabc = g_use_intrabc[i] ? 1 : 0;
+    pool[i].mode = (PREDICTION_MODE)g_mode[i];
+    pool[i].mv[0].as_mv.row = g_mv0_row[i];
+    pool[i].mv[0].as_mv.col = g_mv0_col[i];
+    pool[i].mv[1].as_mv.row = g_mv1_row[i];
+    pool[i].mv[1].as_mv.col = g_mv1_col[i];
+    grid[i] = &pool[i];
+  }
+  size_t self_idx = (size_t)mi_row * DV_GRID_DIM + (size_t)mi_col;
+  pool[self_idx].bsize = (BLOCK_SIZE)bsize;
+  pool[self_idx].partition = (PARTITION_TYPE)own_partition;
+
+  AV1_COMMON cm;
+  MACROBLOCKD xd;
+  SequenceHeader sp;
+  memset(&cm, 0, sizeof(cm));
+  memset(&xd, 0, sizeof(xd));
+  memset(&sp, 0, sizeof(sp));
+  sp.sb_size = (mib_size >= 32) ? BLOCK_128X128 : BLOCK_64X64;
+  cm.seq_params = &sp;
+  cm.mi_params.mi_rows = frame_mi_rows;
+  cm.mi_params.mi_cols = frame_mi_cols;
+  cm.mi_params.mi_stride = DV_GRID_DIM;
+  cm.features.allow_ref_frame_mvs = allow_ref_frame_mvs;
+  cm.features.allow_high_precision_mv = allow_high_precision_mv;
+  cm.features.cur_frame_force_integer_mv = is_integer_mv;
+  for (int i = 0; i < REF_FRAMES; ++i) cm.ref_frame_sign_bias[i] = sign_bias[i];
+  /* cm.global_motion left all-zero => wmtype IDENTITY => gm_mv (0,0). */
+
+  TPL_MV_REF *tpl = (TPL_MV_REF *)calloc(n, sizeof(TPL_MV_REF));
+  for (size_t i = 0; i < n; ++i) tpl[i].mfmv0.as_int = INVALID_MV;
+  cm.tpl_mvs = tpl;
+
+  xd.mi_row = mi_row;
+  xd.mi_col = mi_col;
+  xd.mi_stride = DV_GRID_DIM;
+  xd.mi = &grid[self_idx];
+  xd.width = mi_size_wide[bsize];
+  xd.height = mi_size_high[bsize];
+  xd.up_available = up_available;
+  xd.left_available = left_available;
+  xd.tile.mi_row_start = tile_mi_row_start;
+  xd.tile.mi_row_end = tile_mi_row_end;
+  xd.tile.mi_col_start = tile_mi_col_start;
+  xd.tile.mi_col_end = tile_mi_col_end;
+  xd.mb_to_top_edge = -(mi_row * 4 * 8);
+  xd.mb_to_bottom_edge = (frame_mi_rows - mi_size_high[bsize] - mi_row) * 4 * 8;
+  xd.mb_to_left_edge = -(mi_col * 4 * 8);
+  xd.mb_to_right_edge = (frame_mi_cols - mi_size_wide[bsize] - mi_col) * 4 * 8;
+  xd.is_last_vertical_rect = 0;
+  if (xd.width < xd.height) {
+    if (!((mi_col + xd.width) & (xd.height - 1))) xd.is_last_vertical_rect = 1;
+  }
+  xd.is_first_horizontal_rect = 0;
+  if (xd.width > xd.height) {
+    if (!(mi_row & (xd.width - 1))) xd.is_first_horizontal_rect = 1;
+  }
+
+  uint8_t ref_mv_count[MODE_CTX_REF_FRAMES];
+  CANDIDATE_MV ref_mv_stack[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+  uint16_t ref_mv_weight[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+  int_mv mv_ref_list[MODE_CTX_REF_FRAMES][MAX_MV_REF_CANDIDATES];
+  int_mv global_mvs[MODE_CTX_REF_FRAMES];
+  int16_t mode_context[MODE_CTX_REF_FRAMES];
+  memset(ref_mv_count, 0, sizeof(ref_mv_count));
+  memset(ref_mv_stack, 0, sizeof(ref_mv_stack));
+  memset(ref_mv_weight, 0, sizeof(ref_mv_weight));
+  memset(mv_ref_list, 0, sizeof(mv_ref_list));
+  memset(global_mvs, 0, sizeof(global_mvs));
+  memset(mode_context, 0, sizeof(mode_context));
+
+  MV_REFERENCE_FRAME rf[2];
+  rf[0] = (MV_REFERENCE_FRAME)rf0;
+  rf[1] = (MV_REFERENCE_FRAME)rf1;
+  const int ref_frame = av1_ref_frame_type(rf);
+  pool[self_idx].ref_frame[0] = rf[0];
+  pool[self_idx].ref_frame[1] = rf[1];
+
+  av1_find_mv_refs(&cm, &xd, &pool[self_idx], ref_frame, ref_mv_count,
+                   ref_mv_stack, ref_mv_weight, mv_ref_list, global_mvs,
+                   mode_context);
+
+  *out_mode_context = mode_context[ref_frame];
+  *out_ref_mv_count = ref_mv_count[ref_frame];
+  for (int i = 0; i < MAX_REF_MV_STACK_SIZE; ++i) {
+    out_stack_row[i] = ref_mv_stack[ref_frame][i].this_mv.as_mv.row;
+    out_stack_col[i] = ref_mv_stack[ref_frame][i].this_mv.as_mv.col;
+    out_comp_row[i] = ref_mv_stack[ref_frame][i].comp_mv.as_mv.row;
+    out_comp_col[i] = ref_mv_stack[ref_frame][i].comp_mv.as_mv.col;
+    out_weight[i] = ref_mv_weight[ref_frame][i];
+  }
+
+  free(tpl);
+  free(pool);
+  free(grid);
+}
+
 /* Facade for the real `static inline` av1_find_ref_dv (mvref_common.h): only
  * `tile->mi_row_start` is read. */
 void shim_find_ref_dv(int mi_row, int mib_size, int tile_mi_row_start, int *out_row,
@@ -4512,4 +4637,60 @@ long shim_encode_av1_kf_cfg(const uint16_t *y, const uint16_t *u,
   aom_codec_destroy(&ctx);
   aom_img_free(img);
   return rc ? rc : total;
+}
+
+/* shim_dump_default_compound_cdfs — dump the compiled default frame-context
+ * tables the COMPOUND-reference inter block path codes with, from the REAL
+ * av1_setup_past_independence default frame context. Layout (concatenated, in
+ * this order):
+ *   fc->comp_inter_cdf           [COMP_INTER_CONTEXTS=5][CDF_SIZE(2)=3]    =  15
+ *   fc->comp_ref_type_cdf        [COMP_REF_TYPE_CONTEXTS=5][CDF_SIZE(2)=3] =  15
+ *   fc->uni_comp_ref_cdf         [UNI_COMP_REF_CONTEXTS=3][UNIDIR_COMP_REFS-1=3][3] = 27
+ *   fc->comp_ref_cdf             [REF_CONTEXTS=3][FWD_REFS-1=3][3]         =  27
+ *   fc->comp_bwdref_cdf          [REF_CONTEXTS=3][BWD_REFS-1=2][3]         =  18
+ *   fc->inter_compound_mode_cdf  [INTER_MODE_CONTEXTS=8][CDF_SIZE(8)=9]    =  72
+ *   fc->compound_index_cdf       [COMP_INDEX_CONTEXTS=6][3]                =  18
+ *   fc->comp_group_idx_cdf       [COMP_GROUP_IDX_CONTEXTS=6][3]            =  18
+ *   fc->compound_type_cdf        [BLOCK_SIZES_ALL=22][3]                   =  66
+ * = 276 u16 total. All are qindex-independent (av1_init_mode_probs);
+ * base_qindex is accepted only to mirror shim_dump_default_kf_fc. Verifies
+ * aom-dsp's DEFAULT_COMP_INTER / DEFAULT_COMP_REF_TYPE /
+ * DEFAULT_UNI_COMP_REF / DEFAULT_COMP_REF / DEFAULT_COMP_BWDREF /
+ * DEFAULT_INTER_COMPOUND_MODE / DEFAULT_COMPOUND_IDX /
+ * DEFAULT_COMP_GROUP_IDX / DEFAULT_COMPOUND_TYPE. */
+int shim_dump_default_compound_cdfs(int base_qindex, uint16_t *out) {
+  AV1_COMMON *cm = (AV1_COMMON *)calloc(1, sizeof(AV1_COMMON));
+  FRAME_CONTEXT *fc = (FRAME_CONTEXT *)calloc(1, sizeof(FRAME_CONTEXT));
+  FRAME_CONTEXT *dfc = (FRAME_CONTEXT *)calloc(1, sizeof(FRAME_CONTEXT));
+  RefCntBuffer *rcb = (RefCntBuffer *)calloc(1, sizeof(RefCntBuffer));
+  if (!cm || !fc || !dfc || !rcb) return 1;
+  cm->fc = fc;
+  cm->default_frame_context = dfc;
+  cm->cur_frame = rcb; /* seg_map NULL -> the memset arm is skipped */
+  cm->quant_params.base_qindex = base_qindex;
+  av1_setup_past_independence(cm);
+  size_t off = 0;
+  memcpy(out + off, fc->comp_inter_cdf, sizeof(fc->comp_inter_cdf));
+  off += sizeof(fc->comp_inter_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->comp_ref_type_cdf, sizeof(fc->comp_ref_type_cdf));
+  off += sizeof(fc->comp_ref_type_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->uni_comp_ref_cdf, sizeof(fc->uni_comp_ref_cdf));
+  off += sizeof(fc->uni_comp_ref_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->comp_ref_cdf, sizeof(fc->comp_ref_cdf));
+  off += sizeof(fc->comp_ref_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->comp_bwdref_cdf, sizeof(fc->comp_bwdref_cdf));
+  off += sizeof(fc->comp_bwdref_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->inter_compound_mode_cdf, sizeof(fc->inter_compound_mode_cdf));
+  off += sizeof(fc->inter_compound_mode_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->compound_index_cdf, sizeof(fc->compound_index_cdf));
+  off += sizeof(fc->compound_index_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->comp_group_idx_cdf, sizeof(fc->comp_group_idx_cdf));
+  off += sizeof(fc->comp_group_idx_cdf) / sizeof(uint16_t);
+  memcpy(out + off, fc->compound_type_cdf, sizeof(fc->compound_type_cdf));
+  off += sizeof(fc->compound_type_cdf) / sizeof(uint16_t);
+  free(cm);
+  free(fc);
+  free(dfc);
+  free(rcb);
+  return off == 276 ? 0 : 2;
 }

@@ -38,7 +38,7 @@
 //! unit-tested) nor multi-block CDF adaptation — both are the next rungs.
 
 use aom_bench::{EncodeCell, MultiFrameEncodeCell};
-use aom_dsp::entropy::dv_ref::{DvNbr, DvTileBounds, find_inter_mv_refs};
+use aom_dsp::entropy::dv_ref::{DvNbr, DvTileBounds, NONE_FRAME, find_inter_mv_refs};
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
     CdefHeader, FrameHeaderObu, FrameHeaderPrefix, FrameSizeHeader, LoopfilterHeader,
@@ -281,7 +281,7 @@ fn port_encode_p_tile_with_mode(
         mi_col_end: mi_cols,
     };
     let refs = find_inter_mv_refs(
-        LAST_FRAME,
+        [LAST_FRAME, NONE_FRAME],
         mi_row,
         mi_col,
         bsize,
@@ -294,8 +294,8 @@ fn port_encode_p_tile_with_mode(
         16,    // mib_size (SB64)
         false, // allow_ref_frame_mvs — §3 disables it
         None,
-        (0, 0),
-        0, // gm_wmtype = IDENTITY
+        [(0, 0), (0, 0)],
+        [0, 0], // gm_wmtype = IDENTITY (both slots)
         [0i8; 8],
         false, // allow_high_precision_mv (qindex 240 >= 128)
         false, // is_integer_mv

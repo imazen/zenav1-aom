@@ -3220,6 +3220,31 @@ pub fn is_inter_singleref_mode(mode: i32) -> bool {
     (NEARESTMV..NEAREST_NEARESTMV).contains(&mode)
 }
 
+/// `compound_ref0_mode` (`blockd.h`): the first reference's sub-mode of a
+/// compound inter mode (which of NEAREST/NEAR/NEW/GLOBAL drives `ref_mv[0]`).
+/// Index is `PREDICTION_MODE`; the intra entries are the identity (only the
+/// compound arm 17..=24 is exercised by callers).
+pub fn compound_ref0_mode(mode: i32) -> i32 {
+    //         DC  V  H  D45 D135 D113 D157 D203 D67 SMO SMV SMH PAE
+    // NEAREST NEAR GLOBAL NEW | NN  NR   NN  RN   NR   NN   GG  NN(comp)
+    const LUT: [i32; 25] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 13, 14, 13, 16, 14, 16, 15, 16,
+    ];
+    LUT[mode as usize]
+}
+
+/// `compound_ref1_mode` (`blockd.h`): the second reference's sub-mode of a
+/// compound inter mode (which of NEAREST/NEAR/NEW/GLOBAL drives `ref_mv[1]`).
+/// Only compound modes (17..=24) carry a second component; single-ref and
+/// intra indices return `MB_MODE_COUNT` (matching C's assert-guarded sentinel).
+pub fn compound_ref1_mode(mode: i32) -> i32 {
+    const LUT: [i32; 25] = [
+        25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 13, 14, 16, 13, 16, 14,
+        15, 16,
+    ];
+    LUT[mode as usize]
+}
+
 /// `av1_mode_context_analyzer` (`mvref_common.h`): the inter-mode CDF context. For a
 /// single-ref block it is the raw `mode_context` value; for a compound block it combines
 /// the new-mv and ref-mv sub-contexts via `compound_mode_ctx_map`. `mode_context_val` is

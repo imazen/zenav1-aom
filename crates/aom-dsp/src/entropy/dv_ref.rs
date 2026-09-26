@@ -17,9 +17,11 @@
 //! `av1_set_ref_frame(rf, INTRA_FRAME)` yields `rf = [INTRA_FRAME,
 //! NONE_FRAME]` (`INTRA_FRAME < REF_FRAMES`, so the single-ref arm of
 //! `av1_set_ref_frame`), which permanently selects the SINGLE-reference
-//! branch (`rf[1] <= NONE_FRAME`) — the entire compound-reference branch
-//! (`rf[1] > NONE_FRAME`, ~65 lines building `comp_list`/using
-//! `process_compound_ref_mv_candidate`) is unreachable and dropped. Likewise
+//! branch (`rf[1] <= NONE_FRAME`) — so [`find_dv_ref_mvs`] itself permanently
+//! takes the single-reference arm. (The compound-reference branch
+//! `rf[1] > NONE_FRAME` — `process_compound_ref_mv_candidate` + `comp_list`
+//! synthesis — IS ported: [`find_inter_mv_refs`] takes a full `rf` pair and
+//! selects it; it is only unreachable FROM the intrabc path.) Likewise
 //! `cm->features.allow_ref_frame_mvs` (the temporal/`add_tpl_ref_mv` motion-
 //! field block) requires a previous frame's stored motion field; our decode
 //! envelope is KEY-frame-only (no reference frames exist at all), so this
@@ -79,14 +81,27 @@ pub struct DvNbr {
     /// `candidate->mv[0]` (the candidate's own DV when `use_intrabc`), 1/8-pel units.
     pub mv0_row: i32,
     pub mv0_col: i32,
-    /// `candidate->mv[1]` — only read by the (dead-for-KEY-frames, ported for
-    /// generality) compound/second-ref arms.
+    /// `candidate->mv[1]` — only read by the compound/second-ref arms
+    /// (`experimental-video` step 4).
     pub mv1_row: i32,
     pub mv1_col: i32,
+    /// `candidate->compound_idx` — read by `get_comp_index_context`, and only
+    /// when the neighbour `has_second_ref` (a compound neighbour contributes
+    /// its `compound_idx`; a single-ref neighbour falls to its
+    /// `ref_frame[0]==ALTREF` test instead). Mirrors `mbmi->compound_idx`:
+    /// C seeds it to 1 unconditionally, so a non-compound block carries 1
+    /// (the dead-for-single-ref seed value), a coded compound block its read.
+    pub compound_idx: i32,
+    /// `candidate->comp_group_idx` — read by `get_comp_group_idx_context`, and
+    /// only when the neighbour `has_second_ref` (a compound neighbour
+    /// contributes its `comp_group_idx`; a single-ref neighbour falls to its
+    /// `ref_frame[0]==ALTREF` test instead). Mirrors `mbmi->comp_group_idx`:
+    /// 0 for a non-compound block, the coded group index for a compound one.
+    pub comp_group_idx: i32,
 }
 
 /// Number of `i32` slots in [`DvNbrPacked`].
-pub const DV_NBR_SLOTS: usize = 9;
+pub const DV_NBR_SLOTS: usize = 11;
 
 /// The ZERO-INITIALISABLE storage form of [`DvNbr`].
 ///
@@ -96,7 +111,7 @@ pub const DV_NBR_SLOTS: usize = 9;
 /// specialisation (`IsZero`) covers primitives, arrays of them and a couple of
 /// `Option`s, never a user struct, so every element is written one at a time.
 /// MEASURED at 4096x4096 on x86-64 Linux: **12.0-12.8 ms** for
-/// `vec![DvNbr::default(); n]` against **0.003 ms** for `vec![[0i32; 9]; n]`,
+/// `vec![DvNbr::default(); n]` against **0.003 ms** for `vec![[0i32; 11]; n]`,
 /// which IS specialised (`[T; N]: IsZero` where `T: IsZero`) and so is a lazily
 /// zeroed mapping the decoder then faults in as it writes. That 12 ms was the
 /// whole of an un-pollable frame-setup window (GitHub #17).
@@ -124,6 +139,8 @@ impl DvNbr {
             mv0_col: p[6],
             mv1_row: p[7],
             mv1_col: p[8],
+            compound_idx: p[9],
+            comp_group_idx: p[10],
         }
     }
 
@@ -144,6 +161,8 @@ impl DvNbr {
             self.mv0_col,
             self.mv1_row,
             self.mv1_col,
+            self.compound_idx,
+            self.comp_group_idx,
         ]
     }
 }
@@ -260,7 +279,7 @@ fn find_valid_col_offset(tile: &DvTileBounds, mi_col: i32, col_offset: i32) -> i
 /// is called with `is_integer=0` from `read_intrabc_info`, `decodemv.c:715`);
 /// the inter caller ([`find_inter_mv_refs`]) threads
 /// `cur_frame_force_integer_mv`, so the `is_integer` branch is now live.
-fn lower_mv_precision(row: &mut i32, col: &mut i32, allow_hp: bool, is_integer: bool) {
+pub fn lower_mv_precision(row: &mut i32, col: &mut i32, allow_hp: bool, is_integer: bool) {
     if is_integer {
         *row = integer_mv_component(*row);
         *col = integer_mv_component(*col);
@@ -343,20 +362,22 @@ fn check_sb_border(mi_row: i32, mi_col: i32, row_offset: i32, col_offset: i32) -
         || col + col_offset >= sb_mi_size)
 }
 
-/// `add_tpl_ref_mv` (mvref_common.c:329), single-reference arm (`rf[1] ==
-/// NONE`; compound is out of the current decode envelope). Returns 1 when the
-/// tpl cell was valid (a candidate was merged), 0 otherwise.
+/// `add_tpl_ref_mv` (mvref_common.c:329), both arms. `rf` is the block's ref
+/// pair (`rf[1] == NONE` single); `gm` is `gm_mv_candidates[0..2]`. The compound
+/// arm projects the tpl cell toward BOTH refs (two `get_mv_projection`s with
+/// `cur_offset[rf0]`/`cur_offset[rf1]`) and merges on the PAIR
+/// (`this_mv`+`comp_mv`). Returns 1 when the tpl cell was valid (a candidate
+/// was merged), 0 otherwise.
 #[allow(clippy::too_many_arguments)]
 fn add_tpl_ref_mv(
     tpl: &TplField,
     tile: &DvTileBounds,
     mi_row: i32,
     mi_col: i32,
-    rf0: i32,
+    rf: [i32; 2],
     blk_row: i32,
     blk_col: i32,
-    gm_row: i32,
-    gm_col: i32,
+    gm: [(i32, i32); 2],
     allow_high_precision_mv: bool,
     is_integer_mv: bool,
     refmv_count: &mut u8,
@@ -382,7 +403,7 @@ fn add_tpl_ref_mv(
     if !cell.valid {
         return 0;
     }
-    let cur_offset_0 = tpl.cur_offset[rf0 as usize];
+    let cur_offset_0 = tpl.cur_offset[rf[0] as usize];
     let (mut r, mut c) = get_mv_projection(
         cell.row as i32,
         cell.col as i32,
@@ -391,26 +412,66 @@ fn add_tpl_ref_mv(
     );
     lower_mv_precision(&mut r, &mut c, allow_high_precision_mv, is_integer_mv);
 
-    if blk_row == 0 && blk_col == 0 && ((r - gm_row).abs() >= 16 || (c - gm_col).abs() >= 16) {
-        *mode_context |= 1 << GLOBALMV_OFFSET;
-    }
-
     let weight_unit: u32 = 1;
     let n = *refmv_count as usize;
-    let mut idx = n;
-    for (i, e) in stack.iter().enumerate().take(n) {
-        if e.row == r && e.col == c {
-            idx = i;
-            break;
+
+    if rf[1] == NONE_FRAME {
+        if blk_row == 0 && blk_col == 0 && ((r - gm[0].0).abs() >= 16 || (c - gm[0].1).abs() >= 16)
+        {
+            *mode_context |= 1 << GLOBALMV_OFFSET;
         }
-    }
-    if idx < n {
-        weight_arr[idx] += 2 * weight_unit;
-    } else if n < MAX_REF_MV_STACK_SIZE {
-        stack[n].row = r;
-        stack[n].col = c;
-        weight_arr[n] = 2 * weight_unit;
-        *refmv_count += 1;
+        let mut idx = n;
+        for (i, e) in stack.iter().enumerate().take(n) {
+            if e.row == r && e.col == c {
+                idx = i;
+                break;
+            }
+        }
+        if idx < n {
+            weight_arr[idx] += 2 * weight_unit;
+        } else if n < MAX_REF_MV_STACK_SIZE {
+            stack[n].row = r;
+            stack[n].col = c;
+            weight_arr[n] = 2 * weight_unit;
+            *refmv_count += 1;
+        }
+    } else {
+        // compound inter mode: project toward BOTH refs and merge pairwise.
+        let cur_offset_1 = tpl.cur_offset[rf[1] as usize];
+        let (mut cr, mut cc) = get_mv_projection(
+            cell.row as i32,
+            cell.col as i32,
+            cur_offset_1,
+            cell.ref_frame_offset as i32,
+        );
+        lower_mv_precision(&mut cr, &mut cc, allow_high_precision_mv, is_integer_mv);
+
+        if blk_row == 0
+            && blk_col == 0
+            && ((r - gm[0].0).abs() >= 16
+                || (c - gm[0].1).abs() >= 16
+                || (cr - gm[1].0).abs() >= 16
+                || (cc - gm[1].1).abs() >= 16)
+        {
+            *mode_context |= 1 << GLOBALMV_OFFSET;
+        }
+        let mut idx = n;
+        for (i, e) in stack.iter().enumerate().take(n) {
+            if e.row == r && e.col == c && e.crow == cr && e.ccol == cc {
+                idx = i;
+                break;
+            }
+        }
+        if idx < n {
+            weight_arr[idx] += 2 * weight_unit;
+        } else if n < MAX_REF_MV_STACK_SIZE {
+            stack[n].row = r;
+            stack[n].col = c;
+            stack[n].crow = cr;
+            stack[n].ccol = cc;
+            weight_arr[n] = 2 * weight_unit;
+            *refmv_count += 1;
+        }
     }
     1
 }
@@ -464,22 +525,27 @@ fn clamp_mv_ref(
     *row = clamp_i32(*row, row_min, row_max);
 }
 
-/// One entry of the DV candidate stack: `CANDIDATE_MV.this_mv` (`comp_mv` is
-/// dropped — see the module doc: the compound branch is dead for
-/// `ref_frame == INTRA_FRAME`).
+/// One entry of the DV candidate stack: `CANDIDATE_MV`. `row`/`col` are
+/// `this_mv`; `crow`/`ccol` are `comp_mv` (the second reference's MV), zero on
+/// the single-reference paths.
 #[derive(Clone, Copy, Debug, Default)]
 struct StackEntry {
     row: i32,
     col: i32,
+    crow: i32,
+    ccol: i32,
 }
 
-/// `add_ref_mv_candidate` (`mvref_common.c`), compound arm (`rf[1] >
-/// NONE_FRAME`) dropped — dead for `rf == [INTRA_FRAME, NONE_FRAME]` (see
-/// module doc).
+/// `add_ref_mv_candidate` (`mvref_common.c`), both arms: `rf[1] == NONE_FRAME`
+/// is the single-reference branch; `rf[1] > NONE_FRAME` is the compound branch
+/// (candidate must match BOTH refs, both MVs compared pairwise).
+/// `gm_mv` is `gm_mv_candidates` (`gm_get_motion_vector` per ref — `(0,0)` for
+/// identity global motion) and `gm_wmtype` is `gm_params[rf[ref]].wmtype` per
+/// ref (`0`/IDENTITY for the target).
 #[allow(clippy::too_many_arguments)]
 fn add_ref_mv_candidate(
     candidate: &DvNbr,
-    rf0: i32,
+    rf: [i32; 2],
     refmv_count: &mut u8,
     ref_match_count: &mut u8,
     newmv_count: &mut u8,
@@ -487,30 +553,83 @@ fn add_ref_mv_candidate(
     weight_arr: &mut [u32; MAX_REF_MV_STACK_SIZE],
     gm_mv0_row: i32,
     gm_mv0_col: i32,
-    gm_wmtype: i32,
+    gm_mv1_row: i32,
+    gm_mv1_col: i32,
+    gm_wmtype0: i32,
+    gm_wmtype1: i32,
     weight: u32,
 ) {
     if !is_inter_block(candidate) {
         return;
     }
-    // rf[1] == NONE_FRAME: single-reference branch only.
-    for ref_idx in 0..2 {
-        let cand_rf = if ref_idx == 0 {
-            candidate.ref_frame0
-        } else {
-            candidate.ref_frame1
-        };
-        if cand_rf == rf0 {
-            let (this_row, this_col) = if is_global_mv_block(candidate, gm_wmtype) {
-                (gm_mv0_row, gm_mv0_col)
-            } else if ref_idx == 0 {
-                (candidate.mv0_row, candidate.mv0_col)
+    if rf[1] == NONE_FRAME {
+        // single reference frame
+        for ref_idx in 0..2 {
+            let cand_rf = if ref_idx == 0 {
+                candidate.ref_frame0
             } else {
-                (candidate.mv1_row, candidate.mv1_col)
+                candidate.ref_frame1
             };
+            if cand_rf == rf[0] {
+                let (this_row, this_col) = if is_global_mv_block(candidate, gm_wmtype0) {
+                    (gm_mv0_row, gm_mv0_col)
+                } else if ref_idx == 0 {
+                    (candidate.mv0_row, candidate.mv0_col)
+                } else {
+                    (candidate.mv1_row, candidate.mv1_col)
+                };
+                let mut index = 0usize;
+                while index < *refmv_count as usize {
+                    if stack[index].row == this_row && stack[index].col == this_col {
+                        weight_arr[index] += weight;
+                        break;
+                    }
+                    index += 1;
+                }
+                if index == *refmv_count as usize && (*refmv_count as usize) < MAX_REF_MV_STACK_SIZE
+                {
+                    stack[index] = StackEntry {
+                        row: this_row,
+                        col: this_col,
+                        crow: 0,
+                        ccol: 0,
+                    };
+                    weight_arr[index] = weight;
+                    *refmv_count += 1;
+                }
+                if have_newmv_in_inter_mode(candidate.mode) {
+                    *newmv_count += 1;
+                }
+                *ref_match_count += 1;
+            }
+        }
+    } else {
+        // compound reference frame: candidate must carry the same ref pair
+        // (in the same order — C matches ref_frame[0]==rf[0] &&
+        // ref_frame[1]==rf[1] exactly, no permutation).
+        if candidate.ref_frame0 == rf[0] && candidate.ref_frame1 == rf[1] {
+            let wms = [gm_wmtype0, gm_wmtype1];
+            let gms = [(gm_mv0_row, gm_mv0_col), (gm_mv1_row, gm_mv1_col)];
+            let mut this_mv = [(0i32, 0i32); 2];
+            for (ref_idx, tm) in this_mv.iter_mut().enumerate() {
+                let (mv_r, mv_c) = if ref_idx == 0 {
+                    (candidate.mv0_row, candidate.mv0_col)
+                } else {
+                    (candidate.mv1_row, candidate.mv1_col)
+                };
+                *tm = if is_global_mv_block(candidate, wms[ref_idx]) {
+                    gms[ref_idx]
+                } else {
+                    (mv_r, mv_c)
+                };
+            }
             let mut index = 0usize;
             while index < *refmv_count as usize {
-                if stack[index].row == this_row && stack[index].col == this_col {
+                if stack[index].row == this_mv[0].0
+                    && stack[index].col == this_mv[0].1
+                    && stack[index].crow == this_mv[1].0
+                    && stack[index].ccol == this_mv[1].1
+                {
                     weight_arr[index] += weight;
                     break;
                 }
@@ -518,8 +637,10 @@ fn add_ref_mv_candidate(
             }
             if index == *refmv_count as usize && (*refmv_count as usize) < MAX_REF_MV_STACK_SIZE {
                 stack[index] = StackEntry {
-                    row: this_row,
-                    col: this_col,
+                    row: this_mv[0].0,
+                    col: this_mv[0].1,
+                    crow: this_mv[1].0,
+                    ccol: this_mv[1].1,
                 };
                 weight_arr[index] = weight;
                 *refmv_count += 1;
@@ -554,7 +675,7 @@ fn scan_row_mbmi(
     grid: &impl DvGrid,
     mi_col: i32,
     frame_mi_cols: i32,
-    rf0: i32,
+    rf: [i32; 2],
     row_offset: i32,
     width_mi: i32,
     stack: &mut [StackEntry; MAX_REF_MV_STACK_SIZE],
@@ -564,7 +685,10 @@ fn scan_row_mbmi(
     newmv_count: &mut u8,
     gm_mv0_row: i32,
     gm_mv0_col: i32,
-    gm_wmtype: i32,
+    gm_mv1_row: i32,
+    gm_mv1_col: i32,
+    gm_wmtype0: i32,
+    gm_wmtype1: i32,
     max_row_offset: i32,
     processed_rows: &mut i32,
 ) {
@@ -602,7 +726,7 @@ fn scan_row_mbmi(
 
         add_ref_mv_candidate(
             &candidate,
-            rf0,
+            rf,
             refmv_count,
             row_match_count,
             newmv_count,
@@ -610,7 +734,10 @@ fn scan_row_mbmi(
             weight_arr,
             gm_mv0_row,
             gm_mv0_col,
-            gm_wmtype,
+            gm_mv1_row,
+            gm_mv1_col,
+            gm_wmtype0,
+            gm_wmtype1,
             (len as u32) * weight,
         );
 
@@ -624,7 +751,7 @@ fn scan_col_mbmi(
     grid: &impl DvGrid,
     mi_row: i32,
     frame_mi_rows: i32,
-    rf0: i32,
+    rf: [i32; 2],
     col_offset: i32,
     height_mi: i32,
     stack: &mut [StackEntry; MAX_REF_MV_STACK_SIZE],
@@ -634,7 +761,10 @@ fn scan_col_mbmi(
     newmv_count: &mut u8,
     gm_mv0_row: i32,
     gm_mv0_col: i32,
-    gm_wmtype: i32,
+    gm_mv1_row: i32,
+    gm_mv1_col: i32,
+    gm_wmtype0: i32,
+    gm_wmtype1: i32,
     max_col_offset: i32,
     processed_cols: &mut i32,
 ) {
@@ -672,7 +802,7 @@ fn scan_col_mbmi(
 
         add_ref_mv_candidate(
             &candidate,
-            rf0,
+            rf,
             refmv_count,
             col_match_count,
             newmv_count,
@@ -680,7 +810,10 @@ fn scan_col_mbmi(
             weight_arr,
             gm_mv0_row,
             gm_mv0_col,
-            gm_wmtype,
+            gm_mv1_row,
+            gm_mv1_col,
+            gm_wmtype0,
+            gm_wmtype1,
             (len as u32) * weight,
         );
 
@@ -695,7 +828,7 @@ fn scan_blk_mbmi(
     mi_row: i32,
     mi_col: i32,
     tile: &DvTileBounds,
-    rf0: i32,
+    rf: [i32; 2],
     row_offset: i32,
     col_offset: i32,
     stack: &mut [StackEntry; MAX_REF_MV_STACK_SIZE],
@@ -704,7 +837,10 @@ fn scan_blk_mbmi(
     newmv_count: &mut u8,
     gm_mv0_row: i32,
     gm_mv0_col: i32,
-    gm_wmtype: i32,
+    gm_mv1_row: i32,
+    gm_mv1_col: i32,
+    gm_wmtype0: i32,
+    gm_wmtype1: i32,
     refmv_count: &mut u8,
 ) {
     if is_inside(tile, mi_col, mi_row, row_offset, col_offset) {
@@ -712,7 +848,7 @@ fn scan_blk_mbmi(
         let len = MI_SIZE_WIDE[BLOCK_8X8];
         add_ref_mv_candidate(
             &candidate,
-            rf0,
+            rf,
             refmv_count,
             match_count,
             newmv_count,
@@ -720,7 +856,10 @@ fn scan_blk_mbmi(
             weight_arr,
             gm_mv0_row,
             gm_mv0_col,
-            gm_wmtype,
+            gm_mv1_row,
+            gm_mv1_col,
+            gm_wmtype0,
+            gm_wmtype1,
             2 * (len as u32),
         );
     }
@@ -761,9 +900,56 @@ fn process_single_ref_mv_candidate(
                 stack[stack_idx] = StackEntry {
                     row: mv_row,
                     col: mv_col,
+                    crow: 0,
+                    ccol: 0,
                 };
                 weight_arr[stack_idx] = 2;
                 *refmv_count += 1;
+            }
+        }
+    }
+}
+
+/// `process_compound_ref_mv_candidate` (`mvref_common.c`): fill the per-ref
+/// `ref_id` (exact-ref match) and `ref_diff` (sign-bias-adjusted other-ref)
+/// buckets the compound extension builds `comp_list` from. For each of the
+/// candidate's two MV slots, against each of the block's two refs: an exact
+/// `can_rf == rf[cmp_idx]` match goes to `ref_id[cmp_idx]` (cap 2); any other
+/// inter ref goes to `ref_diff[cmp_idx]` after the `ref_frame_sign_bias`
+/// negation (cap 2).
+#[allow(clippy::too_many_arguments)]
+fn process_compound_ref_mv_candidate(
+    candidate: &DvNbr,
+    rf: [i32; 2],
+    sign_bias: &[i8; REF_FRAMES],
+    ref_id: &mut [[(i32, i32); 2]; 2],
+    ref_id_count: &mut [usize; 2],
+    ref_diff: &mut [[(i32, i32); 2]; 2],
+    ref_diff_count: &mut [usize; 2],
+) {
+    for rf_idx in 0..2 {
+        let can_rf = if rf_idx == 0 {
+            candidate.ref_frame0
+        } else {
+            candidate.ref_frame1
+        };
+        let (mv_row, mv_col) = if rf_idx == 0 {
+            (candidate.mv0_row, candidate.mv0_col)
+        } else {
+            (candidate.mv1_row, candidate.mv1_col)
+        };
+        for cmp_idx in 0..2 {
+            if can_rf == rf[cmp_idx] && ref_id_count[cmp_idx] < 2 {
+                ref_id[cmp_idx][ref_id_count[cmp_idx]] = (mv_row, mv_col);
+                ref_id_count[cmp_idx] += 1;
+            } else if can_rf > INTRA_FRAME && ref_diff_count[cmp_idx] < 2 {
+                let (mut r, mut c) = (mv_row, mv_col);
+                if sign_bias[can_rf as usize] != sign_bias[rf[cmp_idx] as usize] {
+                    r = -r;
+                    c = -c;
+                }
+                ref_diff[cmp_idx][ref_diff_count[cmp_idx]] = (r, c);
+                ref_diff_count[cmp_idx] += 1;
             }
         }
     }
@@ -875,7 +1061,7 @@ pub fn find_dv_ref_mvs(
     let mut processed_rows = 0;
     let mut processed_cols = 0;
 
-    let rf0 = INTRA_FRAME;
+    let rf = [INTRA_FRAME, NONE_FRAME];
     let mut refmv_count: u8 = 0;
     let mut stack = [StackEntry::default(); MAX_REF_MV_STACK_SIZE];
     let mut weight_arr = [0u32; MAX_REF_MV_STACK_SIZE];
@@ -912,7 +1098,7 @@ pub fn find_dv_ref_mvs(
             &grid,
             mi_col,
             frame_mi_cols,
-            rf0,
+            rf,
             -1,
             width_mi,
             &mut stack,
@@ -920,6 +1106,9 @@ pub fn find_dv_ref_mvs(
             &mut refmv_count,
             &mut row_match_count,
             &mut dummy_newmv,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -932,7 +1121,7 @@ pub fn find_dv_ref_mvs(
             &grid,
             mi_row,
             frame_mi_rows,
-            rf0,
+            rf,
             -1,
             height_mi,
             &mut stack,
@@ -940,6 +1129,9 @@ pub fn find_dv_ref_mvs(
             &mut refmv_count,
             &mut col_match_count,
             &mut dummy_newmv,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -953,13 +1145,16 @@ pub fn find_dv_ref_mvs(
             mi_row,
             mi_col,
             &tile,
-            rf0,
+            rf,
             -1,
             width_mi,
             &mut stack,
             &mut weight_arr,
             &mut row_match_count,
             &mut dummy_newmv,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -980,13 +1175,16 @@ pub fn find_dv_ref_mvs(
         mi_row,
         mi_col,
         &tile,
-        rf0,
+        rf,
         -1,
         -1,
         &mut stack,
         &mut weight_arr,
         &mut row_match_count,
         &mut dummy_newmv,
+        0,
+        0,
+        0,
         0,
         0,
         0,
@@ -1002,7 +1200,7 @@ pub fn find_dv_ref_mvs(
                 &grid,
                 mi_col,
                 frame_mi_cols,
-                rf0,
+                rf,
                 row_offset,
                 width_mi,
                 &mut stack,
@@ -1010,6 +1208,9 @@ pub fn find_dv_ref_mvs(
                 &mut refmv_count,
                 &mut row_match_count,
                 &mut dummy_newmv,
+                0,
+                0,
+                0,
                 0,
                 0,
                 0,
@@ -1022,7 +1223,7 @@ pub fn find_dv_ref_mvs(
                 &grid,
                 mi_row,
                 frame_mi_rows,
-                rf0,
+                rf,
                 col_offset,
                 height_mi,
                 &mut stack,
@@ -1030,6 +1231,9 @@ pub fn find_dv_ref_mvs(
                 &mut refmv_count,
                 &mut col_match_count,
                 &mut dummy_newmv,
+                0,
+                0,
+                0,
                 0,
                 0,
                 0,
@@ -1069,7 +1273,7 @@ pub fn find_dv_ref_mvs(
         let candidate = grid.get(-1, idx);
         process_single_ref_mv_candidate(
             &candidate,
-            rf0,
+            rf[0],
             &sign_bias,
             &mut stack,
             &mut weight_arr,
@@ -1085,7 +1289,7 @@ pub fn find_dv_ref_mvs(
         let candidate = grid.get(idx, -1);
         process_single_ref_mv_candidate(
             &candidate,
-            rf0,
+            rf[0],
             &sign_bias,
             &mut stack,
             &mut weight_arr,
@@ -1153,21 +1357,33 @@ pub struct InterMvRefs {
     /// the `REF_CAT_LEVEL` bump, bubble-sort, extension, and `clamp_mv_ref`.
     /// Only `[0, ref_mv_count)` is meaningful.
     pub stack: [(i32, i32); MAX_REF_MV_STACK_SIZE],
+    /// `ref_mv_stack[ref_frame][i].comp_mv` (row, col) — the second reference's
+    /// MV for a compound block. All `(0,0)` for a single-reference block
+    /// (`rf[1] <= NONE_FRAME`); mirrors C's zeroed `comp_mv` field on the
+    /// single-ref stack entries.
+    pub comp_stack: [(i32, i32); MAX_REF_MV_STACK_SIZE],
     /// `ref_mv_weight[ref_frame][i]`. Only `[0, ref_mv_count)` is meaningful.
     pub weight: [u32; MAX_REF_MV_STACK_SIZE],
     /// `av1_find_best_ref_mvs` nearest / near (1/8-pel, precision-lowered).
+    /// Meaningful for the single-ref arm; for compound the decoder reads the
+    /// `stack`/`comp_stack` pairs directly (C indexes `ref_mv_stack[ref_frame]`
+    /// by `ref_mv_idx` — see decodemv.c).
     pub nearest: (i32, i32),
     pub near: (i32, i32),
-    /// `global_mvs[ref_frame]` = `gm_get_motion_vector(global_motion[ref])`;
-    /// `(0,0)` for identity global motion.
+    /// `global_mvs` per-reference: `gm_get_motion_vector(global_motion[rf[0]])`
+    /// (`global_mv`) and `global_motion[rf[1]]` (`global_mv1`, `(0,0)` for a
+    /// single-reference block).
     pub global_mv: (i32, i32),
+    pub global_mv1: (i32, i32),
 }
 
-/// `av1_find_mv_refs` (single-reference inter path, `ref_frame > INTRA_FRAME`)
-/// → the full `setup_ref_mv_list` (the spatial scan + `mode_context`/
-/// `newmv_count` bookkeeping the intrabc [`find_dv_ref_mvs`] drops) →
-/// `av1_find_best_ref_mvs`. This is the generalization of [`find_dv_ref_mvs`]
-/// to a real single inter reference.
+/// `av1_find_mv_refs` (inter path, `rf[0] > INTRA_FRAME`) → the full
+/// `setup_ref_mv_list` (the spatial scan + `mode_context`/`newmv_count`
+/// bookkeeping the intrabc [`find_dv_ref_mvs`] drops) → `av1_find_best_ref_mvs`.
+/// `rf` is the reference PAIR: `[rf0, NONE_FRAME]` selects the single-reference
+/// arm (the generalization of [`find_dv_ref_mvs`]); `rf[1] > NONE_FRAME`
+/// selects the compound arm (`process_compound_ref_mv_candidate` +
+/// `comp_list` synthesis, pair-clamped).
 ///
 /// # Scope (verified envelope)
 ///
@@ -1191,7 +1407,7 @@ pub struct InterMvRefs {
 ///   `allow_high_precision_mv` / `is_integer_mv` feed `av1_find_best_ref_mvs`.
 #[allow(clippy::too_many_arguments)]
 pub fn find_inter_mv_refs(
-    rf0: i32,
+    rf: [i32; 2],
     mi_row: i32,
     mi_col: i32,
     bsize: usize,
@@ -1204,8 +1420,8 @@ pub fn find_inter_mv_refs(
     mib_size: i32,
     allow_ref_frame_mvs: bool,
     tpl: Option<&TplField>,
-    global_mv: (i32, i32),
-    gm_wmtype: i32,
+    global_mv: [(i32, i32); 2],
+    gm_wmtype: [i32; 2],
     sign_bias: [i8; REF_FRAMES],
     allow_high_precision_mv: bool,
     is_integer_mv: bool,
@@ -1229,7 +1445,8 @@ pub fn find_inter_mv_refs(
     let mut processed_rows = 0;
     let mut processed_cols = 0;
 
-    let (gm_row, gm_col) = global_mv;
+    let gm = global_mv;
+    let gm_wt = gm_wmtype;
     let mut mode_context: i32 = 0;
     let mut refmv_count: u8 = 0;
     let mut stack = [StackEntry::default(); MAX_REF_MV_STACK_SIZE];
@@ -1261,7 +1478,7 @@ pub fn find_inter_mv_refs(
             &grid,
             mi_col,
             frame_mi_cols,
-            rf0,
+            rf,
             -1,
             width_mi,
             &mut stack,
@@ -1269,9 +1486,12 @@ pub fn find_inter_mv_refs(
             &mut refmv_count,
             &mut row_match_count,
             &mut newmv_count,
-            gm_row,
-            gm_col,
-            gm_wmtype,
+            gm[0].0,
+            gm[0].1,
+            gm[1].0,
+            gm[1].1,
+            gm_wt[0],
+            gm_wt[1],
             max_row_offset,
             &mut processed_rows,
         );
@@ -1281,7 +1501,7 @@ pub fn find_inter_mv_refs(
             &grid,
             mi_row,
             frame_mi_rows,
-            rf0,
+            rf,
             -1,
             height_mi,
             &mut stack,
@@ -1289,9 +1509,12 @@ pub fn find_inter_mv_refs(
             &mut refmv_count,
             &mut col_match_count,
             &mut newmv_count,
-            gm_row,
-            gm_col,
-            gm_wmtype,
+            gm[0].0,
+            gm[0].1,
+            gm[1].0,
+            gm[1].1,
+            gm_wt[0],
+            gm_wt[1],
             max_col_offset,
             &mut processed_cols,
         );
@@ -1302,16 +1525,19 @@ pub fn find_inter_mv_refs(
             mi_row,
             mi_col,
             &tile,
-            rf0,
+            rf,
             -1,
             width_mi,
             &mut stack,
             &mut weight_arr,
             &mut row_match_count,
             &mut newmv_count,
-            gm_row,
-            gm_col,
-            gm_wmtype,
+            gm[0].0,
+            gm[0].1,
+            gm[1].0,
+            gm[1].1,
+            gm_wt[0],
+            gm_wt[1],
             &mut refmv_count,
         );
     }
@@ -1353,11 +1579,10 @@ pub fn find_inter_mv_refs(
                             &tile,
                             mi_row,
                             mi_col,
-                            rf0,
+                            rf,
                             blk_row,
                             blk_col,
-                            gm_row,
-                            gm_col,
+                            gm,
                             allow_high_precision_mv,
                             is_integer_mv,
                             &mut refmv_count,
@@ -1385,11 +1610,10 @@ pub fn find_inter_mv_refs(
                             &tile,
                             mi_row,
                             mi_col,
-                            rf0,
+                            rf,
                             blk_row,
                             blk_col,
-                            gm_row,
-                            gm_col,
+                            gm,
                             allow_high_precision_mv,
                             is_integer_mv,
                             &mut refmv_count,
@@ -1410,16 +1634,19 @@ pub fn find_inter_mv_refs(
         mi_row,
         mi_col,
         &tile,
-        rf0,
+        rf,
         -1,
         -1,
         &mut stack,
         &mut weight_arr,
         &mut row_match_count,
         &mut dummy_newmv,
-        gm_row,
-        gm_col,
-        gm_wmtype,
+        gm[0].0,
+        gm[0].1,
+        gm[1].0,
+        gm[1].1,
+        gm_wt[0],
+        gm_wt[1],
         &mut refmv_count,
     );
 
@@ -1432,7 +1659,7 @@ pub fn find_inter_mv_refs(
                 &grid,
                 mi_col,
                 frame_mi_cols,
-                rf0,
+                rf,
                 row_offset,
                 width_mi,
                 &mut stack,
@@ -1440,9 +1667,12 @@ pub fn find_inter_mv_refs(
                 &mut refmv_count,
                 &mut row_match_count,
                 &mut dummy_newmv,
-                gm_row,
-                gm_col,
-                gm_wmtype,
+                gm[0].0,
+                gm[0].1,
+                gm[1].0,
+                gm[1].1,
+                gm_wt[0],
+                gm_wt[1],
                 max_row_offset,
                 &mut processed_rows,
             );
@@ -1452,7 +1682,7 @@ pub fn find_inter_mv_refs(
                 &grid,
                 mi_row,
                 frame_mi_rows,
-                rf0,
+                rf,
                 col_offset,
                 height_mi,
                 &mut stack,
@@ -1460,9 +1690,12 @@ pub fn find_inter_mv_refs(
                 &mut refmv_count,
                 &mut col_match_count,
                 &mut dummy_newmv,
-                gm_row,
-                gm_col,
-                gm_wmtype,
+                gm[0].0,
+                gm[0].1,
+                gm[1].0,
+                gm[1].1,
+                gm_wt[0],
+                gm_wt[1],
                 max_col_offset,
                 &mut processed_cols,
             );
@@ -1513,63 +1746,186 @@ pub fn find_inter_mv_refs(
     mi_height = mi_height.min(frame_mi_rows - mi_row);
     let mi_size = mi_width.min(mi_height);
 
-    // rf[1] <= NONE_FRAME single-reference extension.
-    let mut idx = 0;
-    while max_row_offset.abs() >= 1
-        && idx < mi_size
-        && (refmv_count as usize) < MAX_MV_REF_CANDIDATES
-    {
-        let candidate = grid.get(-1, idx);
-        process_single_ref_mv_candidate(
-            &candidate,
-            rf0,
-            &sign_bias,
-            &mut stack,
-            &mut weight_arr,
-            &mut refmv_count,
-        );
-        idx += MI_SIZE_WIDE[candidate.bsize];
-    }
-    let mut idx = 0;
-    while max_col_offset.abs() >= 1
-        && idx < mi_size
-        && (refmv_count as usize) < MAX_MV_REF_CANDIDATES
-    {
-        let candidate = grid.get(idx, -1);
-        process_single_ref_mv_candidate(
-            &candidate,
-            rf0,
-            &sign_bias,
-            &mut stack,
-            &mut weight_arr,
-            &mut refmv_count,
-        );
-        idx += MI_SIZE_HIGH[candidate.bsize];
-    }
-
     let mb_to_left_edge = -(mi_col * MI_SIZE * 8);
     let mb_to_right_edge = (frame_mi_cols - width_mi - mi_col) * MI_SIZE * 8;
     let mb_to_top_edge = -(mi_row * MI_SIZE * 8);
     let mb_to_bottom_edge = (frame_mi_rows - height_mi - mi_row) * MI_SIZE * 8;
     let bw_px = width_mi << MI_SIZE_LOG2;
     let bh_px = height_mi << MI_SIZE_LOG2;
-    for e in stack.iter_mut().take(refmv_count as usize) {
-        clamp_mv_ref(
-            &mut e.row,
-            &mut e.col,
-            bw_px,
-            bh_px,
-            mb_to_left_edge,
-            mb_to_right_edge,
-            mb_to_top_edge,
-            mb_to_bottom_edge,
-        );
+
+    // The extension arm (mvref_common.c `setup_ref_mv_list` ~l.682) splits on
+    // `rf[1] > NONE_FRAME`: single-ref gathers `process_single_ref_mv_candidate`
+    // into the stack directly; compound first buckets each neighbour's two MVs
+    // into `ref_id` (exact `can_rf == rf[cmp_idx]` match) / `ref_diff`
+    // (sign-bias-negated other-ref), then synthesises the `comp_list` predictor
+    // grid and pushes the PAIR entries. Only the single-ref arm fills
+    // `mv_ref_list`; for compound C consumes `ref_mv_stack[ref]` pairs directly.
+    if rf[1] <= NONE_FRAME {
+        let mut idx = 0;
+        while max_row_offset.abs() >= 1
+            && idx < mi_size
+            && (refmv_count as usize) < MAX_MV_REF_CANDIDATES
+        {
+            let candidate = grid.get(-1, idx);
+            process_single_ref_mv_candidate(
+                &candidate,
+                rf[0],
+                &sign_bias,
+                &mut stack,
+                &mut weight_arr,
+                &mut refmv_count,
+            );
+            idx += MI_SIZE_WIDE[candidate.bsize];
+        }
+        let mut idx = 0;
+        while max_col_offset.abs() >= 1
+            && idx < mi_size
+            && (refmv_count as usize) < MAX_MV_REF_CANDIDATES
+        {
+            let candidate = grid.get(idx, -1);
+            process_single_ref_mv_candidate(
+                &candidate,
+                rf[0],
+                &sign_bias,
+                &mut stack,
+                &mut weight_arr,
+                &mut refmv_count,
+            );
+            idx += MI_SIZE_HIGH[candidate.bsize];
+        }
+
+        for e in stack.iter_mut().take(refmv_count as usize) {
+            clamp_mv_ref(
+                &mut e.row,
+                &mut e.col,
+                bw_px,
+                bh_px,
+                mb_to_left_edge,
+                mb_to_right_edge,
+                mb_to_top_edge,
+                mb_to_bottom_edge,
+            );
+        }
+    } else {
+        // Compound extension (mvref_common.c ~l.686-742).
+        if (refmv_count as usize) < MAX_MV_REF_CANDIDATES {
+            let mut ref_id = [[(0i32, 0i32); 2]; 2];
+            let mut ref_id_count = [0usize; 2];
+            let mut ref_diff = [[(0i32, 0i32); 2]; 2];
+            let mut ref_diff_count = [0usize; 2];
+
+            let mut idx = 0;
+            while max_row_offset.abs() >= 1 && idx < mi_size {
+                let candidate = grid.get(-1, idx);
+                process_compound_ref_mv_candidate(
+                    &candidate,
+                    rf,
+                    &sign_bias,
+                    &mut ref_id,
+                    &mut ref_id_count,
+                    &mut ref_diff,
+                    &mut ref_diff_count,
+                );
+                idx += MI_SIZE_WIDE[candidate.bsize];
+            }
+            let mut idx = 0;
+            while max_col_offset.abs() >= 1 && idx < mi_size {
+                let candidate = grid.get(idx, -1);
+                process_compound_ref_mv_candidate(
+                    &candidate,
+                    rf,
+                    &sign_bias,
+                    &mut ref_id,
+                    &mut ref_id_count,
+                    &mut ref_diff,
+                    &mut ref_diff_count,
+                );
+                idx += MI_SIZE_HIGH[candidate.bsize];
+            }
+
+            // `comp_list[comp_idx][idx]`: ref_id first, then ref_diff, then the
+            // global-MV candidate for that ref slot.
+            let mut comp_list = [[(0i32, 0i32); 2]; MAX_MV_REF_CANDIDATES];
+            for idx in 0..2 {
+                let mut comp_idx = 0;
+                let mut list_idx = 0;
+                while list_idx < ref_id_count[idx] && comp_idx < MAX_MV_REF_CANDIDATES {
+                    comp_list[comp_idx][idx] = ref_id[idx][list_idx];
+                    list_idx += 1;
+                    comp_idx += 1;
+                }
+                let mut list_idx = 0;
+                while list_idx < ref_diff_count[idx] && comp_idx < MAX_MV_REF_CANDIDATES {
+                    comp_list[comp_idx][idx] = ref_diff[idx][list_idx];
+                    list_idx += 1;
+                    comp_idx += 1;
+                }
+                while comp_idx < MAX_MV_REF_CANDIDATES {
+                    comp_list[comp_idx][idx] = gm[idx];
+                    comp_idx += 1;
+                }
+            }
+
+            if refmv_count > 0 {
+                // C asserts `*refmv_count == 1` here (the compound spatial scan
+                // stops at one exact-match pair); mirror the branch verbatim.
+                if comp_list[0][0] == (stack[0].row, stack[0].col)
+                    && comp_list[0][1] == (stack[0].crow, stack[0].ccol)
+                {
+                    stack[refmv_count as usize].row = comp_list[1][0].0;
+                    stack[refmv_count as usize].col = comp_list[1][0].1;
+                    stack[refmv_count as usize].crow = comp_list[1][1].0;
+                    stack[refmv_count as usize].ccol = comp_list[1][1].1;
+                } else {
+                    stack[refmv_count as usize].row = comp_list[0][0].0;
+                    stack[refmv_count as usize].col = comp_list[0][0].1;
+                    stack[refmv_count as usize].crow = comp_list[0][1].0;
+                    stack[refmv_count as usize].ccol = comp_list[0][1].1;
+                }
+                weight_arr[refmv_count as usize] = 2;
+                refmv_count += 1;
+            } else {
+                for idx in 0..MAX_MV_REF_CANDIDATES {
+                    stack[refmv_count as usize].row = comp_list[idx][0].0;
+                    stack[refmv_count as usize].col = comp_list[idx][0].1;
+                    stack[refmv_count as usize].crow = comp_list[idx][1].0;
+                    stack[refmv_count as usize].ccol = comp_list[idx][1].1;
+                    weight_arr[refmv_count as usize] = 2;
+                    refmv_count += 1;
+                }
+            }
+        }
+
+        for e in stack.iter_mut().take(refmv_count as usize) {
+            clamp_mv_ref(
+                &mut e.row,
+                &mut e.col,
+                bw_px,
+                bh_px,
+                mb_to_left_edge,
+                mb_to_right_edge,
+                mb_to_top_edge,
+                mb_to_bottom_edge,
+            );
+            clamp_mv_ref(
+                &mut e.crow,
+                &mut e.ccol,
+                bw_px,
+                bh_px,
+                mb_to_left_edge,
+                mb_to_right_edge,
+                mb_to_top_edge,
+                mb_to_bottom_edge,
+            );
+        }
     }
 
-    // mv_ref_list fill: C writes `[refmv_count, MAX_MV_REF_CANDIDATES)` with
-    // `gm_mv_candidates[0]` (= `global_mv`) then `[0, min(2, refmv_count))`
-    // with the ranked stack.
-    let mut mv_ref_list = [global_mv; MAX_MV_REF_CANDIDATES];
+    // mv_ref_list fill + `av1_find_best_ref_mvs` nearest/near: single-ref only
+    // in C (the compound caller reads `ref_mv_stack[ref]` pairs directly and
+    // never calls find_best_ref_mvs). The `nearest`/`near`/`global_mv` fields
+    // carry the this_mv-derived values for compound too — deterministic and
+    // ignored by the compound arm, which uses `stack`/`comp_stack`.
+    let mut mv_ref_list = [gm[0]; MAX_MV_REF_CANDIDATES];
     for (i, slot) in mv_ref_list
         .iter_mut()
         .enumerate()
@@ -1585,18 +1941,26 @@ pub fn find_inter_mv_refs(
     lower_mv_precision(&mut rr, &mut rc, allow_high_precision_mv, is_integer_mv);
 
     let mut out_stack = [(0i32, 0i32); MAX_REF_MV_STACK_SIZE];
-    for (o, s) in out_stack.iter_mut().zip(stack.iter()) {
+    let mut out_comp_stack = [(0i32, 0i32); MAX_REF_MV_STACK_SIZE];
+    for ((o, oc), s) in out_stack
+        .iter_mut()
+        .zip(out_comp_stack.iter_mut())
+        .zip(stack.iter())
+    {
         *o = (s.row, s.col);
+        *oc = (s.crow, s.ccol);
     }
 
     InterMvRefs {
         mode_context,
         ref_mv_count: refmv_count,
         stack: out_stack,
+        comp_stack: out_comp_stack,
         weight: weight_arr,
         nearest: (nr, nc),
         near: (rr, rc),
-        global_mv,
+        global_mv: gm[0],
+        global_mv1: gm[1],
     }
 }
 
@@ -1636,7 +2000,7 @@ pub fn find_ref_dv(tile_mi_row_start: i32, mib_size: i32, mi_row: i32) -> (i32, 
 }
 
 /// `is_mv_valid` (`decodemv.c`).
-fn is_mv_valid(row: i32, col: i32) -> bool {
+pub fn is_mv_valid(row: i32, col: i32) -> bool {
     row > MV_LOW && row < MV_UPP && col > MV_LOW && col < MV_UPP
 }
 
@@ -2156,6 +2520,12 @@ mod packed_repr {
     /// other field's, so a swapped pair of slots cannot pass. Negative and
     /// large magnitudes included: the MV components are 1/8-pel and reach
     /// +-32768 at 4096 px, which is why they are `i32` slots and not `i16`.
+    ///
+    /// `use_intrabc`, `compound_idx` and `comp_group_idx` are all 0/1-domain in
+    /// real data, so three of them cannot be pairwise-distinct in-band. The
+    /// packed slot is a raw `i32` carried verbatim (`from_packed` does no domain
+    /// check), so the two new flags take out-of-domain sentinels to keep every
+    /// slot observable; a real stream only ever writes 0/1.
     #[test]
     fn dv_nbr_packed_roundtrips() {
         let cases = [
@@ -2169,6 +2539,12 @@ mod packed_repr {
                 mv0_col: 32767,
                 mv1_row: 9,
                 mv1_col: -2,
+                // `compound_idx`/`comp_group_idx` are 0/1 in real data, but so is
+                // `use_intrabc` — three fields cannot be pairwise-distinct in a
+                // two-value domain. The packed slot is a raw i32 carried
+                // verbatim, so out-of-domain sentinels keep all 11 observable.
+                compound_idx: 90,
+                comp_group_idx: 91,
             },
             DvNbr {
                 bsize: 1,
@@ -2180,6 +2556,8 @@ mod packed_repr {
                 mv0_col: -5,
                 mv1_row: -131072,
                 mv1_col: 131071,
+                compound_idx: 92,
+                comp_group_idx: 93,
             },
         ];
         for c in cases {

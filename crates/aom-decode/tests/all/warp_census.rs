@@ -54,6 +54,8 @@ fn census_match_16x34_warp_block() {
                 mv0_col: -7,
                 mv1_row: 0,
                 mv1_col: 0,
+                compound_idx: 0,
+                comp_group_idx: 0,
             }
         } else {
             DvNbr::default()

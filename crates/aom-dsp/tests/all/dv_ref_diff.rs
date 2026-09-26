@@ -116,6 +116,11 @@ fn grid_fn(grid: &[RefDvNbr], mi_row: i32, mi_col: i32) -> impl Fn(i32, i32) -> 
             mv0_col: cell.mv0_col as i32,
             mv1_row: cell.mv1_row as i32,
             mv1_col: cell.mv1_col as i32,
+            // compound_idx/comp_group_idx feed only the entropy-context helpers
+            // (`get_comp_index_context`/`get_comp_group_idx_context`), not the
+            // MV-ref scan under test — pinned to the unmasked/avg defaults here.
+            compound_idx: 1,
+            comp_group_idx: 0,
         }
     }
 }
@@ -591,7 +596,7 @@ fn run_one_inter(
 
     let rust_grid = grid_fn(grid, b.mi_row, b.mi_col);
     let rust_out = find_inter_mv_refs(
-        case.rf0,
+        [case.rf0, -1], // [rf0, NONE_FRAME] — the single-ref arm
         b.mi_row,
         b.mi_col,
         b.bsize,
@@ -605,8 +610,8 @@ fn run_one_inter(
         case.allow_ref_frame_mvs,
         // Empty temporal field (the differential shim decodes intra-only refs).
         None,
-        (0, 0),
-        0,
+        [(0, 0), (0, 0)],
+        [0, 0],
         case.sign_bias,
         case.allow_high_precision_mv,
         case.is_integer_mv,
@@ -681,6 +686,238 @@ fn find_inter_mv_refs_matches_c() {
     }
     eprintln!(
         "find_inter_mv_refs_matches_c: {total} cases x {n_grids} distinct grids value-identical vs C (av1_find_mv_refs single-ref)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Compound-reference INTER MV scan (`find_inter_mv_refs` compound arm) vs the
+// REAL exported `av1_find_mv_refs` at `ref_frame = av1_ref_frame_type(rf)` —
+// the pairwise-match spatial scan, `process_compound_ref_mv_candidate`
+// (ref_id / sign-bias-negated ref_diff bucketing), `comp_list` synthesis and
+// the two-component `clamp_mv_ref` are all randomized. `rf` is constrained to
+// the legal compound pairs (`ref_frame_map` + uni-comp-ref entries) — an
+// arbitrary ordered pair is not a reachable decoder input.
+// ---------------------------------------------------------------------------
+
+/// The legal compound reference pairs `av1_ref_frame_type` accepts: forward
+/// {LAST..GOLDEN} x backward {BWDREF..ALTREF} bidirectional (12), plus the
+/// `TOTAL_UNIDIR_COMP_REFS` same-side unidirectional pairs (9) — `ref_frame_map`
+/// order. Reference ids: LAST=1, LAST2=2, LAST3=3, GOLDEN=4, BWDREF=5,
+/// ALTREF2=6, ALTREF=7.
+const COMPOUND_PAIRS: [(i32, i32); 21] = [
+    // bidirectional fwd x bwd (4 * 3 = 12)
+    (1, 5),
+    (1, 6),
+    (1, 7),
+    (2, 5),
+    (2, 6),
+    (2, 7),
+    (3, 5),
+    (3, 6),
+    (3, 7),
+    (4, 5),
+    (4, 6),
+    (4, 7),
+    // unidirectional same-side (9): LAST2/LAST3/GOLDEN from LAST, ALTREF2/ALTREF
+    // from BWDREF, and the remaining same-side combos.
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (5, 7),
+    (2, 3),
+    (2, 4),
+    (3, 4),
+    (5, 6),
+    (6, 7),
+];
+
+/// A grid biased toward COMPOUND neighbours matching the probe pair (so the
+/// pairwise `ref_frame[0]==rf[0] && ref_frame[1]==rf[1]` match fires), plus a
+/// spread of single-ref / other-compound / intra / intrabc cells to exercise
+/// the ref_id / ref_diff bucketing and the match filter.
+fn random_compound_grid(rng: &mut Rng, rf: (i32, i32)) -> Vec<RefDvNbr> {
+    let mut g = vec![RefDvNbr::default(); DIM * DIM];
+    for cell in g.iter_mut() {
+        let bsize = rng.range(0, 22) as u8;
+        let class = rng.next() % 100;
+        if class < 45 {
+            // compound neighbour matching the probe pair exactly (order matters).
+            cell.bsize = bsize;
+            cell.ref_frame0 = rf.0 as i8;
+            cell.ref_frame1 = rf.1 as i8;
+            cell.use_intrabc = false;
+            cell.mode = rng.range(17, 25) as u8; // compound modes only
+            cell.mv0_row = (rng.range(-800, 800) * 4) as i16;
+            cell.mv0_col = (rng.range(-800, 800) * 4) as i16;
+            cell.mv1_row = (rng.range(-800, 800) * 4) as i16;
+            cell.mv1_col = (rng.range(-800, 800) * 4) as i16;
+        } else if class < 70 {
+            // single-ref on one of the pair's refs — feeds ref_id/ref_diff.
+            cell.bsize = bsize;
+            cell.ref_frame0 = if rng.next().is_multiple_of(2) {
+                rf.0 as i8
+            } else {
+                rf.1 as i8
+            };
+            cell.ref_frame1 = -1;
+            cell.use_intrabc = false;
+            cell.mode = rng.range(13, 17) as u8; // single-ref inter modes
+            cell.mv0_row = (rng.range(-800, 800) * 4) as i16;
+            cell.mv0_col = (rng.range(-800, 800) * 4) as i16;
+        } else if class < 85 {
+            // a DIFFERENT compound pair (never pairwise-matches the probe).
+            let other = COMPOUND_PAIRS[(rng.next() as usize) % 20];
+            cell.bsize = bsize;
+            cell.ref_frame0 = other.0 as i8;
+            cell.ref_frame1 = other.1 as i8;
+            cell.use_intrabc = false;
+            cell.mode = rng.range(17, 25) as u8;
+            cell.mv0_row = (rng.range(-800, 800) * 4) as i16;
+            cell.mv0_col = (rng.range(-800, 800) * 4) as i16;
+            cell.mv1_row = (rng.range(-800, 800) * 4) as i16;
+            cell.mv1_col = (rng.range(-800, 800) * 4) as i16;
+        } else if class < 93 {
+            // single-ref inter on an unrelated ref (ref_diff source).
+            cell.bsize = bsize;
+            cell.ref_frame0 = rng.range(1, 8) as i8;
+            cell.ref_frame1 = -1;
+            cell.use_intrabc = false;
+            cell.mode = rng.range(13, 25) as u8;
+            cell.mv0_row = (rng.range(-800, 800) * 4) as i16;
+            cell.mv0_col = (rng.range(-800, 800) * 4) as i16;
+        } else {
+            // intra / NONE — gated out.
+            cell.bsize = bsize;
+            cell.ref_frame0 = if rng.next().is_multiple_of(2) { 0 } else { -1 };
+            cell.ref_frame1 = -1;
+            cell.use_intrabc = false;
+            cell.mode = rng.range(0, 13) as u8;
+        }
+    }
+    g
+}
+
+fn run_one_compound(
+    rf: (i32, i32),
+    case: Case,
+    allow_ref_frame_mvs: bool,
+    sign_bias: [i8; 8],
+    allow_high_precision_mv: bool,
+    is_integer_mv: bool,
+    grid: &[RefDvNbr],
+) -> (aom_dsp::entropy::dv_ref::InterMvRefs, c::RefCompoundMvRefs) {
+    let b = case;
+    let up_available = b.mi_row > b.tile.mi_row_start;
+    let left_available = b.mi_col > b.tile.mi_col_start;
+
+    let rust_grid = grid_fn(grid, b.mi_row, b.mi_col);
+    let rust_out = find_inter_mv_refs(
+        [rf.0, rf.1],
+        b.mi_row,
+        b.mi_col,
+        b.bsize,
+        b.own_partition,
+        up_available,
+        left_available,
+        b.tile,
+        b.frame_mi_rows,
+        b.frame_mi_cols,
+        b.mib_size,
+        allow_ref_frame_mvs,
+        None, // empty temporal field (matches the shim's all-INVALID tpl_mvs)
+        [(0, 0), (0, 0)],
+        [0, 0],
+        sign_bias,
+        allow_high_precision_mv,
+        is_integer_mv,
+        rust_grid,
+    );
+
+    let c_out = c::ref_find_compound_mv_refs(
+        rf.0,
+        rf.1,
+        b.mi_row,
+        b.mi_col,
+        b.bsize,
+        b.own_partition,
+        up_available,
+        left_available,
+        b.tile.mi_row_start,
+        b.tile.mi_row_end,
+        b.tile.mi_col_start,
+        b.tile.mi_col_end,
+        b.frame_mi_rows,
+        b.frame_mi_cols,
+        b.mib_size,
+        allow_ref_frame_mvs,
+        sign_bias,
+        allow_high_precision_mv,
+        is_integer_mv,
+        grid,
+    );
+    (rust_out, c_out)
+}
+
+#[test]
+fn find_compound_mv_refs_matches_c() {
+    let mut rng = Rng(0xc0e3_4e11_0000_0001);
+    let n_grids = 150;
+    let cases_per_grid = 12;
+    let mut total = 0u32;
+    for g in 0..n_grids {
+        // A legal compound pair per grid.
+        let rf = COMPOUND_PAIRS[g % COMPOUND_PAIRS.len()];
+        let mut grid_rng =
+            Rng(0xdead_f00d_0000_0001 ^ (g as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let grid = random_compound_grid(&mut grid_rng, rf);
+        for _ in 0..cases_per_grid {
+            let case = random_case(&mut rng);
+            let allow_ref_frame_mvs = rng.next().is_multiple_of(2);
+            let mut sign_bias = [0i8; 8];
+            for s in sign_bias.iter_mut() {
+                *s = (rng.next() % 2) as i8;
+            }
+            let allow_high_precision_mv = rng.next().is_multiple_of(2);
+            let is_integer_mv = rng.next().is_multiple_of(4);
+
+            let (r, c_out) = run_one_compound(
+                rf,
+                case,
+                allow_ref_frame_mvs,
+                sign_bias,
+                allow_high_precision_mv,
+                is_integer_mv,
+                &grid,
+            );
+
+            assert_eq!(
+                r.mode_context, c_out.mode_context,
+                "case {total} mode_context rf={rf:?} {case:?}"
+            );
+            assert_eq!(
+                r.ref_mv_count as i32, c_out.ref_mv_count,
+                "case {total} ref_mv_count rf={rf:?} {case:?}"
+            );
+            let count = r.ref_mv_count as usize;
+            for i in 0..count {
+                assert_eq!(
+                    r.stack[i], c_out.stack[i],
+                    "case {total} stack[{i}] rf={rf:?} {case:?}"
+                );
+                assert_eq!(
+                    r.comp_stack[i], c_out.comp_stack[i],
+                    "case {total} comp_stack[{i}] rf={rf:?} {case:?}"
+                );
+                assert_eq!(
+                    r.weight[i] as i32, c_out.weight[i],
+                    "case {total} weight[{i}] rf={rf:?} {case:?}"
+                );
+            }
+            total += 1;
+        }
+    }
+    eprintln!(
+        "find_compound_mv_refs_matches_c: {total} cases x {n_grids} distinct grids value-identical vs C (av1_find_mv_refs compound)"
     );
 }
 
