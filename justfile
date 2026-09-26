@@ -53,6 +53,15 @@ test-next:
 test-next-scalar:
     AOM_FORCE_SCALAR=1 cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast
 
+# The `experimental-video`-ON leg (docs/HANDOFF-EXPERIMENTAL-VIDEO.md): the
+# default-off inter extensions must be byte-inert on the default envelope —
+# every existing gate passes with the flag on AND off — and each routed family
+# is byte-exact against the C oracle rather than refusing by name. The
+# `--features` form unifies the flag onto the shared workspace build; a
+# `-p`-scoped invocation would not reach the aom-bench / facade consumers.
+test-next-video:
+    cargo nextest run --cargo-profile test-fast --workspace --no-fail-fast --features zenav1-aom-decode/experimental-video
+
 # Where is the suite time actually going? Prints the 25 slowest tests. nextest
 # reports per-test timing, which stock libtest will not on stable — this is how
 # you find the long poles worth splitting.
@@ -119,6 +128,7 @@ gate-landing:
     just ci-yaml-check
     just test-next
     just test-next-scalar
+    just test-next-video
     just census-gate
     just test-whereat
     just api-doc-check

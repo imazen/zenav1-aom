@@ -48,5 +48,6 @@ mod real_bitstream;
 mod superres_diff;
 mod superres_tiles_diff;
 mod tile_roundtrip;
+mod unsupported_refusals;
 mod warp_census;
 mod whereat_entries;

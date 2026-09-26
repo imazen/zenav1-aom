@@ -192,6 +192,16 @@ mod error;
 pub use config::{AllocMode, DEFAULT_MAX_DECODE_PIXELS, DecodeConfig, DecodeLimits};
 pub use error::{DecodeError, LimitKind};
 
+/// Whether this build compiled the `experimental-video` inter-prediction
+/// extensions (docs/HANDOFF-EXPERIMENTAL-VIDEO.md). `false` on the default
+/// build: the highbd sub-pel, scaled-reference and compound families then
+/// still refuse by name ([`DecodeError::UnsupportedFeature`]); `true` routes
+/// them at the existing aom-dsp kernels. Tests read this instead of their own
+/// crate's `cfg!(feature)` — feature unification means a `--features
+/// zenav1-aom-decode/experimental-video` workspace build does NOT set the same
+/// cfg in a test that merely links the crate.
+pub const EXPERIMENTAL_VIDEO: bool = cfg!(feature = "experimental-video");
+
 use enough::StopReason;
 
 // Crate-boundary info for `whereat::at!` (repo + commit + module), so the
@@ -935,6 +945,13 @@ pub struct KfTileDecode {
     /// this into an `Err` and discard the partial reconstruction; `None` on
     /// every conformant in-envelope decode.
     pub corrupt: Option<String>,
+    /// `Some(name)` when the tile walk hit a CONFORMANT-but-unsupported tool
+    /// (see [`TileKf::unsupported`]): a well-formed stream using a feature
+    /// outside this build's decode envelope — e.g. an `experimental-video`
+    /// family with the feature off. Same unwind + discarded reconstruction as
+    /// `corrupt`, but surfaces as `DecodeError::UnsupportedFeature`, never
+    /// `Malformed` — a valid stream must not be reported corrupt.
+    pub unsupported: Option<&'static str>,
     /// `Some(reason)` when the tile walk was cancelled via the caller's stop
     /// token (polled per SB row / per tile). The `Result`-returning entry
     /// points translate this into `DecodeError::Cancelled`; `None` when there
@@ -2024,6 +2041,15 @@ struct TileKf<'c> {
     /// on every conformant in-envelope stream, so the guard is a
     /// never-taken branch and the decode stays byte-identical.
     corrupt: Option<String>,
+    /// Set when the tile walk hits a CONFORMANT stream using a tool this build
+    /// does not decode — a valid AV1 feature outside the envelope (the
+    /// `experimental-video` families with the feature off, plus the other
+    /// named out-of-envelope guards). Distinct from `corrupt`: the stream is
+    /// well-formed, the tool is unimplemented, so the surfaced error is
+    /// `DecodeError::UnsupportedFeature` — never `Malformed`, which would lie
+    /// about the input being bad. Same unwind: the re-entrant `is_corrupt`
+    /// guards test both channels.
+    unsupported: Option<&'static str>,
     /// Set when the caller's stop token cancelled the walk (polled per SB row).
     cancelled: Option<StopReason>,
 }
@@ -2231,6 +2257,7 @@ impl<'c> TileKf<'c> {
             inter_cdfs: InterCdfs::defaults(),
             recon_scratch: ReconScratch::default(),
             corrupt: None,
+            unsupported: None,
             cancelled: None,
         };
         // Run the same per-tile reset `start_tile` applies to any later tile
@@ -2250,16 +2277,29 @@ impl<'c> TileKf<'c> {
     #[cold]
     #[inline(never)]
     fn mark_corrupt(&mut self, reason: impl Into<String>) {
-        if self.corrupt.is_none() {
+        if self.corrupt.is_none() && self.unsupported.is_none() {
             self.corrupt = Some(reason.into());
         }
     }
 
-    /// True once [`mark_corrupt`] has fired — the re-entrant walk guards test
-    /// this to stop decoding a poisoned frame.
+    /// Flag the frame as a CONFORMANT stream using a tool outside this build's
+    /// decode envelope and unwind the walk — the `unsupported` twin of
+    /// [`mark_corrupt`], surfacing as `DecodeError::UnsupportedFeature` instead
+    /// of `Malformed`. First reason wins; never taken on a conformant
+    /// in-envelope stream. See [`TileKf::unsupported`].
+    #[cold]
+    #[inline(never)]
+    fn mark_unsupported(&mut self, name: &'static str) {
+        if self.corrupt.is_none() && self.unsupported.is_none() {
+            self.unsupported = Some(name);
+        }
+    }
+
+    /// True once [`mark_corrupt`] or [`mark_unsupported`] has fired — the
+    /// re-entrant walk guards test this to stop decoding a poisoned frame.
     #[inline]
     fn is_corrupt(&self) -> bool {
-        self.corrupt.is_some()
+        self.corrupt.is_some() || self.unsupported.is_some()
     }
 
     /// Reset the per-TILE transient state at the start of a new tile's
@@ -2393,6 +2433,7 @@ impl<'c> TileKf<'c> {
             blocks: self.blocks,
             lr_units: self.lr_units,
             corrupt: self.corrupt,
+            unsupported: self.unsupported,
             cancelled: self.cancelled,
             saved_ctx: None,
             frame_mvs: self.frame_mvs,
@@ -3183,15 +3224,15 @@ impl<'c> TileKf<'c> {
         // panic) so a malformed / unsupported inter frame from untrusted input
         // returns `Err` instead of aborting the decode.
         if cfg.seg.enabled {
-            self.mark_corrupt("inter: segmentation not supported in this decode envelope");
+            self.mark_unsupported("inter: segmentation not supported in this decode envelope");
             return;
         }
         if inter.skip_mode_present {
-            self.mark_corrupt("inter: skip_mode not supported in this decode envelope");
+            self.mark_unsupported("inter: skip_mode not supported in this decode envelope");
             return;
         }
         if cfg.delta_q_present {
-            self.mark_corrupt("inter: delta-q not supported in this decode envelope");
+            self.mark_unsupported("inter: delta-q not supported in this decode envelope");
             return;
         }
         // tx_mode is TX_MODE_SELECT for the OBMC target (av1-1-b8-01-size-16x18):
@@ -3200,7 +3241,7 @@ impl<'c> TileKf<'c> {
         // handled below (the var-tx read collapses to the single largest tx when
         // the frame codes LARGEST).
         if !matches!(cfg.tx_mode, TxMode::Largest | TxMode::Select) {
-            self.mark_corrupt(format!("inter: unsupported tx_mode {:?}", cfg.tx_mode));
+            self.mark_unsupported("inter: tx_mode ONLY_4X4 not supported in this decode envelope");
             return;
         }
 
@@ -3408,8 +3449,18 @@ impl<'c> TileKf<'c> {
         icdfs.single_ref[ep::pred_ctx_last_or_last2(&rc) as usize][3] = ref_cdfs[13];
         icdfs.single_ref[ep::pred_ctx_last3_or_gld(&rc) as usize][4] = ref_cdfs[14];
         icdfs.single_ref[ep::pred_ctx_brf_or_arf2(&rc) as usize][5] = ref_cdfs[15];
-        if is_compound || !(1..=7).contains(&ref0) || ref1 != -1 {
-            self.mark_corrupt(
+        // Keep the malformed and unsupported cases distinct: an out-of-range
+        // or inconsistent ref coding is a bad stream (corrupt); a well-formed
+        // compound pair is a valid AV1 tool this envelope does not decode
+        // (unsupported). Folding both into one error lied about the category.
+        if !(1..=7).contains(&ref0) || (!is_compound && ref1 != -1) {
+            self.mark_corrupt(format!(
+                "inter: inconsistent ref coding (ref0 {ref0}, ref1 {ref1}, compound {is_compound})"
+            ));
+            return;
+        }
+        if is_compound {
+            self.mark_unsupported(
                 "inter: only single-reference blocks are decoded in this envelope \
                  (compound references unsupported)",
             );
@@ -3422,10 +3473,9 @@ impl<'c> TileKf<'c> {
         // cleanly here rather than reading a wrong NEWMV base and desyncing (every
         // target through 16x18 is identity-GM; e.g. 16x66 uses global motion).
         if inter.gm_wmtype[(ref0 - 1) as usize] != 0 {
-            self.mark_corrupt(format!(
-                "inter: non-identity global motion not supported (ref {ref0} wmtype {})",
-                inter.gm_wmtype[(ref0 - 1) as usize]
-            ));
+            self.mark_unsupported(
+                "inter: non-identity global motion not supported in this decode envelope",
+            );
             return;
         }
 
@@ -3726,10 +3776,16 @@ impl<'c> TileKf<'c> {
         // does not yet implement), which would reach the kernel lookup and panic.
         // Reject it here instead. Byte-inert on in-envelope streams (resolved
         // filters are always 0/1/2 there).
-        if filter_y > 2 || filter_x > 2 {
+        if filter_y > 3 || filter_x > 3 {
             self.mark_corrupt(format!(
-                "inter: unsupported interp filter (y={filter_y}, x={filter_x}) — only REGULAR/SMOOTH/SHARP (0/1/2) in envelope"
+                "inter: out-of-range interp filter (y={filter_y}, x={filter_x})"
             ));
+            return;
+        }
+        if filter_y > 2 || filter_x > 2 {
+            self.mark_unsupported(
+                "inter: interp filter BILINEAR not supported in this decode envelope",
+            );
             return;
         }
 
@@ -3817,9 +3873,9 @@ impl<'c> TileKf<'c> {
         // so the uniform residual loop below tiles with `tx_size` = the read size.
         let _ = &vartx_leaf_grid;
         if vartx_non_uniform {
-            self.mark_corrupt(format!(
-                "inter: non-uniform var-tx not supported (block {bsize} @ mi({mi_row},{mi_col}))"
-            ));
+            self.mark_unsupported(
+                "inter: non-uniform var-tx not supported in this decode envelope",
+            );
             return;
         }
 
@@ -3882,10 +3938,7 @@ impl<'c> TileKf<'c> {
         // convolve lands). Fail-loud, never corrupt (bd10/12 envelope:
         // zero-MV NEARESTMV per the animated-AVIF census).
         if cfg.bd > 8 && (cmv_row != 0 || cmv_col != 0) {
-            self.mark_corrupt(format!(
-                "inter: sub/nonzero-pel MC above bd8 not yet supported (bd {}, mv ({cmv_row},{cmv_col}))",
-                cfg.bd
-            ));
+            self.mark_unsupported("inter: sub/nonzero-pel MC above bd8 not yet supported");
             return;
         }
         let bw_px = (MI_SIZE_WIDE[bsize] * 4) as usize;
