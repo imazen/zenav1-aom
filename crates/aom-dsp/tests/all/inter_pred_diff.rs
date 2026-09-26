@@ -285,7 +285,7 @@ fn smoke_build_inter_predictor() {
     let mut dst = vec![0u16; w * h];
     build_inter_predictor(
         &ref_plane, ref_stride, ref_w, ref_h, &mut dst, 0, dst_stride, blk_x, blk_y, w, h, 0, 0, 0,
-        0, 0, 0,
+        0, 0, 0, 8,
     );
     for y in 0..h {
         for x in 0..w {
@@ -312,7 +312,7 @@ fn smoke_build_inter_predictor() {
         let mut dst = vec![0u16; w * h];
         build_inter_predictor(
             &ref_plane, ref_stride, ref_w, ref_h, &mut dst, 0, dst_stride, bx, by, w, h, mvr, mvc,
-            ssx, ssy, 0, 0,
+            ssx, ssy, 0, 0, 8,
         );
         for &v in &dst {
             assert!(v <= 255, "lowbd predictor out of range: {v}");

@@ -20,14 +20,15 @@
 //!    `aomenc` `[KEY, P]` clips at bd 8/10/12 x {4:2:0, 4:2:2, 4:4:4, mono},
 //!    port-decoded and diffed against C frame by frame. Reports the whole grid
 //!    and hard-asserts the measured state.
-//! 3. [`highbd_nonzero_mv_fails_loud_not_wrong`] — the honest-boundary pin: at
-//!    bd > 8 a nonzero MV is OUTSIDE the ported envelope (the sub-pel filter
-//!    chain is still 8-bit), and the decoder must REFUSE such a stream rather
-//!    than reconstruct it wrong. A silent wrong-pixel path here would be the
-//!    exact defect issue #8 suspected.
+//! 3. [`highbd_nonzero_mv_fails_loud_not_wrong`] — the `experimental-video`
+//!    boundary pin: at bd > 8 a nonzero MV is refused BY NAME
+//!    (`unsupported feature: inter: sub/nonzero-pel MC above bd8`) with the
+//!    feature off, and byte-exact against the C decoder with it on (the u16
+//!    `highbd_convolve_*_sr` route). A silent wrong-pixel path here would be
+//!    the exact defect issue #8 suspected.
 
 use aom_bench::inter_localize::{Divergence, FrameView, SB64_PX, first_frameset_divergence};
-use aom_bench::{EncodeCell, MultiFrameEncodeCell};
+use aom_bench::{EncodeCell, FramePlanes, MultiFrameEncodeCell};
 use aom_decode::frame::FrameDecode;
 
 const ANIMATED: &str = concat!(
@@ -324,14 +325,107 @@ fn highbd_key_p_envelope_vs_c() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. The honest boundary: highbd nonzero-MV refuses instead of guessing
+// 3. The honest boundary: highbd nonzero-MV — refused by name with
+//    `experimental-video` off, byte-exact vs C with it on
 // ---------------------------------------------------------------------------
+
+/// P source shifted by `dx8`/`dy8` eighths of a luma pixel (bilinear,
+/// edge-clamped). A sub-pel offset forces aomenc's motion search off integer
+/// alignment, so the coded MVs carry nonzero sub-pel phases — the
+/// `highbd_convolve_*_sr` filter arms, not the full-pel copy arm.
+fn subpel_cell(base: &EncodeCell, dx8: i32, dy8: i32) -> MultiFrameEncodeCell {
+    let (w, h, mono, ss_x, ss_y) = (base.w, base.h, base.mono, base.ss_x, base.ss_y);
+    let shift = |src: &[u16], pw: usize, ph: usize, sx8: i32, sy8: i32| -> Vec<u16> {
+        if pw == 0 || ph == 0 {
+            return Vec::new();
+        }
+        // Bilinear sample at (r - sy8/8, c - sx8/8); `dx8 = 4` is a half-pel.
+        let (ix, fx) = (sx8.div_euclid(8), sx8.rem_euclid(8) as u32);
+        let (iy, fy) = (sy8.div_euclid(8), sy8.rem_euclid(8) as u32);
+        let at = |r: i32, c: i32| -> u32 {
+            let sr = r.clamp(0, ph as i32 - 1) as usize;
+            let sc = c.clamp(0, pw as i32 - 1) as usize;
+            u32::from(src[sr * pw + sc])
+        };
+        let mut out = vec![0u16; pw * ph];
+        for r in 0..ph {
+            for c in 0..pw {
+                let (r0, c0) = (r as i32 - iy, c as i32 - ix);
+                let (r1, c1) = (r0 - 1, c0 - 1);
+                let sum = at(r0, c0) * (8 - fx) * (8 - fy)
+                    + at(r0, c1) * fx * (8 - fy)
+                    + at(r1, c0) * (8 - fx) * fy
+                    + at(r1, c1) * fx * fy;
+                out[r * pw + c] = ((sum + 32) / 64) as u16;
+            }
+        }
+        out
+    };
+    let (cw, ch) = if mono {
+        (0, 0)
+    } else {
+        ((w + ss_x) >> ss_x, (h + ss_y) >> ss_y)
+    };
+    MultiFrameEncodeCell {
+        label: format!("{}+p(dx8={dx8},dy8={dy8})", base.label),
+        w,
+        h,
+        mono,
+        ss_x,
+        ss_y,
+        bd: base.bd,
+        cq_level: base.cq_level,
+        speed: base.speed,
+        frames: vec![
+            FramePlanes {
+                y: base.y.clone(),
+                u: base.u.clone(),
+                v: base.v.clone(),
+            },
+            FramePlanes {
+                y: shift(&base.y, w, h, dx8, dy8),
+                u: shift(&base.u, cw, ch, dx8 >> ss_x, dy8 >> ss_y),
+                v: shift(&base.v, cw, ch, dx8 >> ss_x, dy8 >> ss_y),
+            },
+        ],
+    }
+}
+
+/// The step-2 contract for one nonzero-MV cell at `bd > 8`: refused BY NAME
+/// (`unsupported feature: inter: sub/nonzero-pel MC above bd8`) when
+/// `experimental-video` is off; byte-exact against the C decoder when on.
+/// Never "decoded without error but different pixels".
+fn assert_mv_cell_contract(label: &str, bd: u8, verdict: &str) {
+    assert!(
+        !verdict.starts_with("WRONG PIXELS"),
+        "{label}: the port decoded a nonzero-MV highbd P without error and got different \
+         pixels than C — {verdict}"
+    );
+    if bd <= 8 {
+        assert_eq!(verdict, "byte-exact", "{label}: bd8 nonzero-MV regressed");
+    } else if aom_decode::EXPERIMENTAL_VIDEO {
+        assert_eq!(
+            verdict, "byte-exact",
+            "{label}: experimental-video on — a nonzero-MV bd{bd} cell must be byte-exact vs C"
+        );
+    } else {
+        assert!(
+            verdict.starts_with("refused: decode error: unsupported feature:")
+                && verdict.contains("sub/nonzero-pel MC above bd8"),
+            "{label}: feature off must refuse a bd{bd} nonzero-MV cell by name — {verdict}"
+        );
+    }
+}
 
 #[test]
 fn highbd_nonzero_mv_fails_loud_not_wrong() {
     aom_sys_ref::ref_init();
     println!("\n=== highbd nonzero-MV P: refusal vs wrong pixels ===");
-    println!("bd | chroma | port verdict on the P frame");
+    println!("bd | chroma | shift | port verdict on the P frame");
+    // Integer-pel sweep: every chroma shape at every depth. The sub-pel sweep
+    // below it forces nonzero subpel phases (x-only, y-only, and 2-D) so each
+    // highbd_convolve_*_sr dispatch arm is exercised end-to-end — 4:2:0 for
+    // subsampled chroma plus 4:4:4 for the unsubsampled path.
     for bd in [8u8, 10, 12] {
         for &(cname, ss_x, ss_y, mono) in CHROMA_SHAPES {
             let label = format!("mv3_{bd}_{cname}");
@@ -349,16 +443,38 @@ fn highbd_nonzero_mv_fails_loud_not_wrong() {
                     Some(d) => format!("WRONG PIXELS: {d}"),
                 },
             };
-            println!("{bd:>2} | {cname:<6} | {verdict}");
-            assert!(
-                !verdict.starts_with("WRONG PIXELS"),
-                "{label}: the port decoded a nonzero-MV highbd P without error and got different \
-                 pixels than C — {verdict}"
-            );
+            println!("{bd:>2} | {cname:<6} | +3px | {verdict}");
+            assert_mv_cell_contract(&label, bd, &verdict);
+        }
+        if bd > 8 {
+            for &(cname, ss_x, ss_y, mono) in &CHROMA_SHAPES[..3] {
+                // +2.5 px in x / y / both — half-pel phases on each axis.
+                for &(dx8, dy8) in &[(20i32, 0i32), (0, 20), (20, 20)] {
+                    let label = format!("subpel_{bd}_{cname}_dx{dx8}dy{dy8}");
+                    let base = hbd_base(&label, 64, 64, bd, ss_x, ss_y, mono, 60);
+                    let cell = subpel_cell(&base, dx8, dy8);
+                    let stream = cell.c_encode_inter(false, false);
+                    let cf = c_frames(&stream, cell.w, cell.h);
+                    assert_eq!(cf.len(), 2, "{label}: C decoded {} frames", cf.len());
+                    let verdict = match port_frames_result(&stream) {
+                        Err(e) => format!("refused: {e}"),
+                        Ok(pf) if pf.len() != 2 => {
+                            format!("port decoded {} frames", pf.len())
+                        }
+                        Ok(pf) => match frame_verdict(&pf, &cf, 1) {
+                            None => "byte-exact".to_string(),
+                            Some(d) => format!("WRONG PIXELS: {d}"),
+                        },
+                    };
+                    println!("{bd:>2} | {cname:<6} | +{dx8}/8,+{dy8}/8 px | {verdict}");
+                    assert_mv_cell_contract(&label, bd, &verdict);
+                }
+            }
         }
     }
     println!(
-        "FINDING: outside the ported envelope the decoder REFUSES (mark_corrupt) rather than \n\
-         reconstructing wrong samples — every cell above is byte-exact or an explicit error."
+        "FINDING: outside the ported envelope the decoder REFUSES by name rather than\n\
+         reconstructing wrong samples; with `experimental-video` the same cells are byte-exact\n\
+         against the C decoder (highbd sub-pel MC routed through the u16 convolve kernels)."
     );
 }

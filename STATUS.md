@@ -38,6 +38,55 @@ tests sit inside modules that consumers also use, so they need per-item work or
 in-crate test moves — deferred until after the first crates.io publish fixes the
 contract. `rust-version` is not set (untested MSRV; CI runs stable 1.98).
 
+## `experimental-video` step 2: highbd sub-pel MC routed through the u16 convolve kernels (2026-09-25, branch `feat/experimental-video`)
+
+Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md` step 2: with `experimental-video` ON a
+bd10/bd12 inter frame codes nonzero MVs end-to-end and decodes **byte-exact**
+against the pinned C oracle; OFF keeps the named refusal
+`inter: sub/nonzero-pel MC above bd8 not yet supported` (the
+`#[cfg(not(feature = "experimental-video"))]` guard is compiled out only on the
+feature leg — `aom-decode/src/lib.rs`).
+
+**The routing.** `aom_dsp::inter::build_inter_predictor` gains a `bd` parameter
+(the port's `is_cur_buf_hbd(xd)`) and, above bd8, gathers the edge-replicated
+reference through the new `build_mc_border_highbd` (u16 twin of
+`build_mc_border` — the `is_highbd` instantiation of C's shared
+`BUILD_MC_BORDER` body) into a u16 scratch, then dispatches through the new
+`highbd_inter_predictor` facade to the already-locked
+`convolve::highbd::highbd_convolve_{x,y,2d}_sr` kernels — never touching the u8
+scratch. The rounding pair is the new `single_ref_rounds(bd)`, the
+`get_conv_params_no_round(.., is_compound = 0)` arm `(3,11)` @ bd8/10, `(5,9)` @
+bd12 — the same derivation `compound_convolve_diff.rs` and
+`warp_highbd_diff.rs` already verify against C. All seven decoder call sites
+(luma, sub8x8 chroma, per-plane chroma, and the four OBMC neighbour strips)
+pass `cfg.bd`, so every translational MC path is depth-correct, and the two
+local-warp sites route `WARPED_CAUSAL` blocks through the existing C-diffed
+`highbd_warp_affine` at bd>8 — leaving the bd8 `warp_affine` on u16 data would
+have been a silent wrong-pixel hole under the widened envelope. Compound,
+scaled-reference, and non-identity global motion still refuse by name in both
+build states.
+
+**Coverage.** `aom-bench/tests/all/highbd_inter_decode_envelope.rs` part 3 now
+asserts the per-state contract cell-by-cell: feature ON, every bd10/bd12
+nonzero-MV cell — the integer-pel sweep (4 chroma shapes) plus new half-pel
+sweeps forcing x-only, y-only and 2-D sub-pel phases — is **byte-exact vs
+`aom_codec_av1_dx`** (30/30 measured); feature OFF each refuses with the named
+`unsupported feature` string. A temporary probe confirmed the sweep drives all
+three kernel dispatch arms at both depths (subpel phases 4/8/12, EIGHTTAP_SMOOTH
+and subsampled-chroma blocks included). The committed
+`unsupported_refusals::highbd_nonzero_mv_refused_by_name` pin flips to
+decode-success under the feature via `aom_decode::EXPERIMENTAL_VIDEO`.
+
+Integration targets: `aom-decode::all` (unsupported_refusals),
+`aom-dsp::all` (inter_pred_diff signature), `aom-bench::all`
+(highbd_inter_decode_envelope), `test-next-video` leg, api-doc snapshot
+(`build_inter_predictor` + `bd`, three new fns).
+
+Gates at landing: `just gate-landing` — test-next **1551/1551**,
+test-next-scalar **1551/1551**, test-next-video (feature ON) **1551/1551**
+(identical counts = byte-inert on the default envelope), plus upstream-check,
+fmt-check, ci-yaml-check, census-gate, test-whereat, api-doc-check all green.
+
 ## `experimental-video` step 1: the default-off feature is scaffolded and conformant-but-unsupported tools refuse by name (2026-09-25, branch `feat/experimental-video`)
 
 Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md`: `zenav1-aom-decode` gains
