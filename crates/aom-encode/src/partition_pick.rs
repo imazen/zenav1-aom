@@ -1712,7 +1712,12 @@ fn leaf_pick_sb_modes(
         // clamped to the frame exactly as the intrabc args below (C's
         // av1_tile_set_row/col clamp; env carries unclamped sentinels).
         let refs = aom_dsp::entropy::dv_ref::find_inter_mv_refs(
-            crate::inter_costs::LAST_FRAME,
+            // Single-reference encode envelope — the rf pair's second slot is
+            // NONE_FRAME, matching the decoder's single-ref call.
+            [
+                crate::inter_costs::LAST_FRAME,
+                aom_dsp::entropy::dv_ref::NONE_FRAME,
+            ],
             mi_row,
             mi_col,
             bsize,
@@ -1732,8 +1737,8 @@ fn leaf_pick_sb_modes(
             // Temporal motion field: None = empty-field model (the encoder's
             // current envelope decodes/encodes against all-intra references).
             None,
-            ic.global_mv,
-            ic.gm_wmtype,
+            [ic.global_mv, (0, 0)],
+            [ic.gm_wmtype, 0],
             ic.sign_bias,
             ic.allow_high_precision_mv,
             ic.is_integer_mv,

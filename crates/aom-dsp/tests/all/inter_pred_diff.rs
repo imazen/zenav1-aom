@@ -17,12 +17,13 @@
 //! frame-edge MVs stay in range).
 
 use aom_dsp::inter::{
-    blend_a64_hmask, blend_a64_vmask, build_inter_predictor, build_mc_border, get_obmc_mask,
-    inter_predictor, scale::ScaleFactors,
+    blend_a64_hmask, blend_a64_vmask, build_compound_inter_predictor, build_inter_predictor,
+    build_mc_border, build_mc_border_highbd, compound, get_obmc_mask, inter_predictor,
+    scale::ScaleFactors, CompoundRefPlane,
 };
 use aom_sys_ref::{
-    ref_blend_a64_hmask, ref_blend_a64_vmask, ref_build_mc_border, ref_get_obmc_mask,
-    ref_inter_predictor,
+    ref_blend_a64_hmask, ref_blend_a64_vmask, ref_build_mc_border, ref_compound_inter_predictor,
+    ref_get_obmc_mask, ref_highbd_compound_inter_predictor, ref_inter_predictor, RefCompoundSrc,
 };
 
 struct Rng(u64);
@@ -472,4 +473,368 @@ fn blend_a64_masks_match_c() {
             }
         }
     }
+}
+
+// ===================================================================
+// Compound (two-reference) prediction — step 4a. The combine + facade
+// dispatch vs the REAL C `inter_predictor`/`highbd_inter_predictor` driven
+// under `get_conv_params_no_round(cmp_index=ref, .., is_compound=1)`.
+// ===================================================================
+//
+// `compound_facade_matches_c` runs `build_compound_inter_predictor` (the Rust
+// port of `build_inter_predictors`'s compound arm) against the real C two-ref
+// loop (`ref_compound_inter_predictor`). The bordered source the C oracle
+// convolves is the REAL C `build_mc_border` output gathered at the SAME
+// (gx, gy, b_w, b_h) the Rust predictor derives for each ref — so the lock is
+// the compound-specific code path (per-ref `do_average`, the shared `dst16`
+// CONV_BUF, the avg-vs-dist-wtd combine, the need_x/need_y kernel dispatch)
+// on top of two already-locked primitives (border gather, subpel derivation
+// shared verbatim with the single-ref facade). Masked compound is step 4b and
+// is intentionally not exercised.
+
+/// The geometry `build_compound_inter_predictor`'s unscaled arm derives for one
+/// reference — `(gx, gy, b_w, b_h, interior, subpel_x, subpel_y)` from the block
+/// origin + clamped MV + plane subsampling. Mirrors `dec_calc_subpel_params`'s
+/// unscaled branch (aom_dsp/inter/mod.rs); kept local so the oracle is fed the
+/// identical bordered scratch.
+#[allow(clippy::too_many_arguments)]
+fn unscaled_geom(
+    blk_x: usize,
+    blk_y: usize,
+    mv_row: i32,
+    mv_col: i32,
+    w: usize,
+    h: usize,
+    ss_x: usize,
+    ss_y: usize,
+) -> (i32, i32, usize, usize, usize, usize, usize) {
+    const SUBPEL_BITS: i32 = 4;
+    const SUBPEL_MASK: i32 = 15;
+    const AOM_INTERP_EXTEND: i32 = 4;
+    let mv_q4_col = mv_col * (1i32 << (1 - ss_x as i32));
+    let mv_q4_row = mv_row * (1i32 << (1 - ss_y as i32));
+    let subpel_x = (mv_q4_col & SUBPEL_MASK) as usize;
+    let subpel_y = (mv_q4_row & SUBPEL_MASK) as usize;
+    let pos_x = (blk_x as i32) << SUBPEL_BITS;
+    let pos_y = (blk_y as i32) << SUBPEL_BITS;
+    let x0 = (pos_x + mv_q4_col) >> SUBPEL_BITS;
+    let y0 = (pos_y + mv_q4_row) >> SUBPEL_BITS;
+    let pad_x = subpel_x != 0;
+    let pad_y = subpel_y != 0;
+    let mx = if pad_x { AOM_INTERP_EXTEND - 1 } else { 0 };
+    let my = if pad_y { AOM_INTERP_EXTEND - 1 } else { 0 };
+    let gx = x0 - mx;
+    let gy = y0 - my;
+    let extra = (2 * AOM_INTERP_EXTEND - 1) as usize;
+    let b_w = w + if pad_x { extra } else { 0 };
+    let b_h = h + if pad_y { extra } else { 0 };
+    let interior = (my as usize) * b_w + mx as usize;
+    (gx, gy, b_w, b_h, interior, subpel_x, subpel_y)
+}
+
+/// One ref arm of a compound case: `(mv_row, mv_col)` plus a content seed.
+#[derive(Clone, Copy)]
+struct CompRef {
+    mv_row: i32,
+    mv_col: i32,
+    seed: u8,
+}
+
+/// Drive `build_compound_inter_predictor` (Rust) and the real C compound loop
+/// (`ref_compound_inter_predictor` for bd 8 / `ref_highbd_compound_inter_predictor`
+/// for bd > 8) over the same two references and assert byte equality.
+///
+/// `compound_idx` selects COMPOUND_DISTWTD (`false`) vs COMPOUND_AVERAGE
+/// (`true`); `fwd`/`bck` are the offsets `av1_dist_wtd_comp_weight_assign`
+/// emits (the test also exercises it directly below).
+#[allow(clippy::too_many_arguments)]
+fn compound_case(
+    rng: &mut Rng,
+    ref_w: usize,
+    ref_h: usize,
+    w: usize,
+    h: usize,
+    blk_x: usize,
+    blk_y: usize,
+    ss_x: usize,
+    ss_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+    bd: u32,
+    r0: CompRef,
+    r1: CompRef,
+    use_dist_wtd: bool,
+    fwd: i32,
+    bck: i32,
+) {
+    let stride = ref_w;
+    let plane0: Vec<u16> = (0..stride * ref_h)
+        .map(|_| (rng.next() % (1u64 << bd)) as u16)
+        .collect();
+    // A distinct second reference plane (different content).
+    let plane1: Vec<u16> = (0..stride * ref_h)
+        .map(|_| (rng.next() % (1u64 << bd)) as u16)
+        .collect();
+    let _ = (r0.seed, r1.seed);
+
+    let sf = ScaleFactors::for_frame(ref_w as i32, ref_h as i32, ref_w as i32, ref_h as i32);
+    assert!(!sf.is_scaled());
+
+    // ---- Rust port: the full two-ref predictor driver ----
+    let weights = compound::DistWtdWeights {
+        fwd_offset: fwd,
+        bck_offset: bck,
+        use_dist_wtd_comp_avg: use_dist_wtd,
+    };
+    let mut dst = vec![0u16; w * h];
+    build_compound_inter_predictor(
+        [
+            CompoundRefPlane {
+                plane: &plane0,
+                stride,
+                w: ref_w,
+                h: ref_h,
+                sf: &sf,
+                mv: (r0.mv_row, r0.mv_col),
+                raw_mv: (r0.mv_row, r0.mv_col),
+            },
+            CompoundRefPlane {
+                plane: &plane1,
+                stride,
+                w: ref_w,
+                h: ref_h,
+                sf: &sf,
+                mv: (r1.mv_row, r1.mv_col),
+                raw_mv: (r1.mv_row, r1.mv_col),
+            },
+        ],
+        &mut dst,
+        0,
+        w,
+        blk_x,
+        blk_y,
+        w,
+        h,
+        ss_x,
+        ss_y,
+        filter_x,
+        filter_y,
+        bd,
+        weights,
+    );
+
+    // ---- C oracle: per-ref border gather at the Rust-derived geometry, then
+    // the real compound facade on each bordered interior. ----
+    let (gx0, gy0, bw0, bh0, int0, sx0, sy0) =
+        unscaled_geom(blk_x, blk_y, r0.mv_row, r0.mv_col, w, h, ss_x, ss_y);
+    let (gx1, gy1, bw1, bh1, int1, sx1, sy1) =
+        unscaled_geom(blk_x, blk_y, r1.mv_row, r1.mv_col, w, h, ss_x, ss_y);
+
+    if bd > 8 {
+        let mut s0 = vec![0u16; bw0 * bh0];
+        build_mc_border_highbd(&plane0, stride, ref_w, ref_h, gx0, gy0, bw0, bh0, &mut s0);
+        let mut s1 = vec![0u16; bw1 * bh1];
+        build_mc_border_highbd(&plane1, stride, ref_w, ref_h, gx1, gy1, bw1, bh1, &mut s1);
+        let c = ref_highbd_compound_inter_predictor(
+            RefCompoundSrc {
+                src: &s0,
+                off: int0,
+                stride: bw0,
+            },
+            RefCompoundSrc {
+                src: &s1,
+                off: int1,
+                stride: bw1,
+            },
+            w,
+            h,
+            sx0,
+            sy0,
+            sx1,
+            sy1,
+            filter_x,
+            filter_y,
+            use_dist_wtd,
+            fwd,
+            bck,
+            bd,
+        );
+        for i in 0..w * h {
+            assert_eq!(
+                dst[i], c[i],
+                "highbd compound diverged at {i} (bd {bd}, {w}x{h}@({blk_x},{blk_y}) \
+                 mv0=({},{})/mv1=({},{}), sp0=({sx0},{sy0})/sp1=({sx1},{sy1}), \
+                 fx={filter_x} fy={filter_y} distwtd={use_dist_wtd} f={fwd}/b={bck})",
+                r0.mv_row, r0.mv_col, r1.mv_row, r1.mv_col
+            );
+        }
+    } else {
+        let p0: Vec<u8> = plane0.iter().map(|&v| v as u8).collect();
+        let p1: Vec<u8> = plane1.iter().map(|&v| v as u8).collect();
+        let s0 = ref_build_mc_border(&p0, stride, ref_w, ref_h, gx0, gy0, bw0, bh0);
+        let s1 = ref_build_mc_border(&p1, stride, ref_w, ref_h, gx1, gy1, bw1, bh1);
+        let c = ref_compound_inter_predictor(
+            RefCompoundSrc {
+                src: &s0,
+                off: int0,
+                stride: bw0,
+            },
+            RefCompoundSrc {
+                src: &s1,
+                off: int1,
+                stride: bw1,
+            },
+            w,
+            h,
+            sx0,
+            sy0,
+            sx1,
+            sy1,
+            filter_x,
+            filter_y,
+            use_dist_wtd,
+            fwd,
+            bck,
+        );
+        for i in 0..w * h {
+            assert_eq!(
+                dst[i], c[i] as u16,
+                "lowbd compound diverged at {i} ({w}x{h}@({blk_x},{blk_y}) \
+                 mv0=({},{})/mv1=({},{}), sp0=({sx0},{sy0})/sp1=({sx1},{sy1}), \
+                 fx={filter_x} fy={filter_y} distwtd={use_dist_wtd} f={fwd}/b={bck})",
+                r0.mv_row, r0.mv_col, r1.mv_row, r1.mv_col
+            );
+        }
+    }
+}
+
+/// The dist-weighted / average compound predictor byte-matches the real C
+/// two-ref `inter_predictor` loop across the four sub-pel dispatch arms, both
+/// blends, edge replication, bd 8/10/12 and several block sizes/filters.
+#[test]
+fn compound_facade_matches_c() {
+    let mut rng = Rng(0xdead_beef_cafe_f00d);
+    let ref_w = 96usize;
+    let ref_h = 80usize;
+
+    // (w, h, blk_x, blk_y, ss_x, ss_y, filter_x, filter_y) — exercises the four
+    // need_x/need_y dispatch arms via the MVs below, plus 4-tap small blocks and
+    // chroma subsampling.
+    let shapes: &[(usize, usize, usize, usize, usize, usize, usize, usize)] = &[
+        (32, 16, 20, 12, 0, 0, 0, 0), // luma, interior
+        (16, 16, 8, 8, 0, 0, 1, 2),   // mixed filters
+        (4, 4, 40, 30, 0, 0, 0, 1),   // 4x4 -> 4-tap both dirs
+        (8, 32, 60, 20, 0, 0, 2, 2),  // 4-tap x only (w<=4 false; h tap)
+        (16, 8, 0, 0, 1, 1, 0, 0),    // chroma 420, top-left edge
+        (64, 64, 20, 8, 0, 0, 1, 1),  // large
+        (8, 4, 88, 74, 0, 0, 2, 0),   // bottom-right edge, 4-tap y
+    ];
+
+    // (mv0, mv1) MV pairs chosen to cover the four sub-pel dispatch
+    // combinations across the two refs, and edge-going offsets.
+    let mvpairs: &[(CompRef, CompRef)] = &[
+        // both full-pel -> copy arm
+        (
+            CompRef {
+                mv_row: 8,
+                mv_col: 8,
+                seed: 1,
+            },
+            CompRef {
+                mv_row: -8,
+                mv_col: 16,
+                seed: 2,
+            },
+        ),
+        // x-only on both
+        (
+            CompRef {
+                mv_row: 8,
+                mv_col: 13,
+                seed: 3,
+            },
+            CompRef {
+                mv_row: 16,
+                mv_col: -21,
+                seed: 4,
+            },
+        ),
+        // y-only on both
+        (
+            CompRef {
+                mv_row: -13,
+                mv_col: 8,
+                seed: 5,
+            },
+            CompRef {
+                mv_row: 29,
+                mv_col: -16,
+                seed: 6,
+            },
+        ),
+        // 2-D on both, opposite signs
+        (
+            CompRef {
+                mv_row: 11,
+                mv_col: 7,
+                seed: 7,
+            },
+            CompRef {
+                mv_row: -5,
+                mv_col: -9,
+                seed: 8,
+            },
+        ),
+        // ref0 2-D, ref1 x-only (mixed dispatch)
+        (
+            CompRef {
+                mv_row: 5,
+                mv_col: 5,
+                seed: 9,
+            },
+            CompRef {
+                mv_row: 8,
+                mv_col: 19,
+                seed: 10,
+            },
+        ),
+        // both off top-left (border replication) + subpel
+        (
+            CompRef {
+                mv_row: -37,
+                mv_col: -41,
+                seed: 11,
+            },
+            CompRef {
+                mv_row: -29,
+                mv_col: -35,
+                seed: 12,
+            },
+        ),
+    ];
+
+    // (use_dist_wtd, fwd, bck) — the simple average and two asymmetric
+    // distance-weighted blends (as QUANT_DIST_LOOKUP_TABLE emits).
+    let blends: &[(bool, i32, i32)] = &[
+        (false, 8, 8), // COMPOUND_AVERAGE
+        (true, 10, 6), // dist-weighted, forward-heavy
+        (true, 4, 12), // dist-weighted, backward-heavy
+        (true, 8, 8),  // dist-weighted symmetric
+    ];
+
+    let mut cases = 0u32;
+    for &bd in &[8u32, 10, 12] {
+        for &(w, h, bx, by, ssx, ssy, fx, fy) in shapes {
+            for &(r0, r1) in mvpairs {
+                for &(udw, fwd, bck) in blends {
+                    compound_case(
+                        &mut rng, ref_w, ref_h, w, h, bx, by, ssx, ssy, fx, fy, bd, r0, r1, udw,
+                        fwd, bck,
+                    );
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert!(cases > 400, "compound harness too thin: {cases} cases");
 }

@@ -290,3 +290,81 @@ fn default_intra_in_inter_cdfs_match_compiled_c() {
     assert_ne!(d::DEFAULT_WEDGE_INTERINTRA[3][0], 16384);
     assert_eq!(d::DEFAULT_WEDGE_INTERINTRA[0][0], 16384);
 }
+
+/// The default CDFs the COMPOUND-reference inter block path codes with — the
+/// `read_ref_frames` compound cascade (`comp_inter`, `comp_ref_type`,
+/// `uni_comp_ref`, `comp_ref`, `comp_bwdref`), the compound inter mode, and the
+/// `read_compound_type_info` fields (`comp_group_idx`, `compound_index`,
+/// `compound_type`). None are in the `shim_dump_default_kf_fc` KF dump (that
+/// stays append-only), so verify them against a dedicated dump of the real
+/// `av1_setup_past_independence` frame context. All nine are qindex-independent
+/// (`av1_init_mode_probs`), so any band reproduces them — sweep a few anyway.
+#[test]
+fn default_compound_cdfs_match_compiled_c() {
+    use aom_dsp::entropy::default_cdfs as d;
+    let rust: Vec<u16> = d::DEFAULT_COMP_INTER
+        .iter()
+        .flatten()
+        .chain(d::DEFAULT_COMP_REF_TYPE.iter().flatten())
+        .chain(d::DEFAULT_UNI_COMP_REF.iter().flatten().flatten())
+        .chain(d::DEFAULT_COMP_REF.iter().flatten().flatten())
+        .chain(d::DEFAULT_COMP_BWDREF.iter().flatten().flatten())
+        .chain(d::DEFAULT_INTER_COMPOUND_MODE.iter().flatten())
+        .chain(d::DEFAULT_COMPOUND_IDX.iter().flatten())
+        .chain(d::DEFAULT_COMP_GROUP_IDX.iter().flatten())
+        .chain(d::DEFAULT_COMPOUND_TYPE.iter().flatten())
+        .copied()
+        .collect();
+    assert_eq!(rust.len(), c::DUMP_COMPOUND_LEN, "dump length");
+    let names = [
+        "comp_inter_cdf",
+        "comp_ref_type_cdf",
+        "uni_comp_ref_cdf",
+        "comp_ref_cdf",
+        "comp_bwdref_cdf",
+        "inter_compound_mode_cdf",
+        "compound_index_cdf",
+        "comp_group_idx_cdf",
+        "compound_type_cdf",
+    ];
+    for q in [0, 20, 21, 120, 121, 255] {
+        let cd = c::ref_dump_default_compound_cdfs(q);
+        assert_eq!(rust.len(), cd.len(), "length parity");
+        if rust != cd {
+            let bad = rust.iter().zip(&cd).position(|(a, b)| a != b).unwrap();
+            let (mut which, mut base) = (0usize, 0usize);
+            for (i, len) in c::DUMP_COMPOUND_LENS.iter().enumerate() {
+                if bad < base + len {
+                    which = i;
+                    break;
+                }
+                base += len;
+            }
+            panic!(
+                "q={q}: {} mismatch at dump offset {bad} (slot {} within table) \
+                 — rust {} vs C {}",
+                names[which],
+                bad - base,
+                rust[bad],
+                cd[bad]
+            );
+        }
+    }
+    // Non-vacuity: real trained content, distinct contexts, and the masked-type
+    // table carries the wedge/diff-weighted split only on sizes where masked
+    // compound is allowed (block sizes >= BLOCK_8X8; the sub-8x8 rows stay at
+    // the 16384 init — C's default_compound_type_cdf).
+    assert!(d::DEFAULT_COMP_INTER.iter().flatten().any(|&x| x != 0));
+    assert_ne!(d::DEFAULT_COMP_INTER[0][0], d::DEFAULT_COMP_INTER[4][0]);
+    assert!(d::DEFAULT_INTER_COMPOUND_MODE
+        .iter()
+        .flatten()
+        .any(|&x| x != 0));
+    assert_ne!(
+        d::DEFAULT_INTER_COMPOUND_MODE[0][0],
+        d::DEFAULT_INTER_COMPOUND_MODE[7][0]
+    );
+    assert_eq!(d::DEFAULT_COMPOUND_TYPE[0][0], 16384);
+    assert_eq!(d::DEFAULT_COMPOUND_TYPE[2][0], 16384);
+    assert_ne!(d::DEFAULT_COMPOUND_TYPE[3][0], 16384);
+}

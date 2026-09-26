@@ -14,7 +14,7 @@
 #   pub consts/statics                          6
 #   free functions                             63
 #   inherent methods                           28
-#   trait roster entries (type × trait)        48
+#   trait roster entries (type × trait)        49
 #   auto-trait-complete types                   1
 #
 # per-module pub lines:
@@ -102,7 +102,7 @@ pub static aom_dsp::transform::cospi::COSPI_ARR_DATA: [[i32; 64]; 4]
 pub static aom_dsp::transform::cospi::SINPI_ARR_DATA: [[i32; 5]; 4]
 pub struct aom_dsp::restore::wiener::WienerScratch
 
-## trait impls (47 types)
+## trait impls (48 types)
 
 aom_dsp::census::Leaf: TrivialClone
 aom_dsp::convolve::compound::CompoundConvolveParams: TrivialClone
@@ -134,6 +134,7 @@ aom_dsp::entropy::obu::ObuHeader: TrivialClone
 aom_dsp::entropy::partition::MiNbrKf: TrivialClone
 aom_dsp::entropy::partition::PaletteNbrKf: TrivialClone
 aom_dsp::entropy::partition::TxMode: TrivialClone
+aom_dsp::inter::CompoundRefPlane<'a>: TrivialClone
 aom_dsp::inter::compound::CompoundType: TrivialClone
 aom_dsp::inter::compound::DiffwtdMaskType: TrivialClone
 aom_dsp::inter::compound::DistWtdWeights: TrivialClone

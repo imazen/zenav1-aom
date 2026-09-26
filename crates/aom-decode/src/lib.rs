@@ -394,7 +394,7 @@ fn cfl_store_tx_any(
 }
 use aom_dsp::entropy::dec::OdEcDec;
 use aom_dsp::entropy::dv_ref::{
-    DV_NBR_SLOTS, DvGrid, DvNbr, DvNbrPacked, DvTileBounds, assign_and_validate_dv,
+    DV_NBR_SLOTS, DvGrid, DvNbr, DvNbrPacked, DvTileBounds, NONE_FRAME, assign_and_validate_dv,
     find_dv_ref_mvs, find_inter_mv_refs, find_samples, select_samples,
 };
 use aom_dsp::entropy::partition::{
@@ -1091,6 +1091,23 @@ pub struct InterFrameCfg<'r> {
     /// `seq_header.enable_interintra_compound`: gates the inter-intra flag read
     /// on an interintra-allowed inter block.
     pub enable_interintra_compound: bool,
+    /// `seq_header.enable_masked_compound`: with `is_comp_ref_allowed`, gates
+    /// the `comp_group_idx` read (masked-compound group selector).
+    pub enable_masked_compound: bool,
+    /// `seq_header.order_hint_info.enable_dist_wtd_comp`: gates the
+    /// `compound_idx` read (dist-wtd vs plain-average selector) in group 0.
+    pub enable_dist_wtd_comp: bool,
+    /// `seq_header.enable_order_hint`: order hints active (comp-index ctx +
+    /// dist-wtd weight distances are 0 without them).
+    pub enable_order_hint: bool,
+    /// `seq_header.order_hint_info.order_hint_bits_minus_1` — wraps
+    /// `get_relative_dist` for the compound contexts/weights.
+    pub order_hint_bits_minus_1: i32,
+    /// The bound refs' order hints (`get_ref_frame_buf(cm, ref)->order_hint`),
+    /// indexed by `MV_REFERENCE_FRAME` (0 for an unbound slot, matching C's
+    /// NULL-buf arm) — feeds `get_comp_index_context` and
+    /// `dist_wtd_comp_weight_assign`.
+    pub ref_order_hints: [i32; 8],
     /// Per-reference global-motion `wmtype` (`global_motion[ref].wmtype`;
     /// `0 = IDENTITY`). The inter MV scan (`find_inter_mv_refs`) currently assumes
     /// IDENTITY global motion (the base MV for a NEWMV/GLOBALMV block with an empty
@@ -1125,6 +1142,32 @@ pub(crate) struct InterCdfs {
     /// block of a `REFERENCE_MODE_SELECT` frame
     /// ([`aom_dsp::entropy::partition::reference_mode_context`]).
     comp_inter: [[u16; 3]; 5],
+    /// `comp_ref_type_cdf[COMPREF_CONTEXTS]` (CDF_SIZE(2)): the uni-vs-bidir
+    /// compound-reference-type flag (read_compound_ref's first symbol).
+    comp_ref_type: [[u16; 3]; 5],
+    /// `uni_comp_ref_cdf[UNI_COMP_REF_CONTEXTS][3]` (CDF_SIZE(2)): the three
+    /// bits of the unidirectional-pair tree (`{BWDREF,ALTREF}` vs the
+    /// LAST/LAST2|LAST3|GOLDEN sub-trees).
+    uni_comp_ref: [[[u16; 3]; 3]; 3],
+    /// `comp_ref_cdf[REF_CONTEXTS][FWD_REFS-1]` (CDF_SIZE(2)): the bidir
+    /// pair's forward-ref bits (LAST/LAST2/LAST3/GOLDEN tree).
+    comp_ref: [[[u16; 3]; 3]; 3],
+    /// `comp_bwdref_cdf[REF_CONTEXTS][BWD_REFS-1]` (CDF_SIZE(2)): the bidir
+    /// pair's backward-ref bits (BWDREF/ALTREF2/ALTREF tree).
+    comp_bwdref: [[[u16; 3]; 2]; 3],
+    /// `inter_compound_mode_cdf[MODE_CTX_REF_FRAMES]` (CDF_SIZE(
+    /// INTER_COMPOUND_MODES=8)): the compound sub-mode, read on the
+    /// `av1_mode_context_analyzer` context.
+    inter_compound_mode: [[u16; 9]; 8],
+    /// `compound_index_cdf[COMP_INDEX_CONTEXTS]` (CDF_SIZE(2)): the
+    /// distance-weighted-vs-average selector inside compound group 0.
+    compound_idx: [[u16; 3]; 6],
+    /// `comp_group_idx_cdf[COMP_GROUP_IDX_CONTEXTS]` (CDF_SIZE(2)): the
+    /// average-group vs masked-group selector (masked_compound_used only).
+    comp_group_idx: [[u16; 3]; 6],
+    /// `compound_type_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(MASKED_COMPOUND_TYPES=2)):
+    /// wedge-vs-diffwtd inside the masked group (step 4b; read for syntax sync).
+    compound_type: [[u16; 3]; 22],
     single_ref: [[[u16; 3]; 6]; 3],
     newmv: [[u16; 3]; 6],
     zeromv: [[u16; 3]; 2],
@@ -1164,6 +1207,14 @@ impl InterCdfs {
         InterCdfs {
             intra_inter: d::DEFAULT_INTRA_INTER,
             comp_inter: d::DEFAULT_COMP_INTER,
+            comp_ref_type: d::DEFAULT_COMP_REF_TYPE,
+            uni_comp_ref: d::DEFAULT_UNI_COMP_REF,
+            comp_ref: d::DEFAULT_COMP_REF,
+            comp_bwdref: d::DEFAULT_COMP_BWDREF,
+            inter_compound_mode: d::DEFAULT_INTER_COMPOUND_MODE,
+            compound_idx: d::DEFAULT_COMPOUND_IDX,
+            comp_group_idx: d::DEFAULT_COMP_GROUP_IDX,
+            compound_type: d::DEFAULT_COMPOUND_TYPE,
             single_ref: d::DEFAULT_SINGLE_REF,
             newmv: d::DEFAULT_NEWMV,
             zeromv: d::DEFAULT_ZEROMV,
@@ -1182,20 +1233,71 @@ impl InterCdfs {
         }
     }
 
-    /// Assemble the 16-entry ref-frame CDF array `read_ref_frames` indexes: the
-    /// single-reference sub-tree slots `[10..16]` selected at their pred
-    /// contexts from the neighbour ref counts. Compound slots `[0..10]` are
-    /// unused under `SINGLE_REFERENCE` (never read).
-    fn ref_frame_cdfs(&self, rc: &[u8; 8]) -> [[u16; 3]; 16] {
+    /// The compound-side ref-frame CDF contexts [`Self::ref_frame_cdfs`]
+    /// resolved for the block's neighbours — returned so the post-read
+    /// copy-back writes each adapted row to the slot it came from.
+    /// `crt` is `av1_get_comp_reference_type_context` (edge-neighbour
+    /// driven); the rest are the `neighbors_ref_counts` votings shared with
+    /// the single-ref contexts (`pred_common.c`).
+    fn compound_ref_ctxs(rc: &[u8; 8], crt: usize) -> (usize, [usize; 3], [usize; 3], [usize; 2]) {
         use aom_dsp::entropy::partition as p;
+        (
+            crt,
+            [
+                // uni_comp_ref_cdf ctxs: p = fwd-vs-bwd counts (=
+                // single_ref_p1), p1 = LAST2 vs LAST3|GOLDEN, p2 = LAST3 vs
+                // GOLDEN (av1_get_pred_context_uni_comp_ref_{p,p1,p2}).
+                p::single_ref_p1_context(rc) as usize,
+                p::pred_ctx_last2_or_l3gld(rc) as usize,
+                p::pred_ctx_last3_or_gld(rc) as usize,
+            ],
+            [
+                // comp_ref_cdf ctxs: p = (L+L2) vs (L3+G), p1 = L vs L2,
+                // p2 = L3 vs G (av1_get_pred_context_comp_ref_{p,p1,p2}).
+                p::pred_ctx_ll2_or_l3gld(rc) as usize,
+                p::pred_ctx_last_or_last2(rc) as usize,
+                p::pred_ctx_last3_or_gld(rc) as usize,
+            ],
+            [
+                // comp_bwdref_cdf ctxs: p = (B+A2) vs A, p1 = B vs A2
+                // (av1_get_pred_context_comp_bwdref_{p,p1}).
+                p::pred_ctx_brfarf2_or_arf(rc) as usize,
+                p::pred_ctx_brf_or_arf2(rc) as usize,
+            ],
+        )
+    }
+
+    /// Assemble the 16-entry ref-frame CDF array `read_ref_frames` indexes —
+    /// the single-reference sub-tree slots `[10..16]` AND the compound slots
+    /// `[1..10]` (comp_ref_type / uni_comp_ref / comp_ref / comp_bwdref), each
+    /// at its pred context from the neighbour ref counts (`rc`) and the
+    /// edge-neighbour compound-ref-type context (`crt_ctx`). Slot `[0]`
+    /// (`comp_inter`) is filled by the caller. Returns the assembled array plus
+    /// the compound contexts for the adapted-row copy-back.
+    fn ref_frame_cdfs(
+        &self,
+        rc: &[u8; 8],
+        crt_ctx: usize,
+    ) -> ([[u16; 3]; 16], (usize, [usize; 3], [usize; 3], [usize; 2])) {
+        use aom_dsp::entropy::partition as p;
+        let ctxs = Self::compound_ref_ctxs(rc, crt_ctx);
         let mut cdfs = [[0u16; 3]; 16];
+        cdfs[1] = self.comp_ref_type[ctxs.0];
+        cdfs[2] = self.uni_comp_ref[ctxs.1[0]][0];
+        cdfs[3] = self.uni_comp_ref[ctxs.1[1]][1];
+        cdfs[4] = self.uni_comp_ref[ctxs.1[2]][2];
+        cdfs[5] = self.comp_ref[ctxs.2[0]][0];
+        cdfs[6] = self.comp_ref[ctxs.2[1]][1];
+        cdfs[7] = self.comp_ref[ctxs.2[2]][2];
+        cdfs[8] = self.comp_bwdref[ctxs.3[0]][0];
+        cdfs[9] = self.comp_bwdref[ctxs.3[1]][1];
         cdfs[10] = self.single_ref[p::single_ref_p1_context(rc) as usize][0];
         cdfs[11] = self.single_ref[p::pred_ctx_brfarf2_or_arf(rc) as usize][1];
         cdfs[12] = self.single_ref[p::pred_ctx_ll2_or_l3gld(rc) as usize][2];
         cdfs[13] = self.single_ref[p::pred_ctx_last_or_last2(rc) as usize][3];
         cdfs[14] = self.single_ref[p::pred_ctx_last3_or_gld(rc) as usize][4];
         cdfs[15] = self.single_ref[p::pred_ctx_brf_or_arf2(rc) as usize][5];
-        cdfs
+        (cdfs, ctxs)
     }
 }
 
@@ -1250,6 +1352,36 @@ impl FrameContexts {
         }
         for a in ic.single_ref.iter_mut().flatten() {
             r1(a, 2);
+        }
+        // The compound-ref tables (comp_ref_type / uni_comp_ref / comp_ref /
+        // comp_bwdref) — `RESET_CDF_COUNTER` at entropy.c:124-127 — and the
+        // compound block-type rows (inter_compound_mode / compound_idx /
+        // comp_group_idx / compound_type — :103, :129-130). Same reset as the
+        // single-ref tables; without it a `primary_ref_frame` inheritance would
+        // carry stale adaptation counters into the next frame's compound reads.
+        for a in ic.comp_ref_type.iter_mut() {
+            r1(a, 2);
+        }
+        for a in ic.uni_comp_ref.iter_mut().flatten() {
+            r1(a, 2);
+        }
+        for a in ic.comp_ref.iter_mut().flatten() {
+            r1(a, 2);
+        }
+        for a in ic.comp_bwdref.iter_mut().flatten() {
+            r1(a, 2);
+        }
+        for a in ic.inter_compound_mode.iter_mut() {
+            r1(a, 8); // INTER_COMPOUND_MODES
+        }
+        for a in ic.compound_idx.iter_mut() {
+            r1(a, 2);
+        }
+        for a in ic.comp_group_idx.iter_mut() {
+            r1(a, 2);
+        }
+        for a in ic.compound_type.iter_mut() {
+            r1(a, 2); // MASKED_COMPOUND_TYPES
         }
         for a in ic.newmv.iter_mut() {
             r1(a, 2);
@@ -3445,7 +3577,20 @@ impl<'c> TileKf<'c> {
             left_dv.map_or(0, |d| d.ref_frame0),
             left_dv.map_or(-1, |d| d.ref_frame1),
         );
-        let mut ref_cdfs = icdfs.ref_frame_cdfs(&rc);
+        // `comp_ref_type` (slot 1) contexts off the edge neighbours'
+        // compound-ref structure — `av1_get_comp_reference_type_context`
+        // (pred_common.c:187), driven only by the comp-allowed case.
+        let crt_ctx = ep::get_comp_reference_type_context(
+            up_available,
+            above_dv.map_or(0, |d| d.ref_frame0),
+            above_dv.map_or(-1, |d| d.ref_frame1),
+            above_dv.is_some_and(|d| d.use_intrabc),
+            left_available,
+            left_dv.map_or(0, |d| d.ref_frame0),
+            left_dv.map_or(-1, |d| d.ref_frame1),
+            left_dv.is_some_and(|d| d.use_intrabc),
+        ) as usize;
+        let (mut ref_cdfs, comp_ctxs) = icdfs.ref_frame_cdfs(&rc, crt_ctx);
         // `comp_inter` (read_ref_frames' first symbol): read for every
         // comp-allowed block (`is_comp_ref_allowed`: min dim >= 8) of a
         // REFERENCE_MODE_SELECT frame, on the neighbour-derived context
@@ -3465,11 +3610,19 @@ impl<'c> TileKf<'c> {
             comp_allowed,
         );
         icdfs.comp_inter[rm_ctx] = ref_cdfs[0];
-        // `ref_frame_cdfs` assembled `ref_cdfs` from disjoint `single_ref` rows
-        // (each single-ref sub-tree at its own pred context); copy the adapted
-        // rows back so the adaptation persists across blocks. Only the rows
-        // `read_ref_frames` actually read changed; copying all six is a no-op for
-        // the rest. (Compound slots 0..10 are never read under SINGLE_REFERENCE.)
+        // `ref_frame_cdfs` assembled `ref_cdfs` from disjoint CDF rows (each
+        // sub-tree at its own pred context); copy the adapted rows back so the
+        // adaptation persists across blocks. Only the rows `read_ref_frames`
+        // actually read changed; copying all is a no-op for the rest.
+        icdfs.comp_ref_type[comp_ctxs.0] = ref_cdfs[1];
+        icdfs.uni_comp_ref[comp_ctxs.1[0]][0] = ref_cdfs[2];
+        icdfs.uni_comp_ref[comp_ctxs.1[1]][1] = ref_cdfs[3];
+        icdfs.uni_comp_ref[comp_ctxs.1[2]][2] = ref_cdfs[4];
+        icdfs.comp_ref[comp_ctxs.2[0]][0] = ref_cdfs[5];
+        icdfs.comp_ref[comp_ctxs.2[1]][1] = ref_cdfs[6];
+        icdfs.comp_ref[comp_ctxs.2[2]][2] = ref_cdfs[7];
+        icdfs.comp_bwdref[comp_ctxs.3[0]][0] = ref_cdfs[8];
+        icdfs.comp_bwdref[comp_ctxs.3[1]][1] = ref_cdfs[9];
         icdfs.single_ref[ep::single_ref_p1_context(&rc) as usize][0] = ref_cdfs[10];
         icdfs.single_ref[ep::pred_ctx_brfarf2_or_arf(&rc) as usize][1] = ref_cdfs[11];
         icdfs.single_ref[ep::pred_ctx_ll2_or_l3gld(&rc) as usize][2] = ref_cdfs[12];
@@ -3478,15 +3631,18 @@ impl<'c> TileKf<'c> {
         icdfs.single_ref[ep::pred_ctx_brf_or_arf2(&rc) as usize][5] = ref_cdfs[15];
         // Keep the malformed and unsupported cases distinct: an out-of-range
         // or inconsistent ref coding is a bad stream (corrupt); a well-formed
-        // compound pair is a valid AV1 tool this envelope does not decode
-        // (unsupported). Folding both into one error lied about the category.
-        if !(1..=7).contains(&ref0) || (!is_compound && ref1 != -1) {
+        // compound pair is a valid AV1 tool (decoded below with the feature on,
+        // refused by name with it off).
+        if !(1..=7).contains(&ref0)
+            || (!is_compound && ref1 != -1)
+            || (is_compound && !(1..=7).contains(&ref1))
+        {
             self.mark_corrupt(format!(
                 "inter: inconsistent ref coding (ref0 {ref0}, ref1 {ref1}, compound {is_compound})"
             ));
             return;
         }
-        if is_compound {
+        if is_compound && !crate::EXPERIMENTAL_VIDEO {
             self.mark_unsupported(
                 "inter: only single-reference blocks are decoded in this envelope \
                  (compound references unsupported)",
@@ -3499,7 +3655,10 @@ impl<'c> TileKf<'c> {
         // is_global_mv_block gating — a later chunk. Guarded so such a frame pins
         // cleanly here rather than reading a wrong NEWMV base and desyncing (every
         // target through 16x18 is identity-GM; e.g. 16x66 uses global motion).
-        if inter.gm_wmtype[(ref0 - 1) as usize] != 0 {
+        // For a compound pair BOTH refs must be identity-GM.
+        if inter.gm_wmtype[(ref0 - 1) as usize] != 0
+            || (is_compound && inter.gm_wmtype[(ref1 - 1) as usize] != 0)
+        {
             self.mark_unsupported(
                 "inter: non-identity global motion not supported in this decode envelope",
             );
@@ -3528,8 +3687,13 @@ impl<'c> TileKf<'c> {
                 stride: inter.tpl_stride,
                 cur_offset: inter.tpl_cur_offset,
             });
+        let rf = if is_compound {
+            [ref0, ref1]
+        } else {
+            [ref0, NONE_FRAME]
+        };
         let imv = find_inter_mv_refs(
-            ref0,
+            rf,
             mi_row,
             mi_col,
             bsize,
@@ -3542,23 +3706,40 @@ impl<'c> TileKf<'c> {
             mib_size,
             inter.allow_ref_frame_mvs,
             tpl_field.as_ref(),
-            (0, 0),
-            0,
+            [(0, 0), (0, 0)],
+            [0, 0],
             inter.ref_frame_sign_bias,
             inter.allow_high_precision_mv,
             inter.cur_frame_force_integer_mv,
             grid,
         );
 
-        // read_inter_mode (single-ref: mode_context passes through verbatim).
-        let mode = ep::read_inter_mode(
-            dec,
-            &mut icdfs.newmv,
-            &mut icdfs.zeromv,
-            &mut icdfs.refmv,
-            imv.mode_context,
-        );
+        // read_inter_mode / read_inter_compound_mode (decodemv.c:1312-1316):
+        // single-ref reads the NEWMV/GLOBALMV/NEARESTMV cascade; compound reads
+        // the 8-symbol compound-mode row on `av1_mode_context_analyzer`'s ctx.
+        let mode = if is_compound {
+            let mctx = ep::mode_context_analyzer(imv.mode_context, true) as usize;
+            ep::read_inter_compound_mode(dec, &mut icdfs.inter_compound_mode[mctx])
+        } else {
+            ep::read_inter_mode(
+                dec,
+                &mut icdfs.newmv,
+                &mut icdfs.zeromv,
+                &mut icdfs.refmv,
+                imv.mode_context,
+            )
+        };
+        // The coded mode's compoundness must agree with the ref coding
+        // (decodemv.c:1323 — a desynced stream is corrupt, not unsupported).
+        if is_compound != ep::is_inter_compound_mode(mode) {
+            self.mark_corrupt(format!(
+                "inter: mode {mode} inconsistent with ref coding (compound {is_compound})"
+            ));
+            return;
+        }
         // read_drl_idx: weights as u16 (values are well under 2^16, see dv_ref).
+        // No-ops (returns 0, reads nothing) for non-NEW/non-NEAR modes — the
+        // gate matches C's `mode == NEWMV || NEW_NEWMV || have_nearmv`.
         let weights_u16: [u16; 8] = std::array::from_fn(|i| imv.weight[i] as u16);
         let ref_mv_idx = ep::read_drl_idx(
             dec,
@@ -3568,7 +3749,8 @@ impl<'c> TileKf<'c> {
             &weights_u16,
         );
 
-        // assign_mv: resolve the predictor per mode, then read the MV.
+        // assign_mv: resolve the predictor(s) per mode, then read the coded MVs.
+        // Compound resolves an MV per reference (decodemv.c:1114-1212).
         let precision = if inter.cur_frame_force_integer_mv {
             -1
         } else if inter.allow_high_precision_mv {
@@ -3576,31 +3758,122 @@ impl<'c> TileKf<'c> {
         } else {
             0
         };
-        let (mv_row, mv_col) = match mode {
-            NEWMV => {
-                // ref_mv[0] = nearest, or stack[ref_mv_idx] when the list has >1.
-                let base = if imv.ref_mv_count > 1 {
-                    imv.stack[ref_mv_idx as usize]
-                } else {
-                    imv.nearest
-                };
-                let [c0, c1] = &mut icdfs.nmv_comps;
-                let (dr, dc) = ep::read_mv(dec, &mut icdfs.nmv_joints, c0, c1, precision);
-                (base.0 + dr, base.1 + dc)
-            }
-            NEARESTMV => imv.nearest,
-            NEARMV => {
-                if ref_mv_idx > 0 {
-                    imv.stack[(1 + ref_mv_idx) as usize]
-                } else {
-                    imv.near
+        // Compound sub-modes (blockd.h compound_ref{0,1}_mode pairings).
+        const NEAREST_NEARESTMV: i32 = 17;
+        const NEAR_NEARMV: i32 = 18;
+        const NEAREST_NEWMV: i32 = 19;
+        const NEW_NEARESTMV: i32 = 20;
+        const NEAR_NEWMV: i32 = 21;
+        const NEW_NEARMV: i32 = 22;
+        const GLOBAL_GLOBALMV: i32 = 23;
+        const NEW_NEWMV: i32 = 24;
+        let (mv_row, mv_col, mv1_row, mv1_col) = if is_compound {
+            // nearest/near come off the compound PAIR stack: `stack[i]` is
+            // ref0's candidate, `comp_stack[i]` ref1's (this_mv / comp_mv).
+            // Both are `lower_mv_precision`'d; GLOBAL_GLOBALMV skips the block.
+            let mut nearest = [(0i32, 0i32); 2];
+            let mut near = [(0i32, 0i32); 2];
+            if mode != GLOBAL_GLOBALMV {
+                nearest = [imv.stack[0], imv.comp_stack[0]];
+                near = [
+                    imv.stack[(1 + ref_mv_idx) as usize],
+                    imv.comp_stack[(1 + ref_mv_idx) as usize],
+                ];
+                for m in nearest.iter_mut().chain(near.iter_mut()) {
+                    aom_dsp::entropy::dv_ref::lower_mv_precision(
+                        &mut m.0,
+                        &mut m.1,
+                        inter.allow_high_precision_mv,
+                        inter.cur_frame_force_integer_mv,
+                    );
                 }
             }
-            GLOBALMV => (0, 0), // identity global motion (census: all IDENTITY)
-            _ => {
-                self.mark_corrupt(format!("inter: unsupported single-ref mode {mode}"));
-                return;
+            // Each NEW component's read_mv base defaults to the (lowered)
+            // nearest and is overwritten by the RAW stack entry
+            // (`ref_mv_stack[ref_mv_idx]` — `+1` for the NEAR_NEW/NEW_NEAR
+            // pairings, decodemv.c:1362-1368).
+            let mut ref_mv = nearest;
+            let rmi = if mode == NEAR_NEWMV || mode == NEW_NEARMV {
+                (1 + ref_mv_idx) as usize
+            } else {
+                ref_mv_idx as usize
+            };
+            if ep::compound_ref0_mode(mode) == NEWMV {
+                ref_mv[0] = imv.stack[rmi];
             }
+            if ep::compound_ref1_mode(mode) == NEWMV {
+                ref_mv[1] = imv.comp_stack[rmi];
+            }
+            let mut mvp = [(0i32, 0i32); 2];
+            match mode {
+                NEAREST_NEARESTMV => mvp = nearest,
+                NEAR_NEARMV => mvp = near,
+                NEW_NEWMV => {
+                    for i in 0..2 {
+                        let [c0, c1] = &mut icdfs.nmv_comps;
+                        let (dr, dc) = ep::read_mv(dec, &mut icdfs.nmv_joints, c0, c1, precision);
+                        mvp[i] = (ref_mv[i].0 + dr, ref_mv[i].1 + dc);
+                    }
+                }
+                NEAREST_NEWMV => {
+                    mvp[0] = nearest[0];
+                    let [c0, c1] = &mut icdfs.nmv_comps;
+                    let (dr, dc) = ep::read_mv(dec, &mut icdfs.nmv_joints, c0, c1, precision);
+                    mvp[1] = (ref_mv[1].0 + dr, ref_mv[1].1 + dc);
+                }
+                NEW_NEARESTMV => {
+                    let [c0, c1] = &mut icdfs.nmv_comps;
+                    let (dr, dc) = ep::read_mv(dec, &mut icdfs.nmv_joints, c0, c1, precision);
+                    mvp[0] = (ref_mv[0].0 + dr, ref_mv[0].1 + dc);
+                    mvp[1] = nearest[1];
+                }
+                NEAR_NEWMV => {
+                    mvp[0] = near[0];
+                    let [c0, c1] = &mut icdfs.nmv_comps;
+                    let (dr, dc) = ep::read_mv(dec, &mut icdfs.nmv_joints, c0, c1, precision);
+                    mvp[1] = (ref_mv[1].0 + dr, ref_mv[1].1 + dc);
+                }
+                NEW_NEARMV => {
+                    let [c0, c1] = &mut icdfs.nmv_comps;
+                    let (dr, dc) = ep::read_mv(dec, &mut icdfs.nmv_joints, c0, c1, precision);
+                    mvp[0] = (ref_mv[0].0 + dr, ref_mv[0].1 + dc);
+                    mvp[1] = near[1];
+                }
+                GLOBAL_GLOBALMV => mvp = [imv.global_mv, imv.global_mv1],
+                _ => {
+                    self.mark_corrupt(format!("inter: invalid compound mode {mode}"));
+                    return;
+                }
+            }
+            (mvp[0].0, mvp[0].1, mvp[1].0, mvp[1].1)
+        } else {
+            let (r, c) = match mode {
+                NEWMV => {
+                    // ref_mv[0] = nearest, or stack[ref_mv_idx] when the list has >1.
+                    let base = if imv.ref_mv_count > 1 {
+                        imv.stack[ref_mv_idx as usize]
+                    } else {
+                        imv.nearest
+                    };
+                    let [c0, c1] = &mut icdfs.nmv_comps;
+                    let (dr, dc) = ep::read_mv(dec, &mut icdfs.nmv_joints, c0, c1, precision);
+                    (base.0 + dr, base.1 + dc)
+                }
+                NEARESTMV => imv.nearest,
+                NEARMV => {
+                    if ref_mv_idx > 0 {
+                        imv.stack[(1 + ref_mv_idx) as usize]
+                    } else {
+                        imv.near
+                    }
+                }
+                GLOBALMV => (0, 0), // identity global motion (census: all IDENTITY)
+                _ => {
+                    self.mark_corrupt(format!("inter: unsupported single-ref mode {mode}"));
+                    return;
+                }
+            };
+            (r, c, 0, 0)
         };
 
         // Inter-intra (decodemv.c:1383-1407 — AFTER assign_mv, BEFORE findSamples /
@@ -3664,6 +3937,86 @@ impl<'c> TileKf<'c> {
             )
         } else {
             0 // SIMPLE_TRANSLATION
+        };
+
+        // read_compound_type_info (decodemv.c:1424-1478 — AFTER motion_mode,
+        // BEFORE read_mb_interp_filter): only a second-ref (compound) block
+        // codes these. `comp_group_idx` selects average/dist-wtd (group 0) vs
+        // masked (group 1); within group 0, `compound_idx` picks dist-wtd vs
+        // plain average. Group 1 is the wedge/diffwtd masked family — the
+        // syntax is consumed for sync (a conformant read of every symbol C
+        // reads) then refused by name until step 4b lands the mask kernels.
+        let (comp_group_idx, compound_idx, _comp_type, _wedge_index, _wedge_sign, _mask_type) =
+            if is_compound {
+                let masked_compound_used = comp_allowed && inter.enable_masked_compound;
+                let cgi_ctx = ep::get_comp_group_idx_context(
+                    up_available,
+                    above_dv.map_or(0, |d| d.ref_frame0),
+                    above_dv.map_or(-1, |d| d.ref_frame1),
+                    above_dv.map_or(0, |d| d.comp_group_idx),
+                    left_available,
+                    left_dv.map_or(0, |d| d.ref_frame0),
+                    left_dv.map_or(-1, |d| d.ref_frame1),
+                    left_dv.map_or(0, |d| d.comp_group_idx),
+                ) as usize;
+                // `fwd`/`bck` order-hint pairing follows C's buffer lookup
+                // (pred_common.h:102): `bck_buf` is ref_frame[0], `fwd_buf`
+                // ref_frame[1] — so ref1's order hint is the `fwd` arg.
+                let ci_ctx = ep::get_comp_index_context(
+                    inter.enable_order_hint,
+                    inter.order_hint_bits_minus_1,
+                    inter.order_hint,
+                    inter.ref_order_hints[ref1 as usize],
+                    inter.ref_order_hints[ref0 as usize],
+                    up_available,
+                    above_dv.is_some_and(|d| d.ref_frame1 > 0),
+                    above_dv.map_or(0, |d| d.compound_idx),
+                    above_dv.map_or(0, |d| d.ref_frame0),
+                    left_available,
+                    left_dv.is_some_and(|d| d.ref_frame1 > 0),
+                    left_dv.map_or(0, |d| d.compound_idx),
+                    left_dv.map_or(0, |d| d.ref_frame0),
+                ) as usize;
+                ep::read_compound_type_info(
+                    dec,
+                    masked_compound_used,
+                    &mut icdfs.comp_group_idx[cgi_ctx],
+                    inter.enable_dist_wtd_comp,
+                    &mut icdfs.compound_idx[ci_ctx],
+                    comp_allowed && aom_dsp::inter::interintra::is_wedge_used(bsize),
+                    &mut icdfs.compound_type[bsize],
+                    &mut icdfs.wedge_idx[bsize],
+                )
+            } else {
+                // Non-compound defaults (C seeds comp_group_idx=0, compound_idx=1).
+                (0, 1, 0, 0, 0, 0)
+            };
+        if is_compound && comp_group_idx != 0 {
+            self.mark_unsupported(
+                "inter: masked compound (wedge/diffwtd) not yet supported in this \
+                 decode envelope",
+            );
+            return;
+        }
+        // `av1_dist_wtd_comp_weight_assign` (reconinter.c:669): compound_idx==0
+        // -> distance-weighted offsets from the pair's order-hint distances;
+        // compound_idx==1 (or !is_compound) -> the plain 8/8 average.
+        let comp_weights = if is_compound {
+            aom_dsp::inter::compound::dist_wtd_comp_weight_assign(
+                inter.enable_order_hint,
+                inter.order_hint_bits_minus_1,
+                inter.order_hint,
+                inter.ref_order_hints[ref1 as usize],
+                inter.ref_order_hints[ref0 as usize],
+                compound_idx != 0,
+                is_compound,
+            )
+        } else {
+            aom_dsp::inter::compound::DistWtdWeights {
+                fwd_offset: 8,
+                bck_offset: 8,
+                use_dist_wtd_comp_avg: false,
+            }
         };
         // WARPED_CAUSAL (chunk 5): gather the warp samples (av1_findSamples),
         // select (av1_selectSamples when num_proj_ref > 1), derive the local
@@ -3957,11 +4310,19 @@ impl<'c> TileKf<'c> {
 
         // --- motion compensation (predict phase; NO entropy reads) ---
         let (cmv_row, cmv_col) = clamp_mv_to_umv_border(mv_row, mv_col, mi_row, mi_col, bsize, cfg);
+        // A compound block's SECOND MV clamps independently (dec_calc_subpel_params
+        // runs per ref). `(0,0)` for single-ref (unused there).
+        let (cmv1_row, cmv1_col) = if is_compound {
+            clamp_mv_to_umv_border(mv1_row, mv1_col, mi_row, mi_col, bsize, cfg)
+        } else {
+            (0, 0)
+        };
         // Above bd8, nonzero-MV (sub-pel or integer-pel) motion compensation is
         // an `experimental-video` tool: without the feature the block is refused
         // by name; with it, `build_inter_predictor` dispatches to the u16
         // highbd convolve kernels (u8 scratch would truncate >8-bit samples).
-        // Fail-loud, never corrupt.
+        // Fail-loud, never corrupt. (Compound is feature-gated earlier — this
+        // arm only ever sees single-ref.)
         #[cfg(not(feature = "experimental-video"))]
         if cfg.bd > 8 && (cmv_row != 0 || cmv_col != 0) {
             self.mark_unsupported("inter: sub/nonzero-pel MC above bd8 not yet supported");
@@ -3978,6 +4339,12 @@ impl<'c> TileKf<'c> {
         };
         // `xd->block_ref_scale_factors[0]` — the bound ref's luma scale factors.
         let sf = &inter.ref_sf[(ref0 - 1) as usize];
+        // Compound's second reference + its scale factors (`block_ref_scale_factors[1]`).
+        let sf1 = if is_compound {
+            &inter.ref_sf[(ref1 - 1) as usize]
+        } else {
+            sf
+        };
         let blk_x = (mi_col * 4) as usize;
         let blk_y = (mi_row * 4) as usize;
         let dst_off = blk_y * self.stride + blk_x;
@@ -3986,7 +4353,61 @@ impl<'c> TileKf<'c> {
         // blend runs after, below). Luma block is always >= 8 -> passes
         // av1_init_warp_params' per-plane size gate. `av1_allow_warp` also gates
         // on `!av1_is_scaled(sf)` — a scaled ref falls back to translational.
-        if let Some(wm) = warp_luma.filter(|_| !sf.is_scaled()) {
+        // A COMPOUND block is always SIMPLE_TRANSLATION (motion_variation is
+        // single-ref only), so it takes the plain two-ref translational arm.
+        if is_compound {
+            let Some(bck) = inter.refs[(ref1 - 1) as usize] else {
+                self.mark_corrupt(format!(
+                    "inter: block references unavailable ref {ref1} (no stored frame)"
+                ));
+                return;
+            };
+            let refs = [
+                aom_dsp::inter::CompoundRefPlane {
+                    plane: &last.y,
+                    stride: last.stride,
+                    w: last.width,
+                    h: last.height,
+                    sf,
+                    mv: (cmv_row, cmv_col),
+                    raw_mv: (mv_row, mv_col),
+                },
+                aom_dsp::inter::CompoundRefPlane {
+                    plane: &bck.y,
+                    stride: bck.stride,
+                    w: bck.width,
+                    h: bck.height,
+                    sf: sf1,
+                    mv: (cmv1_row, cmv1_col),
+                    raw_mv: (mv1_row, mv1_col),
+                },
+            ];
+            self.recon.with_wide_rect(
+                dst_off,
+                self.stride,
+                bw_px,
+                bh_px,
+                &mut self.wide_rect,
+                |dst, stride| {
+                    aom_dsp::inter::build_compound_inter_predictor(
+                        refs,
+                        dst,
+                        0,
+                        stride,
+                        blk_x,
+                        blk_y,
+                        bw_px,
+                        bh_px,
+                        0,
+                        0,
+                        filter_x,
+                        filter_y,
+                        cfg.bd as u32,
+                        comp_weights,
+                    );
+                },
+            );
+        } else if let Some(wm) = warp_luma.filter(|_| !sf.is_scaled()) {
             self.recon.with_wide_rect(
                 dst_off,
                 self.stride,
@@ -4104,7 +4525,97 @@ impl<'c> TileKf<'c> {
         } else {
             mi_col
         };
-        if chroma_ref {
+        if chroma_ref && is_compound {
+            // Compound chroma: a compound block is always min-dim >= 8, so the
+            // sub-8x8 sharing path can never apply — one whole-block combine
+            // per chroma plane. Each ref's MV clamps against the CHROMA dims
+            // (clamp_mv_to_umv_border_plane, as the single-ref path does).
+            let Some(bck) = inter.refs[(ref1 - 1) as usize] else {
+                self.mark_corrupt(format!(
+                    "inter: block references unavailable ref {ref1} (no stored frame)"
+                ));
+                return;
+            };
+            let bw_uv = bw_px >> ss_x;
+            let bh_uv = bh_px >> ss_y;
+            let uv_org_x = ((adj_col * 4) >> ss_x) as usize;
+            let uv_org_y = ((adj_row * 4) >> ss_y) as usize;
+            let (cmv0r_uv, cmv0c_uv) = clamp_mv_to_umv_border_plane(
+                mv_row,
+                mv_col,
+                mi_row,
+                mi_col,
+                bsize,
+                bw_uv as i32,
+                bh_uv as i32,
+                ss_x,
+                ss_y,
+                cfg,
+            );
+            let (cmv1r_uv, cmv1c_uv) = clamp_mv_to_umv_border_plane(
+                mv1_row,
+                mv1_col,
+                mi_row,
+                mi_col,
+                bsize,
+                bw_uv as i32,
+                bh_uv as i32,
+                ss_x,
+                ss_y,
+                cfg,
+            );
+            let doff = uv_org_y * self.stride_uv + uv_org_x;
+            for (dst_plane, (p0, p1)) in [
+                (&mut self.recon_u, (&last.u, &bck.u)),
+                (&mut self.recon_v, (&last.v, &bck.v)),
+            ] {
+                let refs = [
+                    aom_dsp::inter::CompoundRefPlane {
+                        plane: p0,
+                        stride: last.stride_uv,
+                        w: last.width_uv,
+                        h: last.height_uv,
+                        sf,
+                        mv: (cmv0r_uv, cmv0c_uv),
+                        raw_mv: (mv_row, mv_col),
+                    },
+                    aom_dsp::inter::CompoundRefPlane {
+                        plane: p1,
+                        stride: bck.stride_uv,
+                        w: bck.width_uv,
+                        h: bck.height_uv,
+                        sf: sf1,
+                        mv: (cmv1r_uv, cmv1c_uv),
+                        raw_mv: (mv1_row, mv1_col),
+                    },
+                ];
+                dst_plane.with_wide_rect(
+                    doff,
+                    self.stride_uv,
+                    bw_uv,
+                    bh_uv,
+                    &mut self.wide_rect,
+                    |dst, stride| {
+                        aom_dsp::inter::build_compound_inter_predictor(
+                            refs,
+                            dst,
+                            0,
+                            stride,
+                            uv_org_x,
+                            uv_org_y,
+                            bw_uv,
+                            bh_uv,
+                            ss_x,
+                            ss_y,
+                            filter_x,
+                            filter_y,
+                            cfg.bd as u32,
+                            comp_weights,
+                        );
+                    },
+                );
+            }
+        } else if chroma_ref {
             let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
             let uv_org_x = ((adj_col * 4) >> ss_x) as usize;
             let uv_org_y = ((adj_row * 4) >> ss_y) as usize;
@@ -4824,8 +5335,10 @@ impl<'c> TileKf<'c> {
                 mode,
                 mv0_row: mv_row,
                 mv0_col: mv_col,
-                mv1_row: 0,
-                mv1_col: 0,
+                mv1_row,
+                mv1_col,
+                compound_idx,
+                comp_group_idx,
             },
         );
         // Stamp the block's coded interp filters so later switchable inter blocks'
@@ -4833,7 +5346,7 @@ impl<'c> TileKf<'c> {
         self.stamp_interp(mi_row, mi_col, bsize, (filter_y as u8, filter_x as u8));
         if dbg_blocks() {
             aom_dsp::trace_out!(
-                "BLK mi({mi_row},{mi_col}) bs={bsize} inter ref={ref0} mode={mode} skip={skip} mv=({mv_row},{mv_col}) f=({filter_y},{filter_x})"
+                "BLK mi({mi_row},{mi_col}) bs={bsize} inter ref={ref0},{ref1} mode={mode} skip={skip} mv=({mv_row},{mv_col}),({mv1_row},{mv1_col}) f=({filter_y},{filter_x})"
             );
         }
         // (av1_copy_frame_mvs) for LATER frames' temporal projection.
@@ -4843,7 +5356,7 @@ impl<'c> TileKf<'c> {
             mi_col,
             bsize,
             [ref0, ref1],
-            [(mv_row, mv_col), (0, 0)],
+            [(mv_row, mv_col), (mv1_row, mv1_col)],
         );
         // Minimal per-block record for the post-filter / output structures. The
         // inter block carries no intra fields; `skip`/`current_qindex` are what
@@ -6574,6 +7087,8 @@ impl<'c> TileKf<'c> {
                 mv0_col: info.dv_col,
                 mv1_row: 0,
                 mv1_col: 0,
+                compound_idx: 0,
+                comp_group_idx: 0,
             },
         );
         // The uv-mode grid stamp: non-chroma-reference blocks carry UV_DC_PRED

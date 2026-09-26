@@ -13576,6 +13576,43 @@ unsafe extern "C" {
         out_global_row: *mut i32,
         out_global_col: *mut i32,
     );
+    fn shim_find_compound_mv_refs(
+        rf0: i32,
+        rf1: i32,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+        own_partition: i32,
+        up_available: i32,
+        left_available: i32,
+        tile_mi_row_start: i32,
+        tile_mi_row_end: i32,
+        tile_mi_col_start: i32,
+        tile_mi_col_end: i32,
+        frame_mi_rows: i32,
+        frame_mi_cols: i32,
+        mib_size: i32,
+        allow_ref_frame_mvs: i32,
+        sign_bias: *const i8,
+        allow_high_precision_mv: i32,
+        is_integer_mv: i32,
+        g_bsize: *const u8,
+        g_ref_frame0: *const i8,
+        g_ref_frame1: *const i8,
+        g_use_intrabc: *const u8,
+        g_mode: *const u8,
+        g_mv0_row: *const i16,
+        g_mv0_col: *const i16,
+        g_mv1_row: *const i16,
+        g_mv1_col: *const i16,
+        out_mode_context: *mut i32,
+        out_ref_mv_count: *mut i32,
+        out_stack_row: *mut i32,
+        out_stack_col: *mut i32,
+        out_comp_row: *mut i32,
+        out_comp_col: *mut i32,
+        out_weight: *mut i32,
+    );
     fn shim_find_ref_dv(
         mi_row: i32,
         mib_size: i32,
@@ -13827,6 +13864,135 @@ pub fn ref_find_inter_mv_refs(
         nearest: (nr, nc),
         near: (rr, rc),
         global_mv: (gr, gc),
+    }
+}
+
+/// The C-side output surface of [`ref_find_compound_mv_refs`] — the compound
+/// `ref_mv_stack` pairs. `stack` is `this_mv`, `comp_stack` is `comp_mv`
+/// (`uint16_t` weight / `uint8_t` count widened to `i32` for the FFI boundary).
+/// Only `[0, ref_mv_count)` is meaningful. (C writes no `mv_ref_list`/
+/// `nearest`/`near`/`global_mvs` for compound — the decoder consumes the stack
+/// pairs directly — so those fields are absent.)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RefCompoundMvRefs {
+    pub mode_context: i32,
+    pub ref_mv_count: i32,
+    pub stack: [(i32, i32); 8],
+    pub comp_stack: [(i32, i32); 8],
+    pub weight: [i32; 8],
+}
+
+/// The REAL exported `av1_find_mv_refs` at a COMPOUND reference `rf` (rf1 >
+/// NONE_FRAME, `ref_frame = av1_ref_frame_type(rf)` — the compound-pair type
+/// index), driven over the same synthetic `REF_DV_GRID_DIM x REF_DV_GRID_DIM`
+/// grid — the oracle for the compound arm of
+/// `aom_entropy::dv_ref::find_inter_mv_refs`. `rf` MUST be a legal compound
+/// pair (a `ref_frame_map` / uni-comp-ref entry — forward × backward or a
+/// same-side unidir pair); an arbitrary ordered pair is not a reachable
+/// decoder input.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_find_compound_mv_refs(
+    rf0: i32,
+    rf1: i32,
+    mi_row: i32,
+    mi_col: i32,
+    bsize: usize,
+    own_partition: usize,
+    up_available: bool,
+    left_available: bool,
+    tile_mi_row_start: i32,
+    tile_mi_row_end: i32,
+    tile_mi_col_start: i32,
+    tile_mi_col_end: i32,
+    frame_mi_rows: i32,
+    frame_mi_cols: i32,
+    mib_size: i32,
+    allow_ref_frame_mvs: bool,
+    sign_bias: [i8; 8],
+    allow_high_precision_mv: bool,
+    is_integer_mv: bool,
+    grid: &[RefDvNbr],
+) -> RefCompoundMvRefs {
+    assert_eq!(grid.len(), REF_DV_GRID_DIM * REF_DV_GRID_DIM);
+    let n = grid.len();
+    let mut g_bsize = Vec::with_capacity(n);
+    let mut g_ref_frame0 = Vec::with_capacity(n);
+    let mut g_ref_frame1 = Vec::with_capacity(n);
+    let mut g_use_intrabc = Vec::with_capacity(n);
+    let mut g_mode = Vec::with_capacity(n);
+    let mut g_mv0_row = Vec::with_capacity(n);
+    let mut g_mv0_col = Vec::with_capacity(n);
+    let mut g_mv1_row = Vec::with_capacity(n);
+    let mut g_mv1_col = Vec::with_capacity(n);
+    for c in grid {
+        g_bsize.push(c.bsize);
+        g_ref_frame0.push(c.ref_frame0);
+        g_ref_frame1.push(c.ref_frame1);
+        g_use_intrabc.push(c.use_intrabc as u8);
+        g_mode.push(c.mode);
+        g_mv0_row.push(c.mv0_row);
+        g_mv0_col.push(c.mv0_col);
+        g_mv1_row.push(c.mv1_row);
+        g_mv1_col.push(c.mv1_col);
+    }
+    let mut mode_context = 0i32;
+    let mut ref_mv_count = 0i32;
+    let mut stack_row = [0i32; 8];
+    let mut stack_col = [0i32; 8];
+    let mut comp_row = [0i32; 8];
+    let mut comp_col = [0i32; 8];
+    let mut weight = [0i32; 8];
+    unsafe {
+        shim_find_compound_mv_refs(
+            rf0,
+            rf1,
+            mi_row,
+            mi_col,
+            bsize as i32,
+            own_partition as i32,
+            up_available as i32,
+            left_available as i32,
+            tile_mi_row_start,
+            tile_mi_row_end,
+            tile_mi_col_start,
+            tile_mi_col_end,
+            frame_mi_rows,
+            frame_mi_cols,
+            mib_size,
+            allow_ref_frame_mvs as i32,
+            sign_bias.as_ptr(),
+            allow_high_precision_mv as i32,
+            is_integer_mv as i32,
+            g_bsize.as_ptr(),
+            g_ref_frame0.as_ptr(),
+            g_ref_frame1.as_ptr(),
+            g_use_intrabc.as_ptr(),
+            g_mode.as_ptr(),
+            g_mv0_row.as_ptr(),
+            g_mv0_col.as_ptr(),
+            g_mv1_row.as_ptr(),
+            g_mv1_col.as_ptr(),
+            &mut mode_context,
+            &mut ref_mv_count,
+            stack_row.as_mut_ptr(),
+            stack_col.as_mut_ptr(),
+            comp_row.as_mut_ptr(),
+            comp_col.as_mut_ptr(),
+            weight.as_mut_ptr(),
+        );
+    }
+    let mut stack = [(0i32, 0i32); 8];
+    let mut comp_stack = [(0i32, 0i32); 8];
+    for i in 0..8 {
+        stack[i] = (stack_row[i], stack_col[i]);
+        comp_stack[i] = (comp_row[i], comp_col[i]);
+    }
+    RefCompoundMvRefs {
+        mode_context,
+        ref_mv_count,
+        stack,
+        comp_stack,
+        weight,
     }
 }
 
@@ -15624,6 +15790,47 @@ extern "C" {
         b_h: i32,
         dst: *mut u8,
     );
+    fn shim_compound_inter_predictor(
+        src0: *const u8,
+        src_stride0: i32,
+        src1: *const u8,
+        src_stride1: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        dst16: *mut u16,
+        w: i32,
+        h: i32,
+        subpel_x0: i32,
+        subpel_y0: i32,
+        subpel_x1: i32,
+        subpel_y1: i32,
+        filter_x: i32,
+        filter_y: i32,
+        use_dist_wtd: i32,
+        fwd_offset: i32,
+        bck_offset: i32,
+    );
+    fn shim_highbd_compound_inter_predictor(
+        src0: *const u16,
+        src_stride0: i32,
+        src1: *const u16,
+        src_stride1: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        dst16: *mut u16,
+        w: i32,
+        h: i32,
+        subpel_x0: i32,
+        subpel_y0: i32,
+        subpel_x1: i32,
+        subpel_y1: i32,
+        filter_x: i32,
+        filter_y: i32,
+        use_dist_wtd: i32,
+        fwd_offset: i32,
+        bck_offset: i32,
+        bd: i32,
+    );
 }
 
 /// Reference libaom `inter_predictor` (reconinter.h:255) — the unscaled lowbd
@@ -15657,6 +15864,118 @@ pub fn ref_inter_predictor(
             subpel_y as i32,
             filter_x as i32,
             filter_y as i32,
+        )
+    }
+    dst
+}
+
+/// One bound reference's bordered-block view for the compound oracle —
+/// `src`/`src_off`/`src_stride` point at the block interior of a bordered
+/// scratch (as [`ref_build_mc_border`]/the highbd twin returns); the two refs
+/// may have different border extents, so each carries its own stride.
+#[derive(Clone, Copy)]
+pub struct RefCompoundSrc<'a, T> {
+    pub src: &'a [T],
+    pub off: usize,
+    pub stride: usize,
+}
+
+/// Reference libaom COMPOUND predictor (reconinter.h:255 `inter_predictor`,
+/// driven by `get_conv_params_no_round(cmp_index=ref, .., is_compound=1)` +
+/// `av1_convolve_2d_facade`'s compound arm) — the two-ref loop the decoder runs
+/// in `build_inter_predictors`. Each ref gets its own `subpel_x{i}`/`subpel_y{i}`
+/// (per-ref MV) and its own bordered `src{i}` (per-ref border extent). `dst16`
+/// is the shared `CONV_BUF` intermediate; `use_dist_wtd`/`fwd_offset`/
+/// `bck_offset` are the block's dist-weighted blend. Returns the `w`×`h`
+/// combined predictor (u8, dst stride `w`).
+#[allow(clippy::too_many_arguments)]
+pub fn ref_compound_inter_predictor(
+    src0: RefCompoundSrc<u8>,
+    src1: RefCompoundSrc<u8>,
+    w: usize,
+    h: usize,
+    subpel_x0: usize,
+    subpel_y0: usize,
+    subpel_x1: usize,
+    subpel_y1: usize,
+    filter_x: usize,
+    filter_y: usize,
+    use_dist_wtd: bool,
+    fwd_offset: i32,
+    bck_offset: i32,
+) -> Vec<u8> {
+    ref_init();
+    let mut dst = vec![0u8; w * h];
+    let mut dst16 = vec![0u16; w * h];
+    unsafe {
+        shim_compound_inter_predictor(
+            src0.src.as_ptr().add(src0.off),
+            src0.stride as i32,
+            src1.src.as_ptr().add(src1.off),
+            src1.stride as i32,
+            dst.as_mut_ptr(),
+            w as i32,
+            dst16.as_mut_ptr(),
+            w as i32,
+            h as i32,
+            subpel_x0 as i32,
+            subpel_y0 as i32,
+            subpel_x1 as i32,
+            subpel_y1 as i32,
+            filter_x as i32,
+            filter_y as i32,
+            use_dist_wtd as i32,
+            fwd_offset,
+            bck_offset,
+        )
+    }
+    dst
+}
+
+/// High-bit-depth twin of [`ref_compound_inter_predictor`]: real
+/// `highbd_inter_predictor` (reconinter.h:275) under the compound
+/// `ConvolveParams`. `src*`/`dst` are u16 samples. Returns `w`×`h` u16.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_highbd_compound_inter_predictor(
+    src0: RefCompoundSrc<u16>,
+    src1: RefCompoundSrc<u16>,
+    w: usize,
+    h: usize,
+    subpel_x0: usize,
+    subpel_y0: usize,
+    subpel_x1: usize,
+    subpel_y1: usize,
+    filter_x: usize,
+    filter_y: usize,
+    use_dist_wtd: bool,
+    fwd_offset: i32,
+    bck_offset: i32,
+    bd: u32,
+) -> Vec<u16> {
+    ref_init();
+    let mut dst = vec![0u16; w * h];
+    let mut dst16 = vec![0u16; w * h];
+    unsafe {
+        shim_highbd_compound_inter_predictor(
+            src0.src.as_ptr().add(src0.off),
+            src0.stride as i32,
+            src1.src.as_ptr().add(src1.off),
+            src1.stride as i32,
+            dst.as_mut_ptr(),
+            w as i32,
+            dst16.as_mut_ptr(),
+            w as i32,
+            h as i32,
+            subpel_x0 as i32,
+            subpel_y0 as i32,
+            subpel_x1 as i32,
+            subpel_y1 as i32,
+            filter_x as i32,
+            filter_y as i32,
+            use_dist_wtd as i32,
+            fwd_offset,
+            bck_offset,
+            bd as i32,
         )
     }
     dst
@@ -16555,6 +16874,41 @@ pub fn ref_dump_default_intra_in_inter_cdfs(base_qindex: i32) -> Vec<u16> {
     let mut out = vec![0u16; DUMP_INTRA_IN_INTER_LEN];
     let rc = unsafe { shim_dump_default_intra_in_inter_cdfs(base_qindex, out.as_mut_ptr()) };
     assert_eq!(rc, 0, "shim_dump_default_intra_in_inter_cdfs failed ({rc})");
+    out
+}
+
+// ---------------------------------------------------------------------------
+// dec_shim.c (append-only addition): the default frame-context tables the
+// compound-reference inter block path codes with.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn shim_dump_default_compound_cdfs(base_qindex: i32, out: *mut u16) -> i32;
+}
+
+/// Per-table lengths of [`ref_dump_default_compound_cdfs`], in dump order:
+/// `comp_inter_cdf` (5*3), `comp_ref_type_cdf` (5*3),
+/// `uni_comp_ref_cdf` (3*3*3), `comp_ref_cdf` (3*3*3),
+/// `comp_bwdref_cdf` (3*2*3), `inter_compound_mode_cdf` (8*9),
+/// `compound_index_cdf` (6*3), `comp_group_idx_cdf` (6*3),
+/// `compound_type_cdf` (22*3).
+pub const DUMP_COMPOUND_LENS: [usize; 9] = [15, 15, 27, 27, 18, 72, 18, 18, 66];
+
+/// Total length of the compound default-CDF dump (276 u16).
+pub const DUMP_COMPOUND_LEN: usize = 15 + 15 + 27 + 27 + 18 + 72 + 18 + 18 + 66;
+
+/// Dump the compiled default `fc->{comp_inter,comp_ref_type,uni_comp_ref,
+/// comp_ref,comp_bwdref,inter_compound_mode,compound_index,comp_group_idx,
+/// compound_type}_cdf` from the REAL `av1_setup_past_independence` default
+/// frame context, concatenated in that order. Verifies aom-dsp's
+/// `DEFAULT_COMP_INTER` / `DEFAULT_COMP_REF_TYPE` / `DEFAULT_UNI_COMP_REF` /
+/// `DEFAULT_COMP_REF` / `DEFAULT_COMP_BWDREF` /
+/// `DEFAULT_INTER_COMPOUND_MODE` / `DEFAULT_COMPOUND_IDX` /
+/// `DEFAULT_COMP_GROUP_IDX` / `DEFAULT_COMPOUND_TYPE`.
+pub fn ref_dump_default_compound_cdfs(base_qindex: i32) -> Vec<u16> {
+    let mut out = vec![0u16; DUMP_COMPOUND_LEN];
+    let rc = unsafe { shim_dump_default_compound_cdfs(base_qindex, out.as_mut_ptr()) };
+    assert_eq!(rc, 0, "shim_dump_default_compound_cdfs failed ({rc})");
     out
 }
 

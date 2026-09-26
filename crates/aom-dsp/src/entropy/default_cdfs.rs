@@ -671,17 +671,6 @@ pub const DEFAULT_INTER_EXT_TX: [[[u16; 17]; 4]; 4] = [
 pub const DEFAULT_INTRA_INTER: [[u16; 3]; 4] =
     [[31962, 0, 0], [16106, 0, 0], [12582, 0, 0], [6230, 0, 0]];
 
-/// `default_comp_inter_cdf[COMP_INTER_CONTEXTS]` — the single-vs-compound
-/// reference flag (`read_ref_frames`' `comp_inter` symbol, read on every
-/// comp-allowed block of a `REFERENCE_MODE_SELECT` frame).
-pub const DEFAULT_COMP_INTER: [[u16; 3]; 5] = [
-    [5940, 0, 0],
-    [8733, 0, 0],
-    [20737, 0, 0],
-    [22128, 0, 0],
-    [29867, 0, 0],
-];
-
 /// `default_single_ref_cdf[REF_CONTEXTS][SINGLE_REFS-1]`.
 pub const DEFAULT_SINGLE_REF: [[[u16; 3]; 6]; 3] = [
     [
@@ -708,6 +697,103 @@ pub const DEFAULT_SINGLE_REF: [[[u16; 3]; 6]; 3] = [
         [5893, 0, 0],
         [2464, 0, 0],
     ],
+];
+
+/// `default_comp_inter_cdf[COMP_INTER_CONTEXTS]` — the single-vs-compound flag (read_ref_frames' first symbol on a REFERENCE_MODE_SELECT frame).
+pub const DEFAULT_COMP_INTER: [[u16; 3]; 5] = [
+    [5940, 0, 0],
+    [8733, 0, 0],
+    [20737, 0, 0],
+    [22128, 0, 0],
+    [29867, 0, 0],
+];
+
+/// `default_comp_ref_type_cdf[COMP_REF_TYPE_CONTEXTS]` — unidir-vs-bidir compound reference type.
+pub const DEFAULT_COMP_REF_TYPE: [[u16; 3]; 5] = [
+    [31570, 0, 0],
+    [30698, 0, 0],
+    [23602, 0, 0],
+    [25269, 0, 0],
+    [10293, 0, 0],
+];
+
+/// `default_uni_comp_ref_cdf[UNI_COMP_REF_CONTEXTS][UNIDIR_COMP_REFS-1]` — the unidirectional compound pair tree (fwd-vs-bwd, then the pair).
+pub const DEFAULT_UNI_COMP_REF: [[[u16; 3]; 3]; 3] = [
+    [[27484, 0, 0], [28903, 0, 0], [29640, 0, 0]],
+    [[9616, 0, 0], [18595, 0, 0], [17498, 0, 0]],
+    [[994, 0, 0], [7648, 0, 0], [6058, 0, 0]],
+];
+
+/// `default_comp_ref_cdf[REF_CONTEXTS][FWD_REFS-1]` — the bidirectional forward-reference tree (LAST/LAST2 vs LAST3/GOLDEN, then within).
+pub const DEFAULT_COMP_REF: [[[u16; 3]; 3]; 3] = [
+    [[27822, 0, 0], [23300, 0, 0], [31265, 0, 0]],
+    [[12877, 0, 0], [10327, 0, 0], [17608, 0, 0]],
+    [[2037, 0, 0], [1709, 0, 0], [5224, 0, 0]],
+];
+
+/// `default_comp_bwdref_cdf[REF_CONTEXTS][BWD_REFS-1]` — the bidirectional backward-reference tree (BWDREF/ALTREF2 vs ALTREF, then within).
+pub const DEFAULT_COMP_BWDREF: [[[u16; 3]; 2]; 3] = [
+    [[30533, 0, 0], [31345, 0, 0]],
+    [[15586, 0, 0], [17593, 0, 0]],
+    [[2162, 0, 0], [2279, 0, 0]],
+];
+
+/// `default_inter_compound_mode_cdf[INTER_MODE_CONTEXTS]` (CDF_SIZE(INTER_COMPOUND_MODES=8)) — the compound inter mode.
+pub const DEFAULT_INTER_COMPOUND_MODE: [[u16; 9]; 8] = [
+    [25008, 18945, 16960, 15127, 13612, 12102, 5877, 0, 0],
+    [22038, 13316, 11623, 10019, 8729, 7637, 4044, 0, 0],
+    [22104, 12547, 11180, 9862, 8473, 7381, 4332, 0, 0],
+    [19470, 15784, 12297, 8586, 7701, 7032, 6346, 0, 0],
+    [13864, 9443, 7526, 5336, 4870, 4510, 2010, 0, 0],
+    [22043, 15314, 12644, 9948, 8573, 7600, 6722, 0, 0],
+    [15643, 8495, 6954, 5276, 4554, 4064, 2176, 0, 0],
+    [19722, 9554, 8263, 6826, 5333, 4326, 3438, 0, 0],
+];
+
+/// `default_compound_idx_cdfs[COMP_INDEX_CONTEXTS]` — dist-wtd-vs-average selector inside compound group 0 (enable_dist_wtd_comp).
+pub const DEFAULT_COMPOUND_IDX: [[u16; 3]; 6] = [
+    [14524, 0, 0],
+    [19903, 0, 0],
+    [25715, 0, 0],
+    [19509, 0, 0],
+    [23434, 0, 0],
+    [28124, 0, 0],
+];
+
+/// `default_comp_group_idx_cdfs[COMP_GROUP_IDX_CONTEXTS]` — average-group vs masked-group selector (masked_compound_used).
+pub const DEFAULT_COMP_GROUP_IDX: [[u16; 3]; 6] = [
+    [6161, 0, 0],
+    [9877, 0, 0],
+    [13928, 0, 0],
+    [8174, 0, 0],
+    [12834, 0, 0],
+    [10094, 0, 0],
+];
+
+/// `default_compound_type_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(MASKED_COMPOUND_TYPES=2)) — wedge vs difference-weighted inside the masked group.
+pub const DEFAULT_COMPOUND_TYPE: [[u16; 3]; 22] = [
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [9337, 0, 0],
+    [19597, 0, 0],
+    [21298, 0, 0],
+    [22998, 0, 0],
+    [23668, 0, 0],
+    [24535, 0, 0],
+    [26596, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
+    [20948, 0, 0],
+    [25067, 0, 0],
+    [16384, 0, 0],
+    [16384, 0, 0],
 ];
 
 /// `default_newmv_cdf[NEWMV_MODE_CONTEXTS]`.

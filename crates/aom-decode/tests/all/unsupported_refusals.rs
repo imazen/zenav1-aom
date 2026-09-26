@@ -36,6 +36,7 @@ use aom_decode::DecodeError;
 use aom_decode::frame::decode_frames;
 
 const COMPOUND_STREAM: &[u8] = include_bytes!("../data/inter/compound-refs.obu");
+const MASKED_COMPOUND_STREAM: &[u8] = include_bytes!("../data/inter/masked-compound.obu");
 const SCALED_STREAM: &[u8] = include_bytes!("../data/inter/frame-size-override.obu");
 const SCALED_DOWN_STREAM: &[u8] = include_bytes!("../data/inter/scaled-ref-down.obu");
 const SCALED_UP_STREAM: &[u8] = include_bytes!("../data/inter/scaled-ref-up.obu");
@@ -94,9 +95,39 @@ fn assert_refused_by_name(stream: &[u8], family: &str, dims: &[(usize, usize)]) 
 
 #[test]
 fn compound_reference_blocks_refused_by_name() {
-    // OFF: named refusal. ON: identical until step 4 routes compound — that
-    // landing replaces this arm with decode-success.
-    assert_refused_by_name(COMPOUND_STREAM, "compound", &[(64, 64); 4]);
+    if aom_decode::EXPERIMENTAL_VIDEO {
+        // Step 4a routed group-0 compound (average / dist-weighted): the
+        // fixture now decodes end-to-end. Masked compound (wedge/diffwtd,
+        // `comp_group_idx = 1`) stays refused by name until step 4b — the
+        // byte-exactness vs the C oracle is pinned by aom-bench's
+        // compound_decode_envelope.
+        let frames = decode_frames(COMPOUND_STREAM)
+            .expect("experimental-video on: a group-0 compound stream must decode");
+        assert_eq!(frames.len(), 4, "expected 4 shown frames");
+    } else {
+        assert_refused_by_name(COMPOUND_STREAM, "compound", &[(64, 64); 4]);
+    }
+}
+
+#[test]
+fn masked_compound_blocks_refused_by_name() {
+    // `masked-compound.obu` — 4-frame 64x64 stream whose inter frames code
+    // `comp_group_idx = 1` (wedge / diff-weighted masked compound) blocks:
+    // aomenc `--end-usage=q --cq-level=20 --cpu-used=1 --lag-in-frames=4
+    // --enable-global-motion=0 --enable-dist-wtd-comp=0 --enable-masked-comp=1
+    // --enable-interinter-wedge=1 --enable-diff-wtd-comp=1 --limit=4` over a
+    // vertical-boundary clip whose halves translate opposite directions — the
+    // shape where a spatial split (wedge) between two refs wins RD.
+    //
+    // Both build states refuse, but the FAMILY differs: feature OFF the whole
+    // compound gate fires first (`compound`); feature ON the compound arm runs
+    // and the group-1 masked selector is the named refusal — the step-4a
+    // boundary that step 4b's mask builders will flip to decode-success.
+    if aom_decode::EXPERIMENTAL_VIDEO {
+        assert_refused_by_name(MASKED_COMPOUND_STREAM, "masked compound", &[(64, 64); 4]);
+    } else {
+        assert_refused_by_name(MASKED_COMPOUND_STREAM, "compound", &[(64, 64); 4]);
+    }
 }
 
 #[test]

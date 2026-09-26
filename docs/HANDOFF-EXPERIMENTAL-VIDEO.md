@@ -70,6 +70,19 @@ Read that as:
    diff-weighted masks may not). Land the dist-weighted convolve routing first, then masks.
    Gate: C-oracle differential per compound mode on synthetic streams; conformance
    "inter" vectors that use compound.
+   - **4a (LANDED 2026-09-25):** group-0 compound — the compound ref-pair syntax
+     (slots 1..9 of the ref CDFs), `find_inter_mv_refs`'s rf-pair compound stack,
+     `read_inter_compound_mode`, `assign_mv`'s per-submode pair resolution,
+     `read_compound_type_info`, and `build_compound_inter_predictor` (the two-ref
+     `convolve_2d_facade` combine — average + dist-weighted, luma + chroma,
+     scaled + unscaled). Byte-gated: `compound_decode_envelope` (byte-exact vs C
+     on `compound-refs.obu`), `default_cdfs_diff` (9 tables), `dv_ref_diff`'s
+     compound arm (1,800 cases), `inter_pred_diff::compound_facade_matches_c`
+     (504 cases). Group-1 masked compound is still refused by name.
+   - **4b (NEXT):** masked compound — `comp_group_idx = 1`, the wedge +
+     diff-weighted mask builders routing into the same two-ref predictor.
+     `masked-compound.obu` pins the refusal it flips. If a wedge/mask kernel is
+     missing, stop and document it rather than writing it blind.
 
 Stop after any step and hand back if a step needs a NEW kernel rather than routing to an
 existing one — the point of this handoff is that the kernels exist; discovering one is

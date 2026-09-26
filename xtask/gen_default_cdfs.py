@@ -66,6 +66,12 @@ CONSTS = {
     "SWITCHABLE_FILTER_CONTEXTS": 16, "SWITCHABLE_FILTERS": 3,
     "MOTION_MODES": 3, "SKIP_MODE_CONTEXTS": 3,
     "BLOCK_SIZE_GROUPS": 4, "INTERINTRA_MODES": 4, "MAX_WEDGE_TYPES": 16,
+    "COMP_INTER_CONTEXTS": 5, "COMP_REF_TYPE_CONTEXTS": 5,
+    "UNI_COMP_REF_CONTEXTS": 3, "UNIDIR_COMP_REFS": 4,
+    "FWD_REFS": 4, "BWD_REFS": 3,
+    "INTER_MODE_CONTEXTS": 8, "INTER_COMPOUND_MODES": 8,
+    "COMP_INDEX_CONTEXTS": 6, "COMP_GROUP_IDX_CONTEXTS": 6,
+    "MASKED_COMPOUND_TYPES": 2,
 }
 
 
@@ -326,6 +332,56 @@ def main():
     d, f = extract(mode_c, "default_single_ref_cdf")
     assert d == [3, 6, 3], d
     emit("DEFAULT_SINGLE_REF", d, f, "`default_single_ref_cdf[REF_CONTEXTS][SINGLE_REFS-1]`.")
+
+    # --- compound reference + inter-inter compound tables (the read_ref_frames
+    # compound cascade, the compound inter mode, and the comp_group_idx /
+    # compound_idx / compound_type reads of read_compound_type_info) ---
+    d, f = extract(mode_c, "default_comp_inter_cdf")
+    assert d == [5, 3], d
+    emit("DEFAULT_COMP_INTER", d, f,
+         "`default_comp_inter_cdf[COMP_INTER_CONTEXTS]` — the single-vs-compound "
+         "flag (read_ref_frames' first symbol on a REFERENCE_MODE_SELECT frame).")
+    d, f = extract(mode_c, "default_comp_ref_type_cdf")
+    assert d == [5, 3], d
+    emit("DEFAULT_COMP_REF_TYPE", d, f,
+         "`default_comp_ref_type_cdf[COMP_REF_TYPE_CONTEXTS]` — unidir-vs-bidir "
+         "compound reference type.")
+    d, f = extract(mode_c, "default_uni_comp_ref_cdf")
+    assert d == [3, 3, 3], d
+    emit("DEFAULT_UNI_COMP_REF", d, f,
+         "`default_uni_comp_ref_cdf[UNI_COMP_REF_CONTEXTS][UNIDIR_COMP_REFS-1]` — "
+         "the unidirectional compound pair tree (fwd-vs-bwd, then the pair).")
+    d, f = extract(mode_c, "default_comp_ref_cdf")
+    assert d == [3, 3, 3], d
+    emit("DEFAULT_COMP_REF", d, f,
+         "`default_comp_ref_cdf[REF_CONTEXTS][FWD_REFS-1]` — the bidirectional "
+         "forward-reference tree (LAST/LAST2 vs LAST3/GOLDEN, then within).")
+    d, f = extract(mode_c, "default_comp_bwdref_cdf")
+    assert d == [3, 2, 3], d
+    emit("DEFAULT_COMP_BWDREF", d, f,
+         "`default_comp_bwdref_cdf[REF_CONTEXTS][BWD_REFS-1]` — the bidirectional "
+         "backward-reference tree (BWDREF/ALTREF2 vs ALTREF, then within).")
+    d, f = extract(mode_c, "default_inter_compound_mode_cdf")
+    assert d == [8, 9], d
+    emit("DEFAULT_INTER_COMPOUND_MODE", d, f,
+         "`default_inter_compound_mode_cdf[INTER_MODE_CONTEXTS]` "
+         "(CDF_SIZE(INTER_COMPOUND_MODES=8)) — the compound inter mode.")
+    d, f = extract(mode_c, "default_compound_idx_cdfs")
+    assert d == [6, 3], d
+    emit("DEFAULT_COMPOUND_IDX", d, f,
+         "`default_compound_idx_cdfs[COMP_INDEX_CONTEXTS]` — dist-wtd-vs-average "
+         "selector inside compound group 0 (enable_dist_wtd_comp).")
+    d, f = extract(mode_c, "default_comp_group_idx_cdfs")
+    assert d == [6, 3], d
+    emit("DEFAULT_COMP_GROUP_IDX", d, f,
+         "`default_comp_group_idx_cdfs[COMP_GROUP_IDX_CONTEXTS]` — average-group vs "
+         "masked-group selector (masked_compound_used).")
+    d, f = extract(mode_c, "default_compound_type_cdf")
+    assert d == [22, 3], d
+    emit("DEFAULT_COMPOUND_TYPE", d, f,
+         "`default_compound_type_cdf[BLOCK_SIZES_ALL]` (CDF_SIZE(MASKED_COMPOUND_TYPES=2)) — "
+         "wedge vs difference-weighted inside the masked group.")
+
     d, f = extract(mode_c, "default_newmv_cdf")
     assert d == [6, 3], d
     emit("DEFAULT_NEWMV", d, f, "`default_newmv_cdf[NEWMV_MODE_CONTEXTS]`.")

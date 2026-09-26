@@ -67,6 +67,11 @@ pub mod interintra;
 pub mod scale;
 pub mod warp;
 
+// `crate::convolve::compound` carries the dist-weighted convolve kernels and
+// `CompoundConvolveParams`; the local `compound` module is `inter::compound`
+// (the weight/mask builders). Alias the convolve side to keep them distinct.
+use crate::convolve::compound as compound_kernels;
+
 // --- constants (aom_dsp/aom_filter.h, aom_scale/yv12config.h) ---
 const FILTER_BITS: i32 = 7;
 const ROUND0_BITS: i32 = 3;
@@ -960,6 +965,475 @@ fn scaled_inter_predictor(
     for y in 0..h {
         for x in 0..w {
             dst[dst_off + y * dst_stride + x] = tmp[y * w + x] as u16;
+        }
+    }
+}
+
+// ===================================================================
+// Compound (two-reference) prediction — dist-weighted / average combine.
+// ===================================================================
+//
+// `experimental-video` step 4a. Port of the compound arm of
+// `build_inter_predictors` (`av1/common/reconinter_template.inc`) +
+// `av1_convolve_2d_facade` -> `convolve_2d_facade_compound` (convolve.c:592).
+// Two references each run the SAME sub-pel/border gather as the single-ref
+// path, but write into the shared 16-bit `CONV_BUF_TYPE` intermediate (`dst16`,
+// C's `xd->tmp_conv_dst`): ref 0 stores its per-sample result, ref 1 combines
+// (`do_average`) into the pixel. The combine is either the plain average
+// (`use_dist_wtd_comp_avg == false`, `compound_idx == 1` / COMPOUND_AVERAGE) or
+// the distance-weighted blend (`fwd_offset`/`bck_offset` from
+// [`compound::dist_wtd_comp_weight_assign`], `compound_idx == 0` /
+// COMPOUND_DISTWTD). Masked compound (wedge/diffwtd) is step 4b.
+
+/// `get_conv_params_no_round(.., is_compound = 1, .., bd)` (convolve.h:78-86) —
+/// the `(round_0, round_1)` pair for a COMPOUND convolve. `round_0` is
+/// `ROUND0_BITS`; `round_1` is `COMPOUND_ROUND1_BITS` (7) — the combine defers
+/// the full rounding to `dist_wtd`/`avg`. At bd 12 the horizontal
+/// intermediate's `int16` range overflows so `round_0` shifts up, but —
+/// unlike the single-ref [`single_ref_rounds`] — `round_1` is NOT decremented
+/// (`if (!is_compound)` guard, convolve.h:85). bd 8/10 -> `(3, 7)`, bd 12 ->
+/// `(5, 7)`.
+pub fn compound_rounds(bd: u32) -> (i32, i32) {
+    const COMPOUND_ROUND1_BITS: i32 = 7;
+    let mut round_0 = ROUND0_BITS;
+    let round_1 = COMPOUND_ROUND1_BITS;
+    let intbufrange = bd as i32 + FILTER_BITS - round_0 + 2;
+    if intbufrange > 16 {
+        round_0 += intbufrange - 16;
+    }
+    (round_0, round_1)
+}
+
+/// A `CompoundConvolveParams` for reference `ref` (`do_average = (ref == 1)`,
+/// per `get_conv_params_no_round(cmp_index = ref, ..)`) carrying the block's
+/// `weights` (`mbmi->use_dist_wtd_comp_avg`/`fwd_offset`/`bck_offset`,
+/// `av1_dist_wtd_comp_weight_assign`). `rounds` is [`compound_rounds`]`(bd)`.
+#[inline]
+fn compound_cp(
+    do_average: bool,
+    rounds: (i32, i32),
+    weights: compound::DistWtdWeights,
+) -> compound_kernels::CompoundConvolveParams {
+    compound_kernels::CompoundConvolveParams {
+        round_0: rounds.0,
+        round_1: rounds.1,
+        do_average,
+        use_dist_wtd_comp_avg: weights.use_dist_wtd_comp_avg,
+        fwd_offset: weights.fwd_offset,
+        bck_offset: weights.bck_offset,
+    }
+}
+
+/// `convolve_2d_facade_compound` (convolve.c:592) — the lowbd compound facade:
+/// `need_x`/`need_y` dispatch onto `av1_dist_wtd_convolve_{2d_copy,x,y,2d}`.
+/// `dst16` is the shared 16-bit `CONV_BUF` (C's `xd->tmp_conv_dst`); `dst` is
+/// the final u8 block (written only when `cp.do_average`). The kernels take
+/// the already-subpel-selected kernel rows (via [`kernel`], same 4-tap/8-tap
+/// selection as [`inter_predictor`]).
+#[allow(clippy::too_many_arguments)]
+fn compound_inter_predictor(
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x: usize,
+    subpel_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+    cp: &compound_kernels::CompoundConvolveParams,
+) {
+    use crate::convolve::compound as ck;
+    let need_x = subpel_x != 0;
+    let need_y = subpel_y != 0;
+    let use4_x = w <= 4;
+    let use4_y = h <= 4;
+    if !need_x && !need_y {
+        ck::dist_wtd_convolve_2d_copy(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            cp,
+        );
+    } else if need_x && !need_y {
+        ck::dist_wtd_convolve_x(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            kernel(filter_x, subpel_x, use4_x),
+            cp,
+        );
+    } else if !need_x && need_y {
+        ck::dist_wtd_convolve_y(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            kernel(filter_y, subpel_y, use4_y),
+            cp,
+        );
+    } else {
+        ck::dist_wtd_convolve_2d(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            kernel(filter_x, subpel_x, use4_x),
+            kernel(filter_y, subpel_y, use4_y),
+            cp,
+        );
+    }
+}
+
+/// `highbd_convolve_2d_facade_compound` (convolve.c:1196) — the `bd > 8` twin:
+/// `av1_highbd_dist_wtd_convolve_{2d_copy,x,y,2d}` on u16 samples.
+#[allow(clippy::too_many_arguments)]
+fn highbd_compound_inter_predictor(
+    src: &[u16],
+    src_off: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    dst16: &mut [u16],
+    dst16_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x: usize,
+    subpel_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+    cp: &compound_kernels::CompoundConvolveParams,
+    bd: u32,
+) {
+    use crate::convolve::compound as ck;
+    let need_x = subpel_x != 0;
+    let need_y = subpel_y != 0;
+    let use4_x = w <= 4;
+    let use4_y = h <= 4;
+    if !need_x && !need_y {
+        ck::highbd_dist_wtd_convolve_2d_copy(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            cp,
+            bd,
+        );
+    } else if need_x && !need_y {
+        ck::highbd_dist_wtd_convolve_x(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            kernel(filter_x, subpel_x, use4_x),
+            cp,
+            bd,
+        );
+    } else if !need_x && need_y {
+        ck::highbd_dist_wtd_convolve_y(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            kernel(filter_y, subpel_y, use4_y),
+            cp,
+            bd,
+        );
+    } else {
+        ck::highbd_dist_wtd_convolve_2d(
+            src,
+            src_off,
+            src_stride,
+            dst,
+            dst_stride,
+            dst16,
+            dst16_stride,
+            w,
+            h,
+            kernel(filter_x, subpel_x, use4_x),
+            kernel(filter_y, subpel_y, use4_y),
+            cp,
+            bd,
+        );
+    }
+}
+
+/// One bound reference of a compound pair — bundles the per-ref plane, dims,
+/// scale factors and the coded/clamped MVs [`build_compound_inter_predictor`]
+/// needs (so the two `build_one_inter_predictor` calls share one signature).
+#[derive(Clone, Copy)]
+pub struct CompoundRefPlane<'a> {
+    /// Reference plane samples (u16; bd8 values `0..=255`), stride `stride`.
+    pub plane: &'a [u16],
+    pub stride: usize,
+    /// This plane's valid dimensions (for edge replication).
+    pub w: usize,
+    pub h: usize,
+    /// This ref's `block_ref_scale_factors` (`av1_setup_scale_factors_for_frame`).
+    pub sf: &'a scale::ScaleFactors,
+    /// The applied (umv-clamped) MV in luma 1/8-pel units.
+    pub mv: (i32, i32),
+    /// The coded, unclamped MV — read by the scaled arm (C's `src_mv`).
+    pub raw_mv: (i32, i32),
+}
+
+/// Two-reference translational inter predictor — the compound arm of
+/// `av1_build_inter_predictor` (`build_inter_predictors`,
+/// reconinter_template.inc). Each `refs[i]` runs the identical sub-pel/border
+/// gather as [`build_inter_predictor`]; the combine goes through the shared
+/// `dst16` intermediate (ref 0 stores, ref 1 `do_average`-combines into `dst`).
+/// `weights` is `av1_dist_wtd_comp_weight_assign`'s output (avg vs dist-wtd).
+/// Masked compound (wedge/diffwtd) is NOT handled — step 4b; callers reject
+/// `comp_type != COMPOUND_AVERAGE`/DISTWTD before reaching here.
+///
+/// Per-plane dims/`ss`/`filters` are shared across the two refs (C codes one
+/// interp filter per compound block).
+#[allow(clippy::too_many_arguments)]
+pub fn build_compound_inter_predictor(
+    refs: [CompoundRefPlane; 2],
+    dst: &mut [u16],
+    dst_off: usize,
+    dst_stride: usize,
+    blk_x: usize,
+    blk_y: usize,
+    w: usize,
+    h: usize,
+    ss_x: usize,
+    ss_y: usize,
+    filter_x: usize,
+    filter_y: usize,
+    bd: u32,
+    weights: compound::DistWtdWeights,
+) {
+    use crate::convolve::scaled::{
+        convolve_2d_scale, highbd_convolve_2d_scale, ScaleConvolveParams,
+    };
+    let rounds = compound_rounds(bd);
+    // `xd->tmp_conv_dst`: the shared 16-bit intermediate, one block.
+    let mut dst16 = vec![0u16; w * h];
+
+    for (idx, r) in refs.iter().enumerate() {
+        let do_average = idx != 0;
+        let cp = compound_cp(do_average, rounds, weights);
+        if r.sf.is_scaled() {
+            // Scaled+compound: `convolve_2d_scale_wrapper` -> `av1_convolve_2d_scale`
+            // with `is_compound` — the ref's per-sample q10 position/step and the
+            // always-on scaled pad, then the dist-wtd/avg combine.
+            const SCALE_SUBPEL_BITS: i32 = 10;
+            const SCALE_SUBPEL_MASK: i32 = (1 << SCALE_SUBPEL_BITS) - 1;
+            const SCALE_EXTRA_OFF: i32 = 32;
+            fn left_top_margin_scaled(ss: i32) -> i32 {
+                ((AOM_BORDER_IN_PIXELS >> ss) - AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS
+            }
+            let orig_x = ((blk_x as i32) << SUBPEL_BITS) + (r.raw_mv.1 << (1 - ss_x as i32));
+            let orig_y = ((blk_y as i32) << SUBPEL_BITS) + (r.raw_mv.0 << (1 - ss_y as i32));
+            let mut pos_x = r.sf.scaled_x(orig_x) + SCALE_EXTRA_OFF;
+            let mut pos_y = r.sf.scaled_y(orig_y) + SCALE_EXTRA_OFF;
+            let top = -left_top_margin_scaled(ss_y as i32);
+            let left = -left_top_margin_scaled(ss_x as i32);
+            let bottom = ((r.h as i32) + AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS;
+            let right = ((r.w as i32) + AOM_INTERP_EXTEND) << SCALE_SUBPEL_BITS;
+            pos_y = pos_y.clamp(top, bottom);
+            pos_x = pos_x.clamp(left, right);
+            let subpel_x = pos_x & SCALE_SUBPEL_MASK;
+            let subpel_y = pos_y & SCALE_SUBPEL_MASK;
+            let xs = r.sf.x_step_q4;
+            let ys = r.sf.y_step_q4;
+            let mut bx0 = pos_x >> SCALE_SUBPEL_BITS;
+            let mut by0 = pos_y >> SCALE_SUBPEL_BITS;
+            let mut bx1 = ((pos_x + (w as i32 - 1) * xs) >> SCALE_SUBPEL_BITS) + 1;
+            let mut by1 = ((pos_y + (h as i32 - 1) * ys) >> SCALE_SUBPEL_BITS) + 1;
+            bx0 -= AOM_INTERP_EXTEND - 1;
+            bx1 += AOM_INTERP_EXTEND;
+            by0 -= AOM_INTERP_EXTEND - 1;
+            by1 += AOM_INTERP_EXTEND;
+            let b_w = (bx1 - bx0) as usize;
+            let b_h = (by1 - by0) as usize;
+            let interior = (AOM_INTERP_EXTEND as usize - 1) * (b_w + 1);
+            let x_table = kernel_table(filter_x, w <= 4);
+            let y_table = kernel_table(filter_y, h <= 4);
+            let scp = ScaleConvolveParams {
+                round_0: rounds.0,
+                round_1: rounds.1,
+                is_compound: true,
+                do_average,
+                use_dist_wtd_comp_avg: weights.use_dist_wtd_comp_avg,
+                fwd_offset: weights.fwd_offset,
+                bck_offset: weights.bck_offset,
+            };
+            if bd > 8 {
+                let mut scratch = vec![0u16; b_w * b_h];
+                build_mc_border_highbd(
+                    r.plane,
+                    r.stride,
+                    r.w,
+                    r.h,
+                    bx0,
+                    by0,
+                    b_w,
+                    b_h,
+                    &mut scratch,
+                );
+                highbd_convolve_2d_scale(
+                    &scratch,
+                    interior,
+                    b_w,
+                    &mut dst[dst_off..],
+                    dst_stride,
+                    &mut dst16,
+                    w,
+                    w,
+                    h,
+                    x_table,
+                    y_table,
+                    SUBPEL_TAPS,
+                    subpel_x,
+                    xs,
+                    subpel_y,
+                    ys,
+                    &scp,
+                    bd,
+                );
+            } else {
+                let mut scratch = vec![0u8; b_w * b_h];
+                build_mc_border(
+                    r.plane,
+                    r.stride,
+                    r.w,
+                    r.h,
+                    bx0,
+                    by0,
+                    b_w,
+                    b_h,
+                    &mut scratch,
+                );
+                let mut tmp = vec![0u8; w * h];
+                convolve_2d_scale(
+                    &scratch,
+                    interior,
+                    b_w,
+                    &mut tmp,
+                    w,
+                    &mut dst16,
+                    w,
+                    w,
+                    h,
+                    x_table,
+                    y_table,
+                    SUBPEL_TAPS,
+                    subpel_x,
+                    xs,
+                    subpel_y,
+                    ys,
+                    &scp,
+                );
+                if do_average {
+                    for y in 0..h {
+                        for x in 0..w {
+                            dst[dst_off + y * dst_stride + x] = tmp[y * w + x] as u16;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Unscaled — `dec_calc_subpel_params` unscaled branch, per ref.
+        let mv_q4_col = r.mv.1 * (1i32 << (1 - ss_x as i32));
+        let mv_q4_row = r.mv.0 * (1i32 << (1 - ss_y as i32));
+        let subpel_x = (mv_q4_col & SUBPEL_MASK) as usize;
+        let subpel_y = (mv_q4_row & SUBPEL_MASK) as usize;
+        let pos_x = (blk_x as i32) << SUBPEL_BITS;
+        let pos_y = (blk_y as i32) << SUBPEL_BITS;
+        let x0 = (pos_x + mv_q4_col) >> SUBPEL_BITS;
+        let y0 = (pos_y + mv_q4_row) >> SUBPEL_BITS;
+        let pad_x = subpel_x != 0;
+        let pad_y = subpel_y != 0;
+        let mx = if pad_x { AOM_INTERP_EXTEND - 1 } else { 0 };
+        let my = if pad_y { AOM_INTERP_EXTEND - 1 } else { 0 };
+        let gx = x0 - mx;
+        let gy = y0 - my;
+        let extra = (2 * AOM_INTERP_EXTEND - 1) as usize;
+        let b_w = w + if pad_x { extra } else { 0 };
+        let b_h = h + if pad_y { extra } else { 0 };
+        let interior = (my as usize) * b_w + mx as usize;
+
+        if bd > 8 {
+            let mut scratch = vec![0u16; b_w * b_h];
+            build_mc_border_highbd(r.plane, r.stride, r.w, r.h, gx, gy, b_w, b_h, &mut scratch);
+            highbd_compound_inter_predictor(
+                &scratch,
+                interior,
+                b_w,
+                &mut dst[dst_off..],
+                dst_stride,
+                &mut dst16,
+                w,
+                w,
+                h,
+                subpel_x,
+                subpel_y,
+                filter_x,
+                filter_y,
+                &cp,
+                bd,
+            );
+        } else {
+            let mut scratch = vec![0u8; b_w * b_h];
+            build_mc_border(r.plane, r.stride, r.w, r.h, gx, gy, b_w, b_h, &mut scratch);
+            let mut tmp = vec![0u8; w * h];
+            compound_inter_predictor(
+                &scratch, interior, b_w, &mut tmp, w, &mut dst16, w, w, h, subpel_x, subpel_y,
+                filter_x, filter_y, &cp,
+            );
+            if do_average {
+                for y in 0..h {
+                    for x in 0..w {
+                        dst[dst_off + y * dst_stride + x] = tmp[y * w + x] as u16;
+                    }
+                }
+            }
         }
     }
 }
