@@ -34,11 +34,36 @@ const COMPOUND_STREAM: &[u8] = include_bytes!("../data/inter/compound-refs.obu")
 const SCALED_STREAM: &[u8] = include_bytes!("../data/inter/frame-size-override.obu");
 const HIGHBD_MV_STREAM: &[u8] = include_bytes!("../data/inter/highbd-nonzero-mv.obu");
 
+/// Evidence for the pin's premise: `stream` is CONFORMANT — the in-process
+/// C oracle (`aom_codec_av1_dx`, pinned to the same upstream rev) decodes
+/// every frame listed in `dims`, each asserted against its pinned `(w, h)`
+/// (the shim panics on a dims mismatch and on any mid-stream decode error).
+/// The named refusal that follows is therefore OUR envelope boundary, not a
+/// corrupt stream.
+#[track_caller]
+fn assert_conformant_to_c_oracle(stream: &[u8], dims: &[(usize, usize)], label: &str) {
+    aom_sys_ref::ref_init();
+    assert!(
+        !dims.is_empty(),
+        "{label}: pin must list at least one shown frame"
+    );
+    for (i, &(w, h)) in dims.iter().enumerate() {
+        aom_sys_ref::ref_decode_av1_stream_frame_opt(stream, i, w, h).unwrap_or_else(|| {
+            panic!(
+                "{label}: C oracle produced fewer than {} shown frames",
+                dims.len()
+            )
+        });
+    }
+}
+
 /// The contract every envelope-boundary refusal keeps, pinned verbatim:
 /// `UnsupportedFeature` naming the tool family — not `Malformed` (the stream
-/// is conformant), not a panic, not silent output.
+/// is conformant — proven against the C oracle first), not a panic, not
+/// silent output.
 #[track_caller]
-fn assert_refused_by_name(stream: &[u8], family: &str) {
+fn assert_refused_by_name(stream: &[u8], family: &str, dims: &[(usize, usize)]) {
+    assert_conformant_to_c_oracle(stream, dims, family);
     match decode_frames(stream) {
         Err(DecodeError::UnsupportedFeature(name)) => {
             assert!(
@@ -64,14 +89,14 @@ fn assert_refused_by_name(stream: &[u8], family: &str) {
 fn compound_reference_blocks_refused_by_name() {
     // OFF: named refusal. ON: identical until step 4 routes compound — that
     // landing replaces this arm with decode-success.
-    assert_refused_by_name(COMPOUND_STREAM, "compound");
+    assert_refused_by_name(COMPOUND_STREAM, "compound", &[(64, 64); 4]);
 }
 
 #[test]
 fn scaled_reference_frame_refused_by_name() {
     // OFF: named refusal at the frame_size_override gate. ON: identical until
     // step 3 routes scaled references.
-    assert_refused_by_name(SCALED_STREAM, "frame_size_override");
+    assert_refused_by_name(SCALED_STREAM, "frame_size_override", &[(51, 51)]);
 }
 
 #[test]
@@ -84,6 +109,6 @@ fn highbd_nonzero_mv_refused_by_name() {
             .expect("experimental-video on: a nonzero-MV bd10 stream must decode");
         assert_eq!(frames.len(), 2, "expected KEY + P, got {}", frames.len());
     } else {
-        assert_refused_by_name(HIGHBD_MV_STREAM, "above bd8");
+        assert_refused_by_name(HIGHBD_MV_STREAM, "above bd8", &[(64, 64); 2]);
     }
 }
