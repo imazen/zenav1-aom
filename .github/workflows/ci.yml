@@ -386,6 +386,18 @@ jobs:
         with:
           command: check
 
+  # rustdoc with warnings as errors on the four published crates (what docs.rs
+  # will build): broken intra-doc links, missing docs on the consumer surfaces.
+  rustdoc:
+    name: rustdoc -D warnings (published crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p zenav1-aom-dsp -p zenav1-aom-decode -p zenav1-aom-encode -p zenav1-aom
+
   public-api:
     name: public API surface + crates.io publishability
     runs-on: ubuntu-latest

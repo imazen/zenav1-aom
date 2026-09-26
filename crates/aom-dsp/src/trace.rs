@@ -305,7 +305,7 @@ pub fn clear() {
 
 /// Read the documented `AOM_*` names and [`install`] them. The harness front
 /// door; a host that wants env control calls this once at startup.
-pub(crate) fn install_from_env() {
+pub fn install_from_env() {
     install(TraceConfig::from_env());
 }
 
@@ -351,7 +351,7 @@ pub fn hdr_dump_path() -> Option<std::path::PathBuf> {
 }
 
 /// Deliver one line to the installed sink (stderr when none). Sites reach this
-/// through [`trace_out!`]; it is only ever called on an enabled path.
+/// through [`trace_out!`](crate::trace_out); it is only ever called on an enabled path.
 pub fn emit(args: fmt::Arguments<'_>) {
     let guard = SINK.read().unwrap_or_else(|e| e.into_inner());
     match guard.as_ref() {

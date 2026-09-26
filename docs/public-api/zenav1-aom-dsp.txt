@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1868 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 72 lines (72 hidden + 0 excluded-feature)
+# files: zenav1-aom-dsp.txt 1869 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 72 lines (72 hidden + 0 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 8
 
 ## summary
@@ -15,7 +15,7 @@
 #   pub types (struct/enum/trait/alias)        98
 #   pub consts/statics                        210
 #   pub macros                                  4
-#   free functions                            596
+#   free functions                            597
 #   inherent methods                          108
 #   struct fields                             707
 #   enum variants                              37
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            8
-#   aom_dsp                        1815
+#   aom_dsp                        1816
 
-## items (1788 lines)
+## items (1789 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1661,6 +1661,7 @@ pub fn aom_dsp::trace::enabled(aom_dsp::trace::Trace) -> bool
 pub fn aom_dsp::trace::focus(aom_dsp::trace::Focus) -> core::option::Option<(i32, i32)>
 pub fn aom_dsp::trace::hdr_dump_path() -> core::option::Option<std::path::PathBuf>
 pub fn aom_dsp::trace::install(aom_dsp::trace::TraceConfig)
+pub fn aom_dsp::trace::install_from_env()
 pub type aom_dsp::trace::Sink = alloc::boxed::Box<(dyn core::ops::function::Fn(&str) + core::marker::Send + core::marker::Sync)>
 pub mod aom_dsp::transform
 pub mod aom_dsp::transform::cospi

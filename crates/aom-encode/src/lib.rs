@@ -25,6 +25,11 @@
 //! flat/QM), [`aom_dsp::txb::txb_entropy_context`] — wired in the exact
 //! order/params libaom uses, so a residual block maps to byte-identical
 //! `(qcoeff, dqcoeff, eob, txb_entropy_ctx)`.
+// The docs deliberately link implementation items that live behind the default-off
+// `__internals` feature (or are `pub(crate)`): the links resolve for a harness build
+// and read as plain code for a consumer. `just doc-check` runs with `-D warnings`.
+#![allow(rustdoc::private_intra_doc_links)]
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 // ---------------------------------------------------------------------------
@@ -217,10 +222,15 @@ pub struct QmCtx {
 /// [`QuantKind::B`]; `round` is the fp round for FP and the b round for B.
 #[derive(Clone, Copy, Debug)]
 pub struct QuantParams<'a> {
+    /// Zero-bin thresholds `[dc, ac]` (`zbin_QTX`); read by [`QuantKind::B`] only.
     pub zbin: &'a [i16; 2],
+    /// Rounding offsets `[dc, ac]`: the fp round for [`QuantKind::Fp`], the b round for [`QuantKind::B`].
     pub round: &'a [i16; 2],
+    /// Quantizer multipliers `[dc, ac]` (`quant_QTX`).
     pub quant: &'a [i16; 2],
+    /// Second-stage multipliers `[dc, ac]` (`quant_shift_QTX`); read by [`QuantKind::B`] only.
     pub quant_shift: &'a [i16; 2],
+    /// Dequantizer step sizes `[dc, ac]` (`dequant_QTX`).
     pub dequant: &'a [i16; 2],
     /// Per-position quant matrix (`qm`) and its inverse (`iqm`), both indexed by
     /// raster position (length = block area). `None` = flat (no quant matrix).
@@ -228,6 +238,7 @@ pub struct QuantParams<'a> {
     /// drive one explicit matrix); production QM encoding sets [`Self::qm_ctx`]
     /// instead and lets the funnel select per transform.
     pub qm: Option<&'a [u8]>,
+    /// Inverse quant matrix, raster-indexed; `None` = flat. Paired with [`Self::qm`].
     pub iqm: Option<&'a [u8]>,
     /// Frame QM context: `Some` = QM-on (select per `(tx_size, tx_type)` inside
     /// the funnel), `None` = use the explicit `qm`/`iqm` slices (flat when both
@@ -357,10 +368,15 @@ fn resolve_qm<'a>(
 /// Output of [`xform_quant`]: the quantized block plus the propagated context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct XformQuantResult {
+    /// Forward-transform coefficients (pre-quantization), raster order.
     pub coeff: Vec<i32>,
+    /// Quantized levels, raster order.
     pub qcoeff: Vec<i32>,
+    /// Dequantized coefficients, raster order — what reconstruction inverse-transforms.
     pub dqcoeff: Vec<i32>,
+    /// End of block: scan positions up to and including the last nonzero level (`0` = all-zero txb).
     pub eob: u16,
+    /// `cul_level | dc_sign << 3` — the `ENTROPY_CONTEXT` byte this txb writes to its above/left neighbours.
     pub txb_entropy_ctx: u8,
 }
 
@@ -420,7 +436,9 @@ pub struct XformQuantScratch {
 /// a caller-owned [`XformQuantScratch`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct XformQuantSummary {
+    /// End of block: scan positions up to and including the last nonzero level (`0` = all-zero txb).
     pub eob: u16,
+    /// `cul_level | dc_sign << 3` — the `ENTROPY_CONTEXT` byte this txb writes to its above/left neighbours.
     pub txb_entropy_ctx: u8,
 }
 
@@ -678,8 +696,11 @@ pub fn xform_quant_into(
 /// above/left `ENTROPY_CONTEXT` bytes; each is `cul_level | dc_sign<<3`).
 #[derive(Clone, Copy, Debug)]
 pub struct BlockContext<'a> {
+    /// Above `ENTROPY_CONTEXT` bytes for the plane, one per 4x4 column.
     pub above: &'a [i8],
+    /// Left `ENTROPY_CONTEXT` bytes for the plane, one per 4x4 row.
     pub left: &'a [i8],
+    /// Plane index: `0` = Y, `1` = U, `2` = V.
     pub plane: usize,
     /// Plane block size (BlockSize discriminant).
     pub plane_bsize: usize,
@@ -688,8 +709,11 @@ pub struct BlockContext<'a> {
 /// RD inputs for the coefficient trellis (`av1_optimize_b`).
 #[derive(Clone, Copy)]
 pub struct OptimizeInputs<'a> {
+    /// Coefficient cost tables derived from the frame's current CDFs.
     pub cost: &'a CoeffCostTables<'a>,
+    /// Rate-distortion multiplier (`x->rdmult`).
     pub rdmult: i64,
+    /// `oxcf.sharpness` (0..=7): biases the trellis toward keeping levels.
     pub sharpness: i32,
 }
 
@@ -699,14 +723,19 @@ pub struct XformQuantOptResult {
     /// Forward-transform coefficients (pre-quantization) — the transform-domain
     /// distortion reference `dist_block_tx_domain` compares `dqcoeff` against.
     pub coeff: Vec<i32>,
+    /// Quantized levels, raster order.
     pub qcoeff: Vec<i32>,
+    /// Dequantized coefficients, raster order — what reconstruction inverse-transforms.
     pub dqcoeff: Vec<i32>,
+    /// End of block: scan positions up to and including the last nonzero level (`0` = all-zero txb).
     pub eob: u16,
+    /// `cul_level | dc_sign << 3` — the `ENTROPY_CONTEXT` byte this txb writes to its above/left neighbours.
     pub txb_entropy_ctx: u8,
     /// Total coefficient rate (the trellis result, or the skip-txb cost at eob 0).
     pub rate: i32,
     /// The `get_txb_ctx` result — the contexts the coefficient writer also needs.
     pub txb_skip_ctx: usize,
+    /// DC-sign context from `get_txb_ctx` (0..=2).
     pub dc_sign_ctx: usize,
 }
 
@@ -785,10 +814,15 @@ pub fn xform_quant_optimize_split(
 /// buffers stay in a caller-owned [`XformQuantScratch`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct XformQuantOptSummary {
+    /// End of block: scan positions up to and including the last nonzero level (`0` = all-zero txb).
     pub eob: u16,
+    /// `cul_level | dc_sign << 3` — the `ENTROPY_CONTEXT` byte this txb writes to its above/left neighbours.
     pub txb_entropy_ctx: u8,
+    /// Total coefficient rate in 1/1024-bit units (the trellis result, or the skip-txb cost at eob 0).
     pub rate: i32,
+    /// Txb-skip context from `get_txb_ctx` (0..=12).
     pub txb_skip_ctx: usize,
+    /// DC-sign context from `get_txb_ctx` (0..=2).
     pub dc_sign_ctx: usize,
 }
 
@@ -984,11 +1018,17 @@ pub fn encode_block_coeffs(
 /// qindex/skip/segment gate that permits transmission).
 #[derive(Clone, Copy, Debug)]
 pub struct TxTypeContext {
+    /// Block is inter-coded (`false` throughout the KEY-frame envelope).
     pub is_inter: bool,
+    /// `reduced_tx_set_used`: the frame restricts transform types to the reduced set.
     pub reduced: bool,
+    /// Block uses filter-intra; the tx type is then derived from [`Self::fi_mode`].
     pub use_filter_intra: bool,
+    /// Filter-intra mode (meaningful only when [`Self::use_filter_intra`]).
     pub fi_mode: usize,
+    /// Luma intra prediction mode — the `intra_dir` the ext-tx CDF is indexed by.
     pub mode: usize,
+    /// Whether the tx type is transmitted at all: `qindex > 0 && !skip && segment allows` (`av1_write_tx_type`'s gate).
     pub signal_gate: bool,
 }
 
@@ -1050,7 +1090,9 @@ const TXU_H: [usize; 19] = [1, 2, 4, 8, 16, 2, 1, 4, 2, 8, 4, 16, 8, 4, 1, 8, 2,
 /// verification / propagation to the next block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockContexts {
+    /// Above `ENTROPY_CONTEXT` bytes for the plane, one per 4x4 column.
     pub above: Vec<i8>,
+    /// Left `ENTROPY_CONTEXT` bytes for the plane, one per 4x4 row.
     pub left: Vec<i8>,
 }
 
@@ -1129,7 +1171,7 @@ pub fn encode_coding_block_plane(
 
 /// The pixel-domain reconstruction distortion for a transform block — the SSE
 /// the encoder's final RD uses. Reconstructs `pred + inv_txfm(dqcoeff)` (clamped
-/// to the bd pixel range, via [`av1_inv_txfm2d_add`]) and returns the sum of
+/// to the bd pixel range, via `av1_inv_txfm2d_add`) and returns the sum of
 /// squared differences vs `source`. `dqcoeff` has `inv_input_len(tx_size)`
 /// entries; `pred`/`source`/output are the full `TX_W x TX_H` pixel block
 /// (contiguous, stride = TX_W). Pixels are u16 (libaom's internal representation

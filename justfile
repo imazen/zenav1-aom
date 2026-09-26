@@ -114,6 +114,7 @@ gate-landing:
     just upstream-check
     just fmt-check
     just deny
+    just doc-check
     just ci-yaml-check
     just test-next
     just test-next-scalar
@@ -346,6 +347,12 @@ fmt:
 fmt-check:
     cargo fmt --all --check
     cargo fmt --manifest-path apidoc/Cargo.toml --check
+
+# rustdoc on the four published crates with warnings as errors: broken links,
+# missing docs on the consumer surfaces (`aom-encode`/`aom-decode` carry
+# `#![warn(missing_docs)]`), bad HTML. ~40 s warm; a gate-landing step + CI job.
+doc-check:
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p zenav1-aom-dsp -p zenav1-aom-decode -p zenav1-aom-encode -p zenav1-aom
 
 # Dependency policy (deny.toml): licences, advisories, no C toolchain on the
 # published path, no unknown registries. ~5 s; a gate-landing step and a CI job.

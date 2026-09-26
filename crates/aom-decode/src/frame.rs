@@ -4,7 +4,7 @@
 //! header parsing through the validated aom-entropy readers, default
 //! FRAME_CONTEXT init by `base_qindex`, and the KEY-frame tile decode driver.
 //!
-//! ENVELOPE — the feature set [`decode_tile_kf`] / [`decode_frame_tiles_kf`]
+//! ENVELOPE — the feature set `decode_tile_kf` / [`decode_frame_tiles_kf`]
 //! models. Anything outside it is a hard [`Err`], never a mis-decode:
 //! - KEY frame, shown, not show-existing; `error_resilient` accepted.
 //! - 64x64 AND 128x128 superblocks (`use_128x128_superblock`): the
@@ -116,14 +116,23 @@ pub struct FrameDecode {
     pub y: Vec<u16>,
     /// Cropped chroma (empty when monochrome), tight `width_uv`-strided.
     pub u: Vec<u16>,
+    /// V-plane samples, `u16` at every bit depth (empty when monochrome).
     pub v: Vec<u16>,
+    /// Visible (crop) luma width in samples.
     pub width: usize,
+    /// Visible (crop) luma height in samples.
     pub height: usize,
+    /// Visible (crop) chroma width in samples.
     pub width_uv: usize,
+    /// Visible (crop) chroma height in samples.
     pub height_uv: usize,
+    /// Bit depth: 8, 10 or 12.
     pub bit_depth: i32,
+    /// `true` when the stream has no chroma planes.
     pub monochrome: bool,
+    /// Horizontal chroma subsampling (`0` or `1`).
     pub subsampling_x: usize,
+    /// Vertical chroma subsampling (see [`Self::subsampling_x`]).
     pub subsampling_y: usize,
     /// Sequence-header CICP color description, verbatim as coded
     /// (`color_config`): matrix coefficients, primaries, transfer
@@ -131,9 +140,13 @@ pub struct FrameDecode {
     /// Display metadata for the caller's color pipeline — reconstruction
     /// does not depend on them (film grain's MC-identity gate excepted).
     pub matrix_coefficients: i32,
+    /// CICP colour primaries (`color_primaries`), verbatim as coded.
     pub color_primaries: i32,
+    /// CICP transfer characteristics, verbatim as coded.
     pub transfer_characteristics: i32,
+    /// `color_range`: `true` = full range, `false` = studio range.
     pub full_range: bool,
+    /// `chroma_sample_position` (4:2:0 only), verbatim as coded.
     pub chroma_sample_position: i32,
     /// Frame quantizer facts (for harness assertions).
     pub base_qindex: i32,
@@ -143,12 +156,17 @@ pub struct FrameDecode {
     /// CDEF params as coded — CDEF was applied with them when the C decoder
     /// gate (`cdef_bits || cdef_strengths[0] || cdef_uv_strengths[0]`) holds.
     pub cdef_damping: i32,
+    /// `cdef_bits`: number of CDEF strength-index bits per superblock (0..=3).
     pub cdef_bits: i32,
+    /// Luma CDEF strengths (`cdef_strengths[i] = pri * 4 + sec`), one per index.
     pub cdef_strengths: [i32; 8],
+    /// Chroma CDEF strengths, one per index.
     pub cdef_uv_strengths: [i32; 8],
     /// `features.tx_mode` was TX_MODE_SELECT (vs LARGEST).
     pub tx_mode_select: bool,
+    /// `reduced_tx_set_used` from the frame header.
     pub reduced_tx_set: bool,
+    /// `delta_q_present`: per-superblock qindex deltas are coded.
     pub delta_q_present: bool,
     /// Segmentation as coded: when enabled, per-block segment ids were
     /// decoded, `SEG_LVL_ALT_Q` shifted the per-block dequant, and
@@ -156,6 +174,7 @@ pub struct FrameDecode {
     /// `seg_last_active_segid` is `av1_calculate_segdata`'s highest segment
     /// with any active feature (the coded id alphabet bound).
     pub seg_enabled: bool,
+    /// `segmentation.last_active_segid` (`-1` when segmentation is off).
     pub seg_last_active_segid: i32,
     /// Per-plane `frame_restoration_type` as coded (`RESTORE_*`); loop
     /// restoration was applied when any is non-NONE.
@@ -166,6 +185,7 @@ pub struct FrameDecode {
     /// `TileInfoHeader::{cols,rows}` as coded — the tile grid this frame was
     /// decoded with (independently-decoded tiles when either exceeds 1).
     pub tile_cols: usize,
+    /// Number of tile rows in the frame.
     pub tile_rows: usize,
     /// `features.disable_cdf_update` as coded — when true the tile symbol
     /// reader did NOT adapt CDFs (every `read_symbol` left its CDF at the

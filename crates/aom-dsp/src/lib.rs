@@ -13,6 +13,10 @@
 //!
 //! The consolidation is DONE: every former sub-crate is physically absorbed
 //! into `src/<family>/` and there are no `pub use aom_X as X` shims left.
+// The docs deliberately link implementation items that live behind the default-off
+// `__internals` feature (or are `pub(crate)`): the links resolve for a harness build
+// and read as plain code for a consumer. `just doc-check` runs with `-D warnings`.
+#![allow(rustdoc::private_intra_doc_links)]
 #![forbid(unsafe_code)]
 
 pub mod blocksize;

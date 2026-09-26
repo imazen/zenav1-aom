@@ -261,7 +261,7 @@ pub(crate) fn write_txb_body(
 }
 
 /// The complete txb writer: `txb_skip` flag, then (for luma, `plane_type == 0`,
-/// when `signal_gate`) the `tx_type` via [`write_tx_type`], then the coefficient
+/// when `signal_gate`) the `tx_type` via `write_tx_type`, then the coefficient
 /// payload — matching the full `av1_write_coeffs_txb` order. `ext_tx_cdf` is the
 /// caller-selected `[intra|inter]_ext_tx_cdf[eset][square_tx_size][intra_dir]`
 /// slot (separate from the coefficient `cdfs` arena); it is only touched on the

@@ -160,6 +160,11 @@
 //! to the C decoder: byte-identical reconstruction planes, lockstep CDF arenas,
 //! and per-leaf mode-info equality.
 
+// The docs deliberately link implementation items that live behind the default-off
+// `__internals` feature (or are `pub(crate)`): the links resolve for a harness build
+// and read as plain code for a consumer. `just doc-check` runs with `-D warnings`.
+#![allow(rustdoc::private_intra_doc_links)]
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
@@ -414,30 +419,46 @@ pub const MAX_TXSIZE_RECT_LOOKUP: [usize; 22] = [
 pub const TX_SIZE_WIDE: [usize; 19] = [
     4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
 ];
+/// `tx_size_high[TX_SIZES_ALL]`: transform height in pixels.
 pub const TX_SIZE_HIGH: [usize; 19] = [
     4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
 ];
 /// `tx_size_wide_unit` / `tx_size_high_unit`: transform dims in 4x4 mi units.
 pub const TX_SIZE_WIDE_UNIT: [usize; 19] =
     [1, 2, 4, 8, 16, 1, 2, 2, 4, 4, 8, 8, 16, 1, 4, 2, 8, 4, 16];
+/// `tx_size_high_unit[TX_SIZES_ALL]`: transform height in 4x4 mi units.
 pub const TX_SIZE_HIGH_UNIT: [usize; 19] =
     [1, 2, 4, 8, 16, 2, 1, 4, 2, 8, 4, 16, 8, 4, 1, 8, 2, 16, 4];
 
+/// `BlockSize` discriminant for 8x8 (libaom `BLOCK_*` order).
 pub const BLOCK_8X8: usize = 3;
+/// `BlockSize` discriminant for 64x64.
 pub const BLOCK_64X64: usize = 12;
+/// `BlockSize` discriminant for 128x128.
 pub const BLOCK_128X128: usize = 15;
 
+/// `PARTITION_TYPE` discriminant `PARTITION_NONE` (libaom order).
 pub const PARTITION_NONE: usize = 0;
+/// `PARTITION_TYPE` discriminant `PARTITION_HORZ` (libaom order).
 pub const PARTITION_HORZ: usize = 1;
+/// `PARTITION_TYPE` discriminant `PARTITION_VERT` (libaom order).
 pub const PARTITION_VERT: usize = 2;
+/// `PARTITION_TYPE` discriminant `PARTITION_SPLIT` (libaom order).
 pub const PARTITION_SPLIT: usize = 3;
+/// `PARTITION_TYPE` discriminant `PARTITION_HORZ_A` (libaom order).
 pub const PARTITION_HORZ_A: usize = 4;
+/// `PARTITION_TYPE` discriminant `PARTITION_HORZ_B` (libaom order).
 pub const PARTITION_HORZ_B: usize = 5;
+/// `PARTITION_TYPE` discriminant `PARTITION_VERT_A` (libaom order).
 pub const PARTITION_VERT_A: usize = 6;
+/// `PARTITION_TYPE` discriminant `PARTITION_VERT_B` (libaom order).
 pub const PARTITION_VERT_B: usize = 7;
+/// `PARTITION_TYPE` discriminant `PARTITION_HORZ_4` (libaom order).
 pub const PARTITION_HORZ_4: usize = 8;
+/// `PARTITION_TYPE` discriminant `PARTITION_VERT_4` (libaom order).
 pub const PARTITION_VERT_4: usize = 9;
 
+/// `PREDICTION_MODE::DC_PRED`.
 pub const DC_PRED: i32 = 0;
 const SMOOTH_PRED: i32 = 9;
 const SMOOTH_H_PRED: i32 = 11;
@@ -593,6 +614,7 @@ pub fn max_block_units_ss(plane_px: i32, mb_to_edge: i32, ss: usize) -> usize {
 pub struct KfTileConfig {
     /// Frame height/width in 4x4 mode-info units (whole-mi frame sizes only).
     pub mi_rows: i32,
+    /// Frame width in 4x4 mode-info units.
     pub mi_cols: i32,
     /// Bit depth (8/10/12); pixels are u16 at every depth.
     pub bd: i32,
@@ -607,6 +629,7 @@ pub struct KfTileConfig {
     /// frame mi dimensions to 8 pixels, so shared-chroma groups never straddle
     /// the frame edge).
     pub subsampling_x: usize,
+    /// Vertical chroma subsampling (see [`Self::subsampling_x`]).
     pub subsampling_y: usize,
     /// `seq_params->color_config.matrix_coefficients` (CICP). Needed for
     /// film-grain synthesis (`AOM_CICP_MC_IDENTITY` (0) selects the luma legal
@@ -650,13 +673,18 @@ pub struct KfTileConfig {
     /// `v_dc_delta_q` / `v_ac_delta_q` (read_quantization; each in
     /// `[-63, 63]`). Y's AC has no delta — `base_qindex` is the Y AC point.
     pub y_dc_delta_q: i32,
+    /// U-plane DC quantizer delta (`[-63, 63]`).
     pub u_dc_delta_q: i32,
+    /// U-plane AC quantizer delta (`[-63, 63]`).
     pub u_ac_delta_q: i32,
+    /// V-plane DC quantizer delta (`[-63, 63]`).
     pub v_dc_delta_q: i32,
+    /// V-plane AC quantizer delta (`[-63, 63]`).
     pub v_ac_delta_q: i32,
     /// `delta_q_info.delta_q_present_flag` (requires `base_qindex > 0`, as
     /// the C frame header only codes it then) + `delta_q_res` (1/2/4/8).
     pub delta_q_present: bool,
+    /// `delta_q_res`: the per-superblock qindex delta step (1/2/4/8).
     pub delta_q_res: i32,
     /// `delta_q_info.delta_lf_present_flag` / `delta_lf_multi` /
     /// `delta_lf_res` (1/2/4/8). Only codable when `delta_q_present` (the C
@@ -666,7 +694,9 @@ pub struct KfTileConfig {
     /// read the per-block `delta_lf_from_base` / `delta_lf[]` carries when it
     /// filters the frame — see the crate-doc delta-LF bullet.
     pub delta_lf_present: bool,
+    /// `delta_lf_multi`: separate loop-filter deltas per component.
     pub delta_lf_multi: bool,
+    /// `delta_lf_res`: the per-block loop-filter delta step (1/2/4/8).
     pub delta_lf_res: i32,
     /// Loop-restoration frame geometry (`cm->rst_info` slice): per-plane
     /// frame restoration type + unit size + the frame crop dims that size
@@ -697,7 +727,7 @@ pub struct KfTileConfig {
     /// config axis, respectively).
     pub sb_size_128: bool,
     /// `features.allow_screen_content_tools` (frame header): gates PALETTE mode
-    /// per-block (`av1_allow_palette`, [`allow_palette`] — also needs the
+    /// per-block (`av1_allow_palette`, `allow_palette` — also needs the
     /// block's own bsize <= 64x64). Intra block copy (`allow_intrabc`) is the
     /// OTHER screen-content tool this flag enables in C.
     pub allow_screen_content_tools: bool,
@@ -715,7 +745,9 @@ pub struct KfTileConfig {
     /// `0..=15`): the per-plane QM level selecting the `iwt_matrix_ref` set.
     /// Only meaningful when `using_qmatrix`; level 15 is the flat matrix.
     pub qm_y: usize,
+    /// U-plane QM level (see [`Self::qm_y`]).
     pub qm_u: usize,
+    /// V-plane QM level (see [`Self::qm_y`]).
     pub qm_v: usize,
     /// `features.disable_cdf_update` (frame header uncompressed bit; the encoder
     /// sets it under `cdf_update_mode == 0`, and it is forced on by
@@ -818,13 +850,21 @@ fn frame_qm_levels(cfg: &KfTileConfig, segment_id: usize) -> [usize; 3] {
 /// blocks — empty for monochrome / non-chroma-reference blocks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedBlockKf {
+    /// Block row in 4x4 mode-info units.
     pub mi_row: i32,
+    /// Block column in 4x4 mode-info units.
     pub mi_col: i32,
+    /// `BlockSize` discriminant of the leaf.
     pub bsize: usize,
+    /// The `PARTITION_*` value that produced this leaf.
     pub partition: usize,
+    /// The decoded mode info.
     pub info: MbModeInfoKf,
+    /// Luma transform size (`TxSize` discriminant).
     pub tx_size: usize,
+    /// Luma txbs as `(tx_type, eob)` in raster order; a skip block records `(0, 0)` per txb.
     pub txbs: Vec<(usize, usize)>,
+    /// Chroma txbs (plane 1's in raster order, then plane 2's); empty for monochrome or non-chroma-reference blocks.
     pub txbs_uv: Vec<(usize, usize)>,
     /// Loop-filter mode-info the INTER path carries out-of-band (the intra
     /// `info` fields don't describe an inter block): `Some((ref_frame[0], mode))`
@@ -848,15 +888,25 @@ pub struct KfTileDecode {
     /// [`ReconPlane`]. [`ReconPlane::to_u16`] widens bit-exactly for `u16`
     /// consumers.
     pub recon: ReconPlane,
+    /// Luma row stride in samples.
     pub stride: usize,
+    /// Visible (crop) luma width in samples.
     pub width: usize,
+    /// Visible (crop) luma height in samples.
     pub height: usize,
+    /// U-plane reconstruction (empty when monochrome).
     pub recon_u: ReconPlane,
+    /// V-plane reconstruction (empty when monochrome).
     pub recon_v: ReconPlane,
+    /// Chroma row stride in samples.
     pub stride_uv: usize,
+    /// Visible (crop) chroma width in samples.
     pub width_uv: usize,
+    /// Visible (crop) chroma height in samples.
     pub height_uv: usize,
+    /// Pre-order partition sequence: one `PARTITION_*` discriminant per visited node, including forced (uncoded) partitions.
     pub tree: Vec<i8>,
+    /// Per-leaf decode records in decode order.
     pub blocks: Vec<DecodedBlockKf>,
     /// Per-plane restoration-unit parameters in unit-grid raster order
     /// (`rst_info[plane].unit_info`), decoded interleaved with the SB walk
@@ -895,10 +945,15 @@ pub struct KfTileDecode {
 /// frame 0's `RefFrame`.
 #[derive(Clone, Debug)]
 pub struct RefFrame {
+    /// Luma samples, `u16` at every bit depth.
     pub y: Vec<u16>,
+    /// U-plane samples, `u16` at every bit depth (empty when monochrome).
     pub u: Vec<u16>,
+    /// V-plane samples, `u16` at every bit depth (empty when monochrome).
     pub v: Vec<u16>,
+    /// Luma row stride in samples.
     pub stride: usize,
+    /// Chroma row stride in samples.
     pub stride_uv: usize,
     /// Plane VISIBLE (crop) dimensions for MC edge replication — the reference's
     /// `y_crop_width/height` / `uv_crop_width/height`, i.e. the values C's
@@ -910,9 +965,13 @@ pub struct RefFrame {
     /// edge block's interp taps must edge-replicate at the CROP boundary — reading
     /// the invisible mi-aligned recon rows past it diverges from C.
     pub width: usize,
+    /// Visible (crop) luma height in samples.
     pub height: usize,
+    /// Visible (crop) chroma width in samples.
     pub width_uv: usize,
+    /// Visible (crop) chroma height in samples.
     pub height_uv: usize,
+    /// This frame's `order_hint`.
     pub order_hint: i32,
 }
 
@@ -977,14 +1036,21 @@ pub struct InterFrameCfg<'r> {
     /// `get_relative_dist(cur_order_hint, ref_order_hint[rf])` per
     /// `MV_REFERENCE_FRAME` — `add_tpl_ref_mv`'s projection numerator.
     pub tpl_cur_offset: [i32; 8],
+    /// `allow_high_precision_mv`: motion vectors carry 1/8-pel precision.
     pub allow_high_precision_mv: bool,
+    /// `cur_frame_force_integer_mv`: motion vectors are forced to integer pel.
     pub cur_frame_force_integer_mv: bool,
     /// Frame-level `interp_filter` (`4 == SWITCHABLE`).
     pub interp_filter: i32,
+    /// `is_motion_mode_switchable`: the per-block motion mode is signalled.
     pub switchable_motion_mode: bool,
+    /// `allow_ref_frame_mvs`: temporal motion-vector projection is enabled.
     pub allow_ref_frame_mvs: bool,
+    /// `reference_select`: single vs compound reference is signalled per block.
     pub reference_mode_select: bool,
+    /// `seq_header.enable_dual_filter`: separate x/y interpolation filters may be signalled.
     pub enable_dual_filter: bool,
+    /// `allow_warped_motion`: WARPED_CAUSAL is a permitted motion mode.
     pub allow_warped_motion: bool,
     /// The frame's `skip_mode_flag` ("skip mode present"): gates the
     /// per-block `skip_mode` symbol read.
@@ -998,6 +1064,7 @@ pub struct InterFrameCfg<'r> {
     /// ref-mv list); a non-identity ref is guarded (a later chunk — every target
     /// through 16x18 is identity-GM).
     pub gm_wmtype: [u8; 7],
+    /// This frame's `order_hint`.
     pub order_hint: i32,
 }
 
@@ -1206,7 +1273,9 @@ pub(crate) fn dbg_blocks() -> bool {
 /// (`av1_setup_motion_field`) of LATER frames that reference this one.
 #[derive(Clone, Copy, Debug)]
 pub struct MvRefCell {
+    /// Motion-vector row component in 1/8-pel units.
     pub row: i16,
+    /// Motion-vector column component in 1/8-pel units.
     pub col: i16,
     /// `MV_REFERENCE_FRAME` (`LAST=1..ALTREF=7`), `-1` = none.
     pub ref_frame: i8,
@@ -1233,9 +1302,13 @@ impl Default for MvRefCell {
 /// (has_top_right/has_bottom_left must not reach across a tile boundary).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TileBoundsKf {
+    /// First mode-info row of the tile (inclusive).
     pub mi_row_start: i32,
+    /// One past the last mode-info row of the tile.
     pub mi_row_end: i32,
+    /// First mode-info column of the tile (inclusive).
     pub mi_col_start: i32,
+    /// One past the last mode-info column of the tile.
     pub mi_col_end: i32,
 }
 
@@ -1256,7 +1329,9 @@ impl TileBoundsKf {
 /// `(tile_row, tile_col)` order — the input to [`decode_frame_tiles_kf`].
 #[derive(Clone, Copy, Debug)]
 pub struct TileBytesKf<'a> {
+    /// The tile's coded bytes (tile data, after the tile-size field).
     pub bytes: &'a [u8],
+    /// The tile's mode-info bounds.
     pub bounds: TileBoundsKf,
 }
 

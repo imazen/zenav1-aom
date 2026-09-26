@@ -1678,41 +1678,41 @@ fn should_prune_intra_modes_using_neighbors(
     up_available && this_mode != above_mode && left_available && this_mode != left_mode
 }
 
-/// `av1_nonrd_pick_intra_mode` (nonrd_pickmode.c:1582), Y estimate loop.
-///
-/// The prediction step (`av1_estimate_block_intra` → `av1_predict_intra_block
-/// _facade`) writes INTO the recon plane at the leaf position (the C facade's
-/// dst IS pd->dst), scribbling only inside the block — the winner encode
-/// (`encode_b_intra_dry`) re-predicts + adds residual afterwards, exactly like
-/// C's encode_superblock.
-///
-/// **The txb walk** is `av1_foreach_transformed_block_in_plane` (encodemb.c:536)
-/// inlined. `mi->tx_size` is `max_txsize_lookup[bsize]`, the max square tx of
-/// the SHORT side, so `txsize_to_bsize[mi->tx_size] == bsize` — one visit at
-/// `(0,0)`, C's `plane_bsize == tx_bsize` early return (`:546-549`) — for every
-/// SQUARE leaf, and TWO visits for the four non-square leaves the KEY VBP tree
-/// can stamp (BLOCK_16X8 / 8X16 / 32X16 / 16X32). Until 2026-08-02 the
-/// non-square case was a named refusal (KB-32); everything about the walk below
-/// is byte-inert at a square leaf, where it degenerates to the single visit the
-/// refusal's invariant described.
-///
-/// Three details of C's the walk carries that a naive "loop the txbs" does not:
-///
-/// * each visit predicts into `pd->dst` **before** the next visit reads its
-///   neighbours out of that same buffer (`av1_predict_intra_block_facade`'s
-///   `ref == dst`, reconintra.c:1622) — so txb 1 of a BLOCK_8X16 predicts from
-///   txb 0's *prediction*, there being no residual on this arm;
-/// * `av1_block_yrd` is handed `bsize_tx = txsize_to_bsize[tx_size]`
-///   (nonrd_opt.c:658), so its `num_4x4_w/h` are the TXB's — but
-///   `xd->mb_to_right_edge` is still the LEAF's, so the frame-edge clamp at
-///   nonrd_opt.c:141-144 subtracts the leaf's overhang from each txb's extent
-///   (and can clamp a txb to zero rows, which C then codes as rate 0 / dist 0
-///   / skippable). Reproduced exactly;
-/// * `args->skippable` is **assigned**, not accumulated: `av1_block_yrd` ends
-///   `this_rdc->skip_txfm = *skippable = temp_skippable` (nonrd_opt.c:327), and
-///   `temp_skippable` restarts at 1 in each call — so a multi-txb leaf's
-///   skippable flag is the LAST txb's, not the AND. Rate and dist DO accumulate
-///   (`args->rdc->rate += ...`, nonrd_opt.c:667-668).
+// `av1_nonrd_pick_intra_mode` (nonrd_pickmode.c:1582), Y estimate loop.
+//
+// The prediction step (`av1_estimate_block_intra` → `av1_predict_intra_block
+// _facade`) writes INTO the recon plane at the leaf position (the C facade's
+// dst IS pd->dst), scribbling only inside the block — the winner encode
+// (`encode_b_intra_dry`) re-predicts + adds residual afterwards, exactly like
+// C's encode_superblock.
+//
+// **The txb walk** is `av1_foreach_transformed_block_in_plane` (encodemb.c:536)
+// inlined. `mi->tx_size` is `max_txsize_lookup[bsize]`, the max square tx of
+// the SHORT side, so `txsize_to_bsize[mi->tx_size] == bsize` — one visit at
+// `(0,0)`, C's `plane_bsize == tx_bsize` early return (`:546-549`) — for every
+// SQUARE leaf, and TWO visits for the four non-square leaves the KEY VBP tree
+// can stamp (BLOCK_16X8 / 8X16 / 32X16 / 16X32). Until 2026-08-02 the
+// non-square case was a named refusal (KB-32); everything about the walk below
+// is byte-inert at a square leaf, where it degenerates to the single visit the
+// refusal's invariant described.
+//
+// Three details of C's the walk carries that a naive "loop the txbs" does not:
+//
+// * each visit predicts into `pd->dst` **before** the next visit reads its
+//   neighbours out of that same buffer (`av1_predict_intra_block_facade`'s
+//   `ref == dst`, reconintra.c:1622) — so txb 1 of a BLOCK_8X16 predicts from
+//   txb 0's *prediction*, there being no residual on this arm;
+// * `av1_block_yrd` is handed `bsize_tx = txsize_to_bsize[tx_size]`
+//   (nonrd_opt.c:658), so its `num_4x4_w/h` are the TXB's — but
+//   `xd->mb_to_right_edge` is still the LEAF's, so the frame-edge clamp at
+//   nonrd_opt.c:141-144 subtracts the leaf's overhang from each txb's extent
+//   (and can clamp a txb to zero rows, which C then codes as rate 0 / dist 0
+//   / skippable). Reproduced exactly;
+// * `args->skippable` is **assigned**, not accumulated: `av1_block_yrd` ends
+//   `this_rdc->skip_txfm = *skippable = temp_skippable` (nonrd_opt.c:327), and
+//   `temp_skippable` restarts at 1 in each call — so a multi-txb leaf's
+//   skippable flag is the LAST txb's, not the AND. Rate and dist DO accumulate
+//   (`args->rdc->rate += ...`, nonrd_opt.c:667-668).
 thread_local! {
     /// `(visits, diff)` scratch for `nonrd_pick_intra_mode` — see the take site
     /// for the reuse-safety argument. The fn never nests, so a single pool is

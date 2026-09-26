@@ -73,7 +73,7 @@
 //! * **CDEF** — the u8 CDEF frame walk (`cdef_frame_u8`).
 //! * **Deblock (loop filter)** — the u8 deblock kernels
 //!   ([`crate::loopfilter::horizontal`] / [`crate::loopfilter::vertical`],
-//!   SIMD-dispatched via [`crate::loopfilter::simd::lpf_u8`], the u8 twin of the
+//!   SIMD-dispatched via `crate::loopfilter::simd::lpf_u8`, the u8 twin of the
 //!   u16 kernel with the pixel loads/stores narrowed and `bd` fixed at 8) plus
 //!   the whole-frame lowbd walk [`crate::loopfilter::frame::loop_filter_frame_u8`]
 //!   (the pixel-independent per-edge derivation — `set_lpf_parameters`,

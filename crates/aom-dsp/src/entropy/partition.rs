@@ -5495,7 +5495,7 @@ const MAX_LOOP_FILTER: i32 = 63;
 /// delta-lf driver). At an SB-upper-left non-skip block it reads the reduced delta-qindex
 /// (reconstructing `current_qindex = clamp(base + reduced * delta_q_res, 1, MAXQ)` — the
 /// normative `[1, 255]` clamp of `read_delta_q_params`, av1/decoder/decodemv.c: "Clamp to
-/// [1,MAXQ] to not interfere with lossless mode" — updating the base carry) and, when
+/// `[1, MAXQ]` to not interfere with lossless mode" — updating the base carry) and, when
 /// delta-lf is present, the per-plane multi deltas or the single from-base delta (each
 /// updating its carry, clamped to `[-MAX_LOOP_FILTER, MAX_LOOP_FILTER]` as in C). Returns
 /// the (possibly unchanged) `current_qindex`.

@@ -1372,7 +1372,7 @@ const MODE_TO_ANGLE: [i32; 13] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 
 
 /// Highbd intra prediction dispatch — the mode routing of `av1_predict_intra_block`
 /// (reconintra.c), minus palette and chroma-from-luma. Selects the predictor
-/// family and, for a directional mode, derives `p_angle = mode_to_angle_map[mode]
+/// family and, for a directional mode, derives `p_angle = mode_to_angle_map`mode`
 /// + angle_delta` (the caller pre-scales `angle_delta` by `ANGLE_STEP`, as
 /// `av1_predict_intra_block` does), then calls the matching builder —
 /// [`build_filter_intra_high`], [`build_non_directional_intra_high`], or

@@ -22,7 +22,7 @@ use crate::txb::{dequant_txb, txb_high, txb_wide};
 /// `dst` is the plane pixel buffer (bd-bit samples) with row `stride`; the
 /// block's top-left is `dst[0]`. On entry `dst` holds the intra/inter prediction;
 /// on return it holds the reconstructed block — the prediction plus the residual
-/// clipped to `[0, (1<<bd)-1]` by [`av1_inv_txfm2d_add`]. This is the structural
+/// clipped to `[0, (1<<bd)-1]` by `av1_inv_txfm2d_add`. This is the structural
 /// inverse of the encoder's residual path (predict → subtract → `xform_quant`);
 /// the predictor that fills `dst` is applied by the caller (intra-edge management
 /// and the predictor call are the next reconstruction layer).

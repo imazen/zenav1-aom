@@ -2711,6 +2711,7 @@ pub enum AllocMode {
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+/// Caller-supplied resource caps, checked before any allocation (see [`EncodeConfig::limits`]). `Default` = no caps.
 pub struct EncodeLimits {
     /// Maximum `width * height`. `None` -> unbounded.
     pub max_pixels: Option<u64>,
@@ -2766,6 +2767,7 @@ impl EncodeLimits {
 
 #[derive(Default, Clone, Copy)]
 #[non_exhaustive]
+/// Per-call encode policy: resource limits, allocation mode and an optional cooperative stop token. `Default` = no caps, fallible allocation, never cancels. See [`encode_key_frame_with`].
 pub struct EncodeConfig<'a> {
     /// Caller-supplied resource caps, refused BEFORE any allocation. Default:
     /// no caps — this shell has never had an implicit ceiling and adding one
@@ -2896,6 +2898,13 @@ impl enough::Stop for Deadline {
     }
 }
 
+/// Encode one ALLINTRA KEY frame with the default [`EncodeConfig`].
+///
+/// Returns the complete temporal unit (temporal delimiter + sequence header +
+/// `OBU_FRAME`), bit-exact with libaom v3.14.1's `aomenc` for the same
+/// configuration wherever the documented gates hold. A configuration outside the
+/// supported envelope is refused by name through [`KeyFrameError`] before any
+/// frame-sized allocation; see [`KeyFrameConfig::validate_configuration`].
 pub fn encode_key_frame(
     planes: KeyFramePlanes<'_>,
     cfg: &KeyFrameConfig,
