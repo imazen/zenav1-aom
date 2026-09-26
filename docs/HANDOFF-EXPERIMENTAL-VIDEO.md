@@ -5,7 +5,7 @@ the gap; nothing below is guessed — every line has a file reference.**
 
 ## Why this exists
 
-A public-API census of `aom-dsp` (`docs/INTEGRATION_REVIEW.md`, "Follow-up 2026-09-25")
+A public-API census of `aom-dsp` (`docs/archive/INTEGRATION_REVIEW_2026-09-24.md`, "Follow-up 2026-09-25")
 found 15 functions that nothing in the workspace calls. They are not dead code: they are
 **implemented, C-differential-verified inter-prediction kernels the decoder never routes
 to**, and the decoder's own refusal comments say so:

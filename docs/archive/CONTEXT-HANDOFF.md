@@ -101,7 +101,7 @@ python3 xtask/conformance.py --fetch --scope intra   # decode-conformance vector
   `benchmarks/gate3_peak_wall_2026-07-25.md` for the committed run + caveats,
   the `bd8_*`/`gate3_*` series for per-lever Ir attribution, and
   `benchmarks/gate3_filters_2026-07-22.md` for the ranked remaining levers.
-- **Gate 4 — coverage/integration:** `coverage-audit/COVERAGE.md` is the gap
+- **Gate 4 — coverage/integration:** `docs/coverage-audit/COVERAGE.md` is the gap
   matrix; the zenavif integration contract is specced in CLAUDE.md ("Zen codec
   cross-cutting compliance") — DecodeError/limits/stop/alloc landed, probe +
   estimate still open there.

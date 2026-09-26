@@ -126,7 +126,7 @@ finished work, and nothing here is a shipping claim.
 | Zero-MV P frame, single superblock | ✅ byte-exact (`inter_e2e_search`) | ✅ |
 | `[KEY, P]` across bd 8/10/12 × 4:2:0/4:2:2/4:4:4/mono | ❌ | ✅ 24/24 cells, 48/48 frames (`highbd_inter_decode_envelope`) |
 | Animated multi-frame tracks | ❌ | ✅ 8/8 tracks, 40/40 shown frames |
-| Nonzero-MV motion compensation | ⚠️ skeleton | ✅ bd8 · ❌ **refused by name** above bd8 |
+| Nonzero-MV motion compensation | ⚠️ skeleton | ✅ bd8 · ❌ **refused by name** above bd8 (routing to the existing `u16` kernels is landing behind the default-off `experimental-video` feature on `feat/experimental-video` — [`docs/HANDOFF-EXPERIMENTAL-VIDEO.md`](docs/HANDOFF-EXPERIMENTAL-VIDEO.md)) |
 | Switchable interpolation-filter rate model | ✅ ported | ✅ |
 | Compound / OBMC / warped motion / global motion | ❌ | partial |
 | GOP structure, rate control beyond fixed-Q, TPL, temporal filtering | ❌ | n/a |
@@ -239,10 +239,25 @@ cached forever after on the submodule SHA. It needs **cmake, nasm, and a C compi
 on `PATH` — if any is missing the build fails loud with the one-line install
 (`sudo apt-get install cmake nasm build-essential`), never a cryptic linker error.
 
-[`just`](justfile) wraps the common flows: `just test` (full differential suite),
-`just test-scalar` (the `AOM_FORCE_SCALAR` pin that forces every SIMD kernel through
-its scalar twin), `just test-fast` (same coverage, optimized), and `just bench-gate3`
-(the Gate-3 port-vs-C paired benchmark).
+[`just`](justfile) wraps the flows. **Before pushing anything, run the landing gate:**
+
+```sh
+just gate-landing   # ~15 min: upstream-check, fmt-check, clippy -D warnings, deny,
+                    # doc-check, ci-yaml-check, nextest in both dispatch modes
+                    # (default + AOM_FORCE_SCALAR=1), census, whereat, api-doc-check
+```
+
+Every one of those is also a CI job, so the gate is what CI will say. The pieces:
+`just clippy` / `just doc-check` / `just deny` / `just fmt-check` (seconds to a
+minute each), `just test-next` and `just test-next-scalar` (the two nextest
+workspace passes, ~5 min each), `just api-doc-check` (the public-API snapshots in
+`docs/public-api/`, regenerated with `just api-doc` whenever a `pub` item changes),
+and `just upstream-check` (the C oracle must be the pinned tree; `just
+upstream-instrument` / `upstream-pristine` apply and revert the versioned trace sets
+in `docs/upstream-instrumentation/`). `just gate-encode` is the fast encoder-only
+pre-check while iterating; `just bench-gate3` is the port-vs-C paired benchmark. The
+conventions themselves are in [`CONTRIBUTING.md`](CONTRIBUTING.md); the long-form
+loops in [`docs/ITERATION_PLAYBOOK.md`](docs/ITERATION_PLAYBOOK.md).
 
 ## License
 

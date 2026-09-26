@@ -124,7 +124,7 @@ The exact oracle build config lives in `reference/BUILD_CONFIG.md`.
 4. **Coverage** — `xtask/coverage.py` auto-derives the feature checklist from libaom's live
    CLI (`aomenc --help` / `aomdec --help`) and the control-enum surface, then cross-references
    `coverage/feature_map.json`. A feature is green **only** if it maps to a passing test id;
-   the tool does not invent green. Standing audits live in `coverage-audit/`.
+   the tool does not invent green. Standing audits live in `docs/coverage-audit/`.
 
 5. **zenavif integration** — `crates/aom-encode/tests/avif_parity.rs` muxes the port's
    byte-exact AV1 payload into an AVIF still via `zenavif-serialize`, then closes the loop

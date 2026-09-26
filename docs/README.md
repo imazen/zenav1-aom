@@ -21,10 +21,13 @@
 | [`docs/HANDOFF-TOGGLES.md`](docs/HANDOFF-TOGGLES.md) | The instrumented-sibling-C ("ar-swap") method for dumping C's per-block decisions — the tool that localised most encoder divergences. |
 | [`ENCODER_PRIMARY_ENVELOPE.md`](ENCODER_PRIMARY_ENVELOPE.md), [`ZEN_COMPLIANCE_SPEC.md`](ZEN_COMPLIANCE_SPEC.md) | libaom's allintra defaults (verified); the six zen contracts spec (all landed). |
 | `public-api/` | Generated public-API snapshots, enforced by `just api-doc-check` (pinned nightly). |
+| [`upstream-instrumentation/`](upstream-instrumentation/README.md) | The versioned C-oracle trace sets (`just upstream-instrument` / `upstream-pristine`) and the env-gate <-> `aom_dsp::trace` inventory. |
+| [`HANDOFF-EXPERIMENTAL-VIDEO.md`](HANDOFF-EXPERIMENTAL-VIDEO.md) | The brief for wiring the implemented-but-unrouted inter kernels behind the default-off `experimental-video` feature (in progress on `feat/experimental-video`). |
+| [`coverage-audit/`](coverage-audit/COVERAGE.md) | The 2026-07 control-surface and coding-tools coverage audits. |
 | `CONFIG_*_2026-07-30.md`, `DECODER_CONFIG_COVERAGE_2026-07-30.md`, `SIMD_REACH_AUDIT_2026-07-28.md`, `RDOPT_C_COVERAGE_2026-09-01.md` | Dated measurement records still cited from tests; correct as of their date. |
 
 **Historical — do not plan from these:**
 
 * `inter/` — inter-frame (video) roadmaps and handoffs. Inter is a **non-goal until the still-image ship**; the decoder side is gated, the encoder side is a zero-MV skeleton (see the README video table).
-* `../handoff/2026-09-08/` — the imazen-26 datagen fleet's research handoff (`AOM_ADOPTION.md`, cell tables). Input to the standing goal, not a plan.
-* `archive/` — superseded design notes and handoffs whose content has landed or been overtaken (`kb5_completion_spec`, `winner_mode_port_design`, `qm_rd_threading_staged`, `cpu_used_allintra_sweep_plan`, `inter-vartx-coeff-arm-notes`, `CONTEXT-HANDOFF`). Kept for `git blame` context only.
+* `archive/handoff-2026-09-08/` — the imazen-26 datagen fleet's research handoff (`AOM_ADOPTION.md`, cell tables). Input to the standing goal, not a plan.
+* `archive/` — superseded design notes, handoffs and records whose content has landed or been overtaken: the pre-2026-09-08 `STATUS.md` cycles (`STATUS_2026-07-14_to_2026-09-04.md`), the 2026-09-24 integration review (`INTEGRATION_REVIEW_2026-09-24.md`), the imazen-26 datagen handoff (`handoff-2026-09-08/`), `kb5_completion_spec`, `winner_mode_port_design`, `qm_rd_threading_staged`, `cpu_used_allintra_sweep_plan`, `inter-vartx-coeff-arm-notes`, `CONTEXT-HANDOFF`). Kept for `git blame` context only.
