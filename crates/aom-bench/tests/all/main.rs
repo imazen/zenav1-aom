@@ -68,6 +68,7 @@ mod kb41_screen_detected_defaults;
 mod kb5_lossless_speed_axis;
 mod lr_default_parity;
 mod lr_restoration_gate;
+mod masked_compound_decode_envelope;
 mod rd_close_harness;
 mod rd_close_intrabc;
 mod rd_close_palette;

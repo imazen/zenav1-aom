@@ -20,7 +20,10 @@
  */
 #include <string.h>
 #include "config/av1_rtcd.h"
+#include "config/aom_dsp_rtcd.h"
 #include "av1/common/reconinter.h"
+#include "av1/common/blockd.h"
+#include "av1/common/enums.h"
 
 void shim_inter_predictor(const uint8_t *src, int src_stride, uint8_t *dst,
                           int dst_stride, int w, int h, int subpel_x,
@@ -199,4 +202,141 @@ void shim_highbd_compound_inter_predictor(
                            CONVERT_TO_BYTEPTR(dst), dst_stride, &sp, w, h, &cp,
                            ifp, bd);
   }
+}
+
+/* ==================== masked-compound predictors =============================
+ * Oracle for `build_masked_compound_inter_predictor` (aom-inter, step 4b) — the
+ * wedge / diff-weighted masked compound path of `av1_make_masked_inter_predictor`
+ * + `build_masked_compound_no_round` (reconinter.c:629/:602). Unlike the group-0
+ * compound shim, each reference convolves into its OWN `CONV_BUF` (ref 0 ->
+ * `org_dst`/`tmp_conv_dst`, ref 1 -> `tmp_buf16`) with `do_average = 0`, then a
+ * REAL `aom_*_blend_a64_d16_mask` blends them through the luma-resolution mask:
+ * `av1_get_compound_type_mask` returns the wedge codebook mask, or — for
+ * COMPOUND_DIFFWTD — `comp_data->seg_mask`, which `av1_build_compound_
+ * diffwtd_mask_d16` builds from the two d16 buffers on luma (`!conv_params.plane`)
+ * and which the chroma calls reuse. `mask_stride = block_size_wide[sb_type]`.
+ *
+ * `seg_mask` is caller-owned (it plays `xd->seg_mask`): for COMPOUND_DIFFWTD the
+ * shim builds it when `build_seg_mask` (the luma call) and reads it as-is
+ * otherwise (the chroma calls) — the same in/out contract the Rust predictor
+ * exposes through `is_luma`. For COMPOUND_WEDGE `seg_mask` is ignored.
+ *
+ * ALIGNMENT / DISPATCH: same RTCD aligned-store hazard as the compound shim —
+ * pin the dist-wtd family to `_c`.
+ */
+void shim_masked_compound_inter_predictor(
+    const uint8_t *src0, int src_stride0, const uint8_t *src1, int src_stride1,
+    uint8_t *dst, int dst_stride, int w, int h, int subpel_x0, int subpel_y0,
+    int subpel_x1, int subpel_y1, int filter_x, int filter_y, int comp_type,
+    int wedge_index, int wedge_sign, int mask_type, int bsize, int ssx,
+    int ssy, uint8_t *seg_mask, int build_seg_mask) {
+  shim_pin_dist_wtd_scalar();
+  av1_init_wedge_masks();
+  const uint8_t *srcs[2] = { src0, src1 };
+  const int strs[2] = { src_stride0, src_stride1 };
+  const int subpx[2] = { subpel_x0, subpel_x1 };
+  const int subpy[2] = { subpel_y0, subpel_y1 };
+  const InterpFilterParams *ifp[2];
+  ifp[0] =
+      av1_get_interp_filter_params_with_block_size((InterpFilter)filter_x, w);
+  ifp[1] =
+      av1_get_interp_filter_params_with_block_size((InterpFilter)filter_y, h);
+
+  /* ref 0 -> conv_a (org_dst), ref 1 -> conv_b (tmp_buf16); both do_average=0.
+   * get_conv_params_no_round(cmp_index=0, .., is_compound=1, bd) gives the
+   * compound rounds (round_1 = COMPOUND_ROUND1_BITS) with do_average = 0. */
+  CONV_BUF_TYPE conv_a[MAX_SB_SQUARE], conv_b[MAX_SB_SQUARE];
+  CONV_BUF_TYPE *convs[2] = { conv_a, conv_b };
+  for (int ref = 0; ref < 2; ref++) {
+    SubpelParams sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.xs = SCALE_SUBPEL_SHIFTS;
+    sp.ys = SCALE_SUBPEL_SHIFTS;
+    sp.subpel_x = subpx[ref] << SCALE_EXTRA_BITS;
+    sp.subpel_y = subpy[ref] << SCALE_EXTRA_BITS;
+    ConvolveParams cp = get_conv_params_no_round(0, 0, convs[ref], w, 1, 8);
+    inter_predictor(srcs[ref], strs[ref], dst, dst_stride, &sp, w, h, &cp, ifp);
+  }
+
+  INTERINTER_COMPOUND_DATA cd;
+  memset(&cd, 0, sizeof(cd));
+  cd.seg_mask = seg_mask;
+  cd.type = (COMPOUND_TYPE)comp_type;
+  cd.wedge_index = (int8_t)wedge_index;
+  cd.wedge_sign = (int8_t)wedge_sign;
+  cd.mask_type = (DIFFWTD_MASK_TYPE)mask_type;
+  const int mask_stride = block_size_wide[bsize];
+  /* The blend's rounding params are the compound no-round pair. */
+  ConvolveParams cpb = get_conv_params_no_round(0, 0, conv_a, w, 1, 8);
+  const uint8_t *mask;
+  if (comp_type == COMPOUND_DIFFWTD) {
+    if (build_seg_mask) {
+      av1_build_compound_diffwtd_mask_d16(cd.seg_mask, cd.mask_type, conv_a, w,
+                                          conv_b, w, h, w, &cpb, 8);
+    }
+    mask = cd.seg_mask;
+  } else {
+    mask = av1_get_compound_type_mask(&cd, (BLOCK_SIZE)bsize);
+  }
+  /* The `_c` tier — the RTCD AVX2 blend does aligned 32-byte stores that fault
+   * on ordinary heap oracle buffers (same latent class as the dist-wtd pin). */
+  aom_lowbd_blend_a64_d16_mask_c(dst, dst_stride, conv_a, w, conv_b, w, mask,
+                                 mask_stride, w, h, ssx, ssy, &cpb);
+}
+
+void shim_highbd_masked_compound_inter_predictor(
+    const uint16_t *src0, int src_stride0, const uint16_t *src1, int src_stride1,
+    uint16_t *dst, int dst_stride, int w, int h, int subpel_x0, int subpel_y0,
+    int subpel_x1, int subpel_y1, int filter_x, int filter_y, int comp_type,
+    int wedge_index, int wedge_sign, int mask_type, int bsize, int ssx,
+    int ssy, uint8_t *seg_mask, int build_seg_mask, int bd) {
+  shim_pin_dist_wtd_scalar();
+  av1_init_wedge_masks();
+  const uint16_t *srcs[2] = { src0, src1 };
+  const int strs[2] = { src_stride0, src_stride1 };
+  const int subpx[2] = { subpel_x0, subpel_x1 };
+  const int subpy[2] = { subpel_y0, subpel_y1 };
+  const InterpFilterParams *ifp[2];
+  ifp[0] =
+      av1_get_interp_filter_params_with_block_size((InterpFilter)filter_x, w);
+  ifp[1] =
+      av1_get_interp_filter_params_with_block_size((InterpFilter)filter_y, h);
+
+  CONV_BUF_TYPE conv_a[MAX_SB_SQUARE], conv_b[MAX_SB_SQUARE];
+  CONV_BUF_TYPE *convs[2] = { conv_a, conv_b };
+  for (int ref = 0; ref < 2; ref++) {
+    SubpelParams sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.xs = SCALE_SUBPEL_SHIFTS;
+    sp.ys = SCALE_SUBPEL_SHIFTS;
+    sp.subpel_x = subpx[ref] << SCALE_EXTRA_BITS;
+    sp.subpel_y = subpy[ref] << SCALE_EXTRA_BITS;
+    ConvolveParams cp = get_conv_params_no_round(0, 0, convs[ref], w, 1, bd);
+    highbd_inter_predictor(CONVERT_TO_BYTEPTR(srcs[ref]), strs[ref],
+                           CONVERT_TO_BYTEPTR(dst), dst_stride, &sp, w, h, &cp,
+                           ifp, bd);
+  }
+
+  INTERINTER_COMPOUND_DATA cd;
+  memset(&cd, 0, sizeof(cd));
+  cd.seg_mask = seg_mask;
+  cd.type = (COMPOUND_TYPE)comp_type;
+  cd.wedge_index = (int8_t)wedge_index;
+  cd.wedge_sign = (int8_t)wedge_sign;
+  cd.mask_type = (DIFFWTD_MASK_TYPE)mask_type;
+  const int mask_stride = block_size_wide[bsize];
+  ConvolveParams cpb = get_conv_params_no_round(0, 0, conv_a, w, 1, bd);
+  const uint8_t *mask;
+  if (comp_type == COMPOUND_DIFFWTD) {
+    if (build_seg_mask) {
+      av1_build_compound_diffwtd_mask_d16(cd.seg_mask, cd.mask_type, conv_a, w,
+                                          conv_b, w, h, w, &cpb, bd);
+    }
+    mask = cd.seg_mask;
+  } else {
+    mask = av1_get_compound_type_mask(&cd, (BLOCK_SIZE)bsize);
+  }
+  aom_highbd_blend_a64_d16_mask_c(CONVERT_TO_BYTEPTR(dst), dst_stride, conv_a, w,
+                                  conv_b, w, mask, mask_stride, w, h, ssx, ssy,
+                                  &cpb, bd);
 }

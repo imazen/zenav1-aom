@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-dsp.txt 1847 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 128 lines (73 hidden + 89 excluded-feature)
+# files: zenav1-aom-dsp.txt 1855 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 130 lines (75 hidden + 89 excluded-feature)
 # arch-unique surface: aarch64 2 | x86_64 8
 
 ## summary
 #
 #   pub modules                                56
-#   pub types (struct/enum/trait/alias)        98
+#   pub types (struct/enum/trait/alias)        99
 #   pub consts/statics                        212
 #   pub macros                                  4
-#   free functions                            544
+#   free functions                            545
 #   inherent methods                          107
-#   struct fields                             718
-#   enum variants                              37
-#   trait roster entries (type × trait)       280
-#   auto-trait-complete types                  87
+#   struct fields                             721
+#   enum variants                              39
+#   trait roster entries (type × trait)       285
+#   auto-trait-complete types                  88
 #   auto-trait exceptions                       4
 #
 # per-module pub lines:
 #   (root)                            8
-#   aom_dsp                        1768
+#   aom_dsp                        1775
 
-## items (1767 lines)
+## items (1774 lines)
 
 pub mod aom_dsp
 pub mod aom_dsp::blocksize
@@ -1287,6 +1287,12 @@ pub fn aom_dsp::inter::warp::find_projection(usize, &[i32], &[i32], i32, i32, i3
 pub fn aom_dsp::inter::warp::get_shear_params(&mut aom_dsp::inter::warp::WarpedMotionParams) -> bool
 pub fn aom_dsp::inter::warp::highbd_warp_affine(&[i32; 6], &[u16], usize, usize, usize, &mut [u16], usize, &mut [u16], usize, i32, i32, usize, usize, usize, usize, u32, &aom_dsp::inter::warp::WarpConvolveParams, i16, i16, i16, i16)
 pub fn aom_dsp::inter::warp::warp_affine(&[i32; 6], &[u16], usize, usize, usize, &mut [u16], usize, usize, i32, i32, usize, usize, usize, usize, i16, i16, i16, i16)
+pub enum aom_dsp::inter::MaskedCompound
+pub aom_dsp::inter::MaskedCompound::Diffwtd
+pub aom_dsp::inter::MaskedCompound::Diffwtd::mask_type: aom_dsp::inter::compound::DiffwtdMaskType
+pub aom_dsp::inter::MaskedCompound::Wedge
+pub aom_dsp::inter::MaskedCompound::Wedge::index: usize
+pub aom_dsp::inter::MaskedCompound::Wedge::sign: usize
 pub struct aom_dsp::inter::CompoundRefPlane<'a>
 pub aom_dsp::inter::CompoundRefPlane::h: usize
 pub aom_dsp::inter::CompoundRefPlane::mv: (i32, i32)
@@ -1299,6 +1305,7 @@ pub fn aom_dsp::inter::blend_a64_hmask(&mut [u16], usize, usize, &[u16], usize, 
 pub fn aom_dsp::inter::blend_a64_vmask(&mut [u16], usize, usize, &[u16], usize, usize, &[u8], usize, usize)
 pub fn aom_dsp::inter::build_compound_inter_predictor([aom_dsp::inter::CompoundRefPlane<'_>; 2], &mut [u16], usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, u32, aom_dsp::inter::compound::DistWtdWeights)
 pub fn aom_dsp::inter::build_inter_predictor(&[u16], usize, usize, usize, &mut [u16], usize, usize, usize, usize, usize, usize, i32, i32, i32, i32, usize, usize, usize, usize, u32, &aom_dsp::inter::scale::ScaleFactors)
+pub fn aom_dsp::inter::build_masked_compound_inter_predictor([aom_dsp::inter::CompoundRefPlane<'_>; 2], &mut [u16], usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, u32, aom_dsp::inter::MaskedCompound, usize, bool, &mut [u8])
 pub fn aom_dsp::inter::build_mc_border(&[u16], usize, usize, usize, i32, i32, usize, usize, &mut [u8])
 pub fn aom_dsp::inter::build_mc_border_highbd(&[u16], usize, usize, usize, i32, i32, usize, usize, &mut [u16])
 pub fn aom_dsp::inter::compound_rounds(u32) -> (i32, i32)
@@ -1797,7 +1804,7 @@ pub macro aom_dsp::trace_focus!
 pub macro aom_dsp::trace_on!
 pub macro aom_dsp::trace_out!
 
-## trait impls (75 types)
+## trait impls (76 types)
 
 F: aom_dsp::entropy::dv_ref::DvNbr> aom_dsp::entropy::dv_ref::DvGrid
 aom_dsp::census::Counts: Clone, Debug, Eq, PartialEq
@@ -1847,6 +1854,7 @@ aom_dsp::entropy::partition::TxMode: Clone, Copy, Debug, Eq, PartialEq
 aom_dsp::entropy::rb::ReadBitBuffer<'a>: Clone, Debug
 aom_dsp::entropy::wb::WriteBitBuffer: Clone, Debug, Default
 aom_dsp::inter::CompoundRefPlane<'a>: Clone, Copy
+aom_dsp::inter::MaskedCompound: Clone, Copy, Debug, Eq, PartialEq
 aom_dsp::inter::compound::CompoundType: Clone, Copy, Debug, Eq, PartialEq
 aom_dsp::inter::compound::DiffwtdMaskType: Clone, Copy, Debug, Eq, PartialEq
 aom_dsp::inter::compound::DistWtdWeights: Clone, Copy, Debug, Eq, PartialEq
@@ -1877,7 +1885,7 @@ u8: aom_dsp::cdef::frame::CdefPixel, aom_dsp::restore::pick::LrPixel
 
 ## auto traits
 
-87 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+88 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBuf<'a>: !UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBufU8<'a>: !UnwindSafe
 aom_dsp::restore::frame::LrPlaneInput<'a>: !UnwindSafe

@@ -119,12 +119,14 @@ fn masked_compound_blocks_refused_by_name() {
     // vertical-boundary clip whose halves translate opposite directions — the
     // shape where a spatial split (wedge) between two refs wins RD.
     //
-    // Both build states refuse, but the FAMILY differs: feature OFF the whole
-    // compound gate fires first (`compound`); feature ON the compound arm runs
-    // and the group-1 masked selector is the named refusal — the step-4a
-    // boundary that step 4b's mask builders will flip to decode-success.
+    // Feature OFF the whole compound gate refuses by name (`compound`);
+    // feature ON step 4b routed the masked (wedge/diffwtd) path — the fixture
+    // decodes end-to-end, byte-pinned vs the C oracle by aom-bench's
+    // masked_compound_decode_envelope.
     if aom_decode::EXPERIMENTAL_VIDEO {
-        assert_refused_by_name(MASKED_COMPOUND_STREAM, "masked compound", &[(64, 64); 4]);
+        let frames = decode_frames(MASKED_COMPOUND_STREAM)
+            .expect("experimental-video on: a masked-compound stream must decode");
+        assert_eq!(frames.len(), 4, "expected 4 shown frames");
     } else {
         assert_refused_by_name(MASKED_COMPOUND_STREAM, "compound", &[(64, 64); 4]);
     }

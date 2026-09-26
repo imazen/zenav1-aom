@@ -38,6 +38,55 @@ tests sit inside modules that consumers also use, so they need per-item work or
 in-crate test moves — deferred until after the first crates.io publish fixes the
 contract. `rust-version` is not set (untested MSRV; CI runs stable 1.98).
 
+## `experimental-video` step 4b: masked compound (wedge / diff-weighted) routed through the two-buffer mask blend (2026-09-25, branch `feat/experimental-video`)
+
+Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md` step 4, second landing — the masked
+arm (`comp_group_idx = 1`). Every kernel the C masked path needs already
+existed and was byte-locked (`interintra::wedge_mask_signed` for the wedge
+codebook; `compound::build_compound_diffwtd_mask_{,_d16,_highbd}` +
+`lowbd/highbd_blend_a64_d16_mask` for the blend), so this step was routing, not
+a new kernel — matching the step-7 stop rule, none was missing. With
+`experimental-video` ON a frame coding masked-compound blocks decodes
+**byte-exact** against the pinned C oracle; OFF keeps the named refusal
+`compound` (the group-agnostic gate that fires before the masked read).
+
+**The routing.** `read_compound_type_info`'s masked outputs
+(`comp_type`/`wedge_index`/`wedge_sign`/`mask_type`) — previously parsed for
+stream sync and discarded — now feed a `MaskedCompound` descriptor. The decoder
+allocates one luma-resolution `seg_mask` scratch per compound block.
+`build_masked_compound_inter_predictor` (the port of
+`av1_make_masked_inter_predictor` + `build_masked_compound_no_round`,
+`reconinter.c:629`/`:602`) convolves each ref into its OWN `d16` buffer via the
+step-4a-extracted `convolve_one_compound_ref` (both `do_average = 0`), then:
+
+- `COMPOUND_WEDGE` — fetches the luma-resolution wedge codebook mask
+  (`wedge_mask_signed(luma_bsize, index, sign)`); chroma refetches the same
+  codebook entry.
+- `COMPOUND_DIFFWTD` — builds `seg_mask` from the two luma d16 intermediates
+  **only on luma** (`!inter_pred_params->conv_params.plane`,
+  `reconinter.c:655`); the chroma call reuses that same luma-resolution mask.
+
+Both then blend `lowbd_blend_a64_d16_mask`/`highbd_blend_a64_d16_mask` with
+`mask_stride = block_size_wide[mi->bsize]` (luma width) and the plane's
+`subw`/`subh` — `d16_mask_at` subsamples the luma mask for chroma. The group-0
+shared-`dst16` + `do_average` combine is unchanged.
+
+**Byte-gates.** `masked_compound_decode_envelope` — the conformant
+`masked-compound.obu` (wedge + diffwtd blocks over an occlusion boundary)
+decodes all 4 shown frames byte-identically to `aom_codec_av1_dx` under the
+feature, and refuses `compound` by name without it. The new
+`inter_pred_diff::masked_compound_facade_matches_c` drives
+`build_masked_compound_inter_predictor` vs a real-C masked-assembly shim
+(`ref_masked_compound_inter_predictor` /
+`ref_highbd_masked_compound_inter_predictor` — two `inter_predictor` CONV_BUF
+gathers + `av1_get_compound_type_mask`/`av1_build_compound_diffwtd_mask_d16` +
+the `_c` d16 blend) across wedge index/sign and both diffwtd `mask_type`s,
+luma + 4:2:0 chroma, 7 wedge-capable bsizes, bd 8/10/12, 3 filter pairs and 4
+MV pairs — 1,260 blocks, 2,520 plane calls, byte-exact. The `aom-decode`
+`unsupported_refusals` masked pin flipped: ON `masked-compound` decodes (4
+shown frames), OFF still refuses `compound`. KB-42-clean: both new gates are
+integration targets, none `--lib`.
+
 ## `experimental-video` step 4a: compound group-0 (average / dist-weighted) routed through the two-ref predictor (2026-09-25, branch `feat/experimental-video`)
 
 Per `docs/HANDOFF-EXPERIMENTAL-VIDEO.md` step 4 (compound prediction), first
