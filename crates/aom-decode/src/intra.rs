@@ -362,38 +362,6 @@ impl<'c> TileKf<'c> {
         }
     }
 
-    /// `av1_reset_entropy_context`'s intra arm (parse_decode_block tail):
-    /// skip blocks zero their entropy contexts — plane 0 always, over the
-    /// block's mi footprint; the chroma planes when this block is the chroma
-    /// reference, over the chroma plane-bsize footprint from the adjusted
-    /// context bases (the shared-chroma group's `adj_row`/`adj_col` origin).
-    fn reset_intra_skip_ctx(&mut self, bx: &BlockCtx, info: &MbModeInfoKf) {
-        if info.skip == 0 {
-            return;
-        }
-        let cfg = self.cfg;
-        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
-        let bw = MI_SIZE_WIDE[bx.bsize] as usize;
-        let bh = MI_SIZE_HIGH[bx.bsize] as usize;
-        let a0 = bx.mi_col as usize;
-        self.above_e[0][a0..a0 + bw].fill(0);
-        let l0 = (bx.mi_row & 31) as usize;
-        self.left_e[0][l0..l0 + bh].fill(0);
-        if !cfg.monochrome && bx.chroma_ref {
-            let plane_bsize = get_plane_block_size(bx.bsize, ss_x, ss_y);
-            let (uw, uh) = (
-                MI_SIZE_WIDE[plane_bsize] as usize,
-                MI_SIZE_HIGH[plane_bsize] as usize,
-            );
-            let uv_a_base = (bx.adj_col >> ss_x) as usize;
-            let uv_l_base = ((bx.adj_row & 31) >> ss_y) as usize;
-            for plane in 1..=2 {
-                self.above_e[plane][uv_a_base..uv_a_base + uw].fill(0);
-                self.left_e[plane][uv_l_base..uv_l_base + uh].fill(0);
-            }
-        }
-    }
-
     /// `decode_reconstruct_tx`'s non-uniform arm (decodeframe.c): an intrabc
     /// var-tx block walks the leaf grid in DFS order — each leaf reads its own
     /// coeffs + inter ext-tx type, then copy-reconstructs at the leaf size.
@@ -1726,7 +1694,7 @@ impl<'c> TileKf<'c> {
 
         // --- parse_decode_block tail: skip blocks reset their entropy context
         // (av1_reset_entropy_context) ---
-        self.reset_intra_skip_ctx(bx, &info);
+        self.reset_skip_ctx(bx, info.skip);
 
         let Stage::Continue((txbs, txbs_uv)) =
             self.recon_intra_block(dec, cdfs, bx, &info, &palette, &tx)

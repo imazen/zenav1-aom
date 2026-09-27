@@ -2704,6 +2704,50 @@ impl<'c> TileKf<'c> {
         }
     }
 
+    /// `av1_reset_entropy_context` (blockd.c:58): a SKIP block resets its
+    /// entropy-context footprint to zero — plane 0 always, chroma planes when
+    /// this block is the chroma reference, each over its own plane_bsize
+    /// footprint. This is NOT intra-specific: C runs it for every skipped
+    /// block before `decode_token_recon_block`, and a skip block reads (and
+    /// therefore stamps) no coefficients, so without the reset the footprint
+    /// keeps the stale culs of whatever block last occupied those context
+    /// cells.
+    ///
+    /// The port had this only on the intra path. It stayed invisible while the
+    /// probe pinned before any block could read across a skipped inter
+    /// neighbour's stale cells; the first real victim is mi(44,18) (the first
+    /// intra-in-inter block), whose LEFT neighbour mi(44,16) is a skipped inter
+    /// block: its stale non-zero culs flip mi(44,18)'s `txb_skip_ctx`, so all
+    /// three of its txbs still decode all-zero (the same symbol VALUES C reads)
+    /// but off a different `txb_skip_cdf` row — the arithmetic decoder drifts
+    /// and the next block's `skip_txfm` reads 0 where C reads 1.
+    fn reset_skip_ctx(&mut self, bx: &BlockCtx, skip: i32) {
+        if skip == 0 {
+            return;
+        }
+        let cfg = self.cfg;
+        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
+        let bw = MI_SIZE_WIDE[bx.bsize] as usize;
+        let bh = MI_SIZE_HIGH[bx.bsize] as usize;
+        let a0 = bx.mi_col as usize;
+        self.above_e[0][a0..a0 + bw].fill(0);
+        let l0 = (bx.mi_row & 31) as usize;
+        self.left_e[0][l0..l0 + bh].fill(0);
+        if !cfg.monochrome && bx.chroma_ref {
+            let plane_bsize = get_plane_block_size(bx.bsize, ss_x, ss_y);
+            let (uw, uh) = (
+                MI_SIZE_WIDE[plane_bsize] as usize,
+                MI_SIZE_HIGH[plane_bsize] as usize,
+            );
+            let uv_a_base = (bx.adj_col >> ss_x) as usize;
+            let uv_l_base = ((bx.adj_row & 31) >> ss_y) as usize;
+            for plane in 1..=2 {
+                self.above_e[plane][uv_a_base..uv_a_base + uw].fill(0);
+                self.left_e[plane][uv_l_base..uv_l_base + uh].fill(0);
+            }
+        }
+    }
+
     /// Stamp the block's mode info over its frame-cropped mi footprint (the
     /// mi-grid stamp `set_offsets` clips with `x_mis`/`y_mis`).
     fn stamp_mi(&mut self, mi_row: i32, mi_col: i32, bsize: usize, cell: MiNbrKf) {
