@@ -411,6 +411,7 @@ fn rd_pick_intra_mode_sb_matches_c_composition() {
                 qm_levels: None,
             };
             let sby_cfg = IntraSbySearchCfg {
+                stop: None,
                 gates: &gates,
                 top_intra_model_count_allowed: TOP_INTRA_MODEL_COUNT as i32,
                 adapt_top_model_rd_count_using_neighbors: false,

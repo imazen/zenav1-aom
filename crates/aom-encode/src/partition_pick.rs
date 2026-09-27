@@ -842,6 +842,14 @@ fn leaf_pick_sb_modes(
     // (bsize, mi_row, mi_col) (partition_search.c:628-631); the shadowed
     // env is byte-inert when no tune is installed (KB-59).
     let env = &env.node_env(bsize, mi_row, mi_col);
+    // Leaf-granularity cancellation — the node entry check bounds the gap to
+    // one leaf's 61-candidate sweep, which is still tens of ms at cpu_used=0
+    // on a large block. The caller's next check unwinds the arm.
+    if let Some(s) = env.stop {
+        if s.check().is_err() {
+            return (PartRdStats::invalid(), None, 0);
+        }
+    }
     // av1_rd_cost_update(x->rdmult, &best_rd) on entry (pick_sb_modes:927).
     let mut best_rd = *best_remain;
     rd_cost_update(env.rdmult, &mut best_rd);
@@ -1270,6 +1278,7 @@ fn leaf_pick_sb_modes(
         mb_to_bottom_edge: (env.mi_rows - mi_h as i32 - mi_row) * 4 * 8,
         winner_mode: wm_cfg.as_ref(),
         palette: palette_cfg,
+        stop: env.stop,
     };
     // `x->src_var_info_of_4x4_sub_blocks` (encodeframe.c): C allocates + inits
     // the variance cache ONCE PER SUPERBLOCK and shares it across every leaf
@@ -3062,6 +3071,16 @@ pub fn rd_pick_partition_real(
     if best_rdc.rdcost < 0 {
         return (None, PartRdStats::invalid(), false);
     }
+    // Cooperative cancellation at partition-node granularity — one
+    // superblock's walk can run ~850 ms at cpu_used=0, far past the
+    // per-superblock poll in `pack_tile_lr_stop`. A fired token unwinds the
+    // recursion one level per check; the SB loop re-polls before the
+    // `found` assert so a partial tree can never reach `pack_sb`.
+    if let Some(s) = env.stop {
+        if s.check().is_err() {
+            return (None, PartRdStats::invalid(), false);
+        }
+    }
     let mi_w = MI_SIZE_WIDE_B[bsize];
     let mi_step = (mi_w / 2) as i32;
     let bsize_at_least_8x8 = bsize >= 3;
@@ -4825,6 +4844,14 @@ pub fn rd_use_partition_real(
     // `x->rdmult` is re-folded at THIS node's (bsize, mi_row, mi_col)
     // (KB-59); byte-inert without a tune.
     let env = &env.node_env(bsize, mi_row, mi_col);
+    // Cooperative cancellation, per replay node. `Absent` is the same
+    // sentinel off-frame quadrants carry — the caller's next poll unwinds
+    // before the partial tree is consumed.
+    if let Some(s) = env.stop {
+        if s.check().is_err() {
+            return (SbTree::Absent, PartRdStats::invalid());
+        }
+    }
     let bs = MI_SIZE_WIDE_B[bsize] as i32;
     let hbs = bs / 2;
     let invalid = PartRdStats::invalid();
@@ -4877,7 +4904,12 @@ pub fn rd_use_partition_real(
                 rdcost: this_rdc.rdcost,
             });
             last_part_rdc = this_rdc;
-            SbTree::Leaf(winner.expect("unbounded-budget leaf pick always finds a winner"))
+            // `None` is reachable only via the stop token — propagate as
+            // `Absent` rather than panicking.
+            let Some(winner) = winner else {
+                return (SbTree::Absent, PartRdStats::invalid());
+            };
+            SbTree::Leaf(winner)
         }
         // PARTITION_HORZ (:1869) / PARTITION_VERT (:1903) — same shape on
         // the other axis.
@@ -4911,7 +4943,9 @@ pub fn rd_use_partition_real(
                 rdcost: this_rdc.rdcost,
             });
             last_part_rdc = this_rdc;
-            let mut w0 = w0.expect("unbounded-budget leaf pick always finds a winner");
+            let Some(mut w0) = w0 else {
+                return (SbTree::Absent, PartRdStats::invalid());
+            };
             let sub1_in_frame = if is_horz {
                 mi_row + hbs < env.mi_rows
             } else {
@@ -4990,7 +5024,9 @@ pub fn rd_use_partition_real(
                     last_part_rdc.dist += tmp_rdc.dist;
                     last_part_rdc.rdcost += tmp_rdc.rdcost;
                 }
-                let w1 = w1.expect("unbounded-budget leaf pick always finds a winner");
+                let Some(w1) = w1 else {
+                    return (SbTree::Absent, PartRdStats::invalid());
+                };
                 if is_horz {
                     SbTree::Horz(Box::new([w0, w1]))
                 } else {
@@ -5474,6 +5510,13 @@ pub fn nonrd_use_partition_real(
 ) -> SbTree {
     debug_assert!(mi_row < env.mi_rows && mi_col < env.mi_cols);
     debug_assert!(bsize >= 3, "only square blocks 8x8..128x128 (:2971)");
+    // Cooperative cancellation, per replay node (`Absent` = the off-frame
+    // sentinel; the caller's next poll unwinds before it is consumed).
+    if let Some(s) = env.stop {
+        if s.check().is_err() {
+            return SbTree::Absent;
+        }
+    }
     let bs = MI_SIZE_WIDE_B[bsize] as i32;
     let hbs = bs / 2;
 
@@ -5507,6 +5550,9 @@ pub fn nonrd_use_partition_real(
                 last_source_variance,
                     color_palette_thresh,
                 );
+            let Some(w) = w else {
+                return SbTree::Absent;
+            };
             SbTree::Leaf(w)
         }
         // PARTITION_HORZ (:3055) / PARTITION_VERT (:3031) — pick+encode strip
@@ -5530,6 +5576,9 @@ pub fn nonrd_use_partition_real(
                 last_source_variance,
                     color_palette_thresh,
                 );
+            let Some(w0) = w0 else {
+                return SbTree::Absent;
+            };
             let sub1_in_frame = if is_horz {
                 mi_row + hbs < env.mi_rows
             } else {
@@ -5559,6 +5608,9 @@ pub fn nonrd_use_partition_real(
                     last_source_variance,
                         color_palette_thresh,
                     );
+                let Some(w1) = w1 else {
+                    return SbTree::Absent;
+                };
                 if is_horz {
                     SbTree::Horz(Box::new([w0, w1]))
                 } else {
@@ -5711,7 +5763,7 @@ fn nonrd_leaf_pick_and_encode(
     visits: &mut Vec<LeafVisit>,
     last_source_variance: &mut u32,
     color_palette_thresh: &mut i32,
-) -> LeafWinner {
+) -> Option<LeafWinner> {
     // `setup_block_rdmult` at pick_sb_modes_nonrd:2314 / encode_b_nonrd:2103
     // — under a perceptual tune the ssim arm folds `x->rdmult` at THIS
     // leaf's (bsize, mi_row, mi_col) even on the nonrd walk (the arm is not
@@ -5719,6 +5771,14 @@ fn nonrd_leaf_pick_and_encode(
     // estimate arm's `rdmult`, the palette search's `y_env.rdmult` and the
     // final encode all read the shadowed value (KB-59).
     let env = &env.node_env(bsize, mi_row, mi_col);
+    // Leaf-granularity cancellation — same contract as
+    // `leaf_pick_sb_modes`'s entry check; `None` only ever means the token
+    // fired, which the caller propagates as `SbTree::Absent`.
+    if let Some(s) = env.stop {
+        if s.check().is_err() {
+            return None;
+        }
+    }
     // x->source_variance: pick_sb_modes_nonrd:2306-2311 recomputes per leaf
     // (bsize < sb_size, or the SB-level value is the identical
     // perpixel-variance — module docs in nonrd_pickmode.rs).
@@ -5751,7 +5811,7 @@ fn nonrd_leaf_pick_and_encode(
             dist: this_rdc.dist,
             rdcost: this_rdc.rdcost,
         });
-        let mut w = winner.expect("unbounded-budget leaf pick always finds a winner");
+        let mut w = winner?;
         // output_enabled = true (OUTPUT_ENABLED): the C nonrd walk encodes
         // every leaf dry_run=0 (encode_b_nonrd, partition_search.c:2100). Per
         // KB-4 that gives the tx_type_map COPY semantics — eob-0 -> DCT_DCT
@@ -5785,7 +5845,7 @@ fn nonrd_leaf_pick_and_encode(
             env.mi_rows,
             env.mi_cols,
         );
-        return w;
+        return Some(w);
     }
 
     // Estimate arm: av1_nonrd_pick_intra_mode (nonrd_pickmode.c:1582).
@@ -6194,5 +6254,5 @@ fn nonrd_leaf_pick_and_encode(
         env.mi_rows,
         env.mi_cols,
     );
-    w
+    Some(w)
 }

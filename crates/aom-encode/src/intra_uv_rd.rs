@@ -1858,6 +1858,7 @@ pub fn rd_pick_intra_sbuv_mode(
     pol: &TxTypeSearchPolicy,
     lp: &UvLoopPolicy,
     palette: Option<&crate::palette_search::UvPaletteArgs>,
+    stop: Option<&dyn enough::Stop>,
 ) -> (UvModeResult, Vec<UvModeVisit>) {
     // init_sbuv_mode: uv_mode = UV_DC_PRED, palette_size[1] = 0.
     let mut best = UvModeResult {
@@ -1882,7 +1883,15 @@ pub fn rd_pick_intra_sbuv_mode(
     let sqr_up = crate::tx_search::TXSIZE_SQR_UP_MAP[max_tx_size];
     let _ = sqr_up; // the caller resolved intra_uv_mode_mask by this class
 
-    for &uv_mode in UV_RD_SEARCH_MODE_ORDER.iter() {
+    for (uv_idx, &uv_mode) in UV_RD_SEARCH_MODE_ORDER.iter().enumerate() {
+        // Strided candidate poll — see `IntraSbySearchCfg::stop`. A fire
+        // exits the sweep with whatever partial result stands; the caller's
+        // next check unwinds before the outcome can be emitted.
+        if uv_idx % 16 == 0 && let Some(s) = stop {
+            if s.check().is_err() {
+                break;
+            }
+        }
         let mut visit = UvModeVisit {
             uv_mode,
             this_rd: None,

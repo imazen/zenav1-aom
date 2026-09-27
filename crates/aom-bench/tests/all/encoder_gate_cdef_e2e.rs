@@ -320,6 +320,7 @@ fn port_encode_cdef(cell: &EncodeCell, bootstrap: &[u8]) -> Vec<u8> {
     let speed = 0i32;
     let sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
     let env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: SB,
         mi_rows,

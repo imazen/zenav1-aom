@@ -117,7 +117,7 @@
 //! search sees both frames — `deblocked` and `cur` — because C saves boundary
 //! lines from each (`av1_loop_restoration_save_boundary_lines` calls 0 and 1).
 
-use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame};
+use aom_dsp::cdef::frame::{CdefFrameParams, cdef_frame_stop};
 use aom_dsp::entropy::enc::OdEcEnc;
 use aom_dsp::entropy::header::{
     CdefHeader, ColorConfigParams, DecoderModelInfo, DeltaQParams, FilmGrainParams, FrameHeaderObu,
@@ -130,17 +130,19 @@ use aom_dsp::entropy::lr::{LrFrameConfig, RESTORE_NONE as LR_RESTORE_NONE};
 use aom_dsp::entropy::obu::write_obu_header;
 use aom_dsp::entropy::partition::KfFrameContext;
 use aom_dsp::entropy::wb::WriteBitBuffer;
-use aom_dsp::loopfilter::frame::{LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame_opt};
+use aom_dsp::loopfilter::frame::{
+    LfFrameBuf, LfMiGrid, LfParams, loop_filter_frame_opt_stop, loop_filter_frame_u8_opt_stop,
+};
 use aom_dsp::quant::av1_dc_quant_qtx;
 use aom_dsp::quant::{Dequants, Quants, av1_build_quantizer, set_q_index};
-use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, pick_filter_restoration};
+use aom_dsp::restore::pick::{LrPlanePixels, LrSearchInput, pick_filter_restoration_stop};
 use aom_dsp::txb::cost_tokens_from_cdf;
 
 use crate::encode_intra::TrellisOptType;
 use crate::encode_sb::{LeafWinner, SbEncodeEnv, SbTree};
 use crate::intra_uv_rd::UvLoopPolicy;
 use crate::lf_search::{
-    LfSearchFrame, LoopFilterLevels, pick_filter_level_from_q, pick_filter_level_mt,
+    LfSearchFrame, LoopFilterLevels, pick_filter_level_from_q, pick_filter_level_mt_stop,
 };
 use crate::obu_assemble::{
     OBU_FRAME, assemble_multitile_frame_obu_payload_derived, assemble_obu_frame_single_tile,
@@ -2254,6 +2256,7 @@ fn scm_trial_run_pass(
     let delta_q_present = deltaq.is_some();
     let delta_q_res = deltaq.as_ref().map_or(0, |d| d.delta_q_res);
     let mut env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: inp.sb_block,
         mi_rows: inp.mi_rows,
@@ -2897,6 +2900,37 @@ impl enough::Stop for Deadline {
     }
 }
 
+/// Latching [`enough::Stop`] adapter. A token is allowed to fire exactly
+/// once and read `Ok` afterwards (a poll-budget token is the canonical
+/// example), and post-walk re-polls can therefore never be the
+/// cancellation test — only the walk's own result could be, which for a
+/// partial tree is ambiguous. Cache the first `Err` instead: every later
+/// poll in the frame walk sees it, and a fired token always reaches
+/// [`encode_key_frame_with`]'s `Result` as `Cancelled`.
+struct LatchedStop<'a> {
+    inner: &'a dyn enough::Stop,
+    fired: std::sync::atomic::AtomicBool,
+}
+
+impl enough::Stop for LatchedStop<'_> {
+    fn check(&self) -> Result<(), enough::StopReason> {
+        if self.fired.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(enough::StopReason::Cancelled);
+        }
+        match self.inner.check() {
+            Err(e) => {
+                self.fired
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Err(e)
+            }
+            ok => ok,
+        }
+    }
+    fn may_stop(&self) -> bool {
+        self.inner.may_stop()
+    }
+}
+
 /// Encode one ALLINTRA KEY frame with the default [`EncodeConfig`].
 ///
 /// Returns the complete temporal unit (temporal delimiter + sequence header +
@@ -2922,6 +2956,21 @@ pub fn encode_key_frame_with(
     cfg.validate_configuration()?;
     cfg.check_limits(&opts.limits)?;
     opts.check_alloc_budget(cfg.estimate().peak_memory_bytes)?;
+    // Polls inside the encode go through ONE latch so a fire-once token
+    // (budget style: `Err` once, then `Ok` again) cancels deterministically
+    // instead of producing a silently truncated bitstream. `None` stays
+    // `None` — byte-inert for non-stop callers.
+    let latched;
+    let stop = match opts.stop {
+        Some(s) => {
+            latched = LatchedStop {
+                inner: s,
+                fired: std::sync::atomic::AtomicBool::new(false),
+            };
+            Some(&latched as &dyn enough::Stop)
+        }
+        None => None,
+    };
     let (w, h) = (cfg.width, cfg.height);
     let (cw, ch) = cfg.chroma_dims();
     if planes.y.len() != w * h {
@@ -3453,6 +3502,7 @@ pub fn encode_key_frame_with(
     // trial passes and this env share one copy.)
 
     let mut env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: sb_block,
         mi_rows,
@@ -3797,7 +3847,7 @@ pub fn encode_key_frame_with(
                 n_tc,
                 sb_mi,
                 sb_block,
-                opts.stop,
+                stop,
             )
             .map_err(KeyFrameError::Cancelled)?;
             let _ = scratch.done();
@@ -3845,7 +3895,6 @@ pub fn encode_key_frame_with(
         let u_bands = split_row_bands(&mut recon_u, &band_uv);
         let v_bands = split_row_bands(&mut recon_v, &band_uv);
         let workers = n_workers.min(n_tr);
-        let stop = opts.stop;
         let env = &env;
         let pick_cfg = &pick_cfg;
         let phase1_pack_cfg = &phase1_pack_cfg;
@@ -3889,6 +3938,7 @@ pub fn encode_key_frame_with(
                 for tc in 0..n_tc {
                     let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
                     let env_w = crate::encode_sb::SbEncodeEnv {
+                        stop: None,
                         tile_row_start: r0,
                         tile_col_start: c0,
                         tile_row_end: r1,
@@ -3978,6 +4028,9 @@ pub fn encode_key_frame_with(
     p.restoration.allow_intrabc = p.allow_intrabc;
 
     phase_mark!("lf_pick");
+    if let Some(s) = stop {
+        s.check().map_err(KeyFrameError::Cancelled)?;
+    }
     // ---- loop-filter level: derived from THIS port's reconstruction -------
     let mut mi_grid = crate::lf_search::build_lf_mi_grid_mt(
         &trees, mi_rows, mi_cols, n_sb_x, sb_mi, sb_block, n_workers,
@@ -4059,11 +4112,27 @@ pub fn encode_key_frame_with(
         // bit-identical: every trial SSE is the same integer either way).
         let lf_bufs = lf_frame.stage_lowbd();
         let lf_frame8 = lf_frame.as_lowbd(&lf_bufs);
-        let levels = pick_filter_level_mt(&lf_frame8, true, lf_sharpness, speed >= 4, n_workers);
+        let levels = pick_filter_level_mt_stop(
+            &lf_frame8,
+            true,
+            lf_sharpness,
+            speed >= 4,
+            n_workers,
+            stop,
+        )
+        .map_err(KeyFrameError::Cancelled)?;
         recon8 = Some(lf_bufs);
         levels
     } else {
-        pick_filter_level_mt(&lf_frame, true, lf_sharpness, speed >= 4, n_workers)
+        pick_filter_level_mt_stop(
+            &lf_frame,
+            true,
+            lf_sharpness,
+            speed >= 4,
+            n_workers,
+            stop,
+        )
+        .map_err(KeyFrameError::Cancelled)?
     };
     // `loopfilter_frame` is wrapped whole in `if (!cm->features.allow_intrabc)`
     // (encoder.c:3780), so an IntraBC frame never runs `av1_pick_filter_level`
@@ -4091,6 +4160,9 @@ pub fn encode_key_frame_with(
     }
 
     phase_mark!("deblock");
+    if let Some(s) = stop {
+        s.check().map_err(KeyFrameError::Cancelled)?;
+    }
     // ---- post-filter stages: deblock -> CDEF -> loop restoration ----------
     // C's order (`encoder.c` `loopfilter_frame` -> `cdef_restoration_frame`):
     // apply the picked deblock levels, then `av1_cdef_search` + `av1_cdef_frame`
@@ -4155,13 +4227,15 @@ pub fn encode_key_frame_with(
                 ss_x: cfg.ss_x,
                 ss_y: cfg.ss_y,
             };
-            aom_dsp::loopfilter::frame::loop_filter_frame_u8_opt(
+            loop_filter_frame_u8_opt_stop(
                 &mut buf8,
                 &grid,
                 &params,
                 0,
                 cfg.num_planes(),
-            );
+                stop,
+            )
+            .map_err(KeyFrameError::Cancelled)?;
             deblocked_y = vec![0u16; y8.len()];
             deblocked_u = vec![0u16; u8p.len()];
             deblocked_v = vec![0u16; v8.len()];
@@ -4204,12 +4278,23 @@ pub fn encode_key_frame_with(
                     ss_y: cfg.ss_y,
                     bd: i32::from(bd),
                 };
-                loop_filter_frame_opt(&mut buf, &grid, &params, 0, cfg.num_planes());
+                loop_filter_frame_opt_stop(
+                    &mut buf,
+                    &grid,
+                    &params,
+                    0,
+                    cfg.num_planes(),
+                    stop,
+                )
+                .map_err(KeyFrameError::Cancelled)?;
             }
         }
     }
 
     phase_mark!("cdef");
+    if let Some(s) = stop {
+        s.check().map_err(KeyFrameError::Cancelled)?;
+    }
     // ---- CDEF: search on the deblocked recon, then APPLY it ---------------
     let mut cur_y = Vec::new();
     let mut cur_u = Vec::new();
@@ -4229,7 +4314,7 @@ pub fn encode_key_frame_with(
                 cq_level: crate::rc::quantizer_to_qindex(cfg.cq_level),
                 zero_low_strengths: qindex <= 140,
             });
-        let cdef_res = crate::pickcdef::av1_cdef_search_adaptive(
+        let cdef_res = crate::pickcdef::av1_cdef_search_adaptive_stop(
             &CdefSearchFrame {
                 recon_y: &deblocked_y,
                 recon_u: &deblocked_u,
@@ -4250,7 +4335,9 @@ pub fn encode_key_frame_with(
             },
             sf.cdef_pick_method,
             adaptive,
-        );
+            stop,
+        )
+        .map_err(KeyFrameError::Cancelled)?;
         p.cdef.cdef_damping = cdef_res.cdef_damping;
         p.cdef.cdef_bits = cdef_res.cdef_bits;
         p.cdef.nb_cdef_strengths = cdef_res.nb_cdef_strengths;
@@ -4264,7 +4351,7 @@ pub fn encode_key_frame_with(
             cur_u = deblocked_u.clone();
             cur_v = deblocked_v.clone();
             let skip: Vec<bool> = mi_grid.iter().map(|m| m.skip_txfm).collect();
-            cdef_frame(
+            cdef_frame_stop(
                 &mut cur_y,
                 stride,
                 &mut cur_u,
@@ -4283,7 +4370,9 @@ pub fn encode_key_frame_with(
                     skip_txfm: &skip,
                     unit_strength: &cdef_res.unit_strength,
                 },
-            );
+                stop,
+            )
+            .map_err(KeyFrameError::Cancelled)?;
         }
         Some(CdefPackState {
             cdef_bits: cdef_res.cdef_bits as u32,
@@ -4295,6 +4384,9 @@ pub fn encode_key_frame_with(
     };
 
     phase_mark!("lr_search");
+    if let Some(s) = stop {
+        s.check().map_err(KeyFrameError::Cancelled)?;
+    }
     // ---- loop restoration: `av1_pick_filter_restoration` ------------------
     // `is_restoration_used` (`encoder.h:4431`) = `enable_restoration &&
     // !all_lossless && !large_scale`, plus the `allow_intrabc` gate folded into
@@ -4347,40 +4439,44 @@ pub fn encode_key_frame_with(
                 },
             ]
         };
-        let outcome = pick_filter_restoration(&LrSearchInput {
-            planes,
-            crop_width: enc_w as i32,
-            crop_height: h as i32,
-            ss_x: cfg.ss_x,
-            ss_y: cfg.ss_y,
-            bit_depth: i32::from(bd),
-            highbd: bd > 8,
-            rdmult: i64::from(rdmult),
-            dc_quant_qtx: i32::from(av1_dc_quant_qtx(qindex, 0, bd)),
-            mib_size_log2: mib_size_log2 as i32,
-            mi_rows,
-            mi_cols,
-            // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
-            // resets the per-RU delta-coding references at every tile start, so
-            // the spans must be the REAL ones.
-            tile_sb_rows: (0..n_tile_rows)
-                .map(|t| (p.tile_info.row_start_sb[t], p.tile_info.row_start_sb[t + 1]))
-                .collect(),
-            tile_sb_cols: (0..n_tile_cols)
-                .map(|t| (p.tile_info.col_start_sb[t], p.tile_info.col_start_sb[t + 1]))
-                .collect(),
-            wiener_restore_cost: wiener_cost,
-            sgrproj_restore_cost: sgrproj_cost,
-            switchable_restore_cost: switchable_cost,
-            threads: n_workers,
-            sf: crate::speed_features::lr_search_sf_allintra(
-                speed,
-                qindex,
-                enc_w,
-                h,
-                sct.allow_screen_content_tools,
-            ),
-        });
+        let outcome = pick_filter_restoration_stop(
+            &LrSearchInput {
+                planes,
+                crop_width: enc_w as i32,
+                crop_height: h as i32,
+                ss_x: cfg.ss_x,
+                ss_y: cfg.ss_y,
+                bit_depth: i32::from(bd),
+                highbd: bd > 8,
+                rdmult: i64::from(rdmult),
+                dc_quant_qtx: i32::from(av1_dc_quant_qtx(qindex, 0, bd)),
+                mib_size_log2: mib_size_log2 as i32,
+                mi_rows,
+                mi_cols,
+                // `av1_pick_filter_restoration` walks tiles outer / SBs inner and
+                // resets the per-RU delta-coding references at every tile start, so
+                // the spans must be the REAL ones.
+                tile_sb_rows: (0..n_tile_rows)
+                    .map(|t| (p.tile_info.row_start_sb[t], p.tile_info.row_start_sb[t + 1]))
+                    .collect(),
+                tile_sb_cols: (0..n_tile_cols)
+                    .map(|t| (p.tile_info.col_start_sb[t], p.tile_info.col_start_sb[t + 1]))
+                    .collect(),
+                wiener_restore_cost: wiener_cost,
+                sgrproj_restore_cost: sgrproj_cost,
+                switchable_restore_cost: switchable_cost,
+                threads: n_workers,
+                sf: crate::speed_features::lr_search_sf_allintra(
+                    speed,
+                    qindex,
+                    enc_w,
+                    h,
+                    sct.allow_screen_content_tools,
+                ),
+            },
+            stop,
+        )
+        .map_err(KeyFrameError::Cancelled)?;
         p.restoration.frame_restoration_type = outcome.frame_restoration_type;
         p.restoration.restoration_unit_size = [outcome.unit_size; 3];
         Some(outcome)
@@ -4453,7 +4549,7 @@ pub fn encode_key_frame_with(
                 .collect();
             let mut kf_tile = KfFrameContext::default_for_qindex(qindex);
             let mut enc = OdEcEnc::new();
-            if let Some(s) = opts.stop {
+            if let Some(s) = stop {
                 s.check().map_err(KeyFrameError::Cancelled)?;
             }
             pack_tile_from_trees_lr(
@@ -4474,7 +4570,7 @@ pub fn encode_key_frame_with(
                 sb_block,
                 cdef_pack.clone(),
                 lr_pack.as_ref(),
-                opts.stop,
+                stop,
             )
             .map_err(KeyFrameError::Cancelled)?;
             tile_payloads[tile_idx] = enc.done().to_vec();
@@ -4511,7 +4607,6 @@ pub fn encode_key_frame_with(
         let u_bands = split_row_bands(&mut recon2_u, &band_uv);
         let v_bands = split_row_bands(&mut recon2_v, &band_uv);
         let workers = n_workers.min(n_tr);
-        let stop = opts.stop;
         let env = &env;
         let pick_cfg = &pick_cfg;
         let pack_cfg = &pack_cfg;
@@ -4551,6 +4646,7 @@ pub fn encode_key_frame_with(
                 for tc in 0..n_tc {
                     let &(r0, c0, r1, c1, n_tr_s, n_tc_s) = &tile_grid[tr * n_tc + tc];
                     let env_w = crate::encode_sb::SbEncodeEnv {
+                        stop: None,
                         tile_row_start: r0,
                         tile_col_start: c0,
                         tile_row_end: r1,

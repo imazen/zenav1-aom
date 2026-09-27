@@ -1882,9 +1882,9 @@ pub fn pack_tile_lr(
 /// `Err(StopReason)` with the entropy coder and recon planes PARTIALLY written
 /// — for a cancelled encode, whose caller discards them.
 #[allow(clippy::too_many_arguments)]
-pub fn pack_tile_lr_stop(
+pub fn pack_tile_lr_stop<'a>(
     enc: &mut OdEcEnc,
-    env: &SbEncodeEnv,
+    env: &SbEncodeEnv<'a>,
     pick_cfg: &PickFrameCfg,
     pack_cfg: &PackCfg,
     kf: &mut KfFrameContext,
@@ -1899,7 +1899,7 @@ pub fn pack_tile_lr_stop(
     sb_size: usize,
     lr: Option<&LrPackParams<'_>>,
     mut inter_cdfs: Option<&mut crate::inter_costs::InterFrameCdfs>,
-    stop: Option<&dyn enough::Stop>,
+    stop: Option<&'a dyn enough::Stop>,
 ) -> Result<Vec<SbTree>, enough::StopReason> {
     // C write_modes (bitstream.c): `w->allow_update_cdf = !large_scale_tile
     // && !disable_cdf_update` — the tile writer's symbol adaptation gate
@@ -2234,6 +2234,10 @@ pub fn pack_tile_lr_stop(
                     rows_y: dq_rows.as_ref().map(|r| &r.0).unwrap_or(env.rows_y),
                     rows_u: dq_rows.as_ref().map(|r| &r.1).unwrap_or(env.rows_u),
                     rows_v: dq_rows.as_ref().map(|r| &r.2).unwrap_or(env.rows_v),
+                    // The fn's own token (not env's): every inner poll reads
+                    // `env.stop` — stamping it here is what makes the
+                    // partition-node / leaf / candidate checks live.
+                    stop,
                     ..*env
                 }
             } else {
@@ -2243,6 +2247,7 @@ pub fn pack_tile_lr_stop(
                     rows_y: dq_rows.as_ref().map(|r| &r.0).unwrap_or(env.rows_y),
                     rows_u: dq_rows.as_ref().map(|r| &r.1).unwrap_or(env.rows_u),
                     rows_v: dq_rows.as_ref().map(|r| &r.2).unwrap_or(env.rows_v),
+                    stop,
                     ..*env
                 }
             };
@@ -2450,12 +2455,24 @@ pub fn pack_tile_lr_stop(
                     &mut visits,
                     &mut last_source_variance,
                 );
+                // A token that fired inside the walk unwinds to
+                // `(None, invalid, false)` — which would TRIP the `found`
+                // assert below and panic instead of cancelling. Re-poll
+                // first so a partial tree can never reach `pack_sb`.
+                if let Some(s) = stop {
+                    s.check()?;
+                }
                 assert!(
                     found,
                     "partition search must find a valid tree at ({mi_row}, {mi_col})"
                 );
                 tree.expect("found implies a winning tree")
             };
+            // Covers the VBP/fixed/nonrd arms: a token fired inside their
+            // walk also unwinds here, before the tree can reach `pack_sb`.
+            if let Some(s) = stop {
+                s.check()?;
+            }
 
             // C `write_modes_sb` (bitstream.c:1625-1645): at the superblock
             // root — BEFORE the partition symbol — write every restoration
