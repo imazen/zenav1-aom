@@ -22,38 +22,29 @@ const SWITCHABLE: i32 = 4;
 /// The inter mode-info fields `read_inter_mode_info` produces for the
 /// predict + reconstruct stages — C's `MB_MODE_INFO` payload for an inter
 /// block (decodemv.c `read_inter_block_mode_info` writes into `mbmi`; the
-/// port passes the values through explicitly).
+/// port passes the values through explicitly, and structures the mutually
+/// exclusive pieces so states C merely never produces are inexpressible:
+/// a single-ref block cannot carry a second ref/MV, compound weights, or an
+/// inter-intra blend).
 #[derive(Clone, Copy)]
 struct InterModeInfo {
-    /// `av1_get_reference_mode_context`/`read_ref_frames` result.
-    is_compound: bool,
     /// `ref_frame[0]` — the primary (or only) reference, 1..=7.
     ref0: i32,
-    /// `ref_frame[1]` — the second ref of a compound pair, else 0/-1.
-    ref1: i32,
     /// PREDICTION_MODE after the inter-mode read (`mode` in decodemv.c).
     mode: i32,
-    /// The block's resolved MVs: ref0's `(mv_row, mv_col)`, ref1's
-    /// `(mv1_row, mv1_col)` — `(0,0)` placeholder on the unused arm.
+    /// ref0's resolved `(mv_row, mv_col)`.
     mv_row: i32,
     mv_col: i32,
-    mv1_row: i32,
-    mv1_col: i32,
-    /// `read_interintra_info`: inter-intra blend active.
-    interintra: bool,
-    /// INTERINTRA_MODE index, wedge flag, wedge index.
-    ii_mode: i32,
-    ii_use_wedge: i32,
-    ii_wedge_idx: i32,
+    /// `read_ref_frames`'s compound pair + `read_compound_type_info`'s blend
+    /// — `Some` iff the block is compound (the `is_compound` flag it
+    /// replaces is `compound.is_some()` at every use site).
+    compound: Option<Compound>,
+    /// `read_interintra_info` — `Some` iff the block blends its inter
+    /// predictor with an intra one (single-ref blocks only, per
+    /// `is_interintra_allowed`).
+    interintra: Option<InterIntra>,
     /// `read_motion_mode` result (SIMPLE_TRANSLATION/OBMC_CAUSAL/WARPED_CAUSAL).
     motion_mode: i32,
-    /// `read_compound_type_info`: comp_group_idx + compound_idx contexts.
-    comp_group_idx: i32,
-    compound_idx: i32,
-    /// Masked-compound descriptor (wedge/diffwtd) when the block uses one.
-    masked: Option<aom_dsp::inter::MaskedCompound>,
-    /// `av1_dist_wtd_comp_weight_assign` output for a compound pair.
-    comp_weights: aom_dsp::inter::compound::DistWtdWeights,
     /// The derived local WARPED_CAUSAL model, `None` when invalid/absent.
     warp_luma: Option<aom_dsp::inter::warp::WarpedMotionParams>,
     /// `read_mb_interp_filter`/`set_default_interp_filters`: (y, x) filters.
@@ -61,6 +52,61 @@ struct InterModeInfo {
     filter_x: usize,
     /// The block's luma tx size (var-tx leaf size under TX_MODE_SELECT).
     tx_size: usize,
+}
+
+/// The second half of a compound block's `MB_MODE_INFO`: `ref_frame[1]` and
+/// its MV plus `read_compound_type_info`'s output. `comp_group_idx` /
+/// `compound_idx` are the entropy context values — recon stamps them into the
+/// neighbour grid for later blocks regardless of which blend `kind` selects.
+#[derive(Clone, Copy)]
+struct Compound {
+    /// `ref_frame[1]`, 1..=7.
+    ref1: i32,
+    /// ref1's resolved `(mv_row, mv_col)`.
+    mv1_row: i32,
+    mv1_col: i32,
+    /// `comp_group_idx`: 0 = average/dist-wtd family, 1 = masked family.
+    comp_group_idx: i32,
+    /// `compound_idx`: within group 0, 0 = distance-weighted, 1 = average.
+    compound_idx: i32,
+    /// The predictor family `comp_group_idx` selects.
+    kind: CompoundKind,
+}
+
+/// `read_compound_type_info`'s two mutually exclusive blend families — C
+/// branches on `comp_group_idx` at every build site; the port makes the two
+/// payloads one enum so a masked block cannot also carry weights.
+#[derive(Clone, Copy)]
+enum CompoundKind {
+    /// Group 0: `build_compound_inter_predictor` with the
+    /// `av1_dist_wtd_comp_weight_assign` weights (or the plain 8/8 average).
+    Weighted(aom_dsp::inter::compound::DistWtdWeights),
+    /// Group 1: `build_masked_compound_inter_predictor` (wedge / diffwtd).
+    Masked(aom_dsp::inter::MaskedCompound),
+}
+
+impl InterModeInfo {
+    /// `ref_frame[1]` as C stores it in `mbmi` — the compound pair's second
+    /// ref, `INTRA_FRAME` (0) when the block is inter-intra (`read_interintra_info`
+    /// rewrites `ref_frame[1]` so the intra predictor reads as a ref), or
+    /// `NONE_FRAME` (-1) for a plain single-ref block. Recon stamps this into
+    /// the neighbour grid, where later blocks' ref contexts read it.
+    fn ref1(&self) -> i32 {
+        self.compound
+            .map_or(if self.interintra.is_some() { 0 } else { -1 }, |c| c.ref1)
+    }
+}
+
+/// `read_interintra_info`'s four outputs as one value — the wedge fields are
+/// meaningful only together and only when the blend is active.
+#[derive(Clone, Copy)]
+struct InterIntra {
+    /// INTERINTRA_MODE index (the blend-mask family).
+    mode: i32,
+    /// Wedge blend active (then `wedge_idx` selects the codebook mask).
+    use_wedge: bool,
+    /// `wedge_interintra` index.
+    wedge_idx: i32,
 }
 
 impl<'c> TileKf<'c> {
@@ -718,25 +764,28 @@ impl<'c> TileKf<'c> {
         &mut self,
         dec: &mut OdEcDec,
         cdfs: &mut KfFrameContext,
-        mi_row: i32,
-        mi_col: i32,
-        bsize: usize,
-        partition: usize,
-        skip: i32,
-        cdef_strength: i32,
         mut icdfs: InterCdfs,
-        up_available: bool,
-        left_available: bool,
-        above_mi: Option<MiNbrKf>,
-        left_mi: Option<MiNbrKf>,
+        bx: &BlockCtx,
     ) {
         use aom_dsp::entropy::partition as ep;
+        let BlockCtx {
+            mi_row,
+            mi_col,
+            bsize,
+            up_available,
+            left_available,
+            skip,
+            cdef_strength,
+            chroma_ref,
+            above_mi,
+            left_mi,
+            ..
+        } = *bx;
         let cfg = self.cfg;
         let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
         // Persist the inter CDFs adapted so far — `read_is_inter` mutated
         // `intra_inter[ii_ctx]`, and the intra path below never touches
         // `icdfs` again except for the Y-mode row (written back inline).
-        let chroma_ref = !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
         let cfl_allowed =
             !cfg.monochrome && is_cfl_allowed(bsize, self.st.coded_lossless, ss_x, ss_y);
         let (above_palette, left_palette) = self.palette_neighbours(mi_row, mi_col);
@@ -799,20 +848,7 @@ impl<'c> TileKf<'c> {
                 info.use_filter_intra
             );
         }
-        self.decode_intra_block_body(
-            dec,
-            cdfs,
-            mi_row,
-            mi_col,
-            bsize,
-            partition,
-            info,
-            chroma_ref,
-            up_available,
-            left_available,
-            above_mi,
-            left_mi,
-        );
+        self.decode_intra_block_body(dec, cdfs, info, bx);
     }
 
     /// `read_inter_block_mode_info` (decodemv.c:1484+) through
@@ -821,27 +857,30 @@ impl<'c> TileKf<'c> {
     /// inter-intra / motion-mode / masked-compound / warp and
     /// interp-filter symbols, the var-tx quadtree (or LARGEST fallback),
     /// then `av1_reset_entropy_context` for a skipped block. Returns
-    /// `None` on a named refusal / corrupt symbol — the caller exits the
-    /// block without predicting or reconstructing.
-    #[allow(clippy::too_many_arguments)]
+    /// `Stage::Stop` on a named refusal / corrupt symbol — the caller exits
+    /// the block without predicting or reconstructing.
     fn read_inter_mode_info(
         &mut self,
         dec: &mut OdEcDec,
         icdfs: &mut InterCdfs,
         inter: &InterFrameCfg,
-        mi_row: i32,
-        mi_col: i32,
-        bsize: usize,
-        partition: usize,
-        skip: i32,
-        up_available: bool,
-        left_available: bool,
-        above_dv: Option<DvNbr>,
-        left_dv: Option<DvNbr>,
-        above_if: Option<(u8, u8)>,
-        left_if: Option<(u8, u8)>,
-    ) -> Option<InterModeInfo> {
+        bx: &BlockCtx,
+    ) -> Stage<InterModeInfo> {
         use aom_dsp::entropy::partition as ep;
+        let BlockCtx {
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            skip,
+            up_available,
+            left_available,
+            above_dv,
+            left_dv,
+            above_if,
+            left_if,
+            ..
+        } = *bx;
         let cfg = self.cfg;
         let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
         let dv_inter = |d: DvNbr| d.use_intrabc || d.ref_frame0 > 0;
@@ -919,14 +958,14 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: inconsistent ref coding (ref0 {ref0}, ref1 {ref1}, compound {is_compound})"
             ));
-            return None;
+            return Stage::Stop;
         }
         if is_compound && !crate::EXPERIMENTAL_VIDEO {
             self.mark_unsupported(
                 "inter: only single-reference blocks are decoded in this envelope \
                  (compound references unsupported)",
             );
-            return None;
+            return Stage::Stop;
         }
         // find_inter_mv_refs below hardcodes IDENTITY global motion (base MV (0,0),
         // gm_type 0). A frame whose reference carries non-identity global motion
@@ -941,7 +980,7 @@ impl<'c> TileKf<'c> {
             self.mark_unsupported(
                 "inter: non-identity global motion not supported in this decode envelope",
             );
-            return None;
+            return Stage::Stop;
         }
 
         // find_inter_mv_refs (identity GM, empty temporal field per the census).
@@ -1014,7 +1053,7 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: mode {mode} inconsistent with ref coding (compound {is_compound})"
             ));
-            return None;
+            return Stage::Stop;
         }
         // read_drl_idx: weights as u16 (values are well under 2^16, see dv_ref).
         // No-ops (returns 0, reads nothing) for non-NEW/non-NEAR modes — the
@@ -1121,7 +1160,7 @@ impl<'c> TileKf<'c> {
                 GLOBAL_GLOBALMV => mvp = [imv.global_mv, imv.global_mv1],
                 _ => {
                     self.mark_corrupt(format!("inter: invalid compound mode {mode}"));
-                    return None;
+                    return Stage::Stop;
                 }
             }
             (mvp[0].0, mvp[0].1, mvp[1].0, mvp[1].1)
@@ -1149,7 +1188,7 @@ impl<'c> TileKf<'c> {
                 GLOBALMV => (0, 0), // identity global motion (census: all IDENTITY)
                 _ => {
                     self.mark_corrupt(format!("inter: unsupported single-ref mode {mode}"));
-                    return None;
+                    return Stage::Stop;
                 }
             };
             (r, c, 0, 0)
@@ -1454,13 +1493,13 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: out-of-range interp filter (y={filter_y}, x={filter_x})"
             ));
-            return None;
+            return Stage::Stop;
         }
         if filter_y > 2 || filter_x > 2 {
             self.mark_unsupported(
                 "inter: interp filter BILINEAR not supported in this decode envelope",
             );
-            return None;
+            return Stage::Stop;
         }
 
         // tx_size (decodeframe.c:1179-1198, inter path): TX_MODE_SELECT + a
@@ -1550,7 +1589,7 @@ impl<'c> TileKf<'c> {
             self.mark_unsupported(
                 "inter: non-uniform var-tx not supported in this decode envelope",
             );
-            return None;
+            return Stage::Stop;
         }
 
         // --- parse_decode_block tail (decodeframe.c:1219): a SKIP block resets
@@ -1602,24 +1641,32 @@ impl<'c> TileKf<'c> {
             }
         }
 
-        Some(InterModeInfo {
-            is_compound,
+        // Pack the mutually exclusive families: a compound block carries its
+        // second ref/MV + blend as one `Compound` (masked xor weighted — the
+        // comp_weights a masked block computed are dropped unused), and an
+        // inter-intra blend only exists on a single-ref block.
+        Stage::Continue(InterModeInfo {
             ref0,
-            ref1,
             mode,
             mv_row,
             mv_col,
-            mv1_row,
-            mv1_col,
-            interintra,
-            ii_mode,
-            ii_use_wedge,
-            ii_wedge_idx,
+            compound: is_compound.then_some(Compound {
+                ref1,
+                mv1_row,
+                mv1_col,
+                comp_group_idx,
+                compound_idx,
+                kind: match masked {
+                    Some(mask) => CompoundKind::Masked(mask),
+                    None => CompoundKind::Weighted(comp_weights),
+                },
+            }),
+            interintra: interintra.then_some(InterIntra {
+                mode: ii_mode,
+                use_wedge: ii_use_wedge != 0,
+                wedge_idx: ii_wedge_idx,
+            }),
             motion_mode,
-            comp_group_idx,
-            compound_idx,
-            masked,
-            comp_weights,
             warp_luma,
             filter_y,
             filter_x,
@@ -1632,43 +1679,38 @@ impl<'c> TileKf<'c> {
     /// predictor (masked / distance-weighted when coded), the local-warp and
     /// scaled-reference variants, then the inter-intra luma/chroma blend and
     /// the OBMC above/left feather for an OBMC_CAUSAL block. No entropy
-    /// reads. Returns `false` on a named refusal / corrupt state; the caller
-    /// then exits the block without reconstructing.
-    #[allow(clippy::too_many_arguments)]
+    /// reads. Returns `Stage::Stop` on a named refusal / corrupt state; the
+    /// caller then exits the block without reconstructing.
     fn predict_inter_block(
         &mut self,
-        mi: InterModeInfo,
+        mi: &InterModeInfo,
         inter: &InterFrameCfg,
-        mi_row: i32,
-        mi_col: i32,
-        bsize: usize,
-        partition: usize,
-        chroma_ref: bool,
-        adj_row: i32,
-        adj_col: i32,
-        up_available: bool,
-        left_available: bool,
-        above_mi: Option<MiNbrKf>,
-        left_mi: Option<MiNbrKf>,
-    ) -> bool {
+        bx: &BlockCtx,
+    ) -> Stage<()> {
         use aom_dsp::entropy::partition as ep;
+        let BlockCtx {
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            chroma_ref,
+            adj_row,
+            adj_col,
+            up_available,
+            left_available,
+            above_mi,
+            left_mi,
+            ..
+        } = *bx;
         let cfg = self.cfg;
         let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
-        let InterModeInfo {
-            is_compound,
+        let &InterModeInfo {
             ref0,
-            ref1,
             mv_row,
             mv_col,
-            mv1_row,
-            mv1_col,
+            compound,
             interintra,
-            ii_mode,
-            ii_use_wedge,
-            ii_wedge_idx,
             motion_mode,
-            masked,
-            comp_weights,
             warp_luma,
             filter_y,
             filter_x,
@@ -1678,11 +1720,9 @@ impl<'c> TileKf<'c> {
         let (cmv_row, cmv_col) = clamp_mv_to_umv_border(mv_row, mv_col, mi_row, mi_col, bsize, cfg);
         // A compound block's SECOND MV clamps independently (dec_calc_subpel_params
         // runs per ref). `(0,0)` for single-ref (unused there).
-        let (cmv1_row, cmv1_col) = if is_compound {
-            clamp_mv_to_umv_border(mv1_row, mv1_col, mi_row, mi_col, bsize, cfg)
-        } else {
-            (0, 0)
-        };
+        let (cmv1_row, cmv1_col) = compound.map_or((0, 0), |c| {
+            clamp_mv_to_umv_border(c.mv1_row, c.mv1_col, mi_row, mi_col, bsize, cfg)
+        });
         // Above bd8, nonzero-MV (sub-pel or integer-pel) motion compensation is
         // an `experimental-video` tool: without the feature the block is refused
         // by name; with it, `build_inter_predictor` dispatches to the u16
@@ -1692,7 +1732,7 @@ impl<'c> TileKf<'c> {
         #[cfg(not(feature = "experimental-video"))]
         if cfg.bd > 8 && (cmv_row != 0 || cmv_col != 0) {
             self.mark_unsupported("inter: sub/nonzero-pel MC above bd8 not yet supported");
-            return false;
+            return Stage::Stop;
         }
         let bw_px = (MI_SIZE_WIDE[bsize] * 4) as usize;
         let bh_px = (MI_SIZE_HIGH[bsize] * 4) as usize;
@@ -1701,16 +1741,12 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: block references unavailable ref {ref0} (no stored frame)"
             ));
-            return false;
+            return Stage::Stop;
         };
         // `xd->block_ref_scale_factors[0]` — the bound ref's luma scale factors.
         let sf = &inter.ref_sf[(ref0 - 1) as usize];
         // Compound's second reference + its scale factors (`block_ref_scale_factors[1]`).
-        let sf1 = if is_compound {
-            &inter.ref_sf[(ref1 - 1) as usize]
-        } else {
-            sf
-        };
+        let sf1 = compound.map_or(sf, |c| &inter.ref_sf[(c.ref1 - 1) as usize]);
         let blk_x = (mi_col * 4) as usize;
         let blk_y = (mi_row * 4) as usize;
         let dst_off = blk_y * self.stride + blk_x;
@@ -1719,7 +1755,7 @@ impl<'c> TileKf<'c> {
         // chroma planes — keep one luma-resolution scratch across the block's
         // luma + both chroma masked blends. Wedge refetches the codebook mask
         // per plane and never touches it.
-        let mut seg_mask = if masked.is_some() {
+        let mut seg_mask = if compound.is_some_and(|c| matches!(c.kind, CompoundKind::Masked(_))) {
             vec![0u8; bw_px * bh_px]
         } else {
             Vec::new()
@@ -1731,12 +1767,13 @@ impl<'c> TileKf<'c> {
         // on `!av1_is_scaled(sf)` — a scaled ref falls back to translational.
         // A COMPOUND block is always SIMPLE_TRANSLATION (motion_variation is
         // single-ref only), so it takes the plain two-ref translational arm.
-        if is_compound {
-            let Some(bck) = inter.refs[(ref1 - 1) as usize] else {
+        if let Some(compound) = compound {
+            let Some(bck) = inter.refs[(compound.ref1 - 1) as usize] else {
                 self.mark_corrupt(format!(
-                    "inter: block references unavailable ref {ref1} (no stored frame)"
+                    "inter: block references unavailable ref {} (no stored frame)",
+                    compound.ref1
                 ));
-                return false;
+                return Stage::Stop;
             };
             let refs = [
                 aom_dsp::inter::CompoundRefPlane {
@@ -1755,7 +1792,7 @@ impl<'c> TileKf<'c> {
                     h: bck.height,
                     sf: sf1,
                     mv: (cmv1_row, cmv1_col),
-                    raw_mv: (mv1_row, mv1_col),
+                    raw_mv: (compound.mv1_row, compound.mv1_col),
                 },
             ];
             self.recon.with_wide_rect(
@@ -1765,45 +1802,48 @@ impl<'c> TileKf<'c> {
                 bh_px,
                 &mut self.wide_rect,
                 |dst, stride| {
-                    if let Some(comp) = masked {
+                    match compound.kind {
                         // Masked (wedge/diffwtd): each ref to its own d16
                         // buffer, then blend via the luma-res mask.
-                        aom_dsp::inter::build_masked_compound_inter_predictor(
-                            refs,
-                            dst,
-                            0,
-                            stride,
-                            blk_x,
-                            blk_y,
-                            bw_px,
-                            bh_px,
-                            0,
-                            0,
-                            filter_x,
-                            filter_y,
-                            cfg.bd as u32,
-                            comp,
-                            bsize,
-                            true,
-                            &mut seg_mask,
-                        );
-                    } else {
-                        aom_dsp::inter::build_compound_inter_predictor(
-                            refs,
-                            dst,
-                            0,
-                            stride,
-                            blk_x,
-                            blk_y,
-                            bw_px,
-                            bh_px,
-                            0,
-                            0,
-                            filter_x,
-                            filter_y,
-                            cfg.bd as u32,
-                            comp_weights,
-                        );
+                        CompoundKind::Masked(comp) => {
+                            aom_dsp::inter::build_masked_compound_inter_predictor(
+                                refs,
+                                dst,
+                                0,
+                                stride,
+                                blk_x,
+                                blk_y,
+                                bw_px,
+                                bh_px,
+                                0,
+                                0,
+                                filter_x,
+                                filter_y,
+                                cfg.bd as u32,
+                                comp,
+                                bsize,
+                                true,
+                                &mut seg_mask,
+                            );
+                        }
+                        CompoundKind::Weighted(weights) => {
+                            aom_dsp::inter::build_compound_inter_predictor(
+                                refs,
+                                dst,
+                                0,
+                                stride,
+                                blk_x,
+                                blk_y,
+                                bw_px,
+                                bh_px,
+                                0,
+                                0,
+                                filter_x,
+                                filter_y,
+                                cfg.bd as u32,
+                                weights,
+                            );
+                        }
                     }
                 },
             );
@@ -1915,16 +1955,17 @@ impl<'c> TileKf<'c> {
         // share one chroma block, coded on the group's bottom/right member); the
         // caller computed `chroma_ref`/`adj_*` (setup_pred_plane's odd-position
         // shared-group origin shift) since recon needs the same geometry.
-        if chroma_ref && is_compound {
+        if let Some(compound) = compound.filter(|_| chroma_ref) {
             // Compound chroma: a compound block is always min-dim >= 8, so the
             // sub-8x8 sharing path can never apply — one whole-block combine
             // per chroma plane. Each ref's MV clamps against the CHROMA dims
             // (clamp_mv_to_umv_border_plane, as the single-ref path does).
-            let Some(bck) = inter.refs[(ref1 - 1) as usize] else {
+            let Some(bck) = inter.refs[(compound.ref1 - 1) as usize] else {
                 self.mark_corrupt(format!(
-                    "inter: block references unavailable ref {ref1} (no stored frame)"
+                    "inter: block references unavailable ref {} (no stored frame)",
+                    compound.ref1
                 ));
-                return false;
+                return Stage::Stop;
             };
             let bw_uv = bw_px >> ss_x;
             let bh_uv = bh_px >> ss_y;
@@ -1943,8 +1984,8 @@ impl<'c> TileKf<'c> {
                 cfg,
             );
             let (cmv1r_uv, cmv1c_uv) = clamp_mv_to_umv_border_plane(
-                mv1_row,
-                mv1_col,
+                compound.mv1_row,
+                compound.mv1_col,
                 mi_row,
                 mi_col,
                 bsize,
@@ -1976,7 +2017,7 @@ impl<'c> TileKf<'c> {
                         h: bck.height_uv,
                         sf: sf1,
                         mv: (cmv1r_uv, cmv1c_uv),
-                        raw_mv: (mv1_row, mv1_col),
+                        raw_mv: (compound.mv1_row, compound.mv1_col),
                     },
                 ];
                 dst_plane.with_wide_rect(
@@ -1986,46 +2027,49 @@ impl<'c> TileKf<'c> {
                     bh_uv,
                     &mut self.wide_rect,
                     |dst, stride| {
-                        if let Some(comp) = masked {
+                        match compound.kind {
                             // Chroma masked: chroma dims + subsampling; the
                             // mask stays luma-resolution (`sb_type`/`mask_stride`
                             // from `bsize`, seg_mask already built on luma).
-                            aom_dsp::inter::build_masked_compound_inter_predictor(
-                                refs,
-                                dst,
-                                0,
-                                stride,
-                                uv_org_x,
-                                uv_org_y,
-                                bw_uv,
-                                bh_uv,
-                                ss_x,
-                                ss_y,
-                                filter_x,
-                                filter_y,
-                                cfg.bd as u32,
-                                comp,
-                                bsize,
-                                false,
-                                &mut seg_mask,
-                            );
-                        } else {
-                            aom_dsp::inter::build_compound_inter_predictor(
-                                refs,
-                                dst,
-                                0,
-                                stride,
-                                uv_org_x,
-                                uv_org_y,
-                                bw_uv,
-                                bh_uv,
-                                ss_x,
-                                ss_y,
-                                filter_x,
-                                filter_y,
-                                cfg.bd as u32,
-                                comp_weights,
-                            );
+                            CompoundKind::Masked(comp) => {
+                                aom_dsp::inter::build_masked_compound_inter_predictor(
+                                    refs,
+                                    dst,
+                                    0,
+                                    stride,
+                                    uv_org_x,
+                                    uv_org_y,
+                                    bw_uv,
+                                    bh_uv,
+                                    ss_x,
+                                    ss_y,
+                                    filter_x,
+                                    filter_y,
+                                    cfg.bd as u32,
+                                    comp,
+                                    bsize,
+                                    false,
+                                    &mut seg_mask,
+                                );
+                            }
+                            CompoundKind::Weighted(weights) => {
+                                aom_dsp::inter::build_compound_inter_predictor(
+                                    refs,
+                                    dst,
+                                    0,
+                                    stride,
+                                    uv_org_x,
+                                    uv_org_y,
+                                    bw_uv,
+                                    bh_uv,
+                                    ss_x,
+                                    ss_y,
+                                    filter_x,
+                                    filter_y,
+                                    cfg.bd as u32,
+                                    weights,
+                                );
+                            }
                         }
                     },
                 );
@@ -2279,9 +2323,9 @@ impl<'c> TileKf<'c> {
         // `combine_interintra`): the SMOOTH mask is prebuilt at PLANE resolution and
         // blended 1:1, while the WEDGE mask is at LUMA resolution and box-averaged
         // down by `subw`/`subh` inside the blend.
-        if interintra {
+        if let Some(ii) = interintra {
             let ii_intra_mode =
-                aom_dsp::inter::interintra::INTERINTRA_TO_INTRA_MODE[ii_mode as usize];
+                aom_dsp::inter::interintra::INTERINTRA_TO_INTRA_MODE[ii.mode as usize];
             // `get_intra_edge_filter_type` (reconintra.c:974). Inert for every
             // inter-intra block — the four modes are DC/V/H/SMOOTH and the angle
             // delta is forced to 0 (decodemv.c:1395), so V/H predict at exactly
@@ -2368,9 +2412,9 @@ impl<'c> TileKf<'c> {
                 &mut self.wide_rect,
                 |dst, stride| {
                     aom_dsp::inter::interintra::combine_interintra(
-                        ii_mode as usize,
-                        ii_use_wedge != 0,
-                        ii_wedge_idx as usize,
+                        ii.mode as usize,
+                        ii.use_wedge,
+                        ii.wedge_idx as usize,
                         bsize,
                         bsize,
                         dst,
@@ -2479,9 +2523,9 @@ impl<'c> TileKf<'c> {
                         &mut self.wide_rect,
                         |dst, stride| {
                             aom_dsp::inter::interintra::combine_interintra(
-                                ii_mode as usize,
-                                ii_use_wedge != 0,
-                                ii_wedge_idx as usize,
+                                ii.mode as usize,
+                                ii.use_wedge,
+                                ii.wedge_idx as usize,
                                 bsize,
                                 plane_bsize,
                                 dst,
@@ -2507,7 +2551,7 @@ impl<'c> TileKf<'c> {
             self.obmc_above_blend(mi_row, mi_col, bsize, inter);
             self.obmc_left_blend(mi_row, mi_col, bsize, inter);
         }
-        true
+        Stage::Continue(())
     }
 
     /// `decode_token_recon_block`'s inter path: read the residual
@@ -2516,7 +2560,6 @@ impl<'c> TileKf<'c> {
     /// [`Self::predict_inter_block`], persist the adapted inter mode-info
     /// CDFs, stamp the neighbour grids (`mi`/`dv`/interp/`mvs`), and push the
     /// block record the loop-filter / output structures consume.
-    #[allow(clippy::too_many_arguments)]
     fn recon_inter_block(
         &mut self,
         dec: &mut OdEcDec,
@@ -2524,33 +2567,40 @@ impl<'c> TileKf<'c> {
         icdfs: InterCdfs,
         mi: InterModeInfo,
         inter: &InterFrameCfg,
-        mi_row: i32,
-        mi_col: i32,
-        bsize: usize,
-        partition: usize,
-        skip: i32,
-        cdef_strength: i32,
-        chroma_ref: bool,
-        adj_row: i32,
-        adj_col: i32,
+        bx: &BlockCtx,
     ) {
+        let BlockCtx {
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            skip,
+            cdef_strength,
+            chroma_ref,
+            adj_row,
+            adj_col,
+            ..
+        } = *bx;
         let cfg = self.cfg;
         let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
         let InterModeInfo {
             ref0,
-            ref1,
             mode,
             mv_row,
             mv_col,
-            mv1_row,
-            mv1_col,
-            comp_group_idx,
-            compound_idx,
+            compound,
             filter_y,
             filter_x,
             tx_size,
             ..
         } = mi;
+        // A single-ref block's neighbour-grid stamp carries the C defaults
+        // (`ref_frame[1]` = the inter-intra rewrite or NONE, zero MV, the
+        // non-coded ctx seeds 0/1).
+        let ref1 = mi.ref1();
+        let (mv1_row, mv1_col, comp_group_idx, compound_idx) = compound.map_or((0, 0, 0, 1), |c| {
+            (c.mv1_row, c.mv1_col, c.comp_group_idx, c.compound_idx)
+        });
         // --- reconstruction: read residual coefficients + ADD onto the MC
         // prediction (decode_token_recon_block inter path). Skip blocks read no
         // coeffs. tx_size is the (uniform) var-tx / LARGEST per-block luma tx
@@ -2869,7 +2919,6 @@ impl<'c> TileKf<'c> {
     /// read + above/left neighbour feather-blend) and inter var-tx
     /// (`TX_MODE_SELECT`). The pre-mode reads that are no-ops in this envelope
     /// (segment_id, skip_mode, cdef-for-skip, delta-q) are asserted off.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_block_inter(
         &mut self,
         dec: &mut OdEcDec,
@@ -2883,10 +2932,6 @@ impl<'c> TileKf<'c> {
         use aom_dsp::entropy::partition as ep;
 
         let cfg = self.cfg;
-        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
-        let cols = cfg.mi_cols;
-        let up_available = mi_row > self.tile.mi_row_start;
-        let left_available = mi_col > self.tile.mi_col_start;
 
         if dbg_blocks() {
             aom_dsp::trace_out!(
@@ -2921,18 +2966,8 @@ impl<'c> TileKf<'c> {
             return;
         }
 
-        // Neighbour projections for the mode-info contexts.
-        let (above_mi, left_mi) = self.neighbours(mi_row, mi_col);
-        let above_dv = up_available
-            .then(|| DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + mi_col) as usize]));
-        let left_dv = left_available
-            .then(|| DvNbr::from_packed(self.mi_dv[(mi_row * cols + mi_col - 1) as usize]));
-        // The neighbours' coded interp filters (parallel to `mi_dv`), for
-        // `av1_get_pred_context_switchable_interp`. Gated by the same edge
-        // availability as `above_dv`/`left_dv`, so they zip cleanly below.
-        let above_if =
-            up_available.then(|| self.mi_interp[((mi_row - 1) * cols + mi_col) as usize]);
-        let left_if = left_available.then(|| self.mi_interp[(mi_row * cols + mi_col - 1) as usize]);
+        // Neighbour projections + shared per-block values, bundled once.
+        let mut bx = self.block_ctx(mi_row, mi_col, bsize, partition);
         let dv_inter = |d: DvNbr| d.use_intrabc || d.ref_frame0 > 0;
 
         // Snapshot the tile's persistent inter CDFs; every read below adapts this
@@ -2946,10 +2981,10 @@ impl<'c> TileKf<'c> {
         // segment_id (seg off -> 0); skip_mode (allowed off -> 0): no reads.
         // read_skip_txfm.
         let skip_ctx = ep::skip_txfm_context(
-            above_mi.map_or(0, |m| m.skip_txfm),
-            left_mi.map_or(0, |m| m.skip_txfm),
+            bx.above_mi.map_or(0, |m| m.skip_txfm),
+            bx.left_mi.map_or(0, |m| m.skip_txfm),
         ) as usize;
-        let skip = ep::read_skip(dec, &mut cdfs.skip[skip_ctx], false);
+        bx.skip = ep::read_skip(dec, &mut cdfs.skip[skip_ctx], false);
         // read_cdef (decodemv.c, ordered after read_skip, before read_delta_q /
         // read_is_inter): the FIRST non-skip block in each 64x64 CDEF unit reads
         // that unit's `cdef_bits`-wide strength literal; skip blocks and
@@ -2965,7 +3000,7 @@ impl<'c> TileKf<'c> {
         let mib_size = self.st.mib_size;
         let sb_size = self.st.sb_size;
         let cdef_bits = self.st.cdef_bits;
-        let cdef_strength = ep::read_cdef(
+        bx.cdef_strength = ep::read_cdef(
             dec,
             coded_lossless,
             allow_intrabc,
@@ -2973,7 +3008,7 @@ impl<'c> TileKf<'c> {
             mi_col,
             mib_size,
             sb_size,
-            skip,
+            bx.skip,
             &mut self.st.cdef_transmitted,
             cdef_bits,
         );
@@ -2981,10 +3016,10 @@ impl<'c> TileKf<'c> {
 
         // read_is_inter_block.
         let ii_ctx = ep::get_intra_inter_context(
-            up_available,
-            above_dv.is_some_and(dv_inter),
-            left_available,
-            left_dv.is_some_and(dv_inter),
+            bx.up_available,
+            bx.above_dv.is_some_and(dv_inter),
+            bx.left_available,
+            bx.left_dv.is_some_and(dv_inter),
         ) as usize;
         let is_inter = ep::read_is_inter(dec, &mut icdfs.intra_inter[ii_ctx], false, false);
 
@@ -2999,95 +3034,20 @@ impl<'c> TileKf<'c> {
         // gate (tx-size's `inter_block_tx`, `av1_read_tx_type`'s `inter_block`,
         // `decode_token_recon_block`'s branch) takes its intra arm unchanged.
         if is_inter == 0 {
-            self.decode_intra_in_inter_block(
-                dec,
-                cdfs,
-                mi_row,
-                mi_col,
-                bsize,
-                partition,
-                skip,
-                cdef_strength,
-                icdfs,
-                up_available,
-                left_available,
-                above_mi,
-                left_mi,
-            );
+            self.decode_intra_in_inter_block(dec, cdfs, icdfs, &bx);
             return;
         }
 
         // --- read_inter_block_mode_info + parse_decode_block tail ---
-        let Some(mi) = self.read_inter_mode_info(
-            dec,
-            &mut icdfs,
-            inter,
-            mi_row,
-            mi_col,
-            bsize,
-            partition,
-            skip,
-            up_available,
-            left_available,
-            above_dv,
-            left_dv,
-            above_if,
-            left_if,
-        ) else {
+        let Stage::Continue(mi) = self.read_inter_mode_info(dec, &mut icdfs, inter, &bx) else {
             return;
-        };
-        // Chroma-reference geometry, shared by predict (chroma MC) and recon
-        // (chroma residual): `chroma_ref` selects the chroma-reference block
-        // (sub-8x8 members share one chroma block, coded on the group's
-        // bottom/right member); `adj_*` is setup_pred_plane's odd-position
-        // shared-group origin shift.
-        let chroma_ref = !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
-        let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && MI_SIZE_HIGH[bsize] == 1 {
-            mi_row - 1
-        } else {
-            mi_row
-        };
-        let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && MI_SIZE_WIDE[bsize] == 1 {
-            mi_col - 1
-        } else {
-            mi_col
         };
         // --- motion compensation (predict phase; NO entropy reads) ---
-        if !self.predict_inter_block(
-            mi,
-            inter,
-            mi_row,
-            mi_col,
-            bsize,
-            partition,
-            chroma_ref,
-            adj_row,
-            adj_col,
-            up_available,
-            left_available,
-            above_mi,
-            left_mi,
-        ) {
+        if let Stage::Stop = self.predict_inter_block(&mi, inter, &bx) {
             return;
         }
-
         // --- reconstruction: residual coefficients + CDF/grid writes ---
-        self.recon_inter_block(
-            dec,
-            cdfs,
-            icdfs,
-            mi,
-            inter,
-            mi_row,
-            mi_col,
-            bsize,
-            partition,
-            skip,
-            cdef_strength,
-            chroma_ref,
-            adj_row,
-            adj_col,
-        );
+        self.recon_inter_block(dec, cdfs, icdfs, mi, inter, &bx);
     }
 }
 
