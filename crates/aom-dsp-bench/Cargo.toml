@@ -15,7 +15,10 @@ publish = false
 # boxes). Keeping the bench in its own crate makes "no C dependency" a
 # STRUCTURAL property rather than a convention.
 [dependencies]
-zenav1-aom-dsp = { path = "../aom-dsp" }
+# `__internals` keeps the `AOM_FORCE_SCALAR` env pin reachable here: the pin's
+# env read is in-tree-only (see aom-dsp's dispatch module), and this bench's
+# main() asserts on `scalar_forced()` to reject pinned paired-tier runs.
+zenav1-aom-dsp = { path = "../aom-dsp", features = ["__internals"] }
 
 [dev-dependencies]
 zenbench = "0.1.9"
