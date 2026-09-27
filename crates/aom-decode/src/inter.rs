@@ -11,6 +11,58 @@
 
 use super::*;
 
+// PREDICTION_MODE inter values (enums.h): NEARESTMV=13 .. NEWMV=16 are the
+// single-ref inter modes; SWITCHABLE is the frame interp_filter sentinel.
+const NEARESTMV: i32 = 13;
+const NEARMV: i32 = 14;
+const GLOBALMV: i32 = 15;
+const NEWMV: i32 = 16;
+const SWITCHABLE: i32 = 4;
+
+/// The inter mode-info fields `read_inter_mode_info` produces for the
+/// predict + reconstruct stages — C's `MB_MODE_INFO` payload for an inter
+/// block (decodemv.c `read_inter_block_mode_info` writes into `mbmi`; the
+/// port passes the values through explicitly).
+#[derive(Clone, Copy)]
+struct InterModeInfo {
+    /// `av1_get_reference_mode_context`/`read_ref_frames` result.
+    is_compound: bool,
+    /// `ref_frame[0]` — the primary (or only) reference, 1..=7.
+    ref0: i32,
+    /// `ref_frame[1]` — the second ref of a compound pair, else 0/-1.
+    ref1: i32,
+    /// PREDICTION_MODE after the inter-mode read (`mode` in decodemv.c).
+    mode: i32,
+    /// The block's resolved MVs: ref0's `(mv_row, mv_col)`, ref1's
+    /// `(mv1_row, mv1_col)` — `(0,0)` placeholder on the unused arm.
+    mv_row: i32,
+    mv_col: i32,
+    mv1_row: i32,
+    mv1_col: i32,
+    /// `read_interintra_info`: inter-intra blend active.
+    interintra: bool,
+    /// INTERINTRA_MODE index, wedge flag, wedge index.
+    ii_mode: i32,
+    ii_use_wedge: i32,
+    ii_wedge_idx: i32,
+    /// `read_motion_mode` result (SIMPLE_TRANSLATION/OBMC_CAUSAL/WARPED_CAUSAL).
+    motion_mode: i32,
+    /// `read_compound_type_info`: comp_group_idx + compound_idx contexts.
+    comp_group_idx: i32,
+    compound_idx: i32,
+    /// Masked-compound descriptor (wedge/diffwtd) when the block uses one.
+    masked: Option<aom_dsp::inter::MaskedCompound>,
+    /// `av1_dist_wtd_comp_weight_assign` output for a compound pair.
+    comp_weights: aom_dsp::inter::compound::DistWtdWeights,
+    /// The derived local WARPED_CAUSAL model, `None` when invalid/absent.
+    warp_luma: Option<aom_dsp::inter::warp::WarpedMotionParams>,
+    /// `read_mb_interp_filter`/`set_default_interp_filters`: (y, x) filters.
+    filter_y: usize,
+    filter_x: usize,
+    /// The block's luma tx size (var-tx leaf size under TX_MODE_SELECT).
+    tx_size: usize,
+}
+
 impl<'c> TileKf<'c> {
     /// [`Self::stamp_dv`]'s interp-filter twin — stamp the block's resolved
     /// `(y_filter, x_filter)` over its frame-cropped mi footprint so later
@@ -656,18 +708,13 @@ impl<'c> TileKf<'c> {
         }
     }
 
-    /// One leaf block: `parse_decode_block` (mode info + tx sizing + skip
-    /// entropy-reset) followed by the intra `decode_token_recon_block` txb loop.
-    /// The INTER-frame single-block mode-info + motion-compensation path,
-    /// mirroring `read_inter_frame_mode_info` + `read_inter_block_mode_info`
-    /// (decodemv.c) then `dec_build_inter_predictors` (decodeframe.c). The
-    /// walking-skeleton envelope was single LAST reference, `SINGLE_REFERENCE`,
-    /// `SIMPLE_TRANSLATION`, `skip = 1`; chunk 4 adds `OBMC_CAUSAL` (motion_mode
-    /// read + above/left neighbour feather-blend) and inter var-tx
-    /// (`TX_MODE_SELECT`). The pre-mode reads that are no-ops in this envelope
-    /// (segment_id, skip_mode, cdef-for-skip, delta-q) are asserted off.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_block_inter(
+    /// `read_inter_frame_mode_info`'s else-arm (decodemv.c:1550): an
+    /// INTRA-coded block inside an inter frame — the mode-info tail
+    /// (shared with `read_mb_modes_kf_fc`, differing only in the Y-mode
+    /// CDF) then `decode_intra_block_body` verbatim. Reads
+    /// `ref_frame = [INTRA_FRAME, NONE_FRAME]` so every downstream gate
+    /// takes its intra arm unchanged.
+    fn decode_intra_in_inter_block(
         &mut self,
         dec: &mut OdEcDec,
         cdfs: &mut KfFrameContext,
@@ -675,217 +722,129 @@ impl<'c> TileKf<'c> {
         mi_col: i32,
         bsize: usize,
         partition: usize,
-        inter: &InterFrameCfg,
+        skip: i32,
+        cdef_strength: i32,
+        mut icdfs: InterCdfs,
+        up_available: bool,
+        left_available: bool,
+        above_mi: Option<MiNbrKf>,
+        left_mi: Option<MiNbrKf>,
     ) {
         use aom_dsp::entropy::partition as ep;
-        // PREDICTION_MODE inter values (enums.h).
-        const NEARESTMV: i32 = 13;
-        const NEARMV: i32 = 14;
-        const GLOBALMV: i32 = 15;
-        const NEWMV: i32 = 16;
-        const SWITCHABLE: i32 = 4;
-
         let cfg = self.cfg;
         let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
-        let cols = cfg.mi_cols;
-        let up_available = mi_row > self.tile.mi_row_start;
-        let left_available = mi_col > self.tile.mi_col_start;
-
+        // Persist the inter CDFs adapted so far — `read_is_inter` mutated
+        // `intra_inter[ii_ctx]`, and the intra path below never touches
+        // `icdfs` again except for the Y-mode row (written back inline).
+        let chroma_ref = !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
+        let cfl_allowed =
+            !cfg.monochrome && is_cfl_allowed(bsize, self.st.coded_lossless, ss_x, ss_y);
+        let (above_palette, left_palette) = self.palette_neighbours(mi_row, mi_col);
+        self.st.mi_row = mi_row;
+        self.st.mi_col = mi_col;
+        self.st.bsize = bsize;
+        self.st.is_chroma_ref = chroma_ref;
+        self.st.cfl_allowed = cfl_allowed;
+        self.st.mb_to_top_edge = -(mi_row * 32);
+        self.st.has_above = up_available;
+        self.st.has_left = left_available;
+        self.st.allow_palette = av1_allow_palette(cfg.allow_screen_content_tools, bsize);
+        // The prefix `read_inter_frame_mode_info` already consumed
+        // (segmentation / delta-q / skip-mode are asserted off above, so
+        // segment_id is 0 and the delta-lf carry is the frame default).
+        let mut info = MbModeInfoKf {
+            segment_id: 0,
+            skip,
+            cdef_strength,
+            current_qindex: cfg.base_qindex,
+            delta_lf: [0; 4],
+            delta_lf_from_base: 0,
+            use_intrabc: 0,
+            dv_row: 0,
+            dv_col: 0,
+            y_mode: 0,
+            angle_delta_y: 0,
+            uv_mode: 0,
+            cfl_alpha_idx: 0,
+            cfl_joint_sign: 0,
+            angle_delta_uv: 0,
+            palette_size: [0, 0],
+            palette_colors: [0; 24],
+            use_filter_intra: 0,
+            filter_intra_mode: 0,
+        };
+        // `y_mode_cdf[size_group_lookup[bsize]]` (decodemv.c:1077). Copied
+        // out and written back so the adaptation persists across blocks,
+        // exactly as C adapts `ec_ctx->y_mode_cdf` in place.
+        let grp = ep::y_mode_size_group(bsize);
+        let mut y_cdf = icdfs.y_mode[grp];
+        ep::read_intra_block_mode_info_fc(
+            dec,
+            cdfs,
+            &mut self.st,
+            &mut y_cdf,
+            cfg.enable_filter_intra,
+            above_mi.is_some(),
+            left_mi.is_some(),
+            above_palette,
+            left_palette,
+            &mut info,
+        );
+        icdfs.y_mode[grp] = y_cdf;
+        self.inter_cdfs = icdfs;
         if dbg_blocks() {
             aom_dsp::trace_out!(
-                "ENTER mi({mi_row},{mi_col}) bs={bsize} tellq={}",
-                dec.tell_frac() as i32
+                "BLK mi({mi_row},{mi_col}) bs={bsize} intra skip={skip} y_mode={} fi={}",
+                info.y_mode,
+                info.use_filter_intra
             );
         }
-
-        // Envelope invariants (STEP-0 census): these pre-mode reads are inert.
-        // Out-of-envelope inter features are rejected as a clean error (not a
-        // panic) so a malformed / unsupported inter frame from untrusted input
-        // returns `Err` instead of aborting the decode.
-        if cfg.seg.enabled {
-            self.mark_unsupported("inter: segmentation not supported in this decode envelope");
-            return;
-        }
-        if inter.skip_mode_present {
-            self.mark_unsupported("inter: skip_mode not supported in this decode envelope");
-            return;
-        }
-        if cfg.delta_q_present {
-            self.mark_unsupported("inter: delta-q not supported in this decode envelope");
-            return;
-        }
-        // tx_mode is TX_MODE_SELECT for the OBMC target (av1-1-b8-01-size-16x18):
-        // inter blocks code a var-tx quadtree (read_tx_size_vartx). The earlier
-        // walking-skeleton / ratchet targets were TX_MODE_LARGEST; both are
-        // handled below (the var-tx read collapses to the single largest tx when
-        // the frame codes LARGEST).
-        if !matches!(cfg.tx_mode, TxMode::Largest | TxMode::Select) {
-            self.mark_unsupported("inter: tx_mode ONLY_4X4 not supported in this decode envelope");
-            return;
-        }
-
-        // Neighbour projections for the mode-info contexts.
-        let (above_mi, left_mi) = self.neighbours(mi_row, mi_col);
-        let above_dv = up_available
-            .then(|| DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + mi_col) as usize]));
-        let left_dv = left_available
-            .then(|| DvNbr::from_packed(self.mi_dv[(mi_row * cols + mi_col - 1) as usize]));
-        // The neighbours' coded interp filters (parallel to `mi_dv`), for
-        // `av1_get_pred_context_switchable_interp`. Gated by the same edge
-        // availability as `above_dv`/`left_dv`, so they zip cleanly below.
-        let above_if =
-            up_available.then(|| self.mi_interp[((mi_row - 1) * cols + mi_col) as usize]);
-        let left_if = left_available.then(|| self.mi_interp[(mi_row * cols + mi_col - 1) as usize]);
-        let dv_inter = |d: DvNbr| d.use_intrabc || d.ref_frame0 > 0;
-
-        // Snapshot the tile's persistent inter CDFs; every read below adapts this
-        // local copy (via `read_symbol`/`update_cdf` when `dec.allow_update_cdf`),
-        // and it is persisted back to `self.inter_cdfs` at the end of the block so
-        // the next inter block sees the adapted state (matching C's in-place
-        // `tile_data->tctx` adaptation).
-        let mut icdfs = self.inter_cdfs;
-
-        // --- read_inter_frame_mode_info pre-mode reads ---
-        // segment_id (seg off -> 0); skip_mode (allowed off -> 0): no reads.
-        // read_skip_txfm.
-        let skip_ctx = ep::skip_txfm_context(
-            above_mi.map_or(0, |m| m.skip_txfm),
-            left_mi.map_or(0, |m| m.skip_txfm),
-        ) as usize;
-        let skip = ep::read_skip(dec, &mut cdfs.skip[skip_ctx], false);
-        // read_cdef (decodemv.c, ordered after read_skip, before read_delta_q /
-        // read_is_inter): the FIRST non-skip block in each 64x64 CDEF unit reads
-        // that unit's `cdef_bits`-wide strength literal; skip blocks and
-        // already-read units read nothing. This is a real entropy read on any
-        // CDEF-enabled frame (`cdef_bits > 0`) — omitting it desyncs the
-        // arithmetic decoder for every following symbol. (The earlier envelope
-        // targets — 16x18, 64x66 — had `cdef_bits == 0` or a skip mi(0,0), so the
-        // gap was inert; `av1-1-b8-01-size-16x66` frame 1 has `cdef_bits == 1`
-        // with a non-skip NEWMV mi(0,0), so the missing read shifted its `read_mv`
-        // and mv desynced to (0,-15) vs C's (-1,-7).)
-        let coded_lossless = self.st.coded_lossless;
-        let allow_intrabc = self.st.allow_intrabc;
-        let mib_size = self.st.mib_size;
-        let sb_size = self.st.sb_size;
-        let cdef_bits = self.st.cdef_bits;
-        let cdef_strength = ep::read_cdef(
+        self.decode_intra_block_body(
             dec,
-            coded_lossless,
-            allow_intrabc,
+            cdfs,
             mi_row,
             mi_col,
-            mib_size,
-            sb_size,
-            skip,
-            &mut self.st.cdef_transmitted,
-            cdef_bits,
-        );
-        // read_delta_q_params: delta_q_present off -> no read.
-
-        // read_is_inter_block.
-        let ii_ctx = ep::get_intra_inter_context(
+            bsize,
+            partition,
+            info,
+            chroma_ref,
             up_available,
-            above_dv.is_some_and(dv_inter),
             left_available,
-            left_dv.is_some_and(dv_inter),
-        ) as usize;
-        let is_inter = ep::read_is_inter(dec, &mut icdfs.intra_inter[ii_ctx], false, false);
+            above_mi,
+            left_mi,
+        );
+    }
 
-        // --- is_inter == 0: an INTRA-coded block inside this inter frame
-        // (`read_inter_frame_mode_info`'s else-arm, decodemv.c:1550). Everything
-        // from here on is the EXISTING byte-exact KEY-frame intra decode: the
-        // mode-info tail (shared with `read_mb_modes_kf_fc`, differing only in
-        // the Y-mode CDF) then `decode_intra_block_body` (shared verbatim — C
-        // installs one frame-type-independent intra recon visitor pair,
-        // decodeframe.c:2756/:2761). The block reads `ref_frame = [INTRA_FRAME,
-        // NONE_FRAME]`, so `is_inter_block` is false for it and every downstream
-        // gate (tx-size's `inter_block_tx`, `av1_read_tx_type`'s `inter_block`,
-        // `decode_token_recon_block`'s branch) takes its intra arm unchanged.
-        if is_inter == 0 {
-            // Persist the inter CDFs adapted so far — `read_is_inter` mutated
-            // `intra_inter[ii_ctx]`, and the intra path below never touches
-            // `icdfs` again except for the Y-mode row (written back inline).
-            let chroma_ref =
-                !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
-            let cfl_allowed =
-                !cfg.monochrome && is_cfl_allowed(bsize, self.st.coded_lossless, ss_x, ss_y);
-            let (above_palette, left_palette) = self.palette_neighbours(mi_row, mi_col);
-            self.st.mi_row = mi_row;
-            self.st.mi_col = mi_col;
-            self.st.bsize = bsize;
-            self.st.is_chroma_ref = chroma_ref;
-            self.st.cfl_allowed = cfl_allowed;
-            self.st.mb_to_top_edge = -(mi_row * 32);
-            self.st.has_above = up_available;
-            self.st.has_left = left_available;
-            self.st.allow_palette = av1_allow_palette(cfg.allow_screen_content_tools, bsize);
-            // The prefix `read_inter_frame_mode_info` already consumed
-            // (segmentation / delta-q / skip-mode are asserted off above, so
-            // segment_id is 0 and the delta-lf carry is the frame default).
-            let mut info = MbModeInfoKf {
-                segment_id: 0,
-                skip,
-                cdef_strength,
-                current_qindex: cfg.base_qindex,
-                delta_lf: [0; 4],
-                delta_lf_from_base: 0,
-                use_intrabc: 0,
-                dv_row: 0,
-                dv_col: 0,
-                y_mode: 0,
-                angle_delta_y: 0,
-                uv_mode: 0,
-                cfl_alpha_idx: 0,
-                cfl_joint_sign: 0,
-                angle_delta_uv: 0,
-                palette_size: [0, 0],
-                palette_colors: [0; 24],
-                use_filter_intra: 0,
-                filter_intra_mode: 0,
-            };
-            // `y_mode_cdf[size_group_lookup[bsize]]` (decodemv.c:1077). Copied
-            // out and written back so the adaptation persists across blocks,
-            // exactly as C adapts `ec_ctx->y_mode_cdf` in place.
-            let grp = ep::y_mode_size_group(bsize);
-            let mut y_cdf = icdfs.y_mode[grp];
-            ep::read_intra_block_mode_info_fc(
-                dec,
-                cdfs,
-                &mut self.st,
-                &mut y_cdf,
-                cfg.enable_filter_intra,
-                above_mi.is_some(),
-                left_mi.is_some(),
-                above_palette,
-                left_palette,
-                &mut info,
-            );
-            icdfs.y_mode[grp] = y_cdf;
-            self.inter_cdfs = icdfs;
-            if dbg_blocks() {
-                aom_dsp::trace_out!(
-                    "BLK mi({mi_row},{mi_col}) bs={bsize} intra skip={skip} y_mode={} fi={}",
-                    info.y_mode,
-                    info.use_filter_intra
-                );
-            }
-            self.decode_intra_block_body(
-                dec,
-                cdfs,
-                mi_row,
-                mi_col,
-                bsize,
-                partition,
-                info,
-                chroma_ref,
-                up_available,
-                left_available,
-                above_mi,
-                left_mi,
-            );
-            return;
-        }
-
+    /// `read_inter_block_mode_info` (decodemv.c:1484+) through
+    /// `parse_decode_block`'s tx-size + skip-entropy tail: read the ref
+    /// pair, prediction mode, MV references and the block's MVs, the
+    /// inter-intra / motion-mode / masked-compound / warp and
+    /// interp-filter symbols, the var-tx quadtree (or LARGEST fallback),
+    /// then `av1_reset_entropy_context` for a skipped block. Returns
+    /// `None` on a named refusal / corrupt symbol — the caller exits the
+    /// block without predicting or reconstructing.
+    #[allow(clippy::too_many_arguments)]
+    fn read_inter_mode_info(
+        &mut self,
+        dec: &mut OdEcDec,
+        icdfs: &mut InterCdfs,
+        inter: &InterFrameCfg,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: usize,
+        partition: usize,
+        skip: i32,
+        up_available: bool,
+        left_available: bool,
+        above_dv: Option<DvNbr>,
+        left_dv: Option<DvNbr>,
+        above_if: Option<(u8, u8)>,
+        left_if: Option<(u8, u8)>,
+    ) -> Option<InterModeInfo> {
+        use aom_dsp::entropy::partition as ep;
+        let cfg = self.cfg;
+        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
+        let dv_inter = |d: DvNbr| d.use_intrabc || d.ref_frame0 > 0;
         // --- read_inter_block_mode_info (single reference) ---
         let rc = ep::collect_neighbors_ref_counts(
             up_available,
@@ -960,14 +919,14 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: inconsistent ref coding (ref0 {ref0}, ref1 {ref1}, compound {is_compound})"
             ));
-            return;
+            return None;
         }
         if is_compound && !crate::EXPERIMENTAL_VIDEO {
             self.mark_unsupported(
                 "inter: only single-reference blocks are decoded in this envelope \
                  (compound references unsupported)",
             );
-            return;
+            return None;
         }
         // find_inter_mv_refs below hardcodes IDENTITY global motion (base MV (0,0),
         // gm_type 0). A frame whose reference carries non-identity global motion
@@ -982,7 +941,7 @@ impl<'c> TileKf<'c> {
             self.mark_unsupported(
                 "inter: non-identity global motion not supported in this decode envelope",
             );
-            return;
+            return None;
         }
 
         // find_inter_mv_refs (identity GM, empty temporal field per the census).
@@ -1055,7 +1014,7 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: mode {mode} inconsistent with ref coding (compound {is_compound})"
             ));
-            return;
+            return None;
         }
         // read_drl_idx: weights as u16 (values are well under 2^16, see dv_ref).
         // No-ops (returns 0, reads nothing) for non-NEW/non-NEAR modes — the
@@ -1162,7 +1121,7 @@ impl<'c> TileKf<'c> {
                 GLOBAL_GLOBALMV => mvp = [imv.global_mv, imv.global_mv1],
                 _ => {
                     self.mark_corrupt(format!("inter: invalid compound mode {mode}"));
-                    return;
+                    return None;
                 }
             }
             (mvp[0].0, mvp[0].1, mvp[1].0, mvp[1].1)
@@ -1190,7 +1149,7 @@ impl<'c> TileKf<'c> {
                 GLOBALMV => (0, 0), // identity global motion (census: all IDENTITY)
                 _ => {
                     self.mark_corrupt(format!("inter: unsupported single-ref mode {mode}"));
-                    return;
+                    return None;
                 }
             };
             (r, c, 0, 0)
@@ -1495,13 +1454,13 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: out-of-range interp filter (y={filter_y}, x={filter_x})"
             ));
-            return;
+            return None;
         }
         if filter_y > 2 || filter_x > 2 {
             self.mark_unsupported(
                 "inter: interp filter BILINEAR not supported in this decode envelope",
             );
-            return;
+            return None;
         }
 
         // tx_size (decodeframe.c:1179-1198, inter path): TX_MODE_SELECT + a
@@ -1591,7 +1550,7 @@ impl<'c> TileKf<'c> {
             self.mark_unsupported(
                 "inter: non-uniform var-tx not supported in this decode envelope",
             );
-            return;
+            return None;
         }
 
         // --- parse_decode_block tail (decodeframe.c:1219): a SKIP block resets
@@ -1643,6 +1602,78 @@ impl<'c> TileKf<'c> {
             }
         }
 
+        Some(InterModeInfo {
+            is_compound,
+            ref0,
+            ref1,
+            mode,
+            mv_row,
+            mv_col,
+            mv1_row,
+            mv1_col,
+            interintra,
+            ii_mode,
+            ii_use_wedge,
+            ii_wedge_idx,
+            motion_mode,
+            comp_group_idx,
+            compound_idx,
+            masked,
+            comp_weights,
+            warp_luma,
+            filter_y,
+            filter_x,
+            tx_size,
+        })
+    }
+
+    /// `dec_build_inter_predictors` + `predict_inter_block` (decodeframe.c):
+    /// the per-plane motion-compensation dispatch — single or compound
+    /// predictor (masked / distance-weighted when coded), the local-warp and
+    /// scaled-reference variants, then the inter-intra luma/chroma blend and
+    /// the OBMC above/left feather for an OBMC_CAUSAL block. No entropy
+    /// reads. Returns `false` on a named refusal / corrupt state; the caller
+    /// then exits the block without reconstructing.
+    #[allow(clippy::too_many_arguments)]
+    fn predict_inter_block(
+        &mut self,
+        mi: InterModeInfo,
+        inter: &InterFrameCfg,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: usize,
+        partition: usize,
+        chroma_ref: bool,
+        adj_row: i32,
+        adj_col: i32,
+        up_available: bool,
+        left_available: bool,
+        above_mi: Option<MiNbrKf>,
+        left_mi: Option<MiNbrKf>,
+    ) -> bool {
+        use aom_dsp::entropy::partition as ep;
+        let cfg = self.cfg;
+        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
+        let InterModeInfo {
+            is_compound,
+            ref0,
+            ref1,
+            mv_row,
+            mv_col,
+            mv1_row,
+            mv1_col,
+            interintra,
+            ii_mode,
+            ii_use_wedge,
+            ii_wedge_idx,
+            motion_mode,
+            masked,
+            comp_weights,
+            warp_luma,
+            filter_y,
+            filter_x,
+            ..
+        } = mi;
         // --- motion compensation (predict phase; NO entropy reads) ---
         let (cmv_row, cmv_col) = clamp_mv_to_umv_border(mv_row, mv_col, mi_row, mi_col, bsize, cfg);
         // A compound block's SECOND MV clamps independently (dec_calc_subpel_params
@@ -1661,7 +1692,7 @@ impl<'c> TileKf<'c> {
         #[cfg(not(feature = "experimental-video"))]
         if cfg.bd > 8 && (cmv_row != 0 || cmv_col != 0) {
             self.mark_unsupported("inter: sub/nonzero-pel MC above bd8 not yet supported");
-            return;
+            return false;
         }
         let bw_px = (MI_SIZE_WIDE[bsize] * 4) as usize;
         let bh_px = (MI_SIZE_HIGH[bsize] * 4) as usize;
@@ -1670,7 +1701,7 @@ impl<'c> TileKf<'c> {
             self.mark_corrupt(format!(
                 "inter: block references unavailable ref {ref0} (no stored frame)"
             ));
-            return;
+            return false;
         };
         // `xd->block_ref_scale_factors[0]` — the bound ref's luma scale factors.
         let sf = &inter.ref_sf[(ref0 - 1) as usize];
@@ -1705,7 +1736,7 @@ impl<'c> TileKf<'c> {
                 self.mark_corrupt(format!(
                     "inter: block references unavailable ref {ref1} (no stored frame)"
                 ));
-                return;
+                return false;
             };
             let refs = [
                 aom_dsp::inter::CompoundRefPlane {
@@ -1881,19 +1912,9 @@ impl<'c> TileKf<'c> {
             );
         }
         // Chroma prediction only at the chroma-reference block (sub-8x8 members
-        // share one chroma block, coded on the group's bottom/right member). The
-        // shared-group origin is `adj` (setup_pred_plane's odd-position shift).
-        let chroma_ref = !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
-        let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && MI_SIZE_HIGH[bsize] == 1 {
-            mi_row - 1
-        } else {
-            mi_row
-        };
-        let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && MI_SIZE_WIDE[bsize] == 1 {
-            mi_col - 1
-        } else {
-            mi_col
-        };
+        // share one chroma block, coded on the group's bottom/right member); the
+        // caller computed `chroma_ref`/`adj_*` (setup_pred_plane's odd-position
+        // shared-group origin shift) since recon needs the same geometry.
         if chroma_ref && is_compound {
             // Compound chroma: a compound block is always min-dim >= 8, so the
             // sub-8x8 sharing path can never apply — one whole-block combine
@@ -1903,7 +1924,7 @@ impl<'c> TileKf<'c> {
                 self.mark_corrupt(format!(
                     "inter: block references unavailable ref {ref1} (no stored frame)"
                 ));
-                return;
+                return false;
             };
             let bw_uv = bw_px >> ss_x;
             let bh_uv = bh_px >> ss_y;
@@ -2486,7 +2507,50 @@ impl<'c> TileKf<'c> {
             self.obmc_above_blend(mi_row, mi_col, bsize, inter);
             self.obmc_left_blend(mi_row, mi_col, bsize, inter);
         }
+        true
+    }
 
+    /// `decode_token_recon_block`'s inter path: read the residual
+    /// coefficients (luma txbs then, at the chroma-reference block, the U/V
+    /// txbs) and add them onto the predictor built by
+    /// [`Self::predict_inter_block`], persist the adapted inter mode-info
+    /// CDFs, stamp the neighbour grids (`mi`/`dv`/interp/`mvs`), and push the
+    /// block record the loop-filter / output structures consume.
+    #[allow(clippy::too_many_arguments)]
+    fn recon_inter_block(
+        &mut self,
+        dec: &mut OdEcDec,
+        cdfs: &mut KfFrameContext,
+        icdfs: InterCdfs,
+        mi: InterModeInfo,
+        inter: &InterFrameCfg,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: usize,
+        partition: usize,
+        skip: i32,
+        cdef_strength: i32,
+        chroma_ref: bool,
+        adj_row: i32,
+        adj_col: i32,
+    ) {
+        let cfg = self.cfg;
+        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
+        let InterModeInfo {
+            ref0,
+            ref1,
+            mode,
+            mv_row,
+            mv_col,
+            mv1_row,
+            mv1_col,
+            comp_group_idx,
+            compound_idx,
+            filter_y,
+            filter_x,
+            tx_size,
+            ..
+        } = mi;
         // --- reconstruction: read residual coefficients + ADD onto the MC
         // prediction (decode_token_recon_block inter path). Skip blocks read no
         // coeffs. tx_size is the (uniform) var-tx / LARGEST per-block luma tx
@@ -2793,6 +2857,237 @@ impl<'c> TileKf<'c> {
             // (build_lf_inputs derives is_inter/ref/mode_lf from this).
             inter_lf: Some((ref0, mode)),
         });
+    }
+
+    /// One leaf block: `parse_decode_block` (mode info + tx sizing + skip
+    /// entropy-reset) followed by the intra `decode_token_recon_block` txb loop.
+    /// The INTER-frame single-block mode-info + motion-compensation path,
+    /// mirroring `read_inter_frame_mode_info` + `read_inter_block_mode_info`
+    /// (decodemv.c) then `dec_build_inter_predictors` (decodeframe.c). The
+    /// walking-skeleton envelope was single LAST reference, `SINGLE_REFERENCE`,
+    /// `SIMPLE_TRANSLATION`, `skip = 1`; chunk 4 adds `OBMC_CAUSAL` (motion_mode
+    /// read + above/left neighbour feather-blend) and inter var-tx
+    /// (`TX_MODE_SELECT`). The pre-mode reads that are no-ops in this envelope
+    /// (segment_id, skip_mode, cdef-for-skip, delta-q) are asserted off.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_block_inter(
+        &mut self,
+        dec: &mut OdEcDec,
+        cdfs: &mut KfFrameContext,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: usize,
+        partition: usize,
+        inter: &InterFrameCfg,
+    ) {
+        use aom_dsp::entropy::partition as ep;
+
+        let cfg = self.cfg;
+        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
+        let cols = cfg.mi_cols;
+        let up_available = mi_row > self.tile.mi_row_start;
+        let left_available = mi_col > self.tile.mi_col_start;
+
+        if dbg_blocks() {
+            aom_dsp::trace_out!(
+                "ENTER mi({mi_row},{mi_col}) bs={bsize} tellq={}",
+                dec.tell_frac() as i32
+            );
+        }
+
+        // Envelope invariants (STEP-0 census): these pre-mode reads are inert.
+        // Out-of-envelope inter features are rejected as a clean error (not a
+        // panic) so a malformed / unsupported inter frame from untrusted input
+        // returns `Err` instead of aborting the decode.
+        if cfg.seg.enabled {
+            self.mark_unsupported("inter: segmentation not supported in this decode envelope");
+            return;
+        }
+        if inter.skip_mode_present {
+            self.mark_unsupported("inter: skip_mode not supported in this decode envelope");
+            return;
+        }
+        if cfg.delta_q_present {
+            self.mark_unsupported("inter: delta-q not supported in this decode envelope");
+            return;
+        }
+        // tx_mode is TX_MODE_SELECT for the OBMC target (av1-1-b8-01-size-16x18):
+        // inter blocks code a var-tx quadtree (read_tx_size_vartx). The earlier
+        // walking-skeleton / ratchet targets were TX_MODE_LARGEST; both are
+        // handled below (the var-tx read collapses to the single largest tx when
+        // the frame codes LARGEST).
+        if !matches!(cfg.tx_mode, TxMode::Largest | TxMode::Select) {
+            self.mark_unsupported("inter: tx_mode ONLY_4X4 not supported in this decode envelope");
+            return;
+        }
+
+        // Neighbour projections for the mode-info contexts.
+        let (above_mi, left_mi) = self.neighbours(mi_row, mi_col);
+        let above_dv = up_available
+            .then(|| DvNbr::from_packed(self.mi_dv[((mi_row - 1) * cols + mi_col) as usize]));
+        let left_dv = left_available
+            .then(|| DvNbr::from_packed(self.mi_dv[(mi_row * cols + mi_col - 1) as usize]));
+        // The neighbours' coded interp filters (parallel to `mi_dv`), for
+        // `av1_get_pred_context_switchable_interp`. Gated by the same edge
+        // availability as `above_dv`/`left_dv`, so they zip cleanly below.
+        let above_if =
+            up_available.then(|| self.mi_interp[((mi_row - 1) * cols + mi_col) as usize]);
+        let left_if = left_available.then(|| self.mi_interp[(mi_row * cols + mi_col - 1) as usize]);
+        let dv_inter = |d: DvNbr| d.use_intrabc || d.ref_frame0 > 0;
+
+        // Snapshot the tile's persistent inter CDFs; every read below adapts this
+        // local copy (via `read_symbol`/`update_cdf` when `dec.allow_update_cdf`),
+        // and it is persisted back to `self.inter_cdfs` at the end of the block so
+        // the next inter block sees the adapted state (matching C's in-place
+        // `tile_data->tctx` adaptation).
+        let mut icdfs = self.inter_cdfs;
+
+        // --- read_inter_frame_mode_info pre-mode reads ---
+        // segment_id (seg off -> 0); skip_mode (allowed off -> 0): no reads.
+        // read_skip_txfm.
+        let skip_ctx = ep::skip_txfm_context(
+            above_mi.map_or(0, |m| m.skip_txfm),
+            left_mi.map_or(0, |m| m.skip_txfm),
+        ) as usize;
+        let skip = ep::read_skip(dec, &mut cdfs.skip[skip_ctx], false);
+        // read_cdef (decodemv.c, ordered after read_skip, before read_delta_q /
+        // read_is_inter): the FIRST non-skip block in each 64x64 CDEF unit reads
+        // that unit's `cdef_bits`-wide strength literal; skip blocks and
+        // already-read units read nothing. This is a real entropy read on any
+        // CDEF-enabled frame (`cdef_bits > 0`) — omitting it desyncs the
+        // arithmetic decoder for every following symbol. (The earlier envelope
+        // targets — 16x18, 64x66 — had `cdef_bits == 0` or a skip mi(0,0), so the
+        // gap was inert; `av1-1-b8-01-size-16x66` frame 1 has `cdef_bits == 1`
+        // with a non-skip NEWMV mi(0,0), so the missing read shifted its `read_mv`
+        // and mv desynced to (0,-15) vs C's (-1,-7).)
+        let coded_lossless = self.st.coded_lossless;
+        let allow_intrabc = self.st.allow_intrabc;
+        let mib_size = self.st.mib_size;
+        let sb_size = self.st.sb_size;
+        let cdef_bits = self.st.cdef_bits;
+        let cdef_strength = ep::read_cdef(
+            dec,
+            coded_lossless,
+            allow_intrabc,
+            mi_row,
+            mi_col,
+            mib_size,
+            sb_size,
+            skip,
+            &mut self.st.cdef_transmitted,
+            cdef_bits,
+        );
+        // read_delta_q_params: delta_q_present off -> no read.
+
+        // read_is_inter_block.
+        let ii_ctx = ep::get_intra_inter_context(
+            up_available,
+            above_dv.is_some_and(dv_inter),
+            left_available,
+            left_dv.is_some_and(dv_inter),
+        ) as usize;
+        let is_inter = ep::read_is_inter(dec, &mut icdfs.intra_inter[ii_ctx], false, false);
+
+        // --- is_inter == 0: an INTRA-coded block inside this inter frame
+        // (`read_inter_frame_mode_info`'s else-arm, decodemv.c:1550). Everything
+        // from here on is the EXISTING byte-exact KEY-frame intra decode: the
+        // mode-info tail (shared with `read_mb_modes_kf_fc`, differing only in
+        // the Y-mode CDF) then `decode_intra_block_body` (shared verbatim — C
+        // installs one frame-type-independent intra recon visitor pair,
+        // decodeframe.c:2756/:2761). The block reads `ref_frame = [INTRA_FRAME,
+        // NONE_FRAME]`, so `is_inter_block` is false for it and every downstream
+        // gate (tx-size's `inter_block_tx`, `av1_read_tx_type`'s `inter_block`,
+        // `decode_token_recon_block`'s branch) takes its intra arm unchanged.
+        if is_inter == 0 {
+            self.decode_intra_in_inter_block(
+                dec,
+                cdfs,
+                mi_row,
+                mi_col,
+                bsize,
+                partition,
+                skip,
+                cdef_strength,
+                icdfs,
+                up_available,
+                left_available,
+                above_mi,
+                left_mi,
+            );
+            return;
+        }
+
+        // --- read_inter_block_mode_info + parse_decode_block tail ---
+        let Some(mi) = self.read_inter_mode_info(
+            dec,
+            &mut icdfs,
+            inter,
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            skip,
+            up_available,
+            left_available,
+            above_dv,
+            left_dv,
+            above_if,
+            left_if,
+        ) else {
+            return;
+        };
+        // Chroma-reference geometry, shared by predict (chroma MC) and recon
+        // (chroma residual): `chroma_ref` selects the chroma-reference block
+        // (sub-8x8 members share one chroma block, coded on the group's
+        // bottom/right member); `adj_*` is setup_pred_plane's odd-position
+        // shared-group origin shift.
+        let chroma_ref = !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
+        let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && MI_SIZE_HIGH[bsize] == 1 {
+            mi_row - 1
+        } else {
+            mi_row
+        };
+        let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && MI_SIZE_WIDE[bsize] == 1 {
+            mi_col - 1
+        } else {
+            mi_col
+        };
+        // --- motion compensation (predict phase; NO entropy reads) ---
+        if !self.predict_inter_block(
+            mi,
+            inter,
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            chroma_ref,
+            adj_row,
+            adj_col,
+            up_available,
+            left_available,
+            above_mi,
+            left_mi,
+        ) {
+            return;
+        }
+
+        // --- reconstruction: residual coefficients + CDF/grid writes ---
+        self.recon_inter_block(
+            dec,
+            cdfs,
+            icdfs,
+            mi,
+            inter,
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            skip,
+            cdef_strength,
+            chroma_ref,
+            adj_row,
+            adj_col,
+        );
     }
 }
 
