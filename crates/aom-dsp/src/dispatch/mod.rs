@@ -31,6 +31,14 @@
 //! dispatch path (including its scalar fallback plumbing) is what runs under
 //! the pin — not a parallel code path.
 //!
+//! **The env read exists only in `__internals` (in-tree harness) builds.**
+//! `scalar_forced()` checks `AOM_FORCE_SCALAR` solely under `cfg(feature =
+//! "__internals")`; every harness that runs the byte-exactness suites already
+//! enables it (`aom-bench` declares it, encode/decode `__internals` forward it,
+//! and this crate's own `tests/all` target requires it). A published default
+//! build has no `getenv` on any dispatch path and the pin is unreachable —
+//! the same contract `trace-env` documents for the `AOM_*` trace names.
+//!
 //! Scope: the pin covers every token that is runtime-detected in this build
 //! (x86-64: v2/crypto/v3/v3crypto/v4/v4x/fp16; aarch64: arm-v2/arm-v3 and the
 //! optional neon extensions — aes/sha3/crc). Tokens whose features are
@@ -70,6 +78,7 @@
 //! directly instead of relying on token availability. That is a deliberate
 //! design change, not a bug fix, and is NOT implemented.
 
+#[cfg(feature = "__internals")]
 use std::sync::OnceLock;
 
 /// True when the `AOM_FORCE_SCALAR` environment variable pins this process
@@ -80,16 +89,28 @@ use std::sync::OnceLock;
 /// every subsequent dispatch site and `incant!` falls through to `_scalar`.
 /// Call this at every dispatch entry point BEFORE `incant!` (see the crate
 /// docs for the pattern); after initialization it is a single atomic load.
+///
+/// The env read exists only under `cfg(feature = "__internals")` — the
+/// in-tree harness flag every byte-exactness suite already builds with. In a
+/// published default build this returns `false` unconditionally and no env
+/// read is emitted (same contract as `trace-env` on the `AOM_*` trace names).
 pub fn scalar_forced() -> bool {
-    static PIN: OnceLock<bool> = OnceLock::new();
-    *PIN.get_or_init(|| {
-        let forced =
-            std::env::var_os("AOM_FORCE_SCALAR").is_some_and(|v| !v.is_empty() && v != "0");
-        if forced {
-            disable_all_simd_tokens();
-        }
-        forced
-    })
+    #[cfg(feature = "__internals")]
+    {
+        static PIN: OnceLock<bool> = OnceLock::new();
+        *PIN.get_or_init(|| {
+            let forced =
+                std::env::var_os("AOM_FORCE_SCALAR").is_some_and(|v| !v.is_empty() && v != "0");
+            if forced {
+                disable_all_simd_tokens();
+            }
+            forced
+        })
+    }
+    #[cfg(not(feature = "__internals"))]
+    {
+        false
+    }
 }
 
 /// Disable every runtime-dispatchable archmage token, process-wide.
@@ -99,6 +120,10 @@ pub fn scalar_forced() -> bool {
 /// which is fine: a stub's `summon()` already returns `None`, and aom-rs
 /// builds never bake target features in (`-Ctarget-cpu` is banned), so on
 /// native targets every SIMD token here is disableable.
+///
+/// Reached only from `scalar_forced` under `__internals` and from this
+/// module's own tests — a published default build never disables tokens.
+#[cfg(any(test, feature = "__internals"))]
 fn disable_all_simd_tokens() {
     use archmage as a;
     // x86-64 hierarchy (V1 is compile-time on the x86-64 baseline — sse2 —
