@@ -3692,7 +3692,8 @@ fn restoration_search(
     rsc: &mut RscState,
     rusi: &mut [RestUnitSearchInfo],
     disable_lr_filter: &[bool; RESTORE_TYPES],
-) {
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     rsc.reset();
     restoration_search_rows(
         ctx,
@@ -3703,7 +3704,8 @@ fn restoration_search(
         None,
         &input.tile_sb_rows,
         disable_lr_filter,
-    );
+        stop,
+    )
 }
 
 /// The tile-row body of `restoration_search` over `tile_rows` (a slice of
@@ -3721,7 +3723,8 @@ fn restoration_search_rows(
     mut mask: Option<&mut [bool]>,
     tile_rows: &[(i32, i32)],
     disable_lr_filter: &[bool; RESTORE_TYPES],
-) {
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
     let plane = ctx.plane;
     let ru_size = lr_geom.unit_size[plane];
     let ext_size = ru_size * 3 / 2;
@@ -3742,6 +3745,9 @@ fn restoration_search_rows(
             for sb_row in sb_row_start..sb_row_end {
                 let mi_row = sb_row << input.mib_size_log2;
                 for sb_col in sb_col_start..sb_col_end {
+                    if let Some(s) = stop {
+                        s.check()?;
+                    }
                     let mi_col = sb_col << input.mib_size_log2;
                     let Some((rcol0, rcol1, rrow0, rrow1)) = lr_corners_in_sb(
                         lr_geom, plane, input.ss_x, input.ss_y, mi_row, mi_col, mib_size, mib_size,
@@ -3803,6 +3809,7 @@ fn restoration_search_rows(
             }
         }
     }
+    Ok(())
 }
 
 /// `copy_unit_info` (pickrst.c).
@@ -3829,6 +3836,21 @@ fn copy_unit_info(frame_rtype: u8, rusi: &RestUnitSearchInfo) -> LrUnitInfo {
 /// unit sizes and planes. Returns the chosen unit size, per-plane frame
 /// restoration types and per-unit parameters.
 pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
+    // A `None` token is never polled, so this cannot fail; the default
+    // outcome (RESTORE_NONE everywhere) is the same early-return value the
+    // fn produces for degenerate inputs.
+    pick_filter_restoration_stop(input, None).unwrap_or_default()
+}
+
+/// [`pick_filter_restoration`] with a cooperative stop token polled once per
+/// superblock row — a cpu_used=0 wiener/sgr sweep over a megapixel frame can
+/// run for hundreds of ms between the encoder's phase-boundary polls.
+/// Returns `Err(StopReason)` with the search abandoned; the caller discards
+/// the frame on cancellation anyway.
+pub fn pick_filter_restoration_stop(
+    input: &LrSearchInput<'_>,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<LrSearchOutcome, enough::StopReason> {
     let num_planes = input.planes.len();
     let sb_wide = 1i32 << (input.mib_size_log2 + 2); // block_size_wide[sb_size]
 
@@ -3854,14 +3876,14 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
         2
     };
     if plane_start > plane_end {
-        return outcome;
+        return Ok(outcome);
     }
 
     let disable_lr_filter = derive_flags_for_lr_processing(&input.sf);
     // Wiener+SGR both disabled: nothing to search (the C search loop would
     // skip every fn and pick NONE everywhere).
     if disable_lr_filter[RESTORE_NONE as usize] {
-        return outcome;
+        return Ok(outcome);
     }
 
     // Stage the searched planes (av1_extend_frame + boundary saves happen
@@ -3934,10 +3956,12 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
                         Some(&mut mask_w),
                         &tile_rows,
                         &disable_lr_filter,
-                    );
-                    (rsc_w, rusi_w, mask_w)
+                        stop,
+                    )?;
+                    Ok((rsc_w, rusi_w, mask_w))
                 });
-                for (rsc_w, rusi_w, mask_w) in outs {
+                for out in outs {
+                    let (rsc_w, rusi_w, mask_w) = out?;
                     for r in 0..RESTORE_TYPES {
                         rsc.total_sse[r] += rsc_w.total_sse[r];
                         rsc.total_bits[r] += rsc_w.total_bits[r];
@@ -3956,7 +3980,8 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
                     &mut rsc,
                     &mut rusi,
                     &disable_lr_filter,
-                );
+                    stop,
+                )?;
             }
 
             let num_rtypes = if plane_num_units > 1 {
@@ -4027,5 +4052,5 @@ pub fn pick_filter_restoration(input: &LrSearchInput<'_>) -> LrSearchOutcome {
     }
 
     outcome.unit_size = best_luma_unit_size;
-    outcome
+    Ok(outcome)
 }

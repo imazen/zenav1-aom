@@ -399,6 +399,7 @@ fn encode_sb_dry_run_matches_c_walk() {
         }
 
         let env = SbEncodeEnv {
+            stop: None,
             ref_frame: None,
             sb_size: 12,
             mi_rows: 512,

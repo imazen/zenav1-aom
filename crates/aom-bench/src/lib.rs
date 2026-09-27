@@ -1796,6 +1796,7 @@ impl EncodeCell {
                 0
             };
         let mut env = SbEncodeEnv {
+            stop: None,
             ref_frame: None,
             sb_size: sb_block,
             mi_rows,
@@ -2851,6 +2852,7 @@ impl MultiFrameEncodeCell {
         let pol = sf.tx_type_search_policy(false, 0);
         let uv_lp = UvLoopPolicy::speed0_allintra();
         let env = SbEncodeEnv {
+            stop: None,
             ref_frame: Some(&ref_frame),
             sb_size: sb_block,
             mi_rows,

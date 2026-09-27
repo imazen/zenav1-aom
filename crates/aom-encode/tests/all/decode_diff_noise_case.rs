@@ -407,6 +407,7 @@ fn decode_diff_pseudo_random_noise_case() {
     let src_v_strided = vec![0u16; STRIDE * (h + 4)];
 
     let env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: SB,
         mi_rows,

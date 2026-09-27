@@ -489,6 +489,7 @@ fn localize_real_speed(
     let speed = cpu_used;
     let sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
     let env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: SB,
         mi_rows,
