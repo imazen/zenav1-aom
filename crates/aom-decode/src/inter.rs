@@ -73,6 +73,28 @@ struct Compound {
     kind: CompoundKind,
 }
 
+/// The resolved MVs from `read_drl_idx` + `assign_mv`: `mv0` is ref0's MV;
+/// `mv1` is `Some` only for a compound block — a single-ref block cannot
+/// carry a second motion vector.
+struct BlockMvs {
+    mv0: (i32, i32),
+    mv1: Option<(i32, i32)>,
+}
+
+/// The blend-shape product of `read_compound_type_info` + the masked /
+/// distance-weighted payload reads — what the reader learns about a compound
+/// block beyond its refs and MVs. `kind` is `Masked` xor `Weighted`: a masked
+/// block still computes `comp_weights` upstream (C computes them
+/// unconditionally) but nothing downstream reads them.
+struct CompoundShape {
+    /// `comp_group_idx`: 0 = average/dist-wtd family, 1 = masked family.
+    group_idx: i32,
+    /// `compound_idx`: within group 0, 0 = distance-weighted, 1 = average.
+    compound_idx: i32,
+    /// The predictor family `group_idx` selects.
+    kind: CompoundKind,
+}
+
 /// `read_compound_type_info`'s two mutually exclusive blend families — C
 /// branches on `comp_group_idx` at every build site; the port makes the two
 /// payloads one enum so a masked block cannot also carry weights.
@@ -877,12 +899,9 @@ impl<'c> TileKf<'c> {
             left_available,
             above_dv,
             left_dv,
-            above_if,
-            left_if,
             ..
         } = *bx;
         let cfg = self.cfg;
-        let (ss_x, ss_y) = (cfg.subsampling_x, cfg.subsampling_y);
         let dv_inter = |d: DvNbr| d.use_intrabc || d.ref_frame0 > 0;
         // --- read_inter_block_mode_info (single reference) ---
         let rc = ep::collect_neighbors_ref_counts(
@@ -1054,7 +1073,155 @@ impl<'c> TileKf<'c> {
                 "inter: mode {mode} inconsistent with ref coding (compound {is_compound})"
             ));
             return Stage::Stop;
+        } // read_drl_idx + assign_mv (decodemv.c:1114-1212): resolve the MV
+        // predictor per mode, then read the coded residual MVs.
+        let mvs = match self.read_inter_mvs(dec, icdfs, inter, &imv, mode, is_compound) {
+            Stage::Continue(v) => v,
+            Stage::Stop => return Stage::Stop,
+        };
+        let (mv_row, mv_col) = mvs.mv0;
+        let (mv1_row, mv1_col) = mvs.mv1.unwrap_or((0, 0));
+        // Inter-intra (decodemv.c:1383-1407 — AFTER assign_mv, BEFORE findSamples /
+        // read_motion_mode): the flag, then (when set) the mode and the optional
+        // wedge flag + shape index. Coded for an interintra-allowed single-ref
+        // inter block when `enable_interintra_compound`. `av1_is_wedge_used` is
+        // true for EVERY interintra-allowed bsize (BLOCK_8X8..BLOCK_32X32 all have
+        // 16 wedge types), so the wedge flag is always read when the mode is —
+        // carried as a gate anyway, matching C.
+        let (ref1, interintra) = self.read_interintra(dec, icdfs, inter, bx, mode, ref0, ref1);
+
+        // read_motion_mode (decodemv.c:1422 — BEFORE read_mb_interp_filter; an
+        // inter-intra block reads no symbol — see the method doc).
+        let motion_mode = self.read_inter_motion_mode(
+            dec,
+            icdfs,
+            inter,
+            bx,
+            mode,
+            ref0,
+            ref1,
+            interintra.is_some(),
+        );
+
+        // read_compound_type_info + the masked/weighted payload reads — the
+        // blend shape for a second-ref block, `None` for single-ref.
+        let compound_shape =
+            self.read_compound_shape(dec, icdfs, inter, bx, is_compound, comp_allowed, ref0, ref1);
+
+        // findSamples/selectSamples/find_projection for a WARPED_CAUSAL block.
+        let warp_luma =
+            self.find_block_warp(bx, &dv_tile, mib_size, motion_mode, ref0, mv_row, mv_col);
+
+        let (filter_y, filter_x) =
+            match self.read_inter_interp_filter(dec, icdfs, inter, bx, motion_mode, ref0, ref1) {
+                Stage::Continue(v) => v,
+                Stage::Stop => return Stage::Stop,
+            };
+
+        // tx_size (decodeframe.c:1179-1198, inter path): TX_MODE_SELECT + a
+        // signalling block (bsize > BLOCK_4X4) + !skip -> the inter var-tx
+        // quadtree (read_tx_size_vartx over txfm_partition_cdf; it stamps the
+        // txfm-context arrays itself). Else the tx_mode fallback (TX_MODE_LARGEST
+        // for the 64x64 / 16x16 / 64x66 targets — a single per-block tx, no
+        // symbol). Every block in the 16x18 OBMC target is Select + skip=0 and
+        // resolves to a UNIFORM leaf tiling (the strips stay TX_4X16; the OBMC
+        // BLOCK_16X8 splits to 2x TX_8X8) — a non-uniform partition would need the
+        // reconstruction-phase leaf walk (collect_vartx_leaves) and is guarded.
+        let tx_size = match self.read_inter_tx_layout(dec, bx) {
+            Stage::Continue(v) => v,
+            Stage::Stop => return Stage::Stop,
+        };
+
+        // parse_decode_block tail (decodeframe.c:1219): a SKIP block resets its
+        // entropy-context footprint — see `reset_skip_ctx`.
+        self.reset_skip_ctx(bx, skip);
+
+        // Pack the mutually exclusive families: a compound block carries its
+        // second ref/MV + blend as one `Compound` (masked xor weighted — the
+        // comp_weights a masked block computed are dropped unused), and an
+        // inter-intra blend only exists on a single-ref block.
+        Stage::Continue(InterModeInfo {
+            ref0,
+            mode,
+            mv_row,
+            mv_col,
+            compound: compound_shape.map(|s| Compound {
+                ref1,
+                mv1_row,
+                mv1_col,
+                comp_group_idx: s.group_idx,
+                compound_idx: s.compound_idx,
+                kind: s.kind,
+            }),
+            interintra,
+            motion_mode,
+            warp_luma,
+            filter_y,
+            filter_x,
+            tx_size,
+        })
+    }
+
+    /// `read_motion_mode` (decodemv.c:1422 — BEFORE read_mb_interp_filter). A
+    /// symbol is read only when the frame allows switchable motion modes AND
+    /// (via motion_mode_allowed) the block is motion-variation-allowed
+    /// (min(bw,bh) >= 8) with >= 1 overlappable inter neighbour. The ceiling
+    /// selects the 2-symbol obmc_cdf (OBMC ceiling) or the 3-symbol
+    /// motion_mode_cdf (WARP ceiling); the resolved mode may still be SIMPLE.
+    /// The earlier targets read nothing (64x64 skeleton: no neighbours; 16x16
+    /// ratchet: BLOCK_16X4 fails the size gate). WARPED_CAUSAL is chunk 5.
+    ///
+    /// An INTER-INTRA block reads NO motion-mode symbol: C gates the whole read
+    /// on `mbmi->ref_frame[1] != INTRA_FRAME` (decodemv.c:1421) after seeding
+    /// `motion_mode = SIMPLE_TRANSLATION` (:1414), so inter-intra and
+    /// OBMC/WARPED_CAUSAL are mutually exclusive by construction.
+    fn read_inter_motion_mode(
+        &mut self,
+        dec: &mut OdEcDec,
+        icdfs: &mut InterCdfs,
+        inter: &InterFrameCfg,
+        bx: &BlockCtx,
+        mode: i32,
+        ref0: i32,
+        ref1: i32,
+        interintra: bool,
+    ) -> i32 {
+        use aom_dsp::entropy::partition as ep;
+        let BlockCtx {
+            mi_row,
+            mi_col,
+            bsize,
+            ..
+        } = *bx;
+        if interintra {
+            0 // SIMPLE_TRANSLATION — no symbol read
+        } else if inter.switchable_motion_mode {
+            let ceiling = self.motion_mode_ceiling(mi_row, mi_col, bsize, mode, ref0, ref1, inter);
+            ep::read_motion_mode(
+                dec,
+                &mut icdfs.obmc[bsize],
+                &mut icdfs.motion_mode[bsize],
+                ceiling,
+            )
+        } else {
+            0 // SIMPLE_TRANSLATION
         }
+    }
+
+    /// `read_drl_idx` + `assign_mv` (decodemv.c:1114-1212): pick the reference
+    /// MV by DRL index, resolve the predictor per mode, then read the coded
+    /// residual MVs — one per reference for compound. A single-ref block
+    /// cannot carry a second MV (`BlockMvs::mv1` is `None`).
+    fn read_inter_mvs(
+        &mut self,
+        dec: &mut OdEcDec,
+        icdfs: &mut InterCdfs,
+        inter: &InterFrameCfg,
+        imv: &aom_dsp::entropy::dv_ref::InterMvRefs,
+        mode: i32,
+        is_compound: bool,
+    ) -> Stage<BlockMvs> {
+        use aom_dsp::entropy::partition as ep;
         // read_drl_idx: weights as u16 (values are well under 2^16, see dv_ref).
         // No-ops (returns 0, reads nothing) for non-NEW/non-NEAR modes — the
         // gate matches C's `mode == NEWMV || NEW_NEWMV || have_nearmv`.
@@ -1085,7 +1252,7 @@ impl<'c> TileKf<'c> {
         const NEW_NEARMV: i32 = 22;
         const GLOBAL_GLOBALMV: i32 = 23;
         const NEW_NEWMV: i32 = 24;
-        let (mv_row, mv_col, mv1_row, mv1_col) = if is_compound {
+        let mvs = if is_compound {
             // nearest/near come off the compound PAIR stack: `stack[i]` is
             // ref0's candidate, `comp_stack[i]` ref1's (this_mv / comp_mv).
             // Both are `lower_mv_precision`'d; GLOBAL_GLOBALMV skips the block.
@@ -1163,7 +1330,10 @@ impl<'c> TileKf<'c> {
                     return Stage::Stop;
                 }
             }
-            (mvp[0].0, mvp[0].1, mvp[1].0, mvp[1].1)
+            BlockMvs {
+                mv0: mvp[0],
+                mv1: Some(mvp[1]),
+            }
         } else {
             let (r, c) = match mode {
                 NEWMV => {
@@ -1191,16 +1361,40 @@ impl<'c> TileKf<'c> {
                     return Stage::Stop;
                 }
             };
-            (r, c, 0, 0)
+            BlockMvs {
+                mv0: (r, c),
+                mv1: None,
+            }
         };
+        Stage::Continue(mvs)
+    }
 
-        // Inter-intra (decodemv.c:1383-1407 — AFTER assign_mv, BEFORE findSamples /
-        // read_motion_mode): the flag, then (when set) the mode and the optional
-        // wedge flag + shape index. Coded for an interintra-allowed single-ref
-        // inter block when `enable_interintra_compound`. `av1_is_wedge_used` is
-        // true for EVERY interintra-allowed bsize (BLOCK_8X8..BLOCK_32X32 all have
-        // 16 wedge types), so the wedge flag is always read when the mode is —
-        // carried as a gate anyway, matching C.
+    /// `read_interintra_info` (decodemv.c:1383-1407 — AFTER assign_mv, BEFORE
+    /// findSamples / read_motion_mode): the flag, then (when set) the mode and
+    /// the optional wedge flag + shape index. Coded for an interintra-allowed
+    /// single-ref inter block when `enable_interintra_compound`.
+    /// `av1_is_wedge_used` is true for EVERY interintra-allowed bsize
+    /// (BLOCK_8X8..BLOCK_32X32 all have 16 wedge types), so the wedge flag is
+    /// always read when the mode is — carried as a gate anyway, matching C.
+    ///
+    /// Returns the post-rewrite `ref1`: an active interintra blend rewrites
+    /// `ref_frame[1] = INTRA_FRAME` (decodemv.c:1393) — load-bearing beyond
+    /// bookkeeping, since `av1_findSamples` counts a warp sample only for a
+    /// neighbour with `ref_frame[1] == NONE_FRAME` (-1), so an interintra
+    /// neighbour must NOT look single-ref there. (`collect_neighbors_ref_counts`
+    /// and the MV scan both gate on `> INTRA_FRAME`, unaffected either way.)
+    fn read_interintra(
+        &mut self,
+        dec: &mut OdEcDec,
+        icdfs: &mut InterCdfs,
+        inter: &InterFrameCfg,
+        bx: &BlockCtx,
+        mode: i32,
+        ref0: i32,
+        ref1: i32,
+    ) -> (i32, Option<InterIntra>) {
+        use aom_dsp::entropy::partition as ep;
+        let bsize = bx.bsize;
         let mut ref1 = ref1;
         let (interintra, ii_mode, ii_use_wedge, ii_wedge_idx) =
             if inter.enable_interintra_compound && is_interintra_allowed(bsize, mode, ref0, ref1) {
@@ -1228,91 +1422,94 @@ impl<'c> TileKf<'c> {
             } else {
                 (0, 0, 0, 0)
             };
-        let interintra = interintra != 0;
-
-        // read_motion_mode (decodemv.c:1422 — BEFORE read_mb_interp_filter). A
-        // symbol is read only when the frame allows switchable motion modes AND
-        // (via motion_mode_allowed) the block is motion-variation-allowed
-        // (min(bw,bh) >= 8) with >= 1 overlappable inter neighbour. The ceiling
-        // selects the 2-symbol obmc_cdf (OBMC ceiling) or the 3-symbol
-        // motion_mode_cdf (WARP ceiling); the resolved mode may still be SIMPLE.
-        // The earlier targets read nothing (64x64 skeleton: no neighbours; 16x16
-        // ratchet: BLOCK_16X4 fails the size gate). WARPED_CAUSAL is chunk 5.
-        //
-        // An INTER-INTRA block reads NO motion-mode symbol: C gates the whole read
-        // on `mbmi->ref_frame[1] != INTRA_FRAME` (decodemv.c:1421) after seeding
-        // `motion_mode = SIMPLE_TRANSLATION` (:1414), so inter-intra and
-        // OBMC/WARPED_CAUSAL are mutually exclusive by construction.
-        let motion_mode = if interintra {
-            0 // SIMPLE_TRANSLATION — no symbol read
-        } else if inter.switchable_motion_mode {
-            let ceiling = self.motion_mode_ceiling(mi_row, mi_col, bsize, mode, ref0, ref1, inter);
-            ep::read_motion_mode(
-                dec,
-                &mut icdfs.obmc[bsize],
-                &mut icdfs.motion_mode[bsize],
-                ceiling,
+        if interintra != 0 {
+            (
+                ref1,
+                Some(InterIntra {
+                    mode: ii_mode,
+                    use_wedge: ii_use_wedge != 0,
+                    wedge_idx: ii_wedge_idx,
+                }),
             )
         } else {
-            0 // SIMPLE_TRANSLATION
+            (ref1, None)
+        }
+    }
+
+    /// `read_compound_type_info` (decodemv.c:1424-1478 — AFTER motion_mode,
+    /// BEFORE read_mb_interp_filter) + the masked/distance-weighted payload:
+    /// only a second-ref (compound) block codes these. Returns `None` for a
+    /// single-ref block — C's seeded comp_group_idx=0/compound_idx=1 defaults
+    /// are never read downstream, so `Compound` exists only under `Some`.
+    fn read_compound_shape(
+        &mut self,
+        dec: &mut OdEcDec,
+        icdfs: &mut InterCdfs,
+        inter: &InterFrameCfg,
+        bx: &BlockCtx,
+        is_compound: bool,
+        comp_allowed: bool,
+        ref0: i32,
+        ref1: i32,
+    ) -> Option<CompoundShape> {
+        use aom_dsp::entropy::partition as ep;
+        if !is_compound {
+            return None;
+        }
+        let BlockCtx {
+            bsize,
+            up_available,
+            left_available,
+            above_dv,
+            left_dv,
+            ..
+        } = *bx;
+        let (comp_group_idx, compound_idx, comp_type, wedge_index, wedge_sign, mask_type) = {
+            let masked_compound_used = comp_allowed && inter.enable_masked_compound;
+            let cgi_ctx = ep::get_comp_group_idx_context(
+                up_available,
+                above_dv.map_or(0, |d| d.ref_frame0),
+                above_dv.map_or(-1, |d| d.ref_frame1),
+                above_dv.map_or(0, |d| d.comp_group_idx),
+                left_available,
+                left_dv.map_or(0, |d| d.ref_frame0),
+                left_dv.map_or(-1, |d| d.ref_frame1),
+                left_dv.map_or(0, |d| d.comp_group_idx),
+            ) as usize;
+            // `fwd`/`bck` order-hint pairing follows C's buffer lookup
+            // (pred_common.h:102): `bck_buf` is ref_frame[0], `fwd_buf`
+            // ref_frame[1] — so ref1's order hint is the `fwd` arg.
+            let ci_ctx = ep::get_comp_index_context(
+                inter.enable_order_hint,
+                inter.order_hint_bits_minus_1,
+                inter.order_hint,
+                inter.ref_order_hints[ref1 as usize],
+                inter.ref_order_hints[ref0 as usize],
+                up_available,
+                above_dv.is_some_and(|d| d.ref_frame1 > 0),
+                above_dv.map_or(0, |d| d.compound_idx),
+                above_dv.map_or(0, |d| d.ref_frame0),
+                left_available,
+                left_dv.is_some_and(|d| d.ref_frame1 > 0),
+                left_dv.map_or(0, |d| d.compound_idx),
+                left_dv.map_or(0, |d| d.ref_frame0),
+            ) as usize;
+            ep::read_compound_type_info(
+                dec,
+                masked_compound_used,
+                &mut icdfs.comp_group_idx[cgi_ctx],
+                inter.enable_dist_wtd_comp,
+                &mut icdfs.compound_idx[ci_ctx],
+                comp_allowed && aom_dsp::inter::interintra::is_wedge_used(bsize),
+                &mut icdfs.compound_type[bsize],
+                &mut icdfs.wedge_idx[bsize],
+            )
         };
 
-        // read_compound_type_info (decodemv.c:1424-1478 — AFTER motion_mode,
-        // BEFORE read_mb_interp_filter): only a second-ref (compound) block
-        // codes these. `comp_group_idx` selects average/dist-wtd (group 0) vs
-        // masked (group 1); within group 0, `compound_idx` picks dist-wtd vs
-        // plain average. Group 1 is the wedge/diffwtd masked family — the
-        // mask payload (comp_type + wedge_index/sign or mask_type) feeds the
-        // masked predictor below.
-        let (comp_group_idx, compound_idx, comp_type, wedge_index, wedge_sign, mask_type) =
-            if is_compound {
-                let masked_compound_used = comp_allowed && inter.enable_masked_compound;
-                let cgi_ctx = ep::get_comp_group_idx_context(
-                    up_available,
-                    above_dv.map_or(0, |d| d.ref_frame0),
-                    above_dv.map_or(-1, |d| d.ref_frame1),
-                    above_dv.map_or(0, |d| d.comp_group_idx),
-                    left_available,
-                    left_dv.map_or(0, |d| d.ref_frame0),
-                    left_dv.map_or(-1, |d| d.ref_frame1),
-                    left_dv.map_or(0, |d| d.comp_group_idx),
-                ) as usize;
-                // `fwd`/`bck` order-hint pairing follows C's buffer lookup
-                // (pred_common.h:102): `bck_buf` is ref_frame[0], `fwd_buf`
-                // ref_frame[1] — so ref1's order hint is the `fwd` arg.
-                let ci_ctx = ep::get_comp_index_context(
-                    inter.enable_order_hint,
-                    inter.order_hint_bits_minus_1,
-                    inter.order_hint,
-                    inter.ref_order_hints[ref1 as usize],
-                    inter.ref_order_hints[ref0 as usize],
-                    up_available,
-                    above_dv.is_some_and(|d| d.ref_frame1 > 0),
-                    above_dv.map_or(0, |d| d.compound_idx),
-                    above_dv.map_or(0, |d| d.ref_frame0),
-                    left_available,
-                    left_dv.is_some_and(|d| d.ref_frame1 > 0),
-                    left_dv.map_or(0, |d| d.compound_idx),
-                    left_dv.map_or(0, |d| d.ref_frame0),
-                ) as usize;
-                ep::read_compound_type_info(
-                    dec,
-                    masked_compound_used,
-                    &mut icdfs.comp_group_idx[cgi_ctx],
-                    inter.enable_dist_wtd_comp,
-                    &mut icdfs.compound_idx[ci_ctx],
-                    comp_allowed && aom_dsp::inter::interintra::is_wedge_used(bsize),
-                    &mut icdfs.compound_type[bsize],
-                    &mut icdfs.wedge_idx[bsize],
-                )
-            } else {
-                // Non-compound defaults (C seeds comp_group_idx=0, compound_idx=1).
-                (0, 1, 0, 0, 0, 0)
-            };
         // Masked compound (`comp_group_idx == 1`): `comp_type` picks the wedge
         // codebook mask (`COMPOUND_WEDGE` = 2, with wedge_index/wedge_sign) or
         // the diff-weighted `seg_mask` (`COMPOUND_DIFFWTD` = 3, with mask_type).
-        let masked: Option<aom_dsp::inter::MaskedCompound> = if is_compound && comp_group_idx != 0 {
+        let masked: Option<aom_dsp::inter::MaskedCompound> = if comp_group_idx != 0 {
             const COMPOUND_WEDGE: i32 = 2;
             Some(if comp_type == COMPOUND_WEDGE {
                 aom_dsp::inter::MaskedCompound::Wedge {
@@ -1334,31 +1531,52 @@ impl<'c> TileKf<'c> {
         // `av1_dist_wtd_comp_weight_assign` (reconinter.c:669): compound_idx==0
         // -> distance-weighted offsets from the pair's order-hint distances;
         // compound_idx==1 (or !is_compound) -> the plain 8/8 average.
-        let comp_weights = if is_compound {
-            aom_dsp::inter::compound::dist_wtd_comp_weight_assign(
-                inter.enable_order_hint,
-                inter.order_hint_bits_minus_1,
-                inter.order_hint,
-                inter.ref_order_hints[ref1 as usize],
-                inter.ref_order_hints[ref0 as usize],
-                compound_idx != 0,
-                is_compound,
-            )
-        } else {
-            aom_dsp::inter::compound::DistWtdWeights {
-                fwd_offset: 8,
-                bck_offset: 8,
-                use_dist_wtd_comp_avg: false,
-            }
-        };
-        // WARPED_CAUSAL (chunk 5): gather the warp samples (av1_findSamples),
-        // select (av1_selectSamples when num_proj_ref > 1), derive the local
-        // AFFINE model (av1_find_projection). C: decodemv.c:1484-1503. An invalid
-        // model marks `wm.invalid` -> MC falls back to translational (allow_warp ->
-        // global(identity) -> TRANSLATION_PRED). Ordering vs read_mb_interp_filter is
-        // moot: find_projection reads NO entropy symbols. `warp_luma` (a usable local
-        // model) drives the affine MC below; luma always passes the per-plane >= 8
-        // gate (motion-variation requires min dim >= 8), chroma is re-gated at its MC.
+        let comp_weights = aom_dsp::inter::compound::dist_wtd_comp_weight_assign(
+            inter.enable_order_hint,
+            inter.order_hint_bits_minus_1,
+            inter.order_hint,
+            inter.ref_order_hints[ref1 as usize],
+            inter.ref_order_hints[ref0 as usize],
+            compound_idx != 0,
+            is_compound,
+        );
+        Some(CompoundShape {
+            group_idx: comp_group_idx,
+            compound_idx,
+            kind: match masked {
+                Some(mask) => CompoundKind::Masked(mask),
+                None => CompoundKind::Weighted(comp_weights),
+            },
+        })
+    }
+
+    /// WARPED_CAUSAL (chunk 5): gather the warp samples (`av1_findSamples`),
+    /// select (`av1_selectSamples` when num_proj_ref > 1), derive the local
+    /// AFFINE model (`av1_find_projection`). C: decodemv.c:1484-1503. An invalid
+    /// model marks `wm.invalid` -> MC falls back to translational (allow_warp ->
+    /// global(identity) -> TRANSLATION_PRED). find_projection reads NO entropy
+    /// symbols. Returns the usable local model (invalid filtered out); chroma
+    /// re-gates at its MC.
+    fn find_block_warp(
+        &self,
+        bx: &BlockCtx,
+        dv_tile: &DvTileBounds,
+        mib_size: i32,
+        motion_mode: i32,
+        ref0: i32,
+        mv_row: i32,
+        mv_col: i32,
+    ) -> Option<aom_dsp::inter::warp::WarpedMotionParams> {
+        let cfg = self.cfg;
+        let BlockCtx {
+            mi_row,
+            mi_col,
+            bsize,
+            partition,
+            up_available,
+            left_available,
+            ..
+        } = *bx;
         let warp_params: Option<aom_dsp::inter::warp::WarpedMotionParams> = if motion_mode == 2 {
             let warp_grid = MiDvGrid {
                 mi_dv: &self.mi_dv,
@@ -1369,7 +1587,7 @@ impl<'c> TileKf<'c> {
             };
             let mut ws = find_samples(
                 &warp_grid,
-                &dv_tile,
+                dv_tile,
                 mib_size,
                 cfg.mi_rows,
                 cfg.mi_cols,
@@ -1412,8 +1630,32 @@ impl<'c> TileKf<'c> {
         } else {
             None
         };
-        let warp_luma = warp_params.filter(|w| w.invalid == 0);
+        warp_params.filter(|w| w.invalid == 0)
+    }
 
+    /// `read_mb_interp_filter` (decodemv.c:1481 — AFTER motion_mode) +
+    /// `set_default_interp_filters`: `av1_is_interp_needed` (reconinter.h:420)
+    /// gates on motion_mode != WARPED_CAUSAL — a warped block reads no symbol.
+    /// Returns `Stage::Stop` when the resolved filter leaves the decode
+    /// envelope (BILINEAR / out-of-range would panic the kernel lookup).
+    fn read_inter_interp_filter(
+        &mut self,
+        dec: &mut OdEcDec,
+        icdfs: &mut InterCdfs,
+        inter: &InterFrameCfg,
+        bx: &BlockCtx,
+        motion_mode: i32,
+        ref0: i32,
+        ref1: i32,
+    ) -> Stage<(usize, usize)> {
+        let BlockCtx {
+            above_dv,
+            left_dv,
+            above_if,
+            left_if,
+            ..
+        } = *bx;
+        use aom_dsp::entropy::partition as ep;
         // read_mb_interp_filter (decodemv.c:1481 — AFTER motion_mode). av1_is_interp_needed
         // (reconinter.h:420) gates on motion_mode != WARPED_CAUSAL: a WARPED_CAUSAL block
         // reads NO interp symbol (set_default_interp_filters). WARPED_CAUSAL is guarded off
@@ -1502,15 +1744,25 @@ impl<'c> TileKf<'c> {
             return Stage::Stop;
         }
 
-        // tx_size (decodeframe.c:1179-1198, inter path): TX_MODE_SELECT + a
-        // signalling block (bsize > BLOCK_4X4) + !skip -> the inter var-tx
-        // quadtree (read_tx_size_vartx over txfm_partition_cdf; it stamps the
-        // txfm-context arrays itself). Else the tx_mode fallback (TX_MODE_LARGEST
-        // for the 64x64 / 16x16 / 64x66 targets — a single per-block tx, no
-        // symbol). Every block in the 16x18 OBMC target is Select + skip=0 and
-        // resolves to a UNIFORM leaf tiling (the strips stay TX_4X16; the OBMC
-        // BLOCK_16X8 splits to 2x TX_8X8) — a non-uniform partition would need the
-        // reconstruction-phase leaf walk (collect_vartx_leaves) and is guarded.
+        Stage::Continue((filter_y, filter_x))
+    }
+
+    /// `read_tx_size` + `set_txfm_ctxs` (decodeframe.c:1179-1198 + the
+    /// `tx_mode == TX_MODE_SELECT` quadtree): under SELECT a non-skip block
+    /// reads the var-tx leaf split via `read_tx_size_vartx` (which stamps the
+    /// txfm contexts itself); a skip/non-SELECT block reads nothing and MUST
+    /// stamp via `set_txfm_ctxs` — the else-arm once skipped that stamp, so a
+    /// skip block left `above_t`/`left_t` at the init 64 and a later var-tx
+    /// neighbour read a wrong `txfm_partition` context whenever the true stamp
+    /// straddled the tx dim (the q63 F1 desync: mi(16,0) skip BLOCK_16X64 →
+    /// above_t 16 in C vs 64 in the port). Returns `Stage::Stop` on the
+    /// non-uniform var-tx refusal — every block in this envelope is uniform.
+    fn read_inter_tx_layout(&mut self, dec: &mut OdEcDec, bx: &BlockCtx) -> Stage<usize> {
+        let cfg = self.cfg;
+        let mi_row = bx.mi_row;
+        let mi_col = bx.mi_col;
+        let bsize = bx.bsize;
+        let skip = bx.skip;
         let a_off = mi_col as usize;
         let l_off = (mi_row & 31) as usize;
         let bw4 = MI_SIZE_WIDE[bsize] as usize;
@@ -1592,86 +1844,7 @@ impl<'c> TileKf<'c> {
             return Stage::Stop;
         }
 
-        // --- parse_decode_block tail (decodeframe.c:1219): a SKIP block resets
-        // its entropy-context footprint to zero (`av1_reset_entropy_context`,
-        // blockd.c:58) — plane 0 always, chroma planes when this block is the
-        // chroma reference, each over its own plane_bsize footprint. This is NOT
-        // intra-specific: C runs it for every skipped block before
-        // `decode_token_recon_block`, and a skip block reads (and therefore
-        // stamps) no coefficients, so without the reset the footprint keeps the
-        // stale culs of whatever block last occupied those context cells.
-        //
-        // The port had this only on the intra path. It stayed invisible while the
-        // probe pinned before any block could read across a skipped inter
-        // neighbour's stale cells; the first real victim is mi(44,18) (the first
-        // intra-in-inter block), whose LEFT neighbour mi(44,16) is a skipped inter
-        // block: its stale non-zero culs flip mi(44,18)'s `txb_skip_ctx`, so all
-        // three of its txbs still decode all-zero (the same symbol VALUES C reads)
-        // but off a different `txb_skip_cdf` row — the arithmetic decoder drifts
-        // and the next block's `skip_txfm` reads 0 where C reads 1.
-        if skip != 0 {
-            let a0 = mi_col as usize;
-            let l0 = (mi_row & 31) as usize;
-            self.above_e[0][a0..a0 + bw4].fill(0);
-            self.left_e[0][l0..l0 + bh4].fill(0);
-            let reset_chroma =
-                !cfg.monochrome && is_chroma_reference(mi_row, mi_col, bsize, ss_x, ss_y);
-            if reset_chroma {
-                // Same chroma-reference origin shift the coefficient loop uses
-                // (setup_pred_plane's odd-position adjustment).
-                let adj_row = if ss_y != 0 && (mi_row & 1) != 0 && MI_SIZE_HIGH[bsize] == 1 {
-                    mi_row - 1
-                } else {
-                    mi_row
-                };
-                let adj_col = if ss_x != 0 && (mi_col & 1) != 0 && MI_SIZE_WIDE[bsize] == 1 {
-                    mi_col - 1
-                } else {
-                    mi_col
-                };
-                let plane_bsize = get_plane_block_size(bsize, ss_x, ss_y);
-                let uw = MI_SIZE_WIDE[plane_bsize] as usize;
-                let uh = MI_SIZE_HIGH[plane_bsize] as usize;
-                let uv_a_base = (adj_col >> ss_x) as usize;
-                let uv_l_base = ((adj_row & 31) >> ss_y) as usize;
-                for plane in 1..=2 {
-                    self.above_e[plane][uv_a_base..uv_a_base + uw].fill(0);
-                    self.left_e[plane][uv_l_base..uv_l_base + uh].fill(0);
-                }
-            }
-        }
-
-        // Pack the mutually exclusive families: a compound block carries its
-        // second ref/MV + blend as one `Compound` (masked xor weighted — the
-        // comp_weights a masked block computed are dropped unused), and an
-        // inter-intra blend only exists on a single-ref block.
-        Stage::Continue(InterModeInfo {
-            ref0,
-            mode,
-            mv_row,
-            mv_col,
-            compound: is_compound.then_some(Compound {
-                ref1,
-                mv1_row,
-                mv1_col,
-                comp_group_idx,
-                compound_idx,
-                kind: match masked {
-                    Some(mask) => CompoundKind::Masked(mask),
-                    None => CompoundKind::Weighted(comp_weights),
-                },
-            }),
-            interintra: interintra.then_some(InterIntra {
-                mode: ii_mode,
-                use_wedge: ii_use_wedge != 0,
-                wedge_idx: ii_wedge_idx,
-            }),
-            motion_mode,
-            warp_luma,
-            filter_y,
-            filter_x,
-            tx_size,
-        })
+        Stage::Continue(tx_size)
     }
 
     /// `dec_build_inter_predictors` + `predict_inter_block` (decodeframe.c):
