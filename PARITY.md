@@ -118,6 +118,10 @@ Bulk agents append rows here as features land (rule 2). Empty at pivot start.
 
 ## Section C — ABSENT (to port), by family
 
+> **Oracle drift (2026-10-01):** upstream libaom is at **v3.15.1**; the pinned oracle below is still v3.14.1.
+> The v3.14.1 → v3.15.1 delta, mapped to port modules and to the shims that must change first, is in
+> [`docs/LIBAOM_3_15_DELTA.md`](docs/LIBAOM_3_15_DELTA.md). The Zenaom SCM-trial decision (`key_frame.rs::scm_trial_determine`) encodes the v3.14.1 thresholds and needs two edits.
+
 Status legend: **ABSENT** = no port; **PARTIAL** = kernels/plumbing exist, search/threading/
 validation missing. Size: S (≤1 day), M (1–3 days), L (multi-day → decompose). C entry
 points are libaom v3.14.1 (`reference/libaom`). Defaults verified in
