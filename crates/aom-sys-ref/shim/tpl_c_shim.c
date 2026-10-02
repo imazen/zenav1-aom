@@ -88,31 +88,16 @@
  * aarch64 leg is green. libaom's own asserts documenting the precondition are
  * compiled away by `-DNDEBUG`, which build.rs REQUIRES for ABI agreement.
  *
- * `#define aom_subtract_block ..` would be inert here: `tpl_get_satd_cost`
- * calls `av1_subtract_block`, whose body lives in the ARCHIVE
- * (`av1/encoder/encodemb.c:37`). So the name tpl_model.c actually calls is
- * rebound to a shim-local copy of that function — a two-way branch on
- * `bd_info.use_highbitdepth_buf` with NO arithmetic, copied verbatim from
- * encodemb.c with only the two RTCD names swapped for their `_c` tiers. Every
- * residual / transform / SATD computation stays libaom's own code, so the
- * tier-1c claim is intact. */
-static void shim_tplc_subtract_block(BitDepthInfo bd_info, int rows, int cols,
-                                     int16_t *diff, ptrdiff_t diff_stride,
-                                     const uint8_t *src8, ptrdiff_t src_stride,
-                                     const uint8_t *pred8,
-                                     ptrdiff_t pred_stride) {
-#if CONFIG_AV1_HIGHBITDEPTH
-  if (bd_info.use_highbitdepth_buf) {
-    aom_highbd_subtract_block_c(rows, cols, diff, diff_stride, src8, src_stride,
-                                pred8, pred_stride);
-    return;
-  }
-#endif
-  (void)bd_info;
-  aom_subtract_block_c(rows, cols, diff, diff_stride, src8, src_stride, pred8,
-                       pred_stride);
-}
-#define av1_subtract_block shim_tplc_subtract_block
+ * libaom v3.15 gave tpl_model.c its OWN `tpl_subtract_block` (a two-way branch
+ * on `bd_info.use_highbitdepth_buf` calling `aom_{highbd_,}subtract_block`), so
+ * `tpl_get_satd_cost` no longer reaches `av1_subtract_block` in the archive.
+ * That makes the plain rebind below effective: the two RTCD names are
+ * `#define`d to their `_c` tiers before the TU is included, so every residual /
+ * transform / SATD computation stays libaom's own code. (At v3.14.1 this needed
+ * a shim-local copy of `av1_subtract_block`, because the call went through the
+ * archive and a `#define` here was inert.) */
+#define aom_subtract_block aom_subtract_block_c
+#define aom_highbd_subtract_block aom_highbd_subtract_block_c
 
 /* --- libaom's own temporal dependency model, unmodified. --- */
 #include "av1/encoder/tpl_model.c"

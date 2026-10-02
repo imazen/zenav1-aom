@@ -21614,14 +21614,36 @@ unsafe extern "C" {
         sse_out: *mut i64,
         est_rd_out: *mut i64,
     );
-    fn shim_rdopt_increase_motion_mode_rd(
-        best_motion_mode: i32,
-        this_motion_mode: i32,
-        best_scaled_rd: *mut i64,
-        this_scaled_rd: *mut i64,
-        rd_warp_bias_scale_pct: i32,
-        rd_obmc_bias_scale_pct: f32,
+    fn shim_rdopt_increase_motion_mode_rdstats(
+        motion_mode: i32,
+        mode: i32,
+        bsize: i32,
+        ref0: i32,
+        ref1: i32,
+        wmtype0: i32,
+        wmtype1: i32,
+        force_int_mv: i32,
+        warp: f32,
+        obmc: f32,
+        gm: f32,
+        io: *mut i64,
+        has_y: i32,
+        has_uv: i32,
     );
+    fn shim_rdopt_increase_motion_mode_rate(
+        motion_mode: i32,
+        mode: i32,
+        bsize: i32,
+        ref0: i32,
+        ref1: i32,
+        wmtype0: i32,
+        wmtype1: i32,
+        force_int_mv: i32,
+        warp: f32,
+        obmc: f32,
+        gm: f32,
+        rate: i32,
+    ) -> i32;
     fn shim_rdopt_skip_interp_filter_search(
         encoding_mode: i32,
         reference_mode: i32,
@@ -21809,24 +21831,70 @@ pub fn ref_rdopt_inter_modes_info_push(
     (n, mr, s, e)
 }
 
-/// Reference `increase_motion_mode_rd` (rdopt.c:1442) — both RDs in/out.
-pub fn ref_rdopt_increase_motion_mode_rd(
-    best_motion_mode: i32,
-    this_motion_mode: i32,
-    best_scaled_rd: &mut i64,
-    this_scaled_rd: &mut i64,
-    rd_warp_bias_scale_pct: i32,
-    rd_obmc_bias_scale_pct: f32,
+/// The block / frame state `increase_motion_mode_rdstats` and
+/// `increase_motion_mode_rate` read (rdopt.c:1320, rdopt_utils.h:737).
+#[derive(Clone, Copy, Debug)]
+pub struct MotionBiasCase {
+    pub motion_mode: i32,
+    pub mode: i32,
+    pub bsize: i32,
+    pub ref0: i32,
+    pub ref1: i32,
+    pub wmtype0: i32,
+    pub wmtype1: i32,
+    pub force_integer_mv: bool,
+    pub warp_pct: f32,
+    pub obmc_pct: f32,
+    pub gm_pct: f32,
+}
+
+/// Reference `increase_motion_mode_rdstats` (rdopt.c:1320). `io` is
+/// `{rate, dist, sse, zero_rate}` for `rd_stats`, `rd_stats_y`, `rd_stats_uv`;
+/// `has_y` / `has_uv` pass NULL for the optional two.
+pub fn ref_rdopt_increase_motion_mode_rdstats(
+    c: &MotionBiasCase,
+    io: &mut [i64; 12],
+    has_y: bool,
+    has_uv: bool,
 ) {
     ref_init();
     unsafe {
-        shim_rdopt_increase_motion_mode_rd(
-            best_motion_mode,
-            this_motion_mode,
-            best_scaled_rd,
-            this_scaled_rd,
-            rd_warp_bias_scale_pct,
-            rd_obmc_bias_scale_pct,
+        shim_rdopt_increase_motion_mode_rdstats(
+            c.motion_mode,
+            c.mode,
+            c.bsize,
+            c.ref0,
+            c.ref1,
+            c.wmtype0,
+            c.wmtype1,
+            c.force_integer_mv as i32,
+            c.warp_pct,
+            c.obmc_pct,
+            c.gm_pct,
+            io.as_mut_ptr(),
+            has_y as i32,
+            has_uv as i32,
+        )
+    }
+}
+
+/// Reference `increase_motion_mode_rate` (rdopt_utils.h:737).
+pub fn ref_rdopt_increase_motion_mode_rate(c: &MotionBiasCase, rate: i32) -> i32 {
+    ref_init();
+    unsafe {
+        shim_rdopt_increase_motion_mode_rate(
+            c.motion_mode,
+            c.mode,
+            c.bsize,
+            c.ref0,
+            c.ref1,
+            c.wmtype0,
+            c.wmtype1,
+            c.force_integer_mv as i32,
+            c.warp_pct,
+            c.obmc_pct,
+            c.gm_pct,
+            rate,
         )
     }
 }
@@ -22201,7 +22269,7 @@ pub fn ref_ct_constants() -> (i32, i32, i32) {
 unsafe extern "C" {
     fn shim_rdopt_get_variance_stats(
         bsize: i32,
-        is_hbd: i32,
+        bd: i32,
         src: *const u16,
         src_stride: i32,
         dst: *const u16,
@@ -22219,7 +22287,7 @@ unsafe extern "C" {
         update_type: i32,
         rdmult: i32,
         bsize: i32,
-        is_hbd: i32,
+        bd: i32,
         src: *const u16,
         src_stride: i32,
         dst: *const u16,
@@ -22235,7 +22303,7 @@ unsafe extern "C" {
         update_type: i32,
         rdmult: i32,
         bsize: i32,
-        is_hbd: i32,
+        bd: i32,
         src: *const u16,
         src_stride: i32,
         dst: *const u16,
@@ -22285,7 +22353,7 @@ unsafe extern "C" {
 #[allow(clippy::too_many_arguments)]
 pub fn ref_rdopt_get_variance_stats(
     bsize: i32,
-    is_hbd: bool,
+    bd: i32,
     src: &[u16],
     src_stride: usize,
     dst: &[u16],
@@ -22296,7 +22364,7 @@ pub fn ref_rdopt_get_variance_stats(
     unsafe {
         shim_rdopt_get_variance_stats(
             bsize,
-            i32::from(is_hbd),
+            bd,
             src.as_ptr(),
             src_stride as i32,
             dst.as_ptr(),
@@ -22330,7 +22398,7 @@ pub fn ref_rdopt_adjust_cost(
     is_inter_pred: bool,
     gates: AdjustGates,
     bsize: i32,
-    is_hbd: bool,
+    bd: i32,
     src: &[u16],
     src_stride: usize,
     dst: &[u16],
@@ -22347,7 +22415,7 @@ pub fn ref_rdopt_adjust_cost(
             gates.update_type,
             gates.rdmult,
             bsize,
-            i32::from(is_hbd),
+            bd,
             src.as_ptr(),
             src_stride as i32,
             dst.as_ptr(),
@@ -22364,7 +22432,7 @@ pub fn ref_rdopt_adjust_rdcost(
     is_inter_pred: bool,
     gates: AdjustGates,
     bsize: i32,
-    is_hbd: bool,
+    bd: i32,
     src: &[u16],
     src_stride: usize,
     dst: &[u16],
@@ -22381,7 +22449,7 @@ pub fn ref_rdopt_adjust_rdcost(
             gates.update_type,
             gates.rdmult,
             bsize,
-            i32::from(is_hbd),
+            bd,
             src.as_ptr(),
             src_stride as i32,
             dst.as_ptr(),
@@ -28383,9 +28451,14 @@ unsafe extern "C" {
         max_frame_bandwidth: i64,
         vbrmax_section: i32,
     ) -> i32;
-    fn shim_p2_calc_correction_factor(err_per_mb: f64, q: i32) -> f64;
-    fn shim_p2_qbpm_enumerator(rate_err_tol: i32) -> i32;
-    fn shim_p2_tu_qbpm_enumerator(rate_err_tol: i32) -> i32;
+    fn shim_p2_calc_correction_factor(
+        err_per_mb: f64,
+        q: i32,
+        inactive_zone: f64,
+        lower_qindex_on_static_frame: i32,
+    ) -> f64;
+    fn shim_p2_qbpm_enumerator(rate_err_tol: i32, use_smaller_enumerator: i32) -> i32;
+    fn shim_p2_tu_qbpm_enumerator(rate_err_tol: i32, use_smaller_enumerator: i32) -> i32;
     fn shim_p2_get_sr_decay_rate(stats: *const f64) -> f64;
     fn shim_p2_get_zero_motion_factor(stats: *const f64) -> f64;
     fn shim_p2_get_prediction_decay_rate(stats: *const f64) -> f64;
@@ -28529,24 +28602,36 @@ pub fn ref_p2_frame_max_bits(
 
 /// Reference `calc_correction_factor` (:171), tier 1c.
 #[must_use]
-pub fn ref_p2_calc_correction_factor(err_per_mb: f64, q: i32) -> f64 {
+pub fn ref_p2_calc_correction_factor(
+    err_per_mb: f64,
+    q: i32,
+    inactive_zone: f64,
+    lower_qindex_on_static_frame: bool,
+) -> f64 {
     ref_init();
-    unsafe { shim_p2_calc_correction_factor(err_per_mb, q) }
+    unsafe {
+        shim_p2_calc_correction_factor(
+            err_per_mb,
+            q,
+            inactive_zone,
+            lower_qindex_on_static_frame as i32,
+        )
+    }
 }
 
 /// Reference `qbpm_enumerator` (:288), tier 1c.
 #[must_use]
-pub fn ref_p2_qbpm_enumerator(rate_err_tol: i32) -> i32 {
+pub fn ref_p2_qbpm_enumerator(rate_err_tol: i32, use_smaller_enumerator: bool) -> i32 {
     ref_init();
-    unsafe { shim_p2_qbpm_enumerator(rate_err_tol) }
+    unsafe { shim_p2_qbpm_enumerator(rate_err_tol, use_smaller_enumerator as i32) }
 }
 
 /// `qbpm_enumerator` through a second entry point in the same TU — the
 /// TU-consistency probe.
 #[must_use]
-pub fn ref_p2_tu_qbpm_enumerator(rate_err_tol: i32) -> i32 {
+pub fn ref_p2_tu_qbpm_enumerator(rate_err_tol: i32, use_smaller_enumerator: bool) -> i32 {
     ref_init();
-    unsafe { shim_p2_tu_qbpm_enumerator(rate_err_tol) }
+    unsafe { shim_p2_tu_qbpm_enumerator(rate_err_tol, use_smaller_enumerator as i32) }
 }
 
 /// Reference `get_sr_decay_rate` (:392), tier 1c.
@@ -30159,10 +30244,13 @@ unsafe extern "C" {
         desired_bits_per_mb: u64,
         bit_depth: i32,
         error_per_mb: f64,
+        lower_qindex_on_static_frame: i32,
         group_weight_factor: f64,
         rate_err_tol: i32,
         best_qindex: i32,
         worst_qindex: i32,
+        use_smaller_enumerator: i32,
+        inactive_zone: f64,
     ) -> i32;
     fn shim_p2_slide_transition(
         this_flat: *const f64,
@@ -30200,10 +30288,13 @@ pub fn ref_p2_find_qindex_by_rate_with_correction(
     desired_bits_per_mb: u64,
     bit_depth: i32,
     error_per_mb: f64,
+    lower_qindex_on_static_frame: bool,
     group_weight_factor: f64,
     rate_err_tol: i32,
     best_qindex: i32,
     worst_qindex: i32,
+    use_smaller_enumerator: bool,
+    inactive_zone: f64,
 ) -> i32 {
     ref_init();
     unsafe {
@@ -30211,10 +30302,13 @@ pub fn ref_p2_find_qindex_by_rate_with_correction(
             desired_bits_per_mb,
             bit_depth,
             error_per_mb,
+            lower_qindex_on_static_frame as i32,
             group_weight_factor,
             rate_err_tol,
             best_qindex,
             worst_qindex,
+            use_smaller_enumerator as i32,
+            inactive_zone,
         )
     }
 }
@@ -30596,4 +30690,90 @@ pub fn ref_vbps_evaluate_neighbour_mvs(
     };
     assert_eq!(rc, 0, "the neighbour-mv shim failed to allocate");
     (ys, (r, c))
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn shim_subtract_block_border_pad(
+        bd: i32,
+        rows: i32,
+        cols: i32,
+        diff: *mut i16,
+        diff_stride: i32,
+        src: *const u16,
+        src_stride: i32,
+        pred: *const u16,
+        pred_stride: i32,
+        plane_rows: i32,
+        plane: i32,
+        plane_bsize: i32,
+        blk_col: i32,
+        blk_row: i32,
+        tx_type: i32,
+        do_border_pad: i32,
+        pix_to_bottom_edge: i32,
+        pix_to_right_edge: i32,
+        ss_x: i32,
+        ss_y: i32,
+    );
+}
+
+/// Everything `av1_subtract_block` reads besides the three planes (libaom v3.15,
+/// `encodemb.c`): the transform block's place in its plane block, the frame-edge
+/// distances `get_visible_dimensions` clips against, and the plane's subsampling.
+#[derive(Clone, Copy, Debug)]
+pub struct SubtractBlockCase {
+    pub bd: i32,
+    pub tx_rows: i32,
+    pub tx_cols: i32,
+    pub plane_rows: i32,
+    pub plane: i32,
+    pub plane_bsize: i32,
+    pub blk_col: i32,
+    pub blk_row: i32,
+    pub tx_type: i32,
+    pub do_border_pad: bool,
+    pub pix_to_bottom_edge: i32,
+    pub pix_to_right_edge: i32,
+    pub ss_x: i32,
+    pub ss_y: i32,
+}
+
+/// Reference `av1_subtract_block` (encodemb.c, v3.15) over PLANE-sized
+/// `src` / `pred` / `diff` buffers; `diff` is in/out.
+#[allow(clippy::too_many_arguments)]
+pub fn ref_subtract_block_border_pad(
+    c: &SubtractBlockCase,
+    diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+) {
+    ref_init();
+    unsafe {
+        shim_subtract_block_border_pad(
+            c.bd,
+            c.tx_rows,
+            c.tx_cols,
+            diff.as_mut_ptr(),
+            diff_stride as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            pred.as_ptr(),
+            pred_stride as i32,
+            c.plane_rows,
+            c.plane,
+            c.plane_bsize,
+            c.blk_col,
+            c.blk_row,
+            c.tx_type,
+            c.do_border_pad as i32,
+            c.pix_to_bottom_edge,
+            c.pix_to_right_edge,
+            c.ss_x,
+            c.ss_y,
+        )
+    }
 }

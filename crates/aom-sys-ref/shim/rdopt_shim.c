@@ -1221,19 +1221,73 @@ void shim_rdopt_inter_modes_info_push(int num_in, int mode_rate, int64_t sse,
   free(info);
 }
 
-void shim_rdopt_increase_motion_mode_rd(int best_motion_mode,
-                                        int this_motion_mode,
-                                        int64_t *best_scaled_rd,
-                                        int64_t *this_scaled_rd,
-                                        int rd_warp_bias_scale_pct,
-                                        float rd_obmc_bias_scale_pct) {
-  MB_MODE_INFO best, cur;
-  memset(&best, 0, sizeof(best));
-  memset(&cur, 0, sizeof(cur));
-  best.motion_mode = (MOTION_MODE)best_motion_mode;
-  cur.motion_mode = (MOTION_MODE)this_motion_mode;
-  increase_motion_mode_rd(&best, &cur, best_scaled_rd, this_scaled_rd,
-                          rd_warp_bias_scale_pct, rd_obmc_bias_scale_pct);
+/* libaom v3.15 replaced `increase_motion_mode_rd` (rdopt.c:1442 at v3.14.1) with
+ * `scale_rdstats` / `increase_motion_mode_rdstats` (rdopt.c:1309/1320) and
+ * `increase_motion_mode_rate` + `get_global_mv_mode_bias` (rdopt_utils.h:714/737).
+ * All are low-complexity-decode biases: the three `bias_*_mode_rd_scale_pct`
+ * speed features are non-zero only under lc-dec. `io` carries up to three
+ * RD_STATS as {rate, dist, sse, zero_rate} x 3 (rd_stats, rd_stats_y,
+ * rd_stats_uv); `has_y` / `has_uv` pass NULL for the optional two, as C does. */
+static void bias_setup(AV1_COMP *cpi, MB_MODE_INFO *m, int motion_mode,
+                       int mode, int bsize, int ref0, int ref1, int wmtype0,
+                       int wmtype1, int force_int_mv, float warp, float obmc,
+                       float gm) {
+  m->motion_mode = (MOTION_MODE)motion_mode;
+  m->mode = (PREDICTION_MODE)mode;
+  m->bsize = (BLOCK_SIZE)bsize;
+  m->ref_frame[0] = (MV_REFERENCE_FRAME)ref0;
+  m->ref_frame[1] = (MV_REFERENCE_FRAME)ref1;
+  cpi->sf.inter_sf.bias_warp_mode_rd_scale_pct = warp;
+  cpi->sf.inter_sf.bias_obmc_mode_rd_scale_pct = obmc;
+  cpi->sf.inter_sf.bias_gm_mode_rd_scale_pct = gm;
+  cpi->common.features.cur_frame_force_integer_mv = force_int_mv;
+  if (ref0 >= 0 && ref0 < REF_FRAMES)
+    cpi->common.global_motion[ref0].wmtype = (TransformationType)wmtype0;
+  if (ref1 >= 0 && ref1 < REF_FRAMES)
+    cpi->common.global_motion[ref1].wmtype = (TransformationType)wmtype1;
+}
+
+void shim_rdopt_increase_motion_mode_rdstats(
+    int motion_mode, int mode, int bsize, int ref0, int ref1, int wmtype0,
+    int wmtype1, int force_int_mv, float warp, float obmc, float gm,
+    int64_t *io, int has_y, int has_uv) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MB_MODE_INFO m;
+  memset(&m, 0, sizeof(m));
+  bias_setup(cpi, &m, motion_mode, mode, bsize, ref0, ref1, wmtype0, wmtype1,
+             force_int_mv, warp, obmc, gm);
+  RD_STATS st[3];
+  memset(st, 0, sizeof(st));
+  for (int i = 0; i < 3; ++i) {
+    st[i].rate = (int)io[4 * i];
+    st[i].dist = io[4 * i + 1];
+    st[i].sse = io[4 * i + 2];
+    st[i].zero_rate = (int)io[4 * i + 3];
+  }
+  increase_motion_mode_rdstats(cpi, &m, &st[0], has_y ? &st[1] : NULL,
+                               has_uv ? &st[2] : NULL);
+  for (int i = 0; i < 3; ++i) {
+    io[4 * i] = st[i].rate;
+    io[4 * i + 1] = st[i].dist;
+    io[4 * i + 2] = st[i].sse;
+    io[4 * i + 3] = st[i].zero_rate;
+  }
+  free(cpi);
+}
+
+int shim_rdopt_increase_motion_mode_rate(int motion_mode, int mode, int bsize,
+                                         int ref0, int ref1, int wmtype0,
+                                         int wmtype1, int force_int_mv,
+                                         float warp, float obmc, float gm,
+                                         int rate) {
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  MB_MODE_INFO m;
+  memset(&m, 0, sizeof(m));
+  bias_setup(cpi, &m, motion_mode, mode, bsize, ref0, ref1, wmtype0, wmtype1,
+             force_int_mv, warp, obmc, gm);
+  const int r = increase_motion_mode_rate(cpi, &m, rate);
+  free(cpi);
+  return r;
 }
 
 int shim_rdopt_skip_interp_filter_search(int encoding_mode, int reference_mode,
@@ -1377,35 +1431,63 @@ int shim_rdopt_calc_target_weighted_pred(
  * turn the difference into an RD penalty.
  * ======================================================================== */
 
-void shim_rdopt_get_variance_stats(int bsize, int is_hbd, const uint16_t *src,
+/* v3.15 moved the 3x3 filter into `aom_{,highbd_}calc_variance_stat`, which are
+ * RTCD-dispatched (AVX2 on x86-64) — so the planes are bounced through
+ * 64-byte-aligned, over-allocated scratch, as DIFFERENTIAL_PLAYBOOK §3a(c)
+ * requires of every dispatched kernel — and `get_variance_stats` now rounds the
+ * high-bit-depth result by `2 * (xd->bd - 8)` (rdopt.c:632-642), so the shim
+ * carries the real bit depth. `bd` 8 is the low-bit-depth buffer; anything above
+ * is a `YV12_FLAG_HIGHBITDEPTH` buffer at that depth. */
+typedef struct {
+  void *src;
+  void *dst;
+} vs_bufs;
+
+static void vs_setup(MACROBLOCK *x, YV12_BUFFER_CONFIG *cb, vs_bufs *vb, int bd,
+                     int bsize, const uint16_t *src, int src_stride,
+                     const uint16_t *dst, int dst_stride) {
+  const int bh = block_size_high[bsize];
+  const int hbd = bd > 8;
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  const size_t sn = (size_t)src_stride * (bh + 8);
+  const size_t dn = (size_t)dst_stride * (bh + 8);
+  vb->src = aom_memalign(64, sn * px + 64);
+  vb->dst = aom_memalign(64, dn * px + 64);
+  for (size_t i = 0; i < sn; ++i) {
+    if (hbd) ((uint16_t *)vb->src)[i] = src[i];
+    else ((uint8_t *)vb->src)[i] = (uint8_t)src[i];
+  }
+  for (size_t i = 0; i < dn; ++i) {
+    if (hbd) ((uint16_t *)vb->dst)[i] = dst[i];
+    else ((uint8_t *)vb->dst)[i] = (uint8_t)dst[i];
+  }
+  memset(cb, 0, sizeof(*cb));
+  cb->flags = hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  x->e_mbd.cur_buf = cb;
+  x->e_mbd.bd = bd;
+  x->plane[0].src.buf =
+      hbd ? CONVERT_TO_BYTEPTR((uint16_t *)vb->src) : (uint8_t *)vb->src;
+  x->e_mbd.plane[0].dst.buf =
+      hbd ? CONVERT_TO_BYTEPTR((uint16_t *)vb->dst) : (uint8_t *)vb->dst;
+  x->plane[0].src.stride = src_stride;
+  x->e_mbd.plane[0].dst.stride = dst_stride;
+}
+
+void shim_rdopt_get_variance_stats(int bsize, int bd, const uint16_t *src,
                                    int src_stride, const uint16_t *dst,
                                    int dst_stride, int64_t *src_var,
                                    int64_t *rec_var) {
   MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
   MB_MODE_INFO *mbmi = (MB_MODE_INFO *)calloc(1, sizeof(*mbmi));
+  YV12_BUFFER_CONFIG cb;
+  vs_bufs vb;
   mbmi->bsize = (BLOCK_SIZE)bsize;
   x->e_mbd.mi = &mbmi;
-  const int bh = block_size_high[bsize];
-  uint8_t *src8 = NULL, *dst8 = NULL;
-  if (is_hbd) {
-    x->plane[0].src.buf = CONVERT_TO_BYTEPTR(src);
-    x->e_mbd.plane[0].dst.buf = CONVERT_TO_BYTEPTR(dst);
-  } else {
-    src8 = (uint8_t *)malloc((size_t)src_stride * (bh + 8));
-    dst8 = (uint8_t *)malloc((size_t)dst_stride * (bh + 8));
-    for (int i = 0; i < src_stride * (bh + 8); ++i) src8[i] = (uint8_t)src[i];
-    for (int i = 0; i < dst_stride * (bh + 8); ++i) dst8[i] = (uint8_t)dst[i];
-    x->plane[0].src.buf = src8;
-    x->e_mbd.plane[0].dst.buf = dst8;
-  }
-  x->plane[0].src.stride = src_stride;
-  x->e_mbd.plane[0].dst.stride = dst_stride;
-  if (is_hbd)
-    get_variance_stats_hbd(x, src_var, rec_var);
-  else
-    get_variance_stats(x, src_var, rec_var);
-  free(dst8);
-  free(src8);
+  vs_setup(x, &cb, &vb, bd, bsize, src, src_stride, dst, dst_stride);
+  /* v3.15's `get_variance_stats` dispatches on `is_cur_buf_hbd` itself. */
+  get_variance_stats(x, src_var, rec_var);
+  aom_free(vb.dst);
+  aom_free(vb.src);
   free(mbmi);
   free(x);
 }
@@ -1428,7 +1510,7 @@ static void shim_rd_set_adjust_gates(AV1_COMP *cpi, AV1_PRIMARY *ppi,
 int64_t shim_rdopt_adjust_cost(int64_t rd_cost, int is_inter_pred, int tuning,
                                int sharpness, int frame_is_intra,
                                int update_type, int rdmult, int bsize,
-                               int is_hbd, const uint16_t *src, int src_stride,
+                               int bd, const uint16_t *src, int src_stride,
                                const uint16_t *dst, int dst_stride) {
   AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
   AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
@@ -1440,27 +1522,11 @@ int64_t shim_rdopt_adjust_cost(int64_t rd_cost, int is_inter_pred, int tuning,
   x->e_mbd.mi = &mbmi;
   x->rdmult = rdmult;
   YV12_BUFFER_CONFIG buf;
-  memset(&buf, 0, sizeof(buf));
-  buf.flags = is_hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
-  x->e_mbd.cur_buf = &buf;
-  const int bh = block_size_high[bsize];
-  uint8_t *src8 = NULL, *dst8 = NULL;
-  if (is_hbd) {
-    x->plane[0].src.buf = CONVERT_TO_BYTEPTR(src);
-    x->e_mbd.plane[0].dst.buf = CONVERT_TO_BYTEPTR(dst);
-  } else {
-    src8 = (uint8_t *)malloc((size_t)src_stride * (bh + 8));
-    dst8 = (uint8_t *)malloc((size_t)dst_stride * (bh + 8));
-    for (int i = 0; i < src_stride * (bh + 8); ++i) src8[i] = (uint8_t)src[i];
-    for (int i = 0; i < dst_stride * (bh + 8); ++i) dst8[i] = (uint8_t)dst[i];
-    x->plane[0].src.buf = src8;
-    x->e_mbd.plane[0].dst.buf = dst8;
-  }
-  x->plane[0].src.stride = src_stride;
-  x->e_mbd.plane[0].dst.stride = dst_stride;
+  vs_bufs vb;
+  vs_setup(x, &buf, &vb, bd, bsize, src, src_stride, dst, dst_stride);
   adjust_cost(cpi, x, &rd_cost, (bool)is_inter_pred);
-  free(dst8);
-  free(src8);
+  aom_free(vb.dst);
+  aom_free(vb.src);
   free(mbmi);
   free(x);
   free(ppi);
@@ -1471,7 +1537,7 @@ int64_t shim_rdopt_adjust_cost(int64_t rd_cost, int is_inter_pred, int tuning,
 void shim_rdopt_adjust_rdcost(int64_t *rate_dist_rdcost /* 3 in/out */,
                               int is_inter_pred, int tuning, int sharpness,
                               int frame_is_intra, int update_type, int rdmult,
-                              int bsize, int is_hbd, const uint16_t *src,
+                              int bsize, int bd, const uint16_t *src,
                               int src_stride, const uint16_t *dst,
                               int dst_stride) {
   AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
@@ -1484,24 +1550,8 @@ void shim_rdopt_adjust_rdcost(int64_t *rate_dist_rdcost /* 3 in/out */,
   x->e_mbd.mi = &mbmi;
   x->rdmult = rdmult;
   YV12_BUFFER_CONFIG buf;
-  memset(&buf, 0, sizeof(buf));
-  buf.flags = is_hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
-  x->e_mbd.cur_buf = &buf;
-  const int bh = block_size_high[bsize];
-  uint8_t *src8 = NULL, *dst8 = NULL;
-  if (is_hbd) {
-    x->plane[0].src.buf = CONVERT_TO_BYTEPTR(src);
-    x->e_mbd.plane[0].dst.buf = CONVERT_TO_BYTEPTR(dst);
-  } else {
-    src8 = (uint8_t *)malloc((size_t)src_stride * (bh + 8));
-    dst8 = (uint8_t *)malloc((size_t)dst_stride * (bh + 8));
-    for (int i = 0; i < src_stride * (bh + 8); ++i) src8[i] = (uint8_t)src[i];
-    for (int i = 0; i < dst_stride * (bh + 8); ++i) dst8[i] = (uint8_t)dst[i];
-    x->plane[0].src.buf = src8;
-    x->e_mbd.plane[0].dst.buf = dst8;
-  }
-  x->plane[0].src.stride = src_stride;
-  x->e_mbd.plane[0].dst.stride = dst_stride;
+  vs_bufs vb;
+  vs_setup(x, &buf, &vb, bd, bsize, src, src_stride, dst, dst_stride);
   RD_STATS rd;
   av1_init_rd_stats(&rd);
   rd.rate = (int)rate_dist_rdcost[0];
@@ -1511,8 +1561,8 @@ void shim_rdopt_adjust_rdcost(int64_t *rate_dist_rdcost /* 3 in/out */,
   rate_dist_rdcost[0] = rd.rate;
   rate_dist_rdcost[1] = rd.dist;
   rate_dist_rdcost[2] = rd.rdcost;
-  free(dst8);
-  free(src8);
+  aom_free(vb.dst);
+  aom_free(vb.src);
   free(mbmi);
   free(x);
   free(ppi);

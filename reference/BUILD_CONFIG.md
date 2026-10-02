@@ -1,6 +1,6 @@
 # Reference oracle build config
 
-- Source: libaom, tag **v3.14.1**, git `03087864cf4bea6abb0d28f95cf7843511413d8f`
+- Source: libaom, tag **v3.15.1**, git `44d0a57786f432d933ff64b653347c66f4d0fa1d`
   — the pinned **`upstream/`** git submodule (canonical). The gitignored
   `reference/libaom` clone remains as a fallback.
 - Toolchain: gcc 15.2.0 / clang 21.1.8 / nasm 3.01, cmake 4.2.3
@@ -8,7 +8,7 @@
   ```
   -DCMAKE_BUILD_TYPE=Release
   -DCONFIG_MULTITHREAD=0     # single-thread → deterministic encoder output target
-  -DENABLE_TESTS=1 -DENABLE_EXAMPLES=1 -DENABLE_TOOLS=1
+  -DENABLE_TESTS=1 -DENABLE_EXAMPLES=1 -DENABLE_TOOLS=1 -DENABLE_APPS=1
   -DCONFIG_AV1_DECODER=1 -DCONFIG_AV1_ENCODER=1
   ```
 - C flags, pinned on EVERY oracle TU (libaom via `CMAKE_C_FLAGS`, and the

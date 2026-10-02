@@ -24,6 +24,7 @@
 #include "av1/common/seg_common.h" /* struct segmentation, SEG_LVL_ALT_Q */
 #include "av1/common/idct.h" /* MAX_TX_SCALE, av1_get_tx_scale */
 #include "av1/encoder/av1_quantize.h" /* QUANTS, Dequants, av1_build_quantizer */
+#include "av1/encoder/encodemb.h" /* av1_subtract_block (v3.15 do_border_pad signature) */
 #include "av1/common/entropy.h" /* av1_default_coef_probs */
 #include "av1/encoder/block.h" /* CoeffCosts, LV_MAP_COEFF_COST */
 #include "av1/encoder/cost.h" /* av1_cost_tokens_from_cdf */
@@ -773,6 +774,12 @@ int64_t shim_pixel_diff_dist(const int16_t *src_diff, int n_diff,
   x->plane[0].src_diff = adiff;
   x->e_mbd.mb_to_right_edge = mb_to_right_edge;
   x->e_mbd.mb_to_bottom_edge = mb_to_bottom_edge;
+  /* v3.15: `av1_pixel_diff_dist` clips through `get_visible_dimensions`, which
+   * reads `x->pix_to_{right,bottom}_edge` (pixels) instead of
+   * `xd->mb_to_*_edge` (1/8 pel). For the encoder's own non-`do_border_pad`
+   * case they are the same number /8 (`set_pixels_to_frame_edge`). */
+  x->pix_to_right_edge = mb_to_right_edge / 8;
+  x->pix_to_bottom_edge = mb_to_bottom_edge / 8;
   x->e_mbd.plane[0].subsampling_x = subsampling_x;
   x->e_mbd.plane[0].subsampling_y = subsampling_y;
   unsigned int mse = 0;
@@ -1805,4 +1812,68 @@ void shim_intra_cnn_run(const uint16_t *win, int bit_depth, int force_cscalar,
     }
   }
   memcpy(out_cnn_buffer, cnn_buffer, CNN_OUT_BUF_SIZE * sizeof(float));
+}
+
+/* ---- v3.15 `do_border_pad`: the REAL exported `av1_subtract_block` ------------
+ * (encodemb.c). It subtracts `rows x cols` of `pred` from `src` into `diff`, and
+ * with `do_border_pad` set then overwrites the part of the block outside the real
+ * frame (`fill_residue_outside_frame`), clipping through
+ * `get_visible_dimensions` against `x->pix_to_{bottom,right}_edge`.
+ *
+ * The planes are PLANE-block sized, as the encoder's are (`src_diff` stride is the
+ * plane block width, so a multiple of 16 int16 for every width the AVX2
+ * `aom_subtract_block` accepts); the tx block sits at (blk_row, blk_col) in 4-pel
+ * units. All three buffers go through 64-byte-aligned scratch. `bd` 8 is a
+ * low-bit-depth buffer; above is a `YV12_FLAG_HIGHBITDEPTH` one. `diff` is
+ * in/out. */
+void shim_subtract_block_border_pad(
+    int bd, int rows, int cols, int16_t *diff, int diff_stride,
+    const uint16_t *src, int src_stride, const uint16_t *pred, int pred_stride,
+    int plane_rows, int plane, int plane_bsize, int blk_col, int blk_row,
+    int tx_type, int do_border_pad, int pix_to_bottom_edge,
+    int pix_to_right_edge, int ss_x, int ss_y) {
+  const int hbd = bd > 8;
+  const size_t px = hbd ? sizeof(uint16_t) : sizeof(uint8_t);
+  const size_t sn = (size_t)src_stride * plane_rows;
+  const size_t pn = (size_t)pred_stride * plane_rows;
+  const size_t dn = (size_t)diff_stride * plane_rows;
+  void *asrc = aom_memalign(64, sn * px + 64);
+  void *apred = aom_memalign(64, pn * px + 64);
+  int16_t *adiff = (int16_t *)aom_memalign(64, dn * sizeof(int16_t) + 64);
+  for (size_t i = 0; i < sn; ++i) {
+    if (hbd) ((uint16_t *)asrc)[i] = src[i];
+    else ((uint8_t *)asrc)[i] = (uint8_t)src[i];
+  }
+  for (size_t i = 0; i < pn; ++i) {
+    if (hbd) ((uint16_t *)apred)[i] = pred[i];
+    else ((uint8_t *)apred)[i] = (uint8_t)pred[i];
+  }
+  memcpy(adiff, diff, dn * sizeof(int16_t));
+
+  MACROBLOCK *x = (MACROBLOCK *)calloc(1, sizeof(*x));
+  YV12_BUFFER_CONFIG cb;
+  memset(&cb, 0, sizeof(cb));
+  cb.flags = hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
+  x->e_mbd.cur_buf = &cb;
+  x->e_mbd.bd = bd;
+  x->e_mbd.plane[plane].subsampling_x = ss_x;
+  x->e_mbd.plane[plane].subsampling_y = ss_y;
+  x->pix_to_bottom_edge = pix_to_bottom_edge;
+  x->pix_to_right_edge = pix_to_right_edge;
+
+  const size_t off_s = (size_t)((blk_row * src_stride + blk_col) << 2);
+  const size_t off_p = (size_t)((blk_row * pred_stride + blk_col) << 2);
+  const size_t off_d = (size_t)((blk_row * diff_stride + blk_col) << 2);
+  const uint8_t *s8 =
+      hbd ? CONVERT_TO_BYTEPTR((uint16_t *)asrc + off_s) : (uint8_t *)asrc + off_s;
+  const uint8_t *p8 = hbd ? CONVERT_TO_BYTEPTR((uint16_t *)apred + off_p)
+                          : (uint8_t *)apred + off_p;
+  av1_subtract_block(x, rows, cols, adiff + off_d, diff_stride, s8, src_stride,
+                     p8, pred_stride, plane, (BLOCK_SIZE)plane_bsize, blk_col,
+                     blk_row, (TX_TYPE)tx_type, do_border_pad != 0);
+  memcpy(diff, adiff, dn * sizeof(int16_t));
+  free(x);
+  aom_free(adiff);
+  aom_free(apred);
+  aom_free(asrc);
 }

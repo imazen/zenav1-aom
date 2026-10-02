@@ -4,7 +4,7 @@
 //! A plain `cargo test` builds everything with no manual step:
 //!   1. verify the C toolchain (cmake / nasm / a C compiler) is present, else
 //!      panic with the one-line install — not a cryptic linker error;
-//!   2. auto-init the `upstream/` git submodule (pinned libaom v3.14.1) if empty;
+//!   2. auto-init the `upstream/` git submodule (pinned libaom v3.15.1) if empty;
 //!   3. build libaom ONCE via cmake in the deterministic single-thread oracle
 //!      config (see reference/BUILD_CONFIG.md), cached by the submodule SHA so it
 //!      never rebuilds on an unchanged tree;
@@ -20,7 +20,7 @@ use std::process::{Command, Stdio};
 
 /// Pinned libaom oracle commit — must match `.gitmodules` / reference/BUILD_CONFIG.md.
 /// Used only as a fallback stamp key if `git` can't report the checked-out SHA.
-const PINNED_SHA: &str = "03087864cf4bea6abb0d28f95cf7843511413d8f";
+const PINNED_SHA: &str = "44d0a57786f432d933ff64b653347c66f4d0fa1d";
 
 /// Floating-point flags pinned on EVERY oracle translation unit (libaom itself
 /// and the shims). See reference/BUILD_CONFIG.md §floating point.
@@ -430,6 +430,7 @@ fn build_libaom(upstream: &Path) -> PathBuf {
             "-DCONFIG_MULTITHREAD=0",
             "-DENABLE_TESTS=1",
             "-DENABLE_EXAMPLES=1",
+            "-DENABLE_APPS=1",
             "-DENABLE_TOOLS=1",
             "-DCONFIG_AV1_DECODER=1",
             "-DCONFIG_AV1_ENCODER=1",

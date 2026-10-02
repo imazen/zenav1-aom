@@ -147,17 +147,20 @@ int shim_p2_frame_max_bits(int64_t avg_frame_bandwidth,
   return r;
 }
 
-double shim_p2_calc_correction_factor(double err_per_mb, int q) {
-  return calc_correction_factor(err_per_mb, q);
+double shim_p2_calc_correction_factor(double err_per_mb, int q,
+                                      double inactive_zone,
+                                      int lower_qindex_on_static_frame) {
+  return calc_correction_factor(err_per_mb, q, inactive_zone,
+                                lower_qindex_on_static_frame != 0);
 }
 
-int shim_p2_qbpm_enumerator(int rate_err_tol) {
-  return qbpm_enumerator(rate_err_tol);
+int shim_p2_qbpm_enumerator(int rate_err_tol, int use_smaller_enumerator) {
+  return qbpm_enumerator(rate_err_tol, use_smaller_enumerator != 0);
 }
 
-int shim_p2_tu_qbpm_enumerator(int rate_err_tol) {
+int shim_p2_tu_qbpm_enumerator(int rate_err_tol, int use_smaller_enumerator) {
   /* Same function, reached through the TU's own copy -- see the header. */
-  return qbpm_enumerator(rate_err_tol);
+  return qbpm_enumerator(rate_err_tol, use_smaller_enumerator != 0);
 }
 
 double shim_p2_get_sr_decay_rate(const double *stats) {
@@ -634,16 +637,15 @@ int shim_p2_half_filt_len(void) { return HALF_FILT_LEN; }
 /* ======================================================================== *
  * The scenecut / noise-model helpers.
  * ======================================================================== */
-int shim_p2_find_qindex_by_rate_with_correction(uint64_t desired_bits_per_mb,
-                                                int bit_depth,
-                                                double error_per_mb,
-                                                double group_weight_factor,
-                                                int rate_err_tol,
-                                                int best_qindex,
-                                                int worst_qindex) {
+int shim_p2_find_qindex_by_rate_with_correction(
+    uint64_t desired_bits_per_mb, int bit_depth, double error_per_mb,
+    int lower_qindex_on_static_frame, double group_weight_factor,
+    int rate_err_tol, int best_qindex, int worst_qindex,
+    int use_smaller_enumerator, double inactive_zone) {
   return find_qindex_by_rate_with_correction(
       desired_bits_per_mb, (aom_bit_depth_t)bit_depth, error_per_mb,
-      group_weight_factor, rate_err_tol, best_qindex, worst_qindex);
+      lower_qindex_on_static_frame != 0, group_weight_factor, rate_err_tol,
+      best_qindex, worst_qindex, use_smaller_enumerator != 0, inactive_zone);
 }
 
 int shim_p2_slide_transition(const double *this_flat, const double *last_flat,

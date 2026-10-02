@@ -33,8 +33,18 @@ void shim_upsampled_pred(const uint8_t *ref, int ref_stride, int width,
                          int height, int subpel_x_q3, int subpel_y_q3,
                          uint8_t *dst) {
   MV mv = { 0, 0 };
-  aom_upsampled_pred_c(NULL, NULL, 0, 0, &mv, dst, width, height, subpel_x_q3,
+  /* v3.15 (`697f461c7b`): `aom_upsampled_pred_c`'s 2-D case now uses `comp_pred`
+   * ITSELF as the horizontal-pass scratch (`uint8_t *temp = comp_pred`), where
+   * v3.14.1 had a stack `temp[]`. The scratch needs ((h-1)*8+7 >> 3) + taps rows
+   * of `width`, i.e. more than `width * height` — libaom's callers always hand
+   * it `xd->tmp_upsample_pred`, sized `2 * MAX_SB_SQUARE`. The caller of this
+   * shim passes exactly `width * height`, so stage through a real-sized buffer
+   * and copy the block out. */
+  uint8_t *tmp = (uint8_t *)aom_memalign(32, 2 * MAX_SB_SQUARE);
+  aom_upsampled_pred_c(NULL, NULL, 0, 0, &mv, tmp, width, height, subpel_x_q3,
                        subpel_y_q3, ref, ref_stride, USE_8_TAPS);
+  memcpy(dst, tmp, (size_t)width * (size_t)height);
+  aom_free(tmp);
 }
 
 /* ---- shim_find_best_sub_pixel_tree ------------------------------------

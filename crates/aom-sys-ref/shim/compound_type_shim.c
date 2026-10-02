@@ -321,6 +321,11 @@ static void shim_ct_install_vf(AV1_PRIMARY *ppi, BLOCK_SIZE b, int hbd,
     V(BLOCK_16X4, 16, 4)
     V(BLOCK_8X32, 8, 32)
     V(BLOCK_32X8, 32, 8)
+    V(BLOCK_64X128, 64, 128)
+    V(BLOCK_128X64, 128, 64)
+    V(BLOCK_128X128, 128, 128)
+    V(BLOCK_16X64, 16, 64)
+    V(BLOCK_64X16, 64, 16)
     default: break;
   }
 #undef V
@@ -1033,6 +1038,28 @@ int64_t shim_ct_compute_sse_plane(int hbd, int bd, int bsize, int ss_x,
     aom_free(adst); aom_free(asrc); free(cb); free(x);
     return 0;
   }
+  AV1_COMP *cpi = (AV1_COMP *)calloc(1, sizeof(*cpi));
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  if (!cpi || !ppi) {
+    aom_free(adst); aom_free(asrc); free(cb); free(x); free(cpi); free(ppi);
+    return 0;
+  }
+  cpi->ppi = ppi;
+  /* v3.15: `compute_sse_plane(cpi, x, xd, plane, bsize)` clips through
+   * `get_visible_dimensions` (rdopt_utils.h:362), which reads
+   * `x->pix_to_{right,bottom}_edge` rather than `xd->mb_to_*_edge`, and when the
+   * block is fully visible calls `cpi->ppi->fn_ptr[plane_bsize].vf`. With
+   * `do_border_pad == false` (the only case this port models) libaom sets
+   * pix_to_*_edge = ((mi_dim - mi_pos - bsize_mi) << 2), i.e. mb_to_*_edge / 8
+   * exactly (`set_pixels_to_frame_edge`, encoder.h:4290). The Rust caller only
+   * draws multiples of 32 there. */
+  x->pix_to_right_edge = mb_to_right_edge / 8;
+  x->pix_to_bottom_edge = mb_to_bottom_edge / 8;
+  {
+    const BLOCK_SIZE pb =
+        get_plane_block_size((BLOCK_SIZE)bsize, ss_x, ss_y);
+    shim_ct_install_vf(ppi, pb, hbd, bd);
+  }
   cb->flags = hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
   x->e_mbd.cur_buf = cb;
   x->e_mbd.bd = bd;
@@ -1048,12 +1075,14 @@ int64_t shim_ct_compute_sse_plane(int hbd, int bd, int bsize, int ss_x,
   x->e_mbd.plane[0].dst.stride = dst_stride;
 
   const int64_t r =
-      compute_sse_plane(x, &x->e_mbd, AOM_PLANE_Y, (BLOCK_SIZE)bsize);
+      compute_sse_plane(cpi, x, &x->e_mbd, AOM_PLANE_Y, (BLOCK_SIZE)bsize);
 
   aom_free(adst);
   aom_free(asrc);
   free(cb);
   free(x);
+  free(cpi);
+  free(ppi);
   return r;
 }
 
@@ -1081,6 +1110,18 @@ int shim_ct_prune_mode_by_skip_rd(int hbd, int bd, int bsize,
   cpi->common.seq_params = seq;
   for (int i = 0; i < TX_SEARCH_CASES; ++i)
     cpi->sf.inter_sf.txfm_rd_gate_level[i] = levels[i];
+  /* v3.15: `prune_mode_by_skip_rd` -> `compute_sse_plane(cpi, ..)` clips via
+   * `x->pix_to_*_edge` and, for a fully visible block, calls
+   * `cpi->ppi->fn_ptr[plane_bsize].vf` — see shim_ct_compute_sse_plane. */
+  AV1_PRIMARY *ppi = (AV1_PRIMARY *)calloc(1, sizeof(*ppi));
+  if (!ppi) {
+    aom_free(adst); aom_free(asrc); free(cb); free(seq); free(cpi); free(x);
+    return 0;
+  }
+  cpi->ppi = ppi;
+  shim_ct_install_vf(ppi, (BLOCK_SIZE)bsize, hbd, bd);
+  x->pix_to_right_edge = mb_to_right_edge / 8;
+  x->pix_to_bottom_edge = mb_to_bottom_edge / 8;
 
   cb->flags = hbd ? YV12_FLAG_HIGHBITDEPTH : 0;
   x->e_mbd.cur_buf = cb;
@@ -1103,6 +1144,7 @@ int shim_ct_prune_mode_by_skip_rd(int hbd, int bd, int bsize,
   aom_free(asrc);
   free(cb);
   free(seq);
+  free(ppi);
   free(cpi);
   free(x);
   return r;
@@ -1166,6 +1208,13 @@ int64_t shim_ct_compute_best_wedge_interintra(
   seq->sb_size = BLOCK_64X64;
   seq->enable_intra_edge_filter = 1;
   e.cpi->common.seq_params = seq;
+  /* v3.15: `model_rd_sb_fn[MODELRD_TYPE_INTERINTRA]` ->
+   * `model_rd_for_sb` -> `compute_sse_plane(cpi, ..)` clips through
+   * `x->pix_to_*_edge` and, for a fully visible plane block, calls
+   * `cpi->ppi->fn_ptr[plane_bsize].vf` (NULL here unless installed). */
+  shim_ct_install_vf(e.ppi, (BLOCK_SIZE)bsize, /*hbd=*/0, /*bd=*/8);
+  e.x->pix_to_right_edge = mb_to_right_edge / 8;
+  e.x->pix_to_bottom_edge = mb_to_bottom_edge / 8;
 
   MACROBLOCKD *xd = &e.x->e_mbd;
   xd->mi_row = mi_row;
@@ -1279,6 +1328,13 @@ int64_t shim_ct_compute_best_interintra_mode(
   seq->sb_size = BLOCK_64X64;
   seq->enable_intra_edge_filter = 1;
   e.cpi->common.seq_params = seq;
+  /* v3.15: `model_rd_sb_fn[MODELRD_TYPE_INTERINTRA]` ->
+   * `model_rd_for_sb` -> `compute_sse_plane(cpi, ..)` clips through
+   * `x->pix_to_*_edge` and, for a fully visible plane block, calls
+   * `cpi->ppi->fn_ptr[plane_bsize].vf` (NULL here unless installed). */
+  shim_ct_install_vf(e.ppi, (BLOCK_SIZE)bsize, /*hbd=*/0, /*bd=*/8);
+  e.x->pix_to_right_edge = mb_to_right_edge / 8;
+  e.x->pix_to_bottom_edge = mb_to_bottom_edge / 8;
 
   MACROBLOCKD *xd = &e.x->e_mbd;
   xd->mi_row = mi_row;

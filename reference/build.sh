@@ -5,9 +5,9 @@
 # a fresh checkout). See reference/BUILD_CONFIG.md for the authoritative config.
 set -euo pipefail
 
-# Pinned libaom: tag v3.14.1. The exact commit the shims are written against.
-LIBAOM_TAG="v3.14.1"
-LIBAOM_SHA="03087864cf4bea6abb0d28f95cf7843511413d8f"
+# Pinned libaom: tag v3.15.1. The exact commit the shims are written against.
+LIBAOM_TAG="v3.15.1"
+LIBAOM_SHA="44d0a57786f432d933ff64b653347c66f4d0fa1d"
 LIBAOM_URL="https://aomedia.googlesource.com/aom"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +34,7 @@ mkdir -p "$BUILD"
 cmake -S "$SRC" -B "$BUILD" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCONFIG_MULTITHREAD=0 \
-    -DENABLE_TESTS=1 -DENABLE_EXAMPLES=1 -DENABLE_TOOLS=1 \
+    -DENABLE_TESTS=1 -DENABLE_EXAMPLES=1 -DENABLE_TOOLS=1 -DENABLE_APPS=1 \
     -DCONFIG_AV1_DECODER=1 -DCONFIG_AV1_ENCODER=1
 cmake --build "$BUILD" --target aom aomenc aomdec -j "$(nproc)"
 

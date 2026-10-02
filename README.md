@@ -3,11 +3,11 @@
 Pure-Rust, bit-exact reimplementation of [libaom](https://aomedia.googlesource.com/aom)
 (the Alliance for Open Media AV1 reference codec), built module-by-module behind
 differential harnesses. Every ported kernel is validated against a pinned C libaom
-**v3.14.1** oracle (`03087864`), and landed decode/encode paths are held to
+**v3.15.1** oracle (`44d0a577`), and landed decode/encode paths are held to
 byte-exact bitstream gates — the port is measured against the real exported C
 functions, not a transcription of them.
 
-`#![forbid(unsafe_code)]` · runtime SIMD dispatch via [archmage](https://github.com/imazen/archmage) · `libaom v3.14.1`
+`#![forbid(unsafe_code)]` · runtime SIMD dispatch via [archmage](https://github.com/imazen/archmage) · `libaom v3.15.1`
 
 ## Crates
 
@@ -54,7 +54,7 @@ dependency of the shipping crates.
 
 Three tables: what the **shipping encoder API** does, what the **decoder** does,
 and where **video** stands. "Bit-exact" always means *byte-identical to the
-pinned C libaom v3.14.1 oracle on a named gate*, never "looks right".
+pinned C libaom v3.15.1 oracle on a named gate*, never "looks right".
 
 Read the first column of the stills-encoder table carefully — it is the one
 distinction this project has repeatedly had to re-learn. A feature can be

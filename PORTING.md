@@ -1,7 +1,7 @@
 # PORTING.md — the C→Rust map
 
 This is the auditability index for `zenav1-aom`: for each Rust module, the
-`upstream/` libaom v3.14.1 source it ports and the differential test that gates
+`upstream/` libaom v3.15.1 source it ports and the differential test that gates
 it. Browse the Rust next to the C it reimplements, then run the gate that proves
 they agree byte-for-byte.
 
@@ -27,8 +27,8 @@ exported C function > synthetic facade over a real function > verbatim
 transcription (a transcribed oracle can carry a shared bug, so it is the weakest
 witness).
 
-The C oracle is the pinned `upstream/` git submodule (libaom v3.14.1,
-`03087864`), built once from source by `crates/aom-sys-ref/build.rs` in the
+The C oracle is the pinned `upstream/` git submodule (libaom v3.15.1,
+`44d0a577`), built once from source by `crates/aom-sys-ref/build.rs` in the
 deterministic single-thread config — see [`reference/BUILD_CONFIG.md`](reference/BUILD_CONFIG.md).
 `cargo test` drives that build automatically; a fresh box needs only
 `cmake`, `nasm`, and a C compiler on `PATH`.

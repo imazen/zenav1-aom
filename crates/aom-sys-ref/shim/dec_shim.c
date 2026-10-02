@@ -1626,7 +1626,7 @@ long shim_lr_units_roundtrip(const int32_t *units, int n, uint8_t *out,
   aom_writer w;
   memset(&w, 0, sizeof(w));
   w.allow_update_cdf = 1;
-  aom_start_encode(&w, buf);
+  aom_start_encode(&w, buf, 1 << 20);
 
   WienerInfo wref[3];
   SgrprojInfo sref[3];

@@ -20,23 +20,19 @@ void shim_blend_a64_mask(uint8_t *dst, uint32_t ds, const uint8_t *s0,
   aom_blend_a64_mask_c(dst, ds, s0, s0s, s1, s1s, mask, ms, w, h, subw, subh);
 }
 
-// Init the compound wedge codebook and copy the baked mask masks[0][index]
+// Copy the baked wedge mask for sign 0, wedge `index`
 // (block_size_wide[bsize] * block_size_high[bsize] bytes, stride bw) into out.
-// Returns 0 if the bsize has no wedge types, -1 if the wedge table is not yet
-// published (see below).
+// Returns 0 if the bsize has no wedge types, -1 if the mask lookup yields NULL.
 //
-// ATTRIBUTION GUARD (the -1 return). The oracle is built CONFIG_MULTITHREAD=0
-// (build.rs, deliberate — it is the determinism definition), which selects the
-// NO-SYNCHRONISATION aom_once (upstream/aom_ports/aom_once.h:70-80). The body
-// av1_init_wedge_masks() guards opens with `memset(wedge_masks, 0, ...)`
-// (upstream/av1/common/reconinter.c:497), so while an init is in flight EVERY
-// av1_wedge_params_lookup[].masks[][] entry reads back NULL, and
-// av1_get_contiguous_soft_mask hands that NULL straight to the memcpy below.
-// Two libtest threads entering the unsynchronised once therefore produced a
-// bare SIGSEGV in memmove with no attribution at all. The init is now forced
-// from ref_init()'s Rust Once (single-threaded funnel) so this cannot happen;
-// the check stays so that if it ever does, the failure NAMES itself instead of
-// costing another afternoon.
+// v3.15 precomputes the wedge masks at codegen time (tools/gen_wedge_masks_data.py
+// -> av1/common/wedge_masks_data.inc): `wedge_mask_buf` is `static const` data and
+// `av1_wedge_params_lookup[].masks[][]` holds BYTE OFFSETS into it, read back only
+// through `av1_get_contiguous_soft_mask` (reconinter.c, now out of line).
+// `av1_init_wedge_masks()` is an empty function. The v3.14.1 hazard this shim used
+// to guard (an unsynchronised `aom_once` under CONFIG_MULTITHREAD=0 leaving every
+// mask entry NULL while an init was in flight, which SIGSEGV'd in memmove with no
+// attribution) no longer exists; the NULL check stays so that a lookup that cannot
+// resolve still names itself.
 int shim_ii_wedge_mask(int bsize, int index, uint8_t *out) {
   av1_init_wedge_masks();
   if (av1_wedge_params_lookup[bsize].wedge_types == 0) return 0;

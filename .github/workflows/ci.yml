@@ -24,7 +24,7 @@ on:
 env:
   # Pinned libaom oracle commit (see reference/BUILD_CONFIG.md). Bump the cache
   # key salt (-vN) when the pin or build config changes.
-  LIBAOM_SHA: 03087864cf4bea6abb0d28f95cf7843511413d8f
+  LIBAOM_SHA: 44d0a57786f432d933ff64b653347c66f4d0fa1d
 
 jobs:
   test-linux:

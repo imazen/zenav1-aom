@@ -128,7 +128,7 @@ def build_manifest():
                 ".md5 companion is the per-frame golden our decoder must reproduce. "
                 "scope_hint is a family heuristic; the 'probe' field (frames/decoded) "
                 "is measured by C aomdec via --probe.",
-        "reference": "libaom v3.14.1",
+        "reference": "libaom v3.15.1",
         "data_url": DATA_URL,
         "summary": {
             "total_av1_vectors": len(vectors),

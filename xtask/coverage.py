@@ -71,7 +71,7 @@ def main():
                 "+ aomcx.h control enums. Green requires a mapping in feature_map.json "
                 "to a passing test. Low-level kernel coverage is tracked separately "
                 "in checklist.json.",
-        "reference": "libaom v3.14.1",
+        "reference": "libaom v3.15.1",
         "summary": {"total": total, "green": green, "red": total - green,
                     "percent": round(100.0 * green / total, 2) if total else 0.0},
         "features": surface,
