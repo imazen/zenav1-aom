@@ -10,7 +10,9 @@ Known Bugs (KB-*) ledger. An entry belongs here only if the surprising behaviour
 is on libaom's side of the line.
 
 **Ground rule.** Every claim carries a `file:line` citation into the pinned
-`upstream/` submodule (libaom v3.14.1, `03087864`) and a provenance tag:
+`upstream/` submodule (libaom v3.14.1, `03087864` — **the submodule is now v3.15.1, `44d0a577`
+as of 2026-10-02; citations below were written against v3.14.1, so re-find the symbol before
+trusting a line number; see `docs/LIBAOM_3_15_DELTA.md`**) and a provenance tag:
 
 | tag | meaning |
 |---|---|

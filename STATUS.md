@@ -1,5 +1,26 @@
 > **Read first:** `docs/CYCLE_LEDGER_2026-09-08_11.md` (what the last cycle did and left open) and `docs/ITERATION_PLAYBOOK.md` (how to iterate). This file is the per-landing narrative, newest first, ~360 KB — grep it for a KB number or a benchmark name rather than reading it top to bottom. Landings before 2026-09-08 are in `docs/archive/STATUS_2026-07-14_to_2026-09-04.md` (moved 2026-09-25; nothing rewritten).
 
+## Oracle bump: libaom v3.14.1 → v3.15.1 (2026-10-02)
+
+The pinned C oracle is now v3.15.1 (`44d0a577`). Full record, per-item outcomes and the
+process lessons: `docs/LIBAOM_3_15_DELTA.md`. Headlines, all MEASURED:
+
+- Workspace against the new oracle: **1552/1562 before any port change, 1562/1562 after**
+  (both dispatch modes; census, whereat and API-doc gates green).
+- **One stills-envelope move**: `137bcff61e` caps `mi->tx_size` to TX_16X16 for flat blocks
+  at `base_qindex > 150` on the top/left edge in `av1_nonrd_pick_intra_mode`
+  (`--cpu-used` 8/9). It was *not* tagged `STATS_CHANGED` upstream. Fixed
+  (`nonrd_flat_edge_tx_cap`); `encoder_gate_speed8/9_textured_allintra` byte-exact again.
+- The port had reproduced v3.14.1's `get_variance_stats` row-aliasing bug on purpose; v3.15
+  fixed it, so the port now uses `bw + 2` (+ hbd rounding).
+- A stale FFI declaration (`av1_model_rd_curvfit`, five args → four) linked and passed by
+  stack-layout luck; an audit of all 163 directly-bound libaom symbols found no other.
+- `do_border_pad` kernels ported and gated against the real `av1_subtract_block`; no encode
+  this port produces reaches the flag (GOOD usage only, refused by `encode_key_frame`).
+- Zenaom SCM trial gained `ratio_is_large_2`; gated against the oracle's own two-pass trial.
+  Measured limit: borderline cells (within ~7% of `diff/ratio = 2`) can disagree because
+  the trial PSNRs are not bit-identical to C's two-pass context.
+
 ## Production prep: publishable, linted, documented, decluttered (2026-09-25, `maint/prod-prep`)
 
 Five landings on one branch, each behind the full landing gate in a clean worktree:

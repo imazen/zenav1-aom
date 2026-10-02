@@ -1,6 +1,7 @@
 # aom-rs — project instructions & durable bug log
 
 Pure-Rust, **bit-exact** reimplementation of libaom ≥ v3.14.1 as a drop-in replacement.
+The pinned oracle is **v3.15.1** (`44d0a577`, since 2026-10-02) — see `docs/LIBAOM_3_15_DELTA.md`.
 Validated behind differential harnesses against the REAL exported C functions (priority of
 evidence: real exported C fn > synthetic-facade-over-real-fn > verbatim transcription —
 transcribed oracles can carry shared bugs).

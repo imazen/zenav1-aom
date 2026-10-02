@@ -9,25 +9,25 @@
 
 ## summary
 #
-#   pub modules                                80
-#   pub types (struct/enum/trait/alias)       287
-#   pub consts/statics                        639
-#   free functions                            625
-#   inherent methods                          975
-#   struct fields                            1957
+#   pub modules                                81
+#   pub types (struct/enum/trait/alias)       290
+#   pub consts/statics                        640
+#   free functions                            632
+#   inherent methods                          986
+#   struct fields                            1970
 #   enum variants                             174
 #   re-exports                                  1
-#   trait roster entries (type × trait)      1130
-#   auto-trait-complete types                 265
+#   trait roster entries (type × trait)      1147
+#   auto-trait-complete types                 268
 #   auto-trait exceptions                      10
 #
 # per-module pub lines:
 #   (root)                           22
-#   aom_encode                     4708
+#   aom_encode                     4744
 #   u16                               4
 #   u8                                4
 
-## items (4702 lines)
+## items (4738 lines)
 
 #[repr(C)] pub struct aom_encode::firstpass::FirstpassStats [also: aom_encode::pass2_model]
 #[repr(C)] pub struct aom_encode::firstpass::FrameStats
@@ -983,6 +983,7 @@ pub aom_encode::nonrd_inter::TxSizeCtx::tx_mode_search_type: i32
 pub aom_encode::nonrd_inter::TxSizeCtx::tx_size_level_based_on_qstep: i32
 pub aom_encode::nonrd_pickmode::NonrdIntraLeafCtx::above_mode: usize
 pub aom_encode::nonrd_pickmode::NonrdIntraLeafCtx::allow_screen_content_tools: bool
+pub aom_encode::nonrd_pickmode::NonrdIntraLeafCtx::base_qindex: i32
 pub aom_encode::nonrd_pickmode::NonrdIntraLeafCtx::bmode_costs: &'a [i32; 13]
 pub aom_encode::nonrd_pickmode::NonrdIntraLeafCtx::enable_intra_mode_pruning_using_neighbors: bool
 pub aom_encode::nonrd_pickmode::NonrdIntraLeafCtx::enable_palette: bool
@@ -1596,6 +1597,18 @@ pub aom_encode::rdopt_single_state::CompoundRows::compound: &'a aom_encode::rdop
 pub aom_encode::rdopt_single_state::CompoundRows::single: [&'a aom_encode::rdopt_mv::RefMvRow; 2]
 pub aom_encode::rdopt_single_state::InterModeInfoEntry::est_rd: i64
 pub aom_encode::rdopt_single_state::InterModeInfoEntry::mode_rate: i32
+pub aom_encode::rdopt_single_state::MotionBiasBlock::bsize: usize
+pub aom_encode::rdopt_single_state::MotionBiasBlock::has_second_ref: bool
+pub aom_encode::rdopt_single_state::MotionBiasBlock::mode: aom_encode::rdopt_mv::PredMode
+pub aom_encode::rdopt_single_state::MotionBiasBlock::motion_mode: i32
+pub aom_encode::rdopt_single_state::MotionBiasBlock::wmtype: [aom_encode::compound_type::TransformationType; 2]
+pub aom_encode::rdopt_single_state::MotionBiasCfg::force_integer_mv: bool
+pub aom_encode::rdopt_single_state::MotionBiasCfg::gm_pct: f32
+pub aom_encode::rdopt_single_state::MotionBiasCfg::obmc_pct: f32
+pub aom_encode::rdopt_single_state::MotionBiasCfg::warp_pct: f32
+pub aom_encode::rdopt_single_state::RdStatsBias::dist: i64
+pub aom_encode::rdopt_single_state::RdStatsBias::rate: i32
+pub aom_encode::rdopt_single_state::RdStatsBias::zero_rate: i32
 pub aom_encode::rdopt_single_state::SingleState::rd: i64
 pub aom_encode::rdopt_single_state::SingleState::ref_frame: core::option::Option<i32>
 pub aom_encode::rdopt_single_state::SingleState::valid: bool
@@ -2176,6 +2189,7 @@ pub const aom_encode::ab_nn_weights::LABEL_SIZE: usize [also: aom_encode::part4_
 pub const aom_encode::allintra_vis::DELTA_Q_RES_PERCEPTUAL: i32
 pub const aom_encode::allintra_vis::PERCEPTUAL_BEST_QUALITY: i32
 pub const aom_encode::allintra_vis::PERCEPTUAL_WORST_QUALITY: i32
+pub const aom_encode::border_pad::IDTX: usize
 pub const aom_encode::cnn_partition::cnn::CNN_OUT_BUF_SIZE: usize
 pub const aom_encode::compound_type::COMPOUND_TYPES: usize
 pub const aom_encode::compound_type::CompoundType::ALL: [aom_encode::compound_type::CompoundType; 4]
@@ -2742,6 +2756,9 @@ pub fn aom_encode::allintra_vis::ssim_rdmult_scaling_factors(&[u16], usize, i32,
 pub fn aom_encode::allintra_vis::variance_boost_block_variance(&[u16], usize, usize, u8) -> u32
 pub fn aom_encode::allintra_vis::variance_boost_delta_q_res(i32) -> i32
 pub fn aom_encode::allintra_vis::variance_boost_raw_qindex(&[u16], usize, usize, u8, i32, u32) -> i32
+pub fn aom_encode::border_pad::fill_residue_outside_frame(&mut [i16], usize, usize, usize, usize, usize, usize)
+pub fn aom_encode::border_pad::get_visible_dimensions(i32, i32, u32, u32, usize, usize, usize, usize, usize, usize, bool) -> (usize, usize, bool)
+pub fn aom_encode::border_pad::set_pixels_to_frame_edge(i32, i32, i32, i32, i32, i32, i32, i32, bool) -> (i32, i32)
 pub fn aom_encode::cnn_partition::cnn::cnn_predict(&[u16], i32) -> [f32; 1636]
 pub fn aom_encode::cnn_partition::decision::CnnPruneDecision::assert_fields_are_eq(&self)
 pub fn aom_encode::cnn_partition::decision::CnnPruneDecision::clone(&self) -> aom_encode::cnn_partition::decision::CnnPruneDecision
@@ -3354,7 +3371,7 @@ pub fn aom_encode::noise_fft::ifft2d(usize, &[f32], &mut [f32], &mut [f32]) -> b
 pub fn aom_encode::noise_fft::noise_psd_get_default_value(usize, f32) -> f32
 pub fn aom_encode::noise_model::FlatBlockFinder::clone(&self) -> aom_encode::noise_model::FlatBlockFinder
 pub fn aom_encode::noise_model::FlatBlockFinder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn aom_encode::noise_model::FlatBlockFinder::new(usize, i32) -> Self
+pub fn aom_encode::noise_model::FlatBlockFinder::new(usize, i32) -> core::option::Option<Self>
 pub fn aom_encode::noise_model::FlatBlockFinder::run(&self, &[u16], usize, usize, usize) -> (alloc::vec::Vec<u8>, i32)
 pub fn aom_encode::noise_model::NoiseModel::clone(&self) -> aom_encode::noise_model::NoiseModel
 pub fn aom_encode::noise_model::NoiseModel::combined_ar_coeffs(&self, usize) -> &[f64]
@@ -3443,6 +3460,7 @@ pub fn aom_encode::nonrd_pickmode::hadamard_lp_8x8_dual(&[i16], usize, &mut [i16
 pub fn aom_encode::nonrd_pickmode::hybrid_use_rdopt(i32, usize, u32) -> bool
 pub fn aom_encode::nonrd_pickmode::multi_txb_leaf_counts() -> [u64; 22]
 pub fn aom_encode::nonrd_pickmode::nonrd_color_palette_thresh(u32) -> i32
+pub fn aom_encode::nonrd_pickmode::nonrd_flat_edge_tx_cap(usize, i32, u32, i32, i32) -> usize
 pub fn aom_encode::nonrd_pickmode::nonrd_leaf_tx_size(usize, bool) -> usize
 pub fn aom_encode::nonrd_pickmode::nonrd_palette_arm_is_live(bool, bool, usize, i32, bool, u32, u32) -> bool
 pub fn aom_encode::nonrd_pickmode::nonrd_palette_search_stats() -> [u64; 3]
@@ -3571,7 +3589,7 @@ pub fn aom_encode::pass2_model::accumulate_this_frame_stats(&aom_encode::pass2_m
 pub fn aom_encode::pass2_model::analyze_region(&[aom_encode::pass2_model::FirstpassStats], usize, &mut [aom_encode::pass2_model::Region])
 pub fn aom_encode::pass2_model::average_gf_stats(i32, &mut aom_encode::pass2_model::GfGroupStats)
 pub fn aom_encode::pass2_model::baseline_err_per_mb(&aom_encode::pass2_model::FrameInfo) -> f64
-pub fn aom_encode::pass2_model::calc_correction_factor(f64, i32) -> f64
+pub fn aom_encode::pass2_model::calc_correction_factor(f64, i32, f64, bool) -> f64
 pub fn aom_encode::pass2_model::calc_frame_boost(i32, &aom_encode::pass2_model::FrameInfo, &aom_encode::pass2_model::FirstpassStats, f64, f64, bool) -> f64
 pub fn aom_encode::pass2_model::calc_kf_frame_boost(i32, &aom_encode::pass2_model::FrameInfo, &aom_encode::pass2_model::FirstpassStats, f64, f64) -> (f64, f64)
 pub fn aom_encode::pass2_model::calculate_active_area(&aom_encode::pass2_model::FrameInfo, &aom_encode::pass2_model::FirstpassStats) -> f64
@@ -3585,7 +3603,7 @@ pub fn aom_encode::pass2_model::double_divide_check(f64) -> f64
 pub fn aom_encode::pass2_model::estimate_coeff(&mut [aom_encode::pass2_model::FirstpassStats])
 pub fn aom_encode::pass2_model::estimate_noise(&mut [aom_encode::pass2_model::FirstpassStats])
 pub fn aom_encode::pass2_model::fclamp(f64, f64, f64) -> f64
-pub fn aom_encode::pass2_model::find_qindex_by_rate_with_correction(u64, u8, f64, f64, i32, i32, i32) -> i32
+pub fn aom_encode::pass2_model::find_qindex_by_rate_with_correction(u64, u8, f64, bool, f64, i32, i32, i32, bool, f64) -> i32
 pub fn aom_encode::pass2_model::find_regions_index(&[aom_encode::pass2_model::Region], usize, i32) -> core::option::Option<usize>
 pub fn aom_encode::pass2_model::find_stable_regions(&[aom_encode::pass2_model::FirstpassStats], &[f64], usize, usize, &mut [aom_encode::pass2_model::Region]) -> usize
 pub fn aom_encode::pass2_model::frame_max_bits(i64, i64, i32) -> i32
@@ -3600,7 +3618,7 @@ pub fn aom_encode::pass2_model::gfu_boost_projection_factor(f64, f64, i32) -> f6
 pub fn aom_encode::pass2_model::insert_region(i32, i32, i32, &mut [aom_encode::pass2_model::Region], &mut i32, &mut i32)
 pub fn aom_encode::pass2_model::is_almost_static(f64, i32, bool) -> bool
 pub fn aom_encode::pass2_model::mark_flashes(&mut [aom_encode::pass2_model::FirstpassStats])
-pub fn aom_encode::pass2_model::qbpm_enumerator(i32) -> i32
+pub fn aom_encode::pass2_model::qbpm_enumerator(i32, bool) -> i32
 pub fn aom_encode::pass2_model::read_frame_stats(usize, usize, i32) -> core::option::Option<usize>
 pub fn aom_encode::pass2_model::remove_region(i32, &mut [aom_encode::pass2_model::Region], &mut i32, &mut i32)
 pub fn aom_encode::pass2_model::remove_short_regions(&mut [aom_encode::pass2_model::Region], &mut i32, i32, i32)
@@ -3896,6 +3914,17 @@ pub fn aom_encode::rdopt_single_state::InterModeInfoEntry::clone(&self) -> aom_e
 pub fn aom_encode::rdopt_single_state::InterModeInfoEntry::default() -> aom_encode::rdopt_single_state::InterModeInfoEntry
 pub fn aom_encode::rdopt_single_state::InterModeInfoEntry::eq(&self, &aom_encode::rdopt_single_state::InterModeInfoEntry) -> bool
 pub fn aom_encode::rdopt_single_state::InterModeInfoEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::rdopt_single_state::MotionBiasBlock::clone(&self) -> aom_encode::rdopt_single_state::MotionBiasBlock
+pub fn aom_encode::rdopt_single_state::MotionBiasBlock::eq(&self, &aom_encode::rdopt_single_state::MotionBiasBlock) -> bool
+pub fn aom_encode::rdopt_single_state::MotionBiasBlock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::rdopt_single_state::MotionBiasCfg::clone(&self) -> aom_encode::rdopt_single_state::MotionBiasCfg
+pub fn aom_encode::rdopt_single_state::MotionBiasCfg::eq(&self, &aom_encode::rdopt_single_state::MotionBiasCfg) -> bool
+pub fn aom_encode::rdopt_single_state::MotionBiasCfg::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn aom_encode::rdopt_single_state::RdStatsBias::assert_fields_are_eq(&self)
+pub fn aom_encode::rdopt_single_state::RdStatsBias::clone(&self) -> aom_encode::rdopt_single_state::RdStatsBias
+pub fn aom_encode::rdopt_single_state::RdStatsBias::default() -> aom_encode::rdopt_single_state::RdStatsBias
+pub fn aom_encode::rdopt_single_state::RdStatsBias::eq(&self, &aom_encode::rdopt_single_state::RdStatsBias) -> bool
+pub fn aom_encode::rdopt_single_state::RdStatsBias::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::rdopt_single_state::SingleState::assert_fields_are_eq(&self)
 pub fn aom_encode::rdopt_single_state::SingleState::clone(&self) -> aom_encode::rdopt_single_state::SingleState
 pub fn aom_encode::rdopt_single_state::SingleState::default() -> Self
@@ -3916,11 +3945,14 @@ pub fn aom_encode::rdopt_single_state::StateList::default() -> aom_encode::rdopt
 pub fn aom_encode::rdopt_single_state::StateList::eq(&self, &aom_encode::rdopt_single_state::StateList) -> bool
 pub fn aom_encode::rdopt_single_state::StateList::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::rdopt_single_state::compound_skip_by_single_states(&aom_encode::rdopt_single_state::SingleStates, i32, aom_encode::rdopt_mv::PredMode, [i32; 2], &aom_encode::rdopt_single_state::CompoundRows<'_>, &[aom_encode::rdopt_mv::Mv; 8]) -> bool
-pub fn aom_encode::rdopt_single_state::increase_motion_mode_rd(i32, i32, &mut i64, &mut i64, i32, f32)
+pub fn aom_encode::rdopt_single_state::get_global_mv_mode_bias(&aom_encode::rdopt_single_state::MotionBiasCfg, &aom_encode::rdopt_single_state::MotionBiasBlock) -> f32
+pub fn aom_encode::rdopt_single_state::increase_motion_mode_rate(&aom_encode::rdopt_single_state::MotionBiasCfg, &aom_encode::rdopt_single_state::MotionBiasBlock, i32) -> i32
+pub fn aom_encode::rdopt_single_state::increase_motion_mode_rdstats(&aom_encode::rdopt_single_state::MotionBiasCfg, &aom_encode::rdopt_single_state::MotionBiasBlock, &mut aom_encode::rdopt_single_state::RdStatsBias, core::option::Option<&mut aom_encode::rdopt_single_state::RdStatsBias>, core::option::Option<&mut aom_encode::rdopt_single_state::RdStatsBias>)
 pub fn aom_encode::rdopt_single_state::init_comp_avg_est_rd(&mut [i64], i32)
 pub fn aom_encode::rdopt_single_state::init_top_tx_no_split_rd_for_inter_modes(&mut [i64], i32)
 pub fn aom_encode::rdopt_single_state::inter_modes_info_push(&mut alloc::vec::Vec<aom_encode::rdopt_single_state::InterModeInfoEntry>, aom_encode::rdopt_single_state::InterModeInfoEntry) -> bool
 pub fn aom_encode::rdopt_single_state::inter_offset(aom_encode::rdopt_mv::PredMode) -> usize
+pub fn aom_encode::rdopt_single_state::scale_rdstats(&mut aom_encode::rdopt_single_state::RdStatsBias, f64)
 pub fn aom_encode::rdopt_single_state::skip_interp_filter_search(i32, i32, bool, bool, bool) -> bool
 pub fn aom_encode::rdopt_single_state::skip_repeated_mv(aom_encode::rdopt_mv::PredMode, bool, usize, bool, i32, &aom_encode::inter_costs::InterModeCosts, &mut [i64; 25]) -> bool
 pub fn aom_encode::rdopt_skip::ModeSkipMask::assert_fields_are_eq(&self)
@@ -3968,9 +4000,9 @@ pub fn aom_encode::rdopt_var_rd::RdStatsCore::eq(&self, &aom_encode::rdopt_var_r
 pub fn aom_encode::rdopt_var_rd::RdStatsCore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn aom_encode::rdopt_var_rd::RefFrameDistanceInfo::clone(&self) -> aom_encode::rdopt_var_rd::RefFrameDistanceInfo
 pub fn aom_encode::rdopt_var_rd::RefFrameDistanceInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn aom_encode::rdopt_var_rd::adjust_cost(i64, bool, aom_encode::rdopt_var_rd::AdjustGates, usize, &[u16], usize, &[u16], usize, bool) -> i64
-pub fn aom_encode::rdopt_var_rd::adjust_rdcost(&mut aom_encode::rdopt_var_rd::RdStatsCore, bool, aom_encode::rdopt_var_rd::AdjustGates, usize, &[u16], usize, &[u16], usize, bool)
-pub fn aom_encode::rdopt_var_rd::get_variance_stats(usize, &[u16], usize, &[u16], usize, bool) -> (i64, i64)
+pub fn aom_encode::rdopt_var_rd::adjust_cost(i64, bool, aom_encode::rdopt_var_rd::AdjustGates, usize, &[u16], usize, &[u16], usize, u8) -> i64
+pub fn aom_encode::rdopt_var_rd::adjust_rdcost(&mut aom_encode::rdopt_var_rd::RdStatsCore, bool, aom_encode::rdopt_var_rd::AdjustGates, usize, &[u16], usize, &[u16], usize, u8)
+pub fn aom_encode::rdopt_var_rd::get_variance_stats(usize, &[u16], usize, &[u16], usize, u8) -> (i64, i64)
 pub fn aom_encode::rdopt_var_rd::inter_mode_compatible_skip(usize, aom_encode::rdopt_mv::PredMode, [i32; 2], i32, bool, i32, bool) -> bool
 pub fn aom_encode::rdopt_var_rd::is_comp_ref_allowed(usize) -> bool [also: aom_encode::compound_type]
 pub fn aom_encode::rdopt_var_rd::is_interintra_allowed_bsize(usize) -> bool
@@ -4312,6 +4344,7 @@ pub fn u8::value(self) -> u32 [also: u16]
 pub mod aom_encode::ab_nn_prune
 pub mod aom_encode::ab_nn_weights
 pub mod aom_encode::allintra_vis
+pub mod aom_encode::border_pad
 pub mod aom_encode::cnn_partition
 pub mod aom_encode::cnn_partition::cnn
 pub mod aom_encode::cnn_partition::decision
@@ -4666,6 +4699,9 @@ pub struct aom_encode::rdopt_obmc::ObmcNeighbour
 pub struct aom_encode::rdopt_obmc::ObmcTargetArgs<'a>
 pub struct aom_encode::rdopt_single_state::CompoundRows<'a>
 pub struct aom_encode::rdopt_single_state::InterModeInfoEntry
+pub struct aom_encode::rdopt_single_state::MotionBiasBlock
+pub struct aom_encode::rdopt_single_state::MotionBiasCfg
+pub struct aom_encode::rdopt_single_state::RdStatsBias
 pub struct aom_encode::rdopt_single_state::SingleState
 pub struct aom_encode::rdopt_single_state::SingleStates
 pub struct aom_encode::rdopt_single_state::StateList
@@ -4732,7 +4768,7 @@ pub type aom_encode::tx_search::TxbWinners = smallvec::SmallVec<[aom_encode::tx_
 pub type aom_encode::var_part::Leaf8x8 = (u32, i32)
 pub use aom_encode::intrabc_search::DEFAULT_TXFM_PARTITION_CDF
 
-## trait impls (247 types)
+## trait impls (250 types)
 
 aom_encode::BlockContext<'a>: TrivialClone
 aom_encode::OptimizeInputs<'a>: TrivialClone
@@ -4921,6 +4957,9 @@ aom_encode::rdopt_mv::SingleNewMvRow: Clone, Copy, Debug, Default, TrivialClone
 aom_encode::rdopt_obmc::ObmcDir: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
 aom_encode::rdopt_obmc::ObmcNeighbour: Clone, Copy, Debug, Eq, PartialEq, TrivialClone
 aom_encode::rdopt_single_state::InterModeInfoEntry: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
+aom_encode::rdopt_single_state::MotionBiasBlock: Clone, Copy, Debug, PartialEq, TrivialClone
+aom_encode::rdopt_single_state::MotionBiasCfg: Clone, Copy, Debug, PartialEq, TrivialClone
+aom_encode::rdopt_single_state::RdStatsBias: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
 aom_encode::rdopt_single_state::SingleState: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
 aom_encode::rdopt_single_state::SingleStates: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
 aom_encode::rdopt_single_state::StateList: Clone, Copy, Debug, Default, Eq, PartialEq, TrivialClone
@@ -4984,7 +5023,7 @@ u8: aom_encode::lf_search::LfTrialPixel, aom_encode::temporal_filter::TfPixel, a
 
 ## auto traits
 
-265 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+268 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::encode_sb::TileCtxState: !Freeze !RefUnwindSafe !Sync
 aom_encode::inter_pred_enc::PixelsMut<'a>: !UnwindSafe
 aom_encode::intra_uv_rd::CflPredict<'a>: !UnwindSafe
@@ -4995,7 +5034,7 @@ aom_encode::rdopt_obmc::ObmcTargetArgs<'a>: !RefUnwindSafe !Send !Sync !UnwindSa
 aom_encode::temporal_filter::TfPlane<'a, P>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
 aom_encode::temporal_filter::TfPlaneMut<'a, P>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
 aom_encode::tx_search::NnDepthPruneCtx<'a>: !UnwindSafe
-## arch shapes (39 shapes: 39 on every recorded arch, 0 arch-unique)
+## arch shapes (40 shapes: 40 on every recorded arch, 0 arch-unique)
 
 [x86_64] impl<'a> core::marker::Freeze for aom_encode::rdopt_<tier>::SsePlane<'a>
 [x86_64] impl<'a> core::marker::Send for aom_encode::rdopt_<tier>::SsePlane<'a>
@@ -5019,6 +5058,7 @@ aom_encode::tx_search::NnDepthPruneCtx<'a>: !UnwindSafe
 [x86_64] pub aom_encode::rdopt_<tier>::SsePlane::src_stride: usize
 [x86_64] pub aom_encode::rdopt_<tier>::SsePlane::w: usize
 [x86_64] pub aom_encode::rdopt_single_state::InterModeInfoEntry::<tier>: i64
+[x86_64] pub aom_encode::rdopt_single_state::RdStatsBias::<tier>: i64
 [x86_64] pub aom_encode::tpl_model::TplDepStats::intra_<tier>: i64
 [x86_64] pub aom_encode::tpl_model::TplDepStats::recrf_<tier>: i64
 [x86_64] pub aom_encode::tpl_model::TplDepStats::srcrf_<tier>: i64
@@ -5037,7 +5077,7 @@ aom_encode::tx_search::NnDepthPruneCtx<'a>: !UnwindSafe
 [x86_64] pub mod aom_encode::rdopt_<tier>
 [x86_64] pub struct aom_encode::rdopt_<tier>::SsePlane<'a>
 
-## arch surface: x86_64 (39 lines)
+## arch surface: x86_64 (40 lines)
 
 impl<'a> core::marker::Freeze for aom_encode::rdopt_sse::SsePlane<'a>
 impl<'a> core::marker::Send for aom_encode::rdopt_sse::SsePlane<'a>
@@ -5055,6 +5095,7 @@ pub aom_encode::intra_uv_rd::CflRdStats::sse: i64
 pub aom_encode::nonrd_idtx::IdtxRd::sse: i64
 pub aom_encode::nonrd_idtx::UvModelRd::tot_sse: i64
 pub aom_encode::rdopt_single_state::InterModeInfoEntry::sse: i64
+pub aom_encode::rdopt_single_state::RdStatsBias::sse: i64
 pub aom_encode::rdopt_sse::SsePlane::dst: &'a [u8]
 pub aom_encode::rdopt_sse::SsePlane::dst_stride: usize
 pub aom_encode::rdopt_sse::SsePlane::h: usize

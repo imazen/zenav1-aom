@@ -6,11 +6,17 @@
 
 The 2026-09-08 → 2026-09-25 cycle: the encoder became a backend zenavif can select
 by default, and the repository was made publishable. Bit-exactness against libaom
-v3.14.1 holds on every gate throughout; nothing below changes a byte of any
-default-envelope stream.
+v3.14.1 holds on every gate throughout; nothing from that cycle changes a byte of any
+default-envelope stream. **From 2026-10-02 the oracle is v3.15.1**, and the one stills
+behaviour change that follows from it — the `--cpu-used` 8/9 flat-edge transform cap, under
+*Fixed* — does change bytes on flat content at high quantizer, because v3.15.1 does.
 
 #### Added
 
+- `border_pad` (`do_border_pad` kernels: `get_visible_dimensions`,
+  `set_pixels_to_frame_edge`, `fill_residue_outside_frame`), gated against the real
+  `av1_subtract_block` over 5,760 cases (`3829964`). Not reachable from any encode this
+  port produces (`encode_key_frame` refuses non-ALLINTRA usage).
 - **Tile threading** (`KeyFrameConfig::threads`, default 1; `0` = auto): phase-1
   tile-row bands over `split_at_mut`, no `unsafe`, byte-identical to serial.
   Against a multithreaded libaom `aomenc`: 1.097x at 4 threads, 0.988x at 8.
@@ -36,6 +42,11 @@ default-envelope stream.
 
 #### Changed
 
+- **Pinned C oracle: libaom v3.14.1 → v3.15.1** (`44d0a577`, `ef159f4`; shims and pins
+  `49bf89e`). `-DENABLE_APPS=1` is now explicit (v3.15 redefined `ENABLE_EXAMPLES`).
+  Workspace result against the new oracle: 1552/1562 before any port change, 1562/1562
+  after; the record is `docs/LIBAOM_3_15_DELTA.md`. Decoder: no source change
+  (`av1/decoder` has no changed files).
 - **Public API surface**: `zenav1-aom-encode` exposes `key_frame` (+ config/error
   types) by default — 258 items, down from ~4,300 — with every implementation
   module behind the default-off `__internals` feature; `zenav1-aom-decode` the same
@@ -61,6 +72,20 @@ default-envelope stream.
 
 #### Fixed
 
+- `--cpu-used` 8/9 on flat content at high quantizer: libaom v3.15 caps `mi->tx_size` to
+  TX_16X16 for a flat block (`source_variance == 0`) at `base_qindex > 150` on the top/left
+  frame edge (`137bcff61e`, not tagged `STATS_CHANGED` upstream). Flat 64x64 cq48/cq63
+  moved against a v3.15.1 oracle; `nonrd_flat_edge_tx_cap` restores byte-identity
+  (`3aba53e`).
+- `get_variance_stats` no longer reproduces v3.14.1's row-aliasing scratch stride
+  (v3.15 fixed it) and rounds high-bit-depth results by `2 * (bd - 8)`; affects inter
+  frames under tune IQ/SSIMULACRA2 only (`3aba53e`).
+- Film-grain noise estimation follows v3.15: NaN-failing solve, `y_corr` guard, error
+  snap below 1e-6 (`3aba53e`).
+- `aom-sys-ref` declared `av1_model_rd_curvfit` with its v3.14.1 five-argument shape;
+  harmless by stack-layout luck, now correct (`389bf3f`).
+- Zenaom SCM trial adds libaom v3.15's `ratio_is_large_2` win arm, gated against the
+  oracle's own two-pass trial.
 - KB-53..KB-68: the remaining byte divergences across the tune bundle, QM,
   `--intra-dct-only`, `--deltaq-mode`, CDEF pick/adaptive, the HBD intra-CNN
   window, `tx_type_map` ordering on SB128, coded-lossless IntraBC conformance,
