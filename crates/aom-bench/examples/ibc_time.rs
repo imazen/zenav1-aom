@@ -52,9 +52,10 @@ fn main() {
         (1280, 720),
         (1920, 1080),
     ] {
-        for &cq in &[32i32] {
+        let cq = 32i32;
+        {
             {
-                let &speed = &6i32;
+                let speed = 6i32;
                 let c = cell(w, h, cq, speed);
                 let t0 = Instant::now();
                 let cs = c.c_encode_screen(true, true).len();
