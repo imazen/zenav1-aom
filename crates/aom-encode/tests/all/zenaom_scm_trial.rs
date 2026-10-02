@@ -267,3 +267,160 @@ fn probe_zenaom_trial_matrix() {
         );
     }
 }
+
+/// `allow_screen_content_tools` as the FRAME HEADER of a stream says it — the
+/// one bit the trial decides. Read through the port's header parser for both
+/// the port's stream and C's, so the comparison is bit-for-bit what a decoder
+/// would see rather than a proxy such as "the streams differ".
+fn header_sct(stream: &[u8]) -> bool {
+    aom_decode::frame::decode_frame_obus_prefilter(stream)
+        .expect("frame header must parse")
+        .2
+        .allow_screen_content_tools
+}
+
+/// `ui_sample` pulled toward mid-grey by `amp` percent: a lower-contrast UI
+/// patch makes a smaller PSNR gain per palette pixel, which is how a cell lands
+/// between the three win conditions.
+fn ui_sample_amp(r: usize, col: usize, amp: i32) -> i32 {
+    128 + (ui_sample(r, col) - 128) * amp / 100
+}
+
+fn patched_sample_amp(
+    w: usize,
+    h: usize,
+    pw: usize,
+    ph: usize,
+    amp: i32,
+) -> impl Fn(usize, usize) -> i32 {
+    let (x0, y0) = ((w - pw) / 2, (h - ph) / 2);
+    move |r, col| {
+        if r >= y0 && r < y0 + ph && col >= x0 && col < x0 + pw {
+            ui_sample_amp(r - y0, col - x0, amp)
+        } else {
+            photo_sample(r, col)
+        }
+    }
+}
+
+/// Search for cells where only libaom v3.15's `ratio_is_large_2`
+/// (`psnr_diff > 0.1 && palette_ratio >= 0.05 && psnr_diff / palette_ratio > 2`)
+/// decides the trial. Prints the port's trial numbers (`AOM_SCT_TRIAL_DBG=1`)
+/// next to both sides' header bit. `#[ignore]`d: a measurement tool, not a gate —
+/// the gate is `zenaom_trial_decision_matches_c_on_the_ratio_arm_cells`.
+#[test]
+#[ignore]
+fn probe_ratio_is_large_2_cells() {
+    c::ref_init();
+    for &(w, h) in &[(256usize, 128usize), (256, 256)] {
+        for &(pw, ph) in &[
+            (48usize, 48usize),
+            (56, 56),
+            (64, 48),
+            (64, 64),
+            (80, 64),
+            (96, 64),
+        ] {
+            for &amp in &[15i32, 25, 35, 50, 70, 100] {
+                let (y, u, v) = planes_of(w, h, patched_sample_amp(w, h, pw, ph, amp));
+                let mut cfg = cfg_for(w, h, 32, 0, KeyFrameMode::Zenaom);
+                cfg.screen_likelihood = Some(0.5);
+                eprintln!("CELL {w}x{h} patch{pw}x{ph} amp{amp}");
+                let zen = port(&y, &u, &v, &cfg);
+                let c2 = c_two_pass(&y, &u, &v, w, h, 32, 0);
+                eprintln!(
+                    "  -> port sct={} C two-pass sct={}",
+                    header_sct(&zen),
+                    header_sct(&c2)
+                );
+            }
+        }
+    }
+}
+
+/// The new v3.15 win arm, end to end, against C's own trial.
+///
+/// `ratio_is_large_2` (`encoder_utils.c`, libaom `577e360c9a`) is
+/// `psnr_diff > 0.1 && palette_ratio >= 0.05 && psnr_diff / palette_ratio > 2`.
+/// These cells are where it is the ONLY arm that fires — measured with
+/// `AOM_SCT_TRIAL_DBG=1` (`probe_ratio_is_large_2_cells`), `psnr_diff` is below the
+/// 0.9 dB arm and `psnr_diff / palette_ratio` is between 2 and 4 (so neither the
+/// 0.9 dB arm nor the `> 4` arm fires):
+///
+/// | cell | psnr_diff | palette_ratio | diff / ratio |
+/// |---|---|---|---|
+/// | 256x128 patch64x64 amp25 | 0.2509 | 0.125 | 2.01 |
+/// | 256x128 patch64x64 amp35 | 0.2742 | 0.125 | 2.19 |
+/// | 256x128 patch64x64 amp50 | 0.4085 | 0.125 | 3.27 |
+/// | 256x128 patch80x64 amp35 | 0.2836 | 0.125 | 2.27 |
+/// | 256x128 patch80x64 amp50 | 0.3862 | 0.125 | 3.09 |
+/// | 256x256 patch64x64 amp25 | 0.1276 | 0.0625 | 2.04 |
+/// | 256x256 patch64x64 amp35 | 0.1629 | 0.0625 | 2.61 |
+/// | 256x256 patch64x64 amp50 | 0.2230 | 0.0625 | 3.57 |
+/// | 256x256 patch80x64 amp50 | 0.1935 | 0.0625 | 3.10 |
+/// | 256x256 patch96x64 amp25 | 0.1305 | 0.0625 | 2.09 |
+/// | 256x256 patch96x64 amp35 | 0.1444 | 0.0625 | 2.31 |
+///
+/// Under the v3.14.1 rule every one of them is a "no" (that is what the port
+/// computed before this change), and the one-pass `LibaomExact` stream never runs
+/// the trial at all — so a pass here means the port's NEW arm and the v3.15.1
+/// oracle's NEW arm agree on the bit a decoder reads: `allow_screen_content_tools`.
+///
+/// **Honest limit, measured:** on cells within ~7% of the `diff / ratio = 2` line
+/// the two sides can disagree, because C's two-pass trial PSNRs are not the port's
+/// to the last digit (256x128 patch80x64 amp25: port 24.7455 / 24.9816, C 24.7149 /
+/// 24.9699 — 0.003-0.03 dB apart; the port says no at 1.89, C says yes). Those cells
+/// are deliberately not here; this is a decision-agreement gate, not a numeric one.
+#[test]
+fn zenaom_trial_decision_matches_c_on_the_ratio_arm_cells() {
+    c::ref_init();
+    // Six of the eleven measured cells (one per size / patch / contrast corner); all
+    // eleven pass, the rest only add ~35 s of multi-pass encodes.
+    let arm_only = [
+        (256usize, 128usize, 64usize, 64usize, 25i32),
+        (256, 128, 64, 64, 50),
+        (256, 128, 80, 64, 35),
+        (256, 256, 64, 64, 25),
+        (256, 256, 80, 64, 50),
+        (256, 256, 96, 64, 25),
+    ];
+    // And a few where the trial genuinely declines (diff / ratio < 2, or below 0.1 dB):
+    // both sides must say no, so the arm is not simply "always yes".
+    let declines = [
+        (256usize, 128usize, 64usize, 64usize, 15i32),
+        (256, 256, 96, 64, 15),
+    ];
+    for &(w, h, pw, ph, amp) in arm_only.iter().chain(declines.iter()) {
+        let expect = arm_only.contains(&(w, h, pw, ph, amp));
+        let label = format!("{w}x{h} patch{pw}x{ph} amp{amp}");
+        let (y, u, v) = planes_of(w, h, patched_sample_amp(w, h, pw, ph, amp));
+        let mut cfg = cfg_for(w, h, 32, 0, KeyFrameMode::Zenaom);
+        // A hint at/above SCM_TRIAL_HINT_MIN nominates the trial regardless of the
+        // detector, so the DECISION is what is under test, not the nomination gate.
+        cfg.screen_likelihood = Some(0.5);
+        let zen = port(&y, &u, &v, &cfg);
+        let exact = port(&y, &u, &v, &cfg_for(w, h, 32, 0, KeyFrameMode::LibaomExact));
+        let c2 = c_two_pass(&y, &u, &v, w, h, 32, 0);
+        assert!(
+            !header_sct(&exact),
+            "{label}: LibaomExact must not run the trial"
+        );
+        assert_eq!(header_sct(&zen), expect, "{label}: port trial decision");
+        assert_eq!(
+            header_sct(&c2),
+            expect,
+            "{label}: C two-pass trial decision"
+        );
+        // Conformance of the flipped stream through the real C decoder.
+        if expect {
+            let c_dec = c::ref_decode_av1_kf(&zen, w, h);
+            let p_dec = aom_decode::frame::decode_frame_obus(&zen)
+                .unwrap_or_else(|e| panic!("{label}: port decode: {e}"));
+            assert_eq!(
+                (&p_dec.y, &p_dec.u, &p_dec.v),
+                (&c_dec.y, &c_dec.u, &c_dec.v),
+                "{label}"
+            );
+        }
+    }
+}
