@@ -71,6 +71,7 @@ impl_mods!(
     allintra_vis,
     ab_nn_prune,
     ab_nn_weights,
+    border_pad,
     cnn_partition,
     denoise,
     encode_intra,

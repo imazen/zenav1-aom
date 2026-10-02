@@ -34,6 +34,7 @@
 )]
 mod avg_4x4_diff;
 mod avif_parity;
+mod border_pad_diff;
 mod cfl_alpha_search_diff;
 mod cnn_partition_cnn_diff;
 mod cnn_partition_decision_diff;
