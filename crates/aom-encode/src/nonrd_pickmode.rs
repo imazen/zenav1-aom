@@ -1386,6 +1386,9 @@ pub struct NonrdIntraLeafCtx<'a> {
     pub left_available: bool,
     /// x->source_variance for THIS leaf (perpixel_variance_y at leaf bsize).
     pub source_variance: u32,
+    /// `cm->quant_params.base_qindex` — the frame base qindex (libaom v3.15's
+    /// flat-block transform cap reads it; see [`nonrd_flat_edge_tx_cap`]).
+    pub base_qindex: i32,
     /// intra_avail geometry.
     pub partition: usize,
     /// Speed-9 sf gates (all false at speed 8).
@@ -1538,6 +1541,31 @@ pub fn nonrd_leaf_tx_size(bsize: usize, lossless: bool) -> usize {
         1, 2, 2, // 32X8,    16X64,   64X16    TX_8X8,   TX_16X16, TX_16X16
     ];
     MAX_TXSIZE_LOOKUP[bsize].min(biggest)
+}
+
+/// libaom v3.15 (`137bcff61e`, "rtc: Fix to avoid chessboard artifact in nonrd
+/// pickmode"), `av1_nonrd_pick_intra_mode` (nonrd_pickmode.c:1789-1795): for a
+/// FLAT block (`source_variance == 0`) at high quantizer (`base_qindex > 150`)
+/// along the top or left frame boundary (`mi_row == 0 || mi_col == 0`), a leaf
+/// whose `mi->tx_size` would exceed TX_16X16 is capped to TX_16X16. Applied
+/// straight after the `AOMMIN(max_txsize_lookup[bsize], ..)` assignment, so the
+/// capped value is the one `tx_bsize`, the per-txb walk and the signalled
+/// `tx_size` all see. Not tagged `STATS_CHANGED` upstream, and it moves
+/// `--cpu-used 8/9` output on flat content (measured: `encoder_gate_speed8/9_
+/// textured_allintra`, flat 64x64 cq48/cq63, red against a v3.15.1 oracle).
+pub fn nonrd_flat_edge_tx_cap(
+    tx_size: usize,
+    base_qindex: i32,
+    source_variance: u32,
+    mi_row: i32,
+    mi_col: i32,
+) -> usize {
+    const TX_16X16: usize = 2;
+    if base_qindex > 150 && source_variance == 0 && (mi_row == 0 || mi_col == 0) && tx_size > TX_16X16 {
+        TX_16X16
+    } else {
+        tx_size
+    }
 }
 
 /// `txsize_to_bsize[]` (common_data.h:280-284) for the five SQUARE tx sizes —
@@ -1738,7 +1766,14 @@ pub fn nonrd_pick_intra_mode(
     let mi_h = MI_H[bsize];
     let bw = mi_w * 4;
     let bh = mi_h * 4;
-    let tx_size_full = nonrd_leaf_tx_size(bsize, env.lossless); // mi->tx_size (signalled)
+    // mi->tx_size (signalled), incl. libaom v3.15's flat-edge cap.
+    let tx_size_full = nonrd_flat_edge_tx_cap(
+        nonrd_leaf_tx_size(bsize, env.lossless),
+        lctx.base_qindex,
+        lctx.source_variance,
+        mi_row,
+        mi_col,
+    );
     let tx_clamped = tx_size_full.min(2); // AOMMIN(tx_size, TX_16X16) for block_yrd
     // `tx_bsize = txsize_to_bsize[mi->tx_size]` (nonrd_pickmode.c:1594) — the
     // per-visit block C hands `av1_block_yrd` as `bsize_tx`.

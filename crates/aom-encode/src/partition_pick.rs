@@ -5821,6 +5821,7 @@ fn nonrd_leaf_pick_and_encode(
         up_available,
         left_available,
         source_variance,
+        base_qindex: cfg.qindex,
         partition,
         prune_h_pred_using_best_mode_so_far: cfg.speed >= 9,
         enable_intra_mode_pruning_using_neighbors: cfg.speed >= 9,

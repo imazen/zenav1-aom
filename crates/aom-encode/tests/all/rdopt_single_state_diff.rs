@@ -19,7 +19,7 @@
 //! | `init_comp_avg_est_rd_matches_c` | `:516` |
 //! | `init_top_tx_no_split_rd_matches_c` | `:5940` |
 //! | `inter_modes_info_push_matches_c` | `:468` |
-//! | `increase_motion_mode_rd_matches_c` | `:1442` |
+//! | `increase_motion_mode_rdstats_matches_c`, `increase_motion_mode_rate_matches_c` | `:1320`, `rdopt_utils.h:737` |
 //! | `skip_interp_filter_search_matches_c` | `:6060` |
 //!
 //! The interesting one is `collect` + `analyze`: they are stateful, so the
@@ -30,14 +30,16 @@
 
 use crate::common::Rng;
 
+use aom_encode::compound_type::TransformationType;
 use aom_encode::inter_costs::{
     DRL_MODE_CONTEXTS, GLOBALMV_MODE_CONTEXTS, INTRA_INTER_CONTEXTS, InterModeCosts,
     NEWMV_MODE_CONTEXTS, REF_CONTEXTS, REFMV_MODE_CONTEXTS, SINGLE_REF_BITS,
 };
 use aom_encode::rdopt_mv::{MAX_REF_MV_SEARCH, Mv, PredMode, RefMvRow};
 use aom_encode::rdopt_single_state::{
-    CompoundRows, FWD_REFS, OBMC_CAUSAL, SIMPLE_TRANSLATION, SingleState, SingleStates,
-    WARPED_CAUSAL, compound_skip_by_single_states, increase_motion_mode_rd, init_comp_avg_est_rd,
+    CompoundRows, FWD_REFS, MotionBiasBlock, MotionBiasCfg, OBMC_CAUSAL, RdStatsBias,
+    SIMPLE_TRANSLATION, SingleState, SingleStates, WARPED_CAUSAL, compound_skip_by_single_states,
+    increase_motion_mode_rate, increase_motion_mode_rdstats, init_comp_avg_est_rd,
     init_top_tx_no_split_rd_for_inter_modes, inter_offset, skip_interp_filter_search,
     skip_repeated_mv,
 };
@@ -613,45 +615,144 @@ fn inter_modes_info_push_matches_c() {
     }
 }
 
+/// One random bias case: motion mode, mode, size, refs and global-motion types,
+/// with the three percentages drawn so each of warp / OBMC / GM is sometimes off.
+fn bias_case(rng: &mut Rng) -> (cref::MotionBiasCase, MotionBiasCfg, MotionBiasBlock) {
+    const MODES: [PredMode; 6] = [
+        PredMode::NearestMv,
+        PredMode::NewMv,
+        PredMode::GlobalMv,
+        PredMode::GlobalGlobalMv,
+        PredMode::NearestNearestMv,
+        PredMode::DcPred,
+    ];
+    const WM: [TransformationType; 4] = [
+        TransformationType::Identity,
+        TransformationType::Translation,
+        TransformationType::RotZoom,
+        TransformationType::Affine,
+    ];
+    let motion_mode = [SIMPLE_TRANSLATION, OBMC_CAUSAL, WARPED_CAUSAL][rng.range(0, 3) as usize];
+    let mode = MODES[rng.range(0, MODES.len() as i32) as usize];
+    // BLOCK_4X4 (0) .. BLOCK_64X16 (21): small blocks fail `is_global_mv_block`'s
+    // `min(w, h) >= 8` test, so both outcomes are drawn.
+    let bsize = rng.range(0, 22) as usize;
+    let has_second = rng.range(0, 2) == 1;
+    let wm = [WM[rng.range(0, 4) as usize], WM[rng.range(0, 4) as usize]];
+    let pct = |rng: &mut Rng| {
+        if rng.range(0, 4) == 0 {
+            0.0
+        } else {
+            // A fractional percentage, so float -> double promotion is exercised.
+            rng.range(1, 6000) as f32 / 100.0
+        }
+    };
+    let (warp_pct, obmc_pct, gm_pct) = (pct(rng), pct(rng), pct(rng));
+    let force_integer_mv = rng.range(0, 6) == 0;
+    let c = cref::MotionBiasCase {
+        motion_mode,
+        mode: mode.to_i32(),
+        bsize: bsize as i32,
+        ref0: 1,
+        ref1: if has_second { 2 } else { 0 },
+        wmtype0: wm[0] as i32,
+        wmtype1: wm[1] as i32,
+        force_integer_mv,
+        warp_pct,
+        obmc_pct,
+        gm_pct,
+    };
+    let cfg = MotionBiasCfg {
+        warp_pct,
+        obmc_pct,
+        gm_pct,
+        force_integer_mv,
+    };
+    let blk = MotionBiasBlock {
+        motion_mode,
+        mode,
+        bsize,
+        has_second_ref: has_second,
+        wmtype: wm,
+    };
+    (c, cfg, blk)
+}
+
 #[test]
-fn increase_motion_mode_rd_matches_c() {
+fn increase_motion_mode_rdstats_matches_c() {
     let mut rng = Rng(0x5eed_0039);
-    let mut moved = 0;
-    let mut n = 0;
-    for _ in 0..2000 {
-        for best_mm in [SIMPLE_TRANSLATION, OBMC_CAUSAL, WARPED_CAUSAL] {
-            for this_mm in [SIMPLE_TRANSLATION, OBMC_CAUSAL, WARPED_CAUSAL] {
-                let a = if rng.next().is_multiple_of(8) {
-                    i64::MAX
+    let (mut moved, mut n) = (0, 0);
+    for _ in 0..20000 {
+        let (c, cfg, blk) = bias_case(&mut rng);
+        let has_y = rng.range(0, 2) == 1;
+        let has_uv = rng.range(0, 2) == 1;
+        let mut st = [RdStatsBias::default(); 3];
+        for s in st.iter_mut() {
+            *s = RdStatsBias {
+                // INT_MAX exercises the early-out on each of the three stats.
+                rate: if rng.range(0, 12) == 0 {
+                    i32::MAX
                 } else {
-                    rng.range(0, 1 << 28) as i64
-                };
-                let b = if rng.next().is_multiple_of(8) {
-                    i64::MAX
-                } else {
-                    rng.range(0, 1 << 28) as i64
-                };
-                let warp_pct = rng.range(0, 60);
-                // A float percentage with a fractional part, so the f32 -> f64
-                // promotion is exercised rather than only whole numbers.
-                let obmc_pct = rng.range(0, 6000) as f32 / 100.0;
-                let (mut wa, mut wb) = (a, b);
-                cref::ref_rdopt_increase_motion_mode_rd(
-                    best_mm, this_mm, &mut wa, &mut wb, warp_pct, obmc_pct,
-                );
-                let (mut ga, mut gb) = (a, b);
-                increase_motion_mode_rd(best_mm, this_mm, &mut ga, &mut gb, warp_pct, obmc_pct);
-                assert_eq!(
-                    (ga, gb),
-                    (wa, wb),
-                    "increase_motion_mode_rd(best={best_mm}, this={this_mm}, \
-                     rd=({a},{b}), warp={warp_pct}%, obmc={obmc_pct}%)"
-                );
-                if (wa, wb) != (a, b) {
-                    moved += 1;
-                }
-                n += 1;
-            }
+                    rng.range(0, 1 << 20)
+                },
+                dist: rng.range(0, 1 << 28) as i64,
+                sse: rng.range(0, 1 << 28) as i64,
+                zero_rate: rng.range(0, 1 << 16),
+            };
+        }
+        let mut io = [0i64; 12];
+        for (i, s) in st.iter().enumerate() {
+            io[4 * i..4 * i + 4].copy_from_slice(&[
+                i64::from(s.rate),
+                s.dist,
+                s.sse,
+                i64::from(s.zero_rate),
+            ]);
+        }
+        let want_in = io;
+        cref::ref_rdopt_increase_motion_mode_rdstats(&c, &mut io, has_y, has_uv);
+
+        let [mut a, mut y, mut uv] = st;
+        increase_motion_mode_rdstats(
+            &cfg,
+            &blk,
+            &mut a,
+            has_y.then_some(&mut y),
+            has_uv.then_some(&mut uv),
+        );
+        let got = [a, y, uv];
+        for (i, g) in got.iter().enumerate() {
+            let w = &io[4 * i..4 * i + 4];
+            assert_eq!(
+                [i64::from(g.rate), g.dist, g.sse, i64::from(g.zero_rate)],
+                [w[0], w[1], w[2], w[3]],
+                "stat {i}: {c:?} has_y={has_y} has_uv={has_uv} in={want_in:?}"
+            );
+        }
+        n += 1;
+        if io != want_in {
+            moved += 1;
+        }
+    }
+    assert!(
+        moved > 0 && moved < n,
+        "constant answer ({moved}/{n} moved)"
+    );
+}
+
+#[test]
+fn increase_motion_mode_rate_matches_c() {
+    let mut rng = Rng(0x5eed_003a);
+    let (mut moved, mut n) = (0, 0);
+    for _ in 0..20000 {
+        let (c, cfg, blk) = bias_case(&mut rng);
+        let rate = rng.range(0, 1 << 20);
+        let want = cref::ref_rdopt_increase_motion_mode_rate(&c, rate);
+        let got = increase_motion_mode_rate(&cfg, &blk, rate);
+        assert_eq!(got, want, "rate={rate} {c:?}");
+        n += 1;
+        if want != rate {
+            moved += 1;
         }
     }
     assert!(

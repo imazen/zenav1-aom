@@ -202,7 +202,12 @@ fn firstpass_stats_layout_matches_c() {
     // The TU's own copy of a pure function, reached through a second entry
     // point, must agree with the first -- the tier-1c consistency probe.
     for tol in [-50i32, 0, 25, 26, 99, 100, 1000] {
-        assert_eq!(ref_p2_qbpm_enumerator(tol), ref_p2_tu_qbpm_enumerator(tol));
+        for small in [false, true] {
+            assert_eq!(
+                ref_p2_qbpm_enumerator(tol, small),
+                ref_p2_tu_qbpm_enumerator(tol, small)
+            );
+        }
     }
 }
 
@@ -303,21 +308,28 @@ fn frame_max_bits_matches_c() {
 fn calc_correction_factor_matches_c() {
     let mut rng = Rng::new(0xC0FA_0004);
     // Every qindex: the exponent is interpolated across 32-wide bands and only
-    // a full walk crosses every boundary.
+    // a full walk crosses every boundary. The two v3.15 parameters are swept
+    // too: `inactive_zone` straddles the `min(0.6, ..)` cap on both sides.
     for q in 0..=255i32 {
-        for &err in &[0.0f64, 0.001, 1.0, 96.0, 500.0, 5000.0, 1.0e6] {
-            bits_eq(
-                calc_correction_factor(err, q),
-                ref_p2_calc_correction_factor(err, q),
-                &format!("q {q} err {err}"),
-            );
+        for lower in [false, true] {
+            for &zone in &[0.0f64, 0.3, 0.6, 0.61, 0.9999] {
+                for &err in &[0.0f64, 0.001, 1.0, 96.0, 500.0, 5000.0, 1.0e6] {
+                    bits_eq(
+                        calc_correction_factor(err, q, zone, lower),
+                        ref_p2_calc_correction_factor(err, q, zone, lower),
+                        &format!("q {q} err {err} zone {zone} lower {lower}"),
+                    );
+                }
+            }
         }
         for _ in 0..8 {
             let err = rng.range(0.0, 1.0e4);
+            let zone = rng.range(0.0, 0.9999);
+            let lower = rng.below(2) == 1;
             bits_eq(
-                calc_correction_factor(err, q),
-                ref_p2_calc_correction_factor(err, q),
-                &format!("q {q} err {err}"),
+                calc_correction_factor(err, q, zone, lower),
+                ref_p2_calc_correction_factor(err, q, zone, lower),
+                &format!("q {q} err {err} zone {zone} lower {lower}"),
             );
         }
     }
@@ -326,11 +338,13 @@ fn calc_correction_factor_matches_c() {
 #[test]
 fn qbpm_enumerator_matches_c() {
     for tol in -100..=300i32 {
-        assert_eq!(
-            qbpm_enumerator(tol),
-            ref_p2_qbpm_enumerator(tol),
-            "tol {tol}"
-        );
+        for small in [false, true] {
+            assert_eq!(
+                qbpm_enumerator(tol, small),
+                ref_p2_qbpm_enumerator(tol, small),
+                "tol {tol} small {small}"
+            );
+        }
     }
 }
 
@@ -1397,27 +1411,36 @@ fn find_qindex_by_rate_with_correction_matches_c() {
         let error_per_mb = rng.range(0.0, 5000.0);
         let group_weight_factor = rng.range(0.1, 4.0);
         let rate_err_tol = rng.below(120) as i32;
+        let lower = rng.below(2) == 1;
+        let small = rng.below(2) == 1;
+        let inactive_zone = rng.range(0.0, 0.9999);
         let want = ref_p2_find_qindex_by_rate_with_correction(
             desired,
             bit_depth,
             error_per_mb,
+            lower,
             group_weight_factor,
             rate_err_tol,
             best,
             worst,
+            small,
+            inactive_zone,
         );
         let got = find_qindex_by_rate_with_correction(
             desired,
             bit_depth as u8,
             error_per_mb,
+            lower,
             group_weight_factor,
             rate_err_tol,
             best,
             worst,
+            small,
+            inactive_zone,
         );
         assert_eq!(
             got, want,
-            "bd{bit_depth} desired {desired} err {error_per_mb} gwf {group_weight_factor} tol {rate_err_tol} [{best},{worst}]"
+            "bd{bit_depth} desired {desired} err {error_per_mb} gwf {group_weight_factor} tol {rate_err_tol} lower {lower} small {small} zone {inactive_zone} [{best},{worst}]"
         );
         if want == best {
             hit_ends.0 += 1;

@@ -528,7 +528,8 @@ pub enum KeyFrameMode {
     /// `q = max(q_orig, 244)` are compared by all-plane PSNR, and
     /// `allow_screen_content_tools` flips on when the tools-on pass wins
     /// by C's own margin (`psnr_diff > 0.9 dB`, or
-    /// `psnr_diff / palette_ratio > 4` with `palette_ratio >= 1e-4`).
+    /// `psnr_diff / palette_ratio > 4` with `palette_ratio >= 1e-4`, or — libaom v3.15 —
+    /// `psnr_diff > 0.1 && palette_ratio >= 0.05 && psnr_diff / palette_ratio > 2`).
     ///
     /// To keep the common photographic path from paying for two trial
     /// encodes it almost never needs, the trial is NOMINATED only when the
@@ -2448,8 +2449,8 @@ fn scm_trial_run_pass(
 /// on, then `screen_content_tools_determination`'s decision (:1161-1188):
 /// flip `allow_screen_content_tools` on when the trial shows a coding gain
 /// (`psnr_diff > 0.9` dB, or `psnr_diff / palette_ratio > 4` at
-/// `palette_ratio >= 0.0001`), restoring every original detector flag on a
-/// negative decision. Callers gate on C's skip conditions
+/// `palette_ratio >= 0.0001`, or the v3.15 `ratio_is_large_2` arm), restoring
+/// every original detector flag on a negative decision. Callers gate on C's skip conditions
 /// (encoder_utils.c:1235-1237) plus the zenaom nomination; `sct` enters as
 /// the detector's decision and leaves as the FINAL decision the frame
 /// header/search then use.
@@ -2630,7 +2631,13 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
     // (encoder_utils.c:1161-1188).
     let psnr_diff = psnr[1] - psnr[0];
     let palette_ratio = palette_pixel_num as f64 / (inp.h as f64 * inp.enc_w as f64);
-    let win = psnr_diff > 0.9 || (palette_ratio >= 0.0001 && psnr_diff / palette_ratio > 4.0);
+    // libaom v3.15 (`577e360c9a`) added a third escape for frames where a
+    // modest PSNR gain comes with a sizeable palette share.
+    let ratio_is_large_2 =
+        psnr_diff > 0.1 && palette_ratio >= 0.05 && psnr_diff / palette_ratio > 2.0;
+    let win = psnr_diff > 0.9
+        || (palette_ratio >= 0.0001 && psnr_diff / palette_ratio > 4.0)
+        || ratio_is_large_2;
     if aom_dsp::trace_on!(aom_dsp::trace::Trace::SctTrial) {
         aom_dsp::trace_out!(
             "[sct-trial] q={} psnr0={:.4} psnr1={:.4} diff={:.4} pal_px={} ratio={:.5} win={}",
@@ -2644,10 +2651,12 @@ fn scm_trial_determine(inp: &ScmTrialInputs<'_>, sct: &mut ScreenContentDecision
         );
     }
     if win {
+        // v3.15: `allow_intrabc = allow_intrabc_orig_decision || intrabc_used`.
         // `intrabc_used` is always 0 (neither pass searches IntraBC), so the
-        // flip sets `allow_intrabc = 0` alongside the tools bit.
+        // detector's own decision survives the flip — it is what `sct` already
+        // holds, so only the tools bit and the content type change. (v3.14.1
+        // assigned `intrabc_used` alone, forcing it off.)
         sct.allow_screen_content_tools = true;
-        sct.allow_intrabc = false;
         sct.is_screen_content_type = true;
     }
     // else: restore — `sct` still holds the detector's decision, which is

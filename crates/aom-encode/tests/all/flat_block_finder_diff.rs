@@ -93,7 +93,7 @@ fn flat_block_finder_run_matches_c() {
             rng.0 ^= (ci as u64) << 40 | (t as u64) << 8 | 0x5171;
             let plane = make_plane(&mut rng, w, h, bs, maxv);
 
-            let finder = FlatBlockFinder::new(bs, bd);
+            let finder = FlatBlockFinder::new(bs, bd).expect("AtA is invertible");
             let (port_map, port_nf) = finder.run(&plane, w, h, w);
             let (c_map, c_nf) = c::ref_flat_block_finder_run(&plane, w, h, bs, bd, hbd)
                 .expect("C flat_block_finder_run");

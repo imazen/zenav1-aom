@@ -6,7 +6,7 @@
 //!
 //! | Rust | C (`av1/encoder/rdopt.c`) |
 //! |---|---|
-//! | [`get_variance_stats`] | `get_variance_stats` `:709` + `_hbd` `:624` |
+//! | [`get_variance_stats`] | `get_variance_stats` `:660` (v3.15; `_hbd` `:624`) |
 //! | [`adjust_cost`] | `:840` |
 //! | [`adjust_rdcost`] | `:796` |
 //! | [`inter_mode_compatible_skip`] | `:4581` |
@@ -32,39 +32,43 @@ pub const MAX_SB_SIZE: usize = 128;
 /// The 3x3 Gaussian `gau_filter` (rdopt.c:626), sum 16.
 const GAU_FILTER: [[i32; 3]; 3] = [[1, 2, 1], [2, 4, 2], [1, 2, 1]];
 
-/// `get_variance_stats` (rdopt.c:709) and `get_variance_stats_hbd` (`:624`) —
+/// `get_variance_stats` (rdopt.c:660) over `aom_calc_variance_stat` /
+/// `aom_highbd_calc_variance_stat` (`aom_dsp/variance.c`, libaom v3.15) —
 /// one function, because the two C copies differ only in the sample type and
 /// this port carries both depths as `u16`.
 ///
 /// Returns `(src_var, rec_var)`: the summed squared high-frequency residual of
-/// the source and of the reconstruction, each `<< 4`.
+/// the source and of the reconstruction, each `<< 4`, and — for a
+/// high-bit-depth buffer — rounded by `2 * (bd - 8)` (rdopt.c:632-642, added in
+/// v3.15 by `7a210280be`; a no-op at `bd == 8`, so `bd` 8 covers both the
+/// low-bit-depth buffer and an 8-bit high-bit-depth one).
 ///
-/// # The scratch buffer's stride is `bw`, NOT `bw + 2`, and that is deliberate
+/// # v3.15 FIXED the row aliasing this function used to reproduce
 ///
-/// C copies a 1-pixel replicated border into `dclevel` and indexes it as
-/// `pred_ptr[idy * bw + idx]` for `idy, idx` in `-1 ..= bw`. With a row stride
-/// of `bw` and a column range of `bw + 2`, the rows OVERLAP: the left halo of
-/// row `y` is the same storage as the right halo of row `y - 1`. The copy loop
-/// runs in increasing `(idy, idx)`, so the later write wins, and the 3x3
-/// filter then reads whatever that aliasing left behind.
-///
-/// That is not a transcription artefact to clean up — it is what the function
-/// computes, and a "corrected" `bw + 2` stride gives different `src_var` and
-/// `rec_var` on every block with a non-trivial border. Reproduced exactly;
-/// the differential fails if the stride is widened.
+/// libaom v3.14.1 copied the 1-pixel replicated border into `dclevel` and indexed
+/// it as `pred_ptr[idy * bw + idx]` for `idy, idx` in `-1 ..= bw`: a row stride of
+/// `bw` against a column range of `bw + 2`, so the left halo of row `y` was the
+/// SAME STORAGE as the right halo of row `y - 1` and the filter read whatever the
+/// aliasing left behind. This port reproduced that deliberately, and said so
+/// (the differential failed if the stride was widened). v3.15 moved the filter to
+/// `aom_calc_variance_stat_c` with `pstride = bw + 2` — no aliasing — so the
+/// right stride is now `bw + 2`, and `rdopt_var_rd_diff` against a v3.15.1 oracle
+/// is what proves it.
 pub fn get_variance_stats(
     bsize: usize,
     src: &[u16],
     src_stride: usize,
     dst: &[u16],
     dst_stride: usize,
-    is_hbd: bool,
+    bd: u8,
 ) -> (i64, i64) {
     let bw = BLOCK_SIZE_WIDE[bsize] as usize;
     let bh = BLOCK_SIZE_HIGH[bsize] as usize;
-    // C's `dclevel` is (MAX_SB_SIZE + 2)^2 with `pred_ptr = &dclevel[bw + 1]`.
+    // C's `dclevel` is (MAX_SB_SIZE + 2)^2 with `pred_ptr = &dclevel[pstride + 1]`.
+    let pstride = bw + 2;
     let mut scratch = vec![0u16; (MAX_SB_SIZE + 2) * (MAX_SB_SIZE + 2)];
-    let base = bw + 1;
+    let base = pstride + 1;
+    let shift = 2 * (u32::from(bd) - 8);
 
     let mut pass = |plane: &[u16], stride: usize| -> i64 {
         for idy in -1i64..=bh as i64 {
@@ -72,13 +76,11 @@ pub fn get_variance_stats(
                 let oy = idy.clamp(0, bh as i64 - 1) as usize;
                 let ox = idx.clamp(0, bw as i64 - 1) as usize;
                 let v = plane[oy * stride + ox];
-                let at = (base as i64 + idy * bw as i64 + idx) as usize;
                 // C's lowbd scratch is `uint8_t`, so its copy would truncate —
                 // but a lowbd sample never exceeds 255, so the truncation is
-                // unreachable. Asserting the contract beats carrying a mask
-                // that no input can exercise (and that a differential
-                // therefore cannot check).
-                debug_assert!(is_hbd || v < 256, "a lowbd sample must fit in 8 bits");
+                // unreachable.
+                debug_assert!(bd > 8 || v < 256, "a lowbd sample must fit in 8 bits");
+                let at = (base as i64 + idy * pstride as i64 + idx) as usize;
                 scratch[at] = v;
             }
         }
@@ -88,27 +90,23 @@ pub fn get_variance_stats(
                 let mut sum = 0i32;
                 for (iy, frow) in GAU_FILTER.iter().enumerate() {
                     for (ix, &f) in frow.iter().enumerate() {
-                        // The offsets go NEGATIVE at the block's first row and
-                        // column; the arithmetic is done signed and only the
-                        // final index is a usize, exactly as C's pointer
-                        // arithmetic does it.
                         let at = base as i64
-                            + (idy as i64 + iy as i64 - 1) * bw as i64
+                            + (idy as i64 + iy as i64 - 1) * pstride as i64
                             + (idx as i64 + ix as i64 - 1);
                         sum += i32::from(scratch[at as usize]) * f;
                     }
                 }
                 sum >>= 4;
-                let diff = i64::from(i32::from(scratch[base + idy * bw + idx]) - sum);
+                let diff = i64::from(i32::from(scratch[base + idy * pstride + idx]) - sum);
                 var += diff * diff;
             }
         }
-        var << 4
+        var <<= 4;
+        // `ROUND_POWER_OF_TWO(var, shift)` (hbd only; `shift == 0` at bd 8).
+        if shift > 0 { (var + ((1i64 << shift) >> 1)) >> shift } else { var }
     };
 
-    // C runs the RECONSTRUCTION first and the SOURCE second, both through the
-    // same scratch buffer. The order is invisible in the result (each pass
-    // fully rewrites the region it reads) but is kept for readability.
+    // C runs the RECONSTRUCTION first and the SOURCE second.
     let rec_var = pass(dst, dst_stride);
     let src_var = pass(src, src_stride);
     (src_var, rec_var)
@@ -146,7 +144,7 @@ pub fn adjust_cost(
     src_stride: usize,
     dst: &[u16],
     dst_stride: usize,
-    is_hbd: bool,
+    bd: u8,
 ) -> i64 {
     if (gates.tuning == AOM_TUNE_IQ || gates.tuning == AOM_TUNE_SSIMULACRA2) && is_inter_pred {
         return rd_cost + (rd_cost >> 3);
@@ -154,7 +152,7 @@ pub fn adjust_cost(
     if gates.sharpness != 3 || gates.frame_is_kf_gf_arf {
         return rd_cost;
     }
-    let (src_var, rec_var) = get_variance_stats(bsize, src, src_stride, dst, dst_stride, is_hbd);
+    let (src_var, rec_var) = get_variance_stats(bsize, src, src_stride, dst, dst_stride, bd);
     if src_var <= rec_var {
         return rd_cost;
     }
@@ -189,7 +187,7 @@ pub fn adjust_rdcost(
     src_stride: usize,
     dst: &[u16],
     dst_stride: usize,
-    is_hbd: bool,
+    bd: u8,
 ) {
     if (gates.tuning == AOM_TUNE_IQ || gates.tuning == AOM_TUNE_SSIMULACRA2) && is_inter_pred {
         rd.dist += rd.dist >> 3;
@@ -199,7 +197,7 @@ pub fn adjust_rdcost(
     if gates.sharpness != 3 || gates.frame_is_kf_gf_arf {
         return;
     }
-    let (src_var, rec_var) = get_variance_stats(bsize, src, src_stride, dst, dst_stride, is_hbd);
+    let (src_var, rec_var) = get_variance_stats(bsize, src, src_stride, dst, dst_stride, bd);
     if src_var <= rec_var {
         return;
     }

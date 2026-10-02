@@ -18,7 +18,8 @@
 //! | [`init_comp_avg_est_rd`] | `:516` |
 //! | [`init_top_tx_no_split_rd_for_inter_modes`] | `:5940` |
 //! | [`inter_modes_info_push`] | `:468` |
-//! | [`increase_motion_mode_rd`] | `:1442` |
+//! | [`scale_rdstats`], [`increase_motion_mode_rdstats`] | `:1309`, `:1320` (libaom v3.15; replaced v3.14.1's `increase_motion_mode_rd`) |
+//! | [`increase_motion_mode_rate`], [`get_global_mv_mode_bias`] | `rdopt_utils.h:737`, `:714` (v3.15) |
 //! | [`skip_interp_filter_search`] | `:6060` |
 //!
 //! # How the table is used
@@ -43,6 +44,7 @@
 //! - **`valid` is a `bool`.** C stores it as `int` and only ever assigns 0/1.
 //! - **`ref_frame` is an `Option<i32>`** where C uses `NONE_FRAME == -1`.
 
+use crate::compound_type::{TransformationType, is_global_mv_block};
 use crate::rdopt_mv::{Mv, PredMode, RefMvRow, get_drl_refmv_count};
 
 /// `SINGLE_INTER_MODE_NUM` (`enums.h:359`): NEARESTMV, NEARMV, GLOBALMV, NEWMV.
@@ -501,43 +503,132 @@ pub const OBMC_CAUSAL: i32 = 1;
 /// `WARPED_CAUSAL`.
 pub const WARPED_CAUSAL: i32 = 2;
 
-/// `increase_motion_mode_rd` (rdopt.c:1442): bias warp and OBMC RD upward, to
-/// trade a little compression for cheaper decoding.
-///
-/// Both RDs are in/out and BOTH are scaled — C biases the incumbent as well as
-/// the challenger, so this is not "penalise the candidate", it is "compare
-/// both at their decode-cost-adjusted values". Either being `INT64_MAX` makes
-/// the whole call a no-op.
-///
-/// The scale factors are percentages: an `int` one for warp and a `float` one
-/// for OBMC, each divided by 100.0 into an `f64`. That asymmetry is C's.
-pub fn increase_motion_mode_rd(
-    best_motion_mode: i32,
-    this_motion_mode: i32,
-    best_scaled_rd: &mut i64,
-    this_scaled_rd: &mut i64,
-    rd_warp_bias_scale_pct: i32,
-    rd_obmc_bias_scale_pct: f32,
+/// The slice of `RD_STATS` the low-complexity-decode bias scales (`rate`, `dist`,
+/// `sse`, `zero_rate`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct RdStatsBias {
+    /// `rate`; `i32::MAX` is C's `INT_MAX` "invalid" sentinel.
+    pub rate: i32,
+    /// `dist`
+    pub dist: i64,
+    /// `sse`
+    pub sse: i64,
+    /// `zero_rate`
+    pub zero_rate: i32,
+}
+
+/// The three speed features and the one frame flag the bias reads
+/// (`cpi->sf.inter_sf.bias_{warp,obmc,gm}_mode_rd_scale_pct`,
+/// `features.cur_frame_force_integer_mv`). All three percentages are `float` in
+/// C as of v3.15 (the warp one was an `int` at v3.14.1) and are non-zero only
+/// under low-complexity decode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionBiasCfg {
+    /// `bias_warp_mode_rd_scale_pct`
+    pub warp_pct: f32,
+    /// `bias_obmc_mode_rd_scale_pct`
+    pub obmc_pct: f32,
+    /// `bias_gm_mode_rd_scale_pct`
+    pub gm_pct: f32,
+    /// `cur_frame_force_integer_mv`
+    pub force_integer_mv: bool,
+}
+
+/// The block fields the bias reads: `mbmi->{motion_mode, mode, bsize}`, whether
+/// `ref_frame[1] > INTRA_FRAME`, and the `wmtype` of each reference's global
+/// motion (`cm->global_motion[ref_frame[i]].wmtype`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionBiasBlock {
+    /// `motion_mode` (`SIMPLE_TRANSLATION` / `OBMC_CAUSAL` / `WARPED_CAUSAL`).
+    pub motion_mode: i32,
+    /// `mode`
+    pub mode: PredMode,
+    /// `bsize` as a `BLOCK_SIZE` index.
+    pub bsize: usize,
+    /// `has_second_ref(mbmi)`
+    pub has_second_ref: bool,
+    /// Global-motion model type of `ref_frame[0]` and `ref_frame[1]`.
+    pub wmtype: [TransformationType; 2],
+}
+
+/// `get_global_mv_mode_bias` (rdopt_utils.h:714). The division is in `float`
+/// (`/ 100.0f`) and only widened by the caller.
+pub fn get_global_mv_mode_bias(cfg: &MotionBiasCfg, b: &MotionBiasBlock) -> f32 {
+    if cfg.gm_pct <= 0.0 || cfg.force_integer_mv {
+        return 0.0;
+    }
+    if is_global_mv_block(b.mode, b.bsize, b.wmtype[0]) {
+        return cfg.gm_pct / 100.0f32;
+    }
+    if b.has_second_ref && is_global_mv_block(b.mode, b.bsize, b.wmtype[1]) {
+        return cfg.gm_pct / 100.0f32;
+    }
+    0.0
+}
+
+/// The `rd_bias_scale` both consumers compute (rdopt.c:1327-1338,
+/// rdopt_utils.h:741-749). `double`: the `float` percentages promote before the
+/// `/ 100.0`.
+fn motion_mode_bias_scale(cfg: &MotionBiasCfg, b: &MotionBiasBlock) -> f64 {
+    if b.motion_mode == WARPED_CAUSAL {
+        f64::from(cfg.warp_pct) / 100.0
+    } else if b.motion_mode == OBMC_CAUSAL {
+        f64::from(cfg.obmc_pct) / 100.0
+    } else if matches!(b.mode, PredMode::GlobalMv | PredMode::GlobalGlobalMv) {
+        f64::from(get_global_mv_mode_bias(cfg, b))
+    } else {
+        0.0
+    }
+}
+
+/// `scale_rdstats` (rdopt.c:1309): grow rate, dist, sse and zero_rate by `scale`,
+/// rounding each to nearest the way C's `(T)(scale * v + 0.5)` does.
+pub fn scale_rdstats(s: &mut RdStatsBias, scale: f64) {
+    s.rate += (scale * f64::from(s.rate) + 0.5) as i32;
+    s.dist += (scale * s.dist as f64 + 0.5) as i64;
+    s.sse += (scale * s.sse as f64 + 0.5) as i64;
+    s.zero_rate += (scale * f64::from(s.zero_rate) + 0.5) as i32;
+}
+
+/// `increase_motion_mode_rdstats` (rdopt.c:1320): bias warp, OBMC and global-MV
+/// blocks upward in rate, distortion and SSE, to trade a little compression for
+/// cheaper decoding. `rd_stats_y` / `rd_stats_uv` are `NULL` in C at some call
+/// sites, hence `Option`. Any present stat at `INT_MAX` rate makes the whole call
+/// a no-op.
+pub fn increase_motion_mode_rdstats(
+    cfg: &MotionBiasCfg,
+    b: &MotionBiasBlock,
+    rd_stats: &mut RdStatsBias,
+    rd_stats_y: Option<&mut RdStatsBias>,
+    rd_stats_uv: Option<&mut RdStatsBias>,
 ) {
-    if *best_scaled_rd == i64::MAX || *this_scaled_rd == i64::MAX {
+    if rd_stats.rate == i32::MAX
+        || rd_stats_y.as_ref().is_some_and(|s| s.rate == i32::MAX)
+        || rd_stats_uv.as_ref().is_some_and(|s| s.rate == i32::MAX)
+    {
         return;
     }
-    let warp = f64::from(rd_warp_bias_scale_pct) / 100.0;
-    // C: `rd_obmc_bias_scale_pct / 100.0` where the numerator is a float and
-    // the denominator a double, so the float is promoted first.
-    let obmc = f64::from(rd_obmc_bias_scale_pct) / 100.0;
-    let bias = |mode: i32, rd: &mut i64| {
-        let scale = if mode == WARPED_CAUSAL {
-            warp
-        } else if mode == OBMC_CAUSAL {
-            obmc
-        } else {
-            return;
-        };
-        *rd += (scale * *rd as f64) as i64;
-    };
-    bias(best_motion_mode, best_scaled_rd);
-    bias(this_motion_mode, this_scaled_rd);
+    let scale = motion_mode_bias_scale(cfg, b);
+    if scale <= 0.0 {
+        return;
+    }
+    scale_rdstats(rd_stats, scale);
+    if let Some(s) = rd_stats_y {
+        scale_rdstats(s, scale);
+    }
+    if let Some(s) = rd_stats_uv {
+        scale_rdstats(s, scale);
+    }
+}
+
+/// `increase_motion_mode_rate` (rdopt_utils.h:737): the same bias applied to a
+/// bare rate.
+pub fn increase_motion_mode_rate(cfg: &MotionBiasCfg, b: &MotionBiasBlock, rate: i32) -> i32 {
+    let scale = motion_mode_bias_scale(cfg, b);
+    if scale <= 0.0 {
+        return rate;
+    }
+    rate + (scale * f64::from(rate) + 0.5) as i32
 }
 
 /// `MODE` (`enc_enums.h:270`).

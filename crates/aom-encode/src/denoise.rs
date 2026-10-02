@@ -67,7 +67,11 @@ fn dither_and_quantize(
                 .max(0.0)
                 .min(block_normalization);
             let new_val = new_val_f as u16; // truncation, as C's (INT_TYPE) cast
-            let err = -((new_val as f32) / block_normalization - result[result_idx]);
+            let mut err = -((new_val as f32) / block_normalization - result[result_idx]);
+            // libaom v3.15 (`20e8e3df1b`): sub-1e-6 diffusion error snaps to 0.
+            if err.abs() < 1e-6 {
+                err = 0.0;
+            }
             denoised[y * stride + x] = new_val;
             if x + 1 < ww {
                 result[result_idx + 1] += err * 7.0 / 16.0;
@@ -111,7 +115,9 @@ pub fn wiener_denoise_2d(
     let result_height = (num_blocks_h + 2) * block_size;
     let block_normalization = ((1i64 << bit_depth) - 1) as f32;
 
-    let block_finder_full = FlatBlockFinder::new(block_size, bit_depth);
+    let Some(block_finder_full) = FlatBlockFinder::new(block_size, bit_depth) else {
+        return false;
+    };
     let window_full = get_half_cos_window(block_size);
     let mut tx_full = match NoiseTx::new(block_size) {
         Some(t) => t,
@@ -120,8 +126,11 @@ pub fn wiener_denoise_2d(
 
     let (block_finder_chroma, window_chroma, mut tx_chroma) = if chroma_sub[0] != 0 {
         let bs_c = block_size >> chroma_sub[0];
+        let Some(finder_c) = FlatBlockFinder::new(bs_c, bit_depth) else {
+            return false;
+        };
         (
-            Some(FlatBlockFinder::new(bs_c, bit_depth)),
+            Some(finder_c),
             Some(get_half_cos_window(bs_c)),
             NoiseTx::new(bs_c),
         )
@@ -303,7 +312,10 @@ impl DenoiseAndModel {
         self.num_blocks_h = h.div_ceil(self.block_size);
         self.flat_blocks = vec![0u8; self.num_blocks_w * self.num_blocks_h];
 
-        self.flat_block_finder = Some(FlatBlockFinder::new(self.block_size, self.bit_depth));
+        self.flat_block_finder = match FlatBlockFinder::new(self.block_size, self.bit_depth) {
+            Some(f) => Some(f),
+            None => return false,
+        };
         let params = NoiseModelParams {
             shape: NoiseShape::Square,
             lag: 3,

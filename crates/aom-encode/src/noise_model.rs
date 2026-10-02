@@ -97,11 +97,18 @@ impl EquationSystem {
 
     /// `equation_system_solve`: solve a COPY of `(A, b)` into `x` (leaving `A`,
     /// `b` untouched), via `linsolve`. Returns success.
+    ///
+    /// libaom v3.15 (`20e8e3df1b`) also fails the solve when any solution entry
+    /// is NaN (`isnan((float)x[i])`), which a singular-but-not-rejected system
+    /// can otherwise produce.
     fn solve(&mut self) -> bool {
         let n = self.n;
         let mut a = self.a.clone();
         let mut b = self.b.clone();
-        linsolve(n, &mut a, n, &mut b, &mut self.x)
+        if !linsolve(n, &mut a, n, &mut b, &mut self.x) {
+            return false;
+        }
+        !self.x[..n].iter().any(|v| (*v as f32).is_nan())
     }
 
     /// `equation_system_clear` — zero `A`, `b`, `x`.
@@ -371,7 +378,10 @@ impl FlatBlockFinder {
     /// `aom_flat_block_finder_init(finder, block_size, bit_depth, use_highbd)`.
     /// (`use_highbd` only distinguishes the pixel read width — the port reads
     /// `u16` pixels uniformly, so it needs only `bit_depth` for normalization.)
-    pub fn new(block_size: usize, bit_depth: i32) -> Self {
+    ///
+    /// Returns `None` where C returns 0: v3.15 propagates a failed lazy-inverse
+    /// solve (`if (!ret) return ret;`) instead of ignoring it.
+    pub fn new(block_size: usize, bit_depth: i32) -> Option<Self> {
         let n = block_size * block_size;
         let mut a = vec![0.0f64; K_LOW_POLY_NUM_PARAMS * n];
         // AtA (3×3) accumulated, then inverted.
@@ -400,17 +410,19 @@ impl FlatBlockFinder {
                 *b = 0.0;
             }
             eqns.b[i] = 1.0;
-            eqns.solve();
+            if !eqns.solve() {
+                return None;
+            }
             for j in 0..K_LOW_POLY_NUM_PARAMS {
                 ata_inv[j * K_LOW_POLY_NUM_PARAMS + i] = eqns.x[j];
             }
         }
-        FlatBlockFinder {
+        Some(FlatBlockFinder {
             a,
             ata_inv,
             block_size,
             normalization: ((1u32 << bit_depth) - 1) as f64,
-        }
+        })
     }
 
     /// `aom_flat_block_finder_extract_block`: extract a (clamped-edge) block,
@@ -1095,7 +1107,12 @@ impl NoiseModel {
             if c == 0 {
                 avg_luma_strength = average_strength;
             } else {
-                y_corr[c - 1] = avg_luma_strength * eqns.x[n_coeff] / average_strength;
+                // v3.15: a vanishing average strength gives 0, not a divide.
+                y_corr[c - 1] = if average_strength > 1e-6 {
+                    avg_luma_strength * eqns.x[n_coeff] / average_strength
+                } else {
+                    0.0
+                };
                 max_coeff = max_coeff.max(y_corr[c - 1]);
                 min_coeff = min_coeff.min(y_corr[c - 1]);
             }

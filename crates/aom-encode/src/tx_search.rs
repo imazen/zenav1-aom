@@ -598,7 +598,9 @@ pub fn max_block_units(
 
 /// `av1_pixel_diff_dist` (tx_search.c): the residual (src - pred) SSE over the
 /// txb's VISIBLE pixels, plus `block_mse_q8 = 256 * sse / visible_pels`
-/// (`u32::MAX` when the visible area is empty). `diff` is the plane's
+/// (`0` when the visible area is empty; libaom v3.15 changed this from `UINT_MAX`
+/// when it moved the clip to `get_visible_dimensions`, and no longer reads `diff`
+/// at all in that case). `diff` is the plane's
 /// `src_diff` buffer (stride = plane block width); `blk_row`/`blk_col` in
 /// 4-pel MI units.
 pub fn av1_pixel_diff_dist(
@@ -609,14 +611,13 @@ pub fn av1_pixel_diff_dist(
     visible_cols: usize,
     visible_rows: usize,
 ) -> (u64, u32) {
+    // v3.15: nothing is read (or summed) for an empty visible area.
+    if visible_cols == 0 || visible_rows == 0 {
+        return (0, 0);
+    }
     let off = (blk_row * diff_stride + blk_col) << 2; // MI_SIZE_LOG2
     let sse = aom_dsp::dist::sum_squares_2d_i16(&diff[off..], diff_stride, visible_cols, visible_rows);
-    let mse_q8 = if visible_cols > 0 && visible_rows > 0 {
-        ((256 * sse) / (visible_cols as u64 * visible_rows as u64)) as u32
-    } else {
-        u32::MAX
-    };
-    (sse, mse_q8)
+    (sse, ((256 * sse) / (visible_cols as u64 * visible_rows as u64)) as u32)
 }
 
 /// `dc_coeff_scale[TX_SIZES_ALL]` (encodemb.h:168): 12-bit fixed-point
@@ -635,7 +636,9 @@ pub(crate) const DC_COEFF_SCALE: [u16; 19] = [
 /// predict-dc path is live the DOUBLE form feeds the trellis/tx-domain
 /// gates, so it must be this form, not the integer one). `per_px_mean` is
 /// the transform-domain (<<7) signed mean; `block_var = sse - norm*sum²`
-/// (double-truncated).
+/// (double-truncated). For an empty visible area libaom v3.15 returns
+/// `(0, 0, 0, 0)` — v3.14.1 left `block_var` / `per_px_mean` unset and returned
+/// `block_mse_q8 = UINT_MAX`.
 pub(crate) fn pixel_diff_stats(
     diff: &[i16],
     diff_stride: usize,
@@ -662,7 +665,7 @@ pub(crate) fn pixel_diff_stats(
         let block_var = sse - (norm_factor * f64::from(sum) * f64::from(sum)) as u64;
         (sse, block_mse_q8, per_px_mean, block_var)
     } else {
-        (sse, u32::MAX, i64::MAX, u64::MAX)
+        (0, 0, 0, 0)
     }
 }
 

@@ -301,6 +301,11 @@ pub fn frame_max_bits(
 
 /// `calc_correction_factor` (pass2_strategy.c:171).
 ///
+/// libaom v3.15 added two parameters: with `lower_qindex_on_static_frame` the
+/// error term is scaled by `1 - min(0.6, inactive_zone)` before the power. Both
+/// are inputs here because the caller (`get_twopass_worst_quality`) is not
+/// ported; the `min(0.6, ...)` is C's `AOMMIN`, i.e. NaN-propagating-as-second.
+///
 /// The exponent is a linear interpolation across the qindex's 32-wide band,
 /// which is why `Q_POW_TERM` has nine entries for eight bands: index
 /// `q >> 5` and `+ 1` are both read, so the last band needs a right endpoint.
@@ -309,9 +314,19 @@ pub fn frame_max_bits(
 /// If `q` is outside `0..=255`; C's `q >> 5` would index past the table's
 /// right endpoint above that.
 #[must_use]
-pub fn calc_correction_factor(err_per_mb: f64, q: i32) -> f64 {
+pub fn calc_correction_factor(
+    err_per_mb: f64,
+    q: i32,
+    inactive_zone: f64,
+    lower_qindex_on_static_frame: bool,
+) -> f64 {
     assert!((0..=255).contains(&q), "qindex out of range: {q}");
-    let error_term = err_per_mb / ERR_DIVISOR;
+    let mut error_term = err_per_mb / ERR_DIVISOR;
+    if lower_qindex_on_static_frame {
+        // `AOMMIN(0.6, inactive_zone)` is `(a) < (b) ? (a) : (b)`.
+        let capped = if 0.6 < inactive_zone { 0.6 } else { inactive_zone };
+        error_term *= 1.0 - capped;
+    }
     let index = (q >> 5) as usize;
     let power_term = Q_POW_TERM[index]
         + (((Q_POW_TERM[index + 1] - Q_POW_TERM[index]) * f64::from(q % 32)) / 32.0);
@@ -319,10 +334,16 @@ pub fn calc_correction_factor(err_per_mb: f64, q: i32) -> f64 {
     fclamp(error_term.powf(power_term), 0.05, 5.0)
 }
 
-/// `qbpm_enumerator` (pass2_strategy.c:288).
+/// `qbpm_enumerator` (pass2_strategy.c:318). v3.15 split the constant:
+/// `1_050_000` for the first GOP (`use_smaller_enumerator`, i.e.
+/// `total_actual_bits == 0`), `1_125_750` after it (v3.14.1 used `1_200_000`).
 #[must_use]
-pub fn qbpm_enumerator(rate_err_tol: i32) -> i32 {
-    1_200_000 + ((300_000 * (rate_err_tol - 25).max(0).min(75)) / 75)
+pub fn qbpm_enumerator(rate_err_tol: i32, use_smaller_enumerator: bool) -> i32 {
+    (if use_smaller_enumerator {
+        1_050_000
+    } else {
+        1_125_750
+    }) + ((300_000 * (rate_err_tol - 25).max(0).min(75)) / 75)
 }
 
 /// `get_sr_decay_rate` (pass2_strategy.c:392) — how fast the second-reference
@@ -1383,7 +1404,8 @@ pub const VERY_LOW_II: f64 = 1.5;
 /// `ERROR_SPIKE` (:2844).
 pub const ERROR_SPIKE: f64 = 5.0;
 
-/// `find_qindex_by_rate_with_correction` (pass2_strategy.c:294) — the qindex
+/// `find_qindex_by_rate_with_correction` (pass2_strategy.c:327; v3.15 added `lower_qindex_on_static_frame`,
+/// `use_smaller_enumerator` and `inactive_zone`, all forwarded to the two helpers above) — the qindex
 /// whose modelled bits-per-mb first drops to or below `desired_bits_per_mb`.
 ///
 /// A binary search over `[best_qindex, worst_qindex]` that converges on the
@@ -1396,14 +1418,18 @@ pub const ERROR_SPIKE: f64 = 5.0;
 /// # Panics
 /// If `best_qindex > worst_qindex`, which C asserts.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn find_qindex_by_rate_with_correction(
     desired_bits_per_mb: u64,
     bit_depth: u8,
     error_per_mb: f64,
+    lower_qindex_on_static_frame: bool,
     group_weight_factor: f64,
     rate_err_tol: i32,
     best_qindex: i32,
     worst_qindex: i32,
+    use_smaller_enumerator: bool,
+    inactive_zone: f64,
 ) -> i32 {
     assert!(
         best_qindex <= worst_qindex,
@@ -1413,9 +1439,14 @@ pub fn find_qindex_by_rate_with_correction(
     let mut high = worst_qindex;
     while low < high {
         let mid = (low + high) >> 1;
-        let mid_factor = calc_correction_factor(error_per_mb, mid);
+        let mid_factor = calc_correction_factor(
+            error_per_mb,
+            mid,
+            inactive_zone,
+            lower_qindex_on_static_frame,
+        );
         let q = convert_qindex_to_q(mid, bit_depth);
-        let enumerator = qbpm_enumerator(rate_err_tol);
+        let enumerator = qbpm_enumerator(rate_err_tol, use_smaller_enumerator);
         let mid_bits_per_mb =
             ((f64::from(enumerator) * mid_factor * group_weight_factor) / q) as u64;
         if mid_bits_per_mb > desired_bits_per_mb {

@@ -7,17 +7,18 @@
 //!
 //! | test | C function (`av1/encoder/rdopt.c`) |
 //! |---|---|
-//! | `get_variance_stats_matches_c` | `get_variance_stats` `:709` + `_hbd` `:624` |
+//! | `get_variance_stats_matches_c` | `get_variance_stats` `:660` (libaom v3.15, over `aom_{,highbd_}calc_variance_stat`) |
 //! | `adjust_cost_matches_c` | `:840` |
 //! | `adjust_rdcost_matches_c` | `:796` |
 //! | `inter_mode_compatible_skip_matches_c` | `:4581` |
 //! | `ref_mv_idx_early_breakout_matches_c` | `:2216` |
 //!
-//! `get_variance_stats` is the one worth staring at: C's scratch buffer has a
-//! row stride of `bw` while the copy loop writes `bw + 2` columns per row, so
-//! the halo columns ALIAS the neighbouring rows. The obvious "clean" port with
-//! a `bw + 2` stride disagrees on every block, and the bite proof below
-//! confirms this harness sees that.
+//! `get_variance_stats` changed meaning between libaom v3.14.1 and v3.15: the
+//! v3.14.1 scratch buffer had a row stride of `bw` against `bw + 2` written
+//! columns, so the halo columns ALIASED the neighbouring rows, and this harness
+//! pinned the port to that. v3.15 moved the filter to `aom_calc_variance_stat`
+//! with `pstride = bw + 2` and rounds high-bit-depth results by `2 * (bd - 8)`;
+//! the harness now sweeps bit depth {8, 10, 12} against the v3.15.1 oracle.
 
 use crate::common::Rng;
 
@@ -53,9 +54,9 @@ fn get_variance_stats_matches_c() {
     let mut nonzero = 0;
     let mut n = 0;
     for &bsize in &BSIZES {
-        for hbd in [false, true] {
+        for bd in [8u8, 10, 12] {
             for _ in 0..6 {
-                let maxval = if hbd { 1 << 12 } else { 1 << 8 };
+                let maxval = 1 << bd;
                 let (bw, bh) = (BW[bsize], BH[bsize]);
                 let src_stride = bw + 7;
                 let dst_stride = bw + 3;
@@ -63,18 +64,16 @@ fn get_variance_stats_matches_c() {
                 let dst = planes(&mut rng, dst_stride, bh, maxval);
                 let want = cref::ref_rdopt_get_variance_stats(
                     bsize as i32,
-                    hbd,
+                    i32::from(bd),
                     &src,
                     src_stride,
                     &dst,
                     dst_stride,
                 );
-                let got = get_variance_stats(bsize, &src, src_stride, &dst, dst_stride, hbd);
+                let got = get_variance_stats(bsize, &src, src_stride, &dst, dst_stride, bd);
                 assert_eq!(
-                    got,
-                    want,
-                    "get_variance_stats{}(bsize={bsize} = {bw}x{bh})",
-                    if hbd { "_hbd" } else { "" }
+                    got, want,
+                    "get_variance_stats(bsize={bsize} = {bw}x{bh}, bd={bd})"
                 );
                 if want.0 != 0 || want.1 != 0 {
                     nonzero += 1;
@@ -136,8 +135,8 @@ fn adjust_cost_matches_c() {
     for i in 0..800 {
         let bsize = BSIZES[(rng.next() as usize) % BSIZES.len()];
         let (bw, bh) = (BW[bsize], BH[bsize]);
-        let hbd = i % 3 == 0;
-        let maxval = if hbd { 1 << 12 } else { 1 << 8 };
+        let bd = [8u8, 10, 12][i % 3];
+        let maxval = 1 << bd;
         let src_stride = bw + 5;
         let dst_stride = bw + 2;
         let src = planes(&mut rng, src_stride, bh, maxval);
@@ -150,19 +149,19 @@ fn adjust_cost_matches_c() {
             is_inter,
             cg,
             bsize as i32,
-            hbd,
+            i32::from(bd),
             &src,
             src_stride,
             &dst,
             dst_stride,
         );
         let got = adjust_cost(
-            rd, is_inter, pg, bsize, &src, src_stride, &dst, dst_stride, hbd,
+            rd, is_inter, pg, bsize, &src, src_stride, &dst, dst_stride, bd,
         );
         assert_eq!(
             got, want,
             "adjust_cost(rd={rd}, inter={is_inter}, tuning={}, sharpness={}, \
-             kf_gf_arf={}, bsize={bsize}, hbd={hbd})",
+             kf_gf_arf={}, bsize={bsize}, bd={bd})",
             pg.tuning, pg.sharpness, pg.frame_is_kf_gf_arf
         );
         if want != rd {
@@ -196,8 +195,8 @@ fn adjust_rdcost_matches_c() {
     for i in 0..800 {
         let bsize = BSIZES[(rng.next() as usize) % BSIZES.len()];
         let (bw, bh) = (BW[bsize], BH[bsize]);
-        let hbd = i % 4 == 0;
-        let maxval = if hbd { 1 << 12 } else { 1 << 8 };
+        let bd = [8u8, 10, 12, 8][i % 4];
+        let maxval = 1 << bd;
         let src_stride = bw + 6;
         let dst_stride = bw + 1;
         let src = planes(&mut rng, src_stride, bh, maxval);
@@ -215,7 +214,7 @@ fn adjust_rdcost_matches_c() {
             is_inter,
             cg,
             bsize as i32,
-            hbd,
+            i32::from(bd),
             &src,
             src_stride,
             &dst,
@@ -223,13 +222,13 @@ fn adjust_rdcost_matches_c() {
         );
         let mut got = seed;
         adjust_rdcost(
-            &mut got, is_inter, pg, bsize, &src, src_stride, &dst, dst_stride, hbd,
+            &mut got, is_inter, pg, bsize, &src, src_stride, &dst, dst_stride, bd,
         );
         assert_eq!(
             [i64::from(got.rate), got.dist, got.rdcost],
             want,
             "adjust_rdcost({seed:?}, inter={is_inter}, tuning={}, sharpness={}, \
-             kf_gf_arf={}, bsize={bsize}, hbd={hbd})",
+             kf_gf_arf={}, bsize={bsize}, bd={bd})",
             pg.tuning,
             pg.sharpness,
             pg.frame_is_kf_gf_arf
