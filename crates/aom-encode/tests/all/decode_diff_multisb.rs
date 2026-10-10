@@ -361,6 +361,7 @@ fn localize(w: usize, h: usize, cq_level: i32, content: impl Fn(usize, usize) ->
     let src_v_strided = vec![0u16; stride * (h + 4)];
 
     let env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: SB,
         mi_rows,

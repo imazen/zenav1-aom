@@ -287,6 +287,7 @@ fn rd_pick_intra_sby_mode_matches_c_loop() {
                 qm_levels: None,
             };
             let cfg = IntraSbySearchCfg {
+                stop: None,
                 gates: &gates,
                 top_intra_model_count_allowed: TOP_INTRA_MODEL_COUNT as i32,
                 adapt_top_model_rd_count_using_neighbors: false,

@@ -547,6 +547,7 @@ fn run_tune_case(
         )
     });
     let env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: SB,
         mi_rows,
