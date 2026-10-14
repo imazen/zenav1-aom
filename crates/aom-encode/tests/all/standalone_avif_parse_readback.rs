@@ -5,7 +5,7 @@
 //! decode-verifiable (both the real C decoder and this repo's own
 //! `aom-decode`); this file proves the stream survives being muxed into a
 //! real AVIF container and read back through an INDEPENDENTLY-maintained
-//! parser (`zenavif-parse`, a fork of Mozilla's MP4 parser, structurally
+//! parser (`zenavif-parse`, a fork of the mp4parse project, structurally
 //! unrelated to anything in this repo) rather than only this repo's own
 //! `aom-decode` or `avif_parity.rs`'s hand-rolled `extract_mdat_payload` box
 //! walker, which shares a lineage with the muxer it checks.
