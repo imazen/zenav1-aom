@@ -135,7 +135,9 @@ pub(crate) fn txb_init_levels_impl_v3(
     // One preflight covers every access below: short buffers take the scalar
     // path (which panics on them identically — same contract, no reachable
     // behaviour change), and the fast path is then check-free by shape.
-    if levels.len() < tail + TX_PAD_BOTTOM * stride + TX_PAD_END || coeff.len() < width * height {
+    if levels.len() < tail + crate::txb::TX_PAD_BOTTOM * stride + crate::txb::TX_PAD_END
+        || coeff.len() < width * height
+    {
         crate::txb::txb_init_levels_scalar(coeff, width, height, levels);
         return;
     }
@@ -145,7 +147,7 @@ pub(crate) fn txb_init_levels_impl_v3(
     // comptime-length copy lowers to inline vector stores, while a byte-wise
     // loop or `.fill(0)` on a dynamic slice gets idiom-recognised back into a
     // memset call (~106 Ir/call at 1.7M calls — measured).
-    let pad_len = TX_PAD_BOTTOM * stride + TX_PAD_END;
+    let pad_len = crate::txb::TX_PAD_BOTTOM * stride + crate::txb::TX_PAD_END;
     match pad_len {
         48 => levels[tail..tail + 48].copy_from_slice(&[0u8; 48]),
         64 => levels[tail..tail + 64].copy_from_slice(&[0u8; 64]),

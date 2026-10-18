@@ -12,7 +12,14 @@
 //! possible because the port kernel is an instruction-level mirror.
 
 // The whole test is x86-64-only (see the note on the test fn); gate the
-// helpers the same way so the aarch64 build holds no dead code.
+// imports and helpers the same way so the aarch64 build holds no dead code.
+#[cfg(target_arch = "x86_64")]
+use aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch;
+#[cfg(target_arch = "x86_64")]
+use aom_sys_ref as c;
+#[cfg(target_arch = "x86_64")]
+use archmage::SimdToken;
+
 #[cfg(target_arch = "x86_64")]
 struct Rng(u64);
 #[cfg(target_arch = "x86_64")]

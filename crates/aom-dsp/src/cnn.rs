@@ -31,6 +31,13 @@
 //! shapes every access is provably in-bounds (see each kernel); slice indexing
 //! keeps the same panic surface as the scalar recipe.
 
+// The magetypes body is emitted for the v3 tier only — aarch64 has no CNN
+// kernel, so the prelude is referenced solely under x86_64.
+#[cfg(target_arch = "x86_64")]
+use archmage::magetypes;
+#[cfg(target_arch = "x86_64")]
+use archmage::prelude::*;
+
 /// One conv layer of `av1_cnn_convolve_no_maxpool_padding_valid_avx2`.
 ///
 /// `input` is the flat `[channel][row][col]` plane (`channel k` at
