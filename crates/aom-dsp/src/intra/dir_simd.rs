@@ -828,7 +828,6 @@ fn z2_above_run_impl(
 }
 
 /// Scalar tier — `z2_above_run_scalar` verbatim.
-#[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
 fn z2_above_run_impl_scalar(
     _t: archmage::ScalarToken,
@@ -845,6 +844,77 @@ fn z2_above_run_impl_scalar(
     z2_above_run_scalar(dst, stride, bw, bh, edge, pad, dx, frac_x, up);
 }
 
+/// NEON mirror of [`z2_above_run_impl`]: the same i16-lane recipe
+/// `(a0 << 5) + (a1 - a0) * s + 16 >> 5`, with `vld2q_u16`'s even/odd
+/// deinterleave standing in for the `pshufb` stride-2 gather at `up == 1`.
+/// Same bounds: a full chunk reads `edge[t0 ..= t0 + 7*inc + 1]`, inside the
+/// caller's `hi` gate exactly as the x86 arm's loads are.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn z2_above_run_impl_neon(
+    _t: archmage::NeonToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    frac_x: u32,
+    up: i32,
+) {
+    use archmage::intrinsics::aarch64::*;
+    let inc = 1usize << up;
+    let sixteen = vdupq_n_s16(16);
+    for r in 0..bh {
+        let y = (r + 1) as i32;
+        let c_end = ((y * dx - 1) >> 6).clamp(0, bw as i32) as usize;
+        let n = bw - c_end;
+        if n == 0 {
+            continue;
+        }
+        let x0 = ((c_end as i32) << 6) - y * dx;
+        let base0 = x0 >> frac_x;
+        let shift = ((x0 << up) & 0x3F) >> 1;
+        let sv = vdupq_n_s16(shift as i16);
+        let start = (pad as i32 + base0) as usize;
+        let drow = &mut dst[r * stride + c_end..r * stride + bw];
+        let mut i = 0usize;
+        while i + 8 <= n {
+            let s = start + i * inc;
+            let (v0, v1) = if up == 0 {
+                (
+                    vreinterpretq_s16_u16(vld1q_u16(edge[s..s + 8].try_into().unwrap())),
+                    vreinterpretq_s16_u16(vld1q_u16(edge[s + 1..s + 9].try_into().unwrap())),
+                )
+            } else {
+                let d = vld2q_u16(edge[s..s + 16].try_into().unwrap());
+                (vreinterpretq_s16_u16(d.0), vreinterpretq_s16_u16(d.1))
+            };
+            let res = vshrq_n_s16::<5>(vaddq_s16(
+                vaddq_s16(vshlq_n_s16::<5>(v0), vmulq_s16(vsubq_s16(v1, v0), sv)),
+                sixteen,
+            ));
+            vst1q_u16(
+                (&mut drow[i..i + 8]).try_into().unwrap(),
+                vreinterpretq_u16_s16(res),
+            );
+            i += 8;
+        }
+        if i < n {
+            let mut base = base0 + (i * inc) as i32;
+            for slot in drow[i..].iter_mut() {
+                let t = (pad as i32 + base) as usize;
+                let a0 = edge[t] as i32;
+                let a1 = edge[t + 1] as i32;
+                *slot = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
+                base += inc as i32;
+            }
+        }
+    }
+}
+
 /// One-`incant!` z2 above-suffix entry — called from `super::dir::z2_high`
 /// only under the `z2_vec_applies` gate (`up <= 1`, taps `<= I16_TAP_MAX`).
 #[allow(clippy::too_many_arguments)]
@@ -859,16 +929,11 @@ pub(crate) fn z2_above_run(
     frac_x: u32,
     up: i32,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = crate::dispatch::scalar_forced();
-        archmage::incant!(
-            z2_above_run_impl(dst, stride, bw, bh, edge, pad, dx, frac_x, up),
-            [v3, scalar]
-        );
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    z2_above_run_scalar(dst, stride, bw, bh, edge, pad, dx, frac_x, up);
+    let _ = crate::dispatch::scalar_forced();
+    archmage::incant!(
+        z2_above_run_impl(dst, stride, bw, bh, edge, pad, dx, frac_x, up),
+        [v3, neon, scalar]
+    );
 }
 
 /// Dispatch entry for the z1 vec path — ALL ROWS in ONE `incant!`.
@@ -997,7 +1062,6 @@ fn z1_rows_impl(
 
 /// Scalar tier — `super::dir::z1_high_scalar` verbatim (the flat `edge`/`pad`
 /// pair IS its `EdgeRef16`).
-#[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
 fn z1_rows_impl_scalar(
     _t: archmage::ScalarToken,
@@ -1021,6 +1085,115 @@ fn z1_rows_impl_scalar(
     );
 }
 
+/// NEON mirror of [`z1_rows_impl`]: the same i16-lane recipe
+/// `(a0 << 5) + (a1 - a0) * s + 16 >> 5`, with `vld2q_u16`/`vld2_u16`
+/// even/odd deinterleaves standing in for the `pshufb` stride-2 gather at
+/// `up == 1`. Same bounds: a full 8-lane chunk reads
+/// `edge[t0 ..= t0 + 7*inc + 1]`, inside the caller's `hi` gate exactly as
+/// the x86 arm's loads are; the scalar tail and fill are verbatim.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn z1_rows_impl_neon(
+    _t: archmage::NeonToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    use archmage::intrinsics::aarch64::*;
+    let frac_bits = 6 - up;
+    let inc = 1usize << up;
+    let inc_i = inc as i32;
+    let max_base_x = (((bw + bh) as i32) - 1) << up;
+    let fillv = edge[(pad as i32 + max_base_x) as usize];
+    let sixteen = vdupq_n_s16(16);
+    let sv4 = vdup_n_s16(16);
+    let mut x = dx;
+    for r in 0..bh {
+        let base0 = x >> frac_bits;
+        let shift = ((x << up) & 0x3F) >> 1;
+        x += dx;
+        if base0 >= max_base_x {
+            for rr in r..bh {
+                dst[rr * stride..rr * stride + bw].fill(fillv);
+            }
+            return;
+        }
+        let n_act = bw.min(((max_base_x - base0 + inc_i - 1) >> up) as usize);
+        let sv = vdupq_n_s16(shift as i16);
+        let sv_tail = vdup_n_s16(shift as i16);
+        let start = (pad as i32 + base0) as usize;
+        let drow = &mut dst[r * stride..r * stride + bw];
+        let mut i = 0usize;
+        while i + 8 <= n_act {
+            let s = start + i * inc;
+            let (v0, v1) = if up == 0 {
+                (
+                    vreinterpretq_s16_u16(vld1q_u16(edge[s..s + 8].try_into().unwrap())),
+                    vreinterpretq_s16_u16(vld1q_u16(edge[s + 1..s + 9].try_into().unwrap())),
+                )
+            } else {
+                let d = vld2q_u16(edge[s..s + 16].try_into().unwrap());
+                (vreinterpretq_s16_u16(d.0), vreinterpretq_s16_u16(d.1))
+            };
+            let res = vshrq_n_s16::<5>(vaddq_s16(
+                vaddq_s16(vshlq_n_s16::<5>(v0), vmulq_s16(vsubq_s16(v1, v0), sv)),
+                sixteen,
+            ));
+            vst1q_u16(
+                (&mut drow[i..i + 8]).try_into().unwrap(),
+                vreinterpretq_u16_s16(res),
+            );
+            i += 8;
+        }
+        // 4-lane arm — the n_act % 8 tail of a wider row, same recipe and
+        // gate bounds at half width (bw==4 blocks still take the scalar
+        // route, as on x86).
+        while i + 4 <= n_act {
+            let s = start + i * inc;
+            let (v0, v1) = if up == 0 {
+                (
+                    vreinterpret_s16_u16(vld1_u16(edge[s..s + 4].try_into().unwrap())),
+                    vreinterpret_s16_u16(vld1_u16(edge[s + 1..s + 5].try_into().unwrap())),
+                )
+            } else {
+                // 4-lane stride-2: `vld2` has no safe 64-bit form — load the
+                // exact 8-tap window and split even/odd in-register.
+                let w = vld1q_u16(edge[s..s + 8].try_into().unwrap());
+                (
+                    vreinterpret_s16_u16(vget_low_u16(vuzp1q_u16(w, w))),
+                    vreinterpret_s16_u16(vget_low_u16(vuzp2q_u16(w, w))),
+                )
+            };
+            let res = vshr_n_s16::<5>(vadd_s16(
+                vadd_s16(vshl_n_s16::<5>(v0), vmul_s16(vsub_s16(v1, v0), sv_tail)),
+                sv4,
+            ));
+            vst1_u16(
+                (&mut drow[i..i + 4]).try_into().unwrap(),
+                vreinterpret_u16_s16(res),
+            );
+            i += 4;
+        }
+        if i < n_act {
+            let mut base = base0 + (i * inc) as i32;
+            for slot in drow[i..n_act].iter_mut() {
+                let t = (pad as i32 + base) as usize;
+                let a0 = edge[t] as i32;
+                let a1 = edge[t + 1] as i32;
+                *slot = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
+                base += inc_i;
+            }
+        }
+        drow[n_act..].fill(fillv);
+    }
+}
+
 /// One-`incant!` z1 entry — called from `super::dir::z1_high` only under the
 /// `z1_vec_applies` gate (`up <= 1`, `bw >= 4`, taps `<= I16_TAP_MAX`).
 #[allow(clippy::too_many_arguments)]
@@ -1034,23 +1207,10 @@ pub(crate) fn z1_rows(
     dx: i32,
     up: i32,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = crate::dispatch::scalar_forced();
-        archmage::incant!(
-            z1_rows_impl(dst, stride, bw, bh, edge, pad, dx, up),
-            [v3, scalar]
-        );
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    super::dir::z1_high_scalar(
-        dst,
-        stride,
-        bw,
-        bh,
-        &super::dir::EdgeRef16::new(edge, pad),
-        up,
-        dx,
+    let _ = crate::dispatch::scalar_forced();
+    archmage::incant!(
+        z1_rows_impl(dst, stride, bw, bh, edge, pad, dx, up),
+        [v3, neon, scalar]
     );
 }
 
@@ -1070,36 +1230,15 @@ pub(crate) fn z1_rows_u8e(
     dx: i32,
     up: i32,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = crate::dispatch::scalar_forced();
-        archmage::incant!(
-            z1_rows_u8e_impl(dst, stride, bw, bh, edge, pad, dx, up),
-            [v3, scalar]
-        );
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let mut e16 = [0u16; 320];
-        let need = edge.len().min(e16.len());
-        for (d, &s) in e16[..need].iter_mut().zip(edge.iter()) {
-            *d = s as u16;
-        }
-        super::dir::z1_high_scalar(
-            dst,
-            stride,
-            bw,
-            bh,
-            &super::dir::EdgeRef16::new(&e16, pad),
-            up,
-            dx,
-        );
-    }
+    let _ = crate::dispatch::scalar_forced();
+    archmage::incant!(
+        z1_rows_u8e_impl(dst, stride, bw, bh, edge, pad, dx, up),
+        [v3, neon, scalar]
+    );
 }
 
 /// Scalar tier — `super::dir::z1_high_scalar` verbatim on the u8 edge
 /// (identical math; every edge value fits u8 by construction).
-#[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
 fn z1_rows_u8e_impl_scalar(
     _t: archmage::ScalarToken,
@@ -1249,6 +1388,86 @@ fn z1_rows_u8e_impl(
             ));
             let t: &mut [u16; 8] = (&mut drow[i..i + 8]).try_into().unwrap();
             _mm_storeu_si128(t, res);
+            i += 8;
+        }
+        for j in i..n_act {
+            let t = start + j * inc_us;
+            drow[j] =
+                super::dir::rpo2_5_16(edge[t] as i32 * (32 - shift) + edge[t + 1] as i32 * shift);
+        }
+        if n_act < bw {
+            drow[n_act..].fill(fillv);
+        }
+    }
+}
+
+/// NEON mirror of [`z1_rows_u8e_impl`]: u8 loads widened by `vmovl_u8`
+/// (the `cvtepu8_epi16` of the x86 arm), `vld2_u8`'s deinterleave for the
+/// stride-2 `up == 1` taps, and the same i16-lane recipe at 8 lanes a chunk.
+/// Same bounds: `edge[t ..= t + 7*inc + 1]` inside the caller's `hi` gate.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn z1_rows_u8e_impl_neon(
+    _t: archmage::NeonToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u8],
+    pad: usize,
+    dx: i32,
+    up: i32,
+) {
+    use archmage::intrinsics::aarch64::*;
+    let frac_bits = 6 - up;
+    let inc = 1i32 << up;
+    let inc_us = inc as usize;
+    let max_base_x = (((bw + bh) as i32) - 1) << up;
+    let fillv = edge[(pad as i32 + max_base_x) as usize] as u16;
+    let sixteen = vdupq_n_s16(16);
+    let mut x = dx;
+    for r in 0..bh {
+        let base0 = x >> frac_bits;
+        let shift = ((x << up) & 0x3F) >> 1;
+        x += dx;
+        if base0 >= max_base_x {
+            for rr in r..bh {
+                dst[rr * stride..rr * stride + bw].fill(fillv);
+            }
+            return;
+        }
+        let n_act = bw.min(((max_base_x - base0 + inc - 1) >> up) as usize);
+        let sv = vdupq_n_s16(shift as i16);
+        let start = (pad as i32 + base0) as usize;
+        let drow = &mut dst[r * stride..r * stride + bw];
+        let mut i = 0usize;
+        while i + 8 <= n_act {
+            let s = start + i * inc_us;
+            let (v0, v1) = if up == 0 {
+                (
+                    vreinterpretq_s16_u16(vmovl_u8(vld1_u8(edge[s..s + 8].try_into().unwrap()))),
+                    vreinterpretq_s16_u16(vmovl_u8(vld1_u8(
+                        edge[s + 1..s + 9].try_into().unwrap(),
+                    ))),
+                )
+            } else {
+                // `vld2` has no safe 64-bit u8 form — load the exact 16-tap
+                // window and split even/odd in-register.
+                let w = vld1q_u8(edge[s..s + 16].try_into().unwrap());
+                (
+                    vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(vuzp1q_u8(w, w)))),
+                    vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(vuzp2q_u8(w, w)))),
+                )
+            };
+            let res = vshrq_n_s16::<5>(vaddq_s16(
+                vaddq_s16(vshlq_n_s16::<5>(v0), vmulq_s16(vsubq_s16(v1, v0), sv)),
+                sixteen,
+            ));
+            vst1q_u16(
+                (&mut drow[i..i + 8]).try_into().unwrap(),
+                vreinterpretq_u16_s16(res),
+            );
             i += 8;
         }
         for j in i..n_act {
@@ -1480,7 +1699,6 @@ fn z3_cols_impl(
 
 /// The scalar tier — `dir::z3_high_scalar`'s per-pixel recipe verbatim
 /// (stride-`base_inc` taps for `up == 1`, contiguous for `up == 0`).
-#[cfg(target_arch = "x86_64")]
 fn z3_cols_impl_scalar(
     _t: archmage::ScalarToken,
     dst: &mut [u16],
@@ -1533,6 +1751,193 @@ fn z3_cols_body_scalar(
     }
 }
 
+/// `transpose_elems_inplace_s16_8x8` (transpose_neon.h:930) — the same
+/// three-`vtrn`-level 8x8 i16 transpose the hadamard NEON tier uses; the
+/// identical lane permutation the x86 body's `unpacklo/hi` ladder emits.
+#[cfg(target_arch = "aarch64")]
+use archmage::intrinsics::aarch64::int16x8_t;
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+fn transpose_s16_8x8_dir(a: &mut [int16x8_t; 8]) {
+    use archmage::intrinsics::aarch64::*;
+    let b0 = vtrnq_s16(a[0], a[1]);
+    let b1 = vtrnq_s16(a[2], a[3]);
+    let b2 = vtrnq_s16(a[4], a[5]);
+    let b3 = vtrnq_s16(a[6], a[7]);
+    let c0 = vtrnq_s32(vreinterpretq_s32_s16(b0.0), vreinterpretq_s32_s16(b1.0));
+    let c1 = vtrnq_s32(vreinterpretq_s32_s16(b0.1), vreinterpretq_s32_s16(b1.1));
+    let c2 = vtrnq_s32(vreinterpretq_s32_s16(b2.0), vreinterpretq_s32_s16(b3.0));
+    let c3 = vtrnq_s32(vreinterpretq_s32_s16(b2.1), vreinterpretq_s32_s16(b3.1));
+    a[0] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c0.0),
+        vreinterpretq_s64_s32(c2.0),
+    ));
+    a[4] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c0.0),
+        vreinterpretq_s64_s32(c2.0),
+    ));
+    a[1] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c1.0),
+        vreinterpretq_s64_s32(c3.0),
+    ));
+    a[5] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c1.0),
+        vreinterpretq_s64_s32(c3.0),
+    ));
+    a[2] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c0.1),
+        vreinterpretq_s64_s32(c2.1),
+    ));
+    a[6] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c0.1),
+        vreinterpretq_s64_s32(c2.1),
+    ));
+    a[3] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c1.1),
+        vreinterpretq_s64_s32(c3.1),
+    ));
+    a[7] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c1.1),
+        vreinterpretq_s64_s32(c3.1),
+    ));
+}
+
+/// NEON mirror of [`z3_cols_impl`]: the same per-8-column band loop and
+/// i16-lane recipe `(a0 << 5) + (a1 - a0) * s + 16 >> 5`, `vld2q_u16`'s
+/// deinterleave for the stride-2 `up == 1` taps, and [`transpose_s16_8x8_dir`]
+/// for the transposed row stores. Same bounds: a full band reads
+/// `edge[b0 ..= b0 + 7*inc + 1]` under the caller's `hi` gate; partial bands
+/// and both tails are the scalar recipe verbatim.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+#[allow(clippy::too_many_arguments)]
+fn z3_cols_impl_neon(
+    _t: archmage::NeonToken,
+    dst: &mut [u16],
+    stride: usize,
+    bw: usize,
+    bh: usize,
+    edge: &[u16],
+    pad: usize,
+    dy: i32,
+    up: i32,
+) {
+    use archmage::intrinsics::aarch64::*;
+    let frac_bits = 6 - up;
+    let base_inc = 1usize << up;
+    let max_base_y = ((bw + bh) as i32 - 1) << up;
+    let fillv = edge[pad + max_base_y as usize];
+    let fill = vreinterpretq_s16_u16(vdupq_n_u16(fillv));
+    let sixteen = vdupq_n_s16(16);
+    let mut c0 = 0usize;
+    while c0 + 8 <= bw {
+        let mut bases = [0usize; 8];
+        let mut shifts = [0i16; 8];
+        let mut n_acts = [0usize; 8];
+        for k in 0..8 {
+            let y = dy * (c0 + k + 1) as i32;
+            let base = y >> frac_bits;
+            bases[k] = base as usize;
+            shifts[k] = (((y << up) & 0x3F) >> 1) as i16;
+            n_acts[k] = if base >= max_base_y {
+                0
+            } else {
+                // Rows are active while base + r*base_inc < max_base_y.
+                // Same pow2 shift — `base_inc` is `1 << up`.
+                bh.min(((max_base_y - base) as usize + base_inc - 1) >> up)
+            };
+        }
+        let mut r0 = 0usize;
+        while r0 + 8 <= bh {
+            let mut cols = [fill; 8];
+            for (k, col) in cols.iter_mut().enumerate() {
+                let n_act = n_acts[k];
+                if r0 + 8 <= n_act {
+                    // Full band — all eight lanes are real taps, so the
+                    // loads stay <= pad + max_base_y (see Bounds above).
+                    let b0 = pad + bases[k] + r0 * base_inc;
+                    let (v0, v1) = if up == 0 {
+                        (
+                            vreinterpretq_s16_u16(vld1q_u16(edge[b0..b0 + 8].try_into().unwrap())),
+                            vreinterpretq_s16_u16(vld1q_u16(
+                                edge[b0 + 1..b0 + 9].try_into().unwrap(),
+                            )),
+                        )
+                    } else {
+                        // Taps step by 2 down the edge: `vld2`'s deinterleave
+                        // of one contiguous 16-element read — the NEON form
+                        // of the x86 arm's even/odd pshufb.
+                        let d = vld2q_u16(edge[b0..b0 + 16].try_into().unwrap());
+                        (vreinterpretq_s16_u16(d.0), vreinterpretq_s16_u16(d.1))
+                    };
+                    let sv = vdupq_n_s16(shifts[k]);
+                    *col = vshrq_n_s16::<5>(vaddq_s16(
+                        vaddq_s16(vshlq_n_s16::<5>(v0), vmulq_s16(vsubq_s16(v1, v0), sv)),
+                        sixteen,
+                    ));
+                } else if r0 < n_act {
+                    // Partial band: taps for rows < n_act, fill above — the
+                    // vector load would read past `max_base_y + 1` here.
+                    let mut buf = [fillv; 8];
+                    let sv = shifts[k] as i32;
+                    for (i, slot) in buf[..n_act - r0].iter_mut().enumerate() {
+                        let t = pad + bases[k] + (r0 + i) * base_inc;
+                        let a0 = edge[t] as i32;
+                        let a1 = edge[t + 1] as i32;
+                        *slot = ((a0 * (32 - sv) + a1 * sv + 16) >> 5) as u16;
+                    }
+                    *col = vreinterpretq_s16_u16(vld1q_u16(&buf));
+                }
+            }
+            transpose_s16_8x8_dir(&mut cols);
+            // One band window buys out 8 store range checks, as on x86.
+            let band = &mut dst[r0 * stride + c0..(r0 + 7) * stride + c0 + 8];
+            for (rr, row) in cols.iter().enumerate() {
+                vst1q_u16(
+                    (&mut band[rr * stride..rr * stride + 8])
+                        .try_into()
+                        .unwrap(),
+                    vreinterpretq_u16_s16(*row),
+                );
+            }
+            r0 += 8;
+        }
+        for r in r0..bh {
+            for k in 0..8 {
+                dst[r * stride + c0 + k] = if r < n_acts[k] {
+                    let t = pad + bases[k] + r * base_inc;
+                    let a0 = edge[t] as i32;
+                    let a1 = edge[t + 1] as i32;
+                    ((a0 * (32 - shifts[k] as i32) + a1 * shifts[k] as i32 + 16) >> 5) as u16
+                } else {
+                    fillv
+                };
+            }
+        }
+        c0 += 8;
+    }
+    // Column tail: bw % 8 == 4 blocks. Scalar recipe verbatim.
+    for c in c0..bw {
+        let y = dy * (c + 1) as i32;
+        let mut base = y >> frac_bits;
+        let shift = ((y << up) & 0x3F) >> 1;
+        for r in 0..bh {
+            if base < max_base_y {
+                let a0 = edge[pad + base as usize] as i32;
+                let a1 = edge[pad + base as usize + 1] as i32;
+                dst[r * stride + c] = ((a0 * (32 - shift) + a1 * shift + 16) >> 5) as u16;
+                base += base_inc as i32;
+            } else {
+                for rr in r..bh {
+                    dst[rr * stride + c] = fillv;
+                }
+                break;
+            }
+        }
+    }
+}
+
 /// One-`incant!` z3 entry — called from `super::dir::z3_high` only under the
 /// `z3_vec_applies` gate (`up <= 1`, `bh >= 4`, taps `<= I16_TAP_MAX`).
 pub(crate) fn z3_cols(
@@ -1545,16 +1950,11 @@ pub(crate) fn z3_cols(
     dy: i32,
     up: i32,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = crate::dispatch::scalar_forced();
-        archmage::incant!(
-            z3_cols_impl(dst, stride, bw, bh, edge, pad, dy, up),
-            [v3, scalar]
-        );
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    z3_cols_body_scalar(dst, stride, bw, bh, edge, pad, dy, up);
+    let _ = crate::dispatch::scalar_forced();
+    archmage::incant!(
+        z3_cols_impl(dst, stride, bw, bh, edge, pad, dy, up),
+        [v3, neon, scalar]
+    );
 }
 
 #[cfg(test)]
