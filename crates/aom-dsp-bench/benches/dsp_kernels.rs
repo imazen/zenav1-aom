@@ -680,6 +680,170 @@ fn bench_intra_dispatch(suite: &mut Suite) {
     }
 }
 
+/// Directional intra predictors `z1`/`z1_u8e`/`z2`/`z3` — the i16 two-tap
+/// interpolation kernels (`z1_vec_applies`/`z3_vec_applies` admit `up <= 1`
+/// and a tap span `<= I16_TAP_MAX`; `rng.pixel()` edges keep every cell
+/// vector-eligible). `EdgeRef16::new(&edge, PAD)` carries the padding the
+/// negative bases of z2/z3 index. The whole-block `incant!`s are scalar on
+/// aarch64 before this lane's NEON tier.
+fn bench_intra_dir(suite: &mut Suite) {
+    const PAD: usize = 16;
+    const BUF: usize = 320;
+    for (bw, bh) in [(16usize, 16usize), (32, 32), (64, 64)] {
+        for up in [0i32, 1] {
+            let name = format!("{bw}x{bh}_up{up}");
+            let reps = WORK_PX / (bw * bh);
+            for (ki, kn) in ["z1", "z1u8e", "z3", "z2"].into_iter().enumerate() {
+                suite.compare(format!("intra_dir/{kn}_{name}"), |g| {
+                    tune(g);
+                    g.throughput(Throughput::Elements(WORK_PX as u64));
+                    for (label, enabled, reference) in [
+                        ("native_simd", true, false),
+                        ("forced_scalar", false, false),
+                        ("scalar_reference", true, true),
+                    ] {
+                        g.bench(label, move |b| {
+                            set_simd(enabled);
+                            let mut rng = Rng(
+                                0x5EED_0010 ^ (bw as u64) << 8 ^ (up as u64) << 4 ^ ki as u64,
+                            );
+                            let above: Vec<u16> =
+                                (0..BUF).map(|_| u16::from(rng.pixel())).collect();
+                            let left: Vec<u16> =
+                                (0..BUF).map(|_| u16::from(rng.pixel())).collect();
+                            let dst = vec![0u16; bw * bh];
+                            let mut want = dst.clone();
+                            let mut got = dst.clone();
+                            let call = |dst: &mut [u16],
+                                        above: &Vec<u16>,
+                                        left: &Vec<u16>,
+                                        scalar: bool| {
+                                let a = intra::dir::EdgeRef16::new(above, PAD);
+                                let l = intra::dir::EdgeRef16::new(left, PAD);
+                                match (kn, scalar) {
+                                    ("z1", true) => {
+                                        intra::dir::z1_high_scalar(dst, bw, bw, bh, &a, up, 32)
+                                    }
+                                    ("z1", false) => {
+                                        intra::dir::z1_high(dst, bw, bw, bh, &a, up, 32)
+                                    }
+                                    ("z1u8e", false) => {
+                                        intra::dir::z1_high_u8e(dst, bw, bw, bh, &a, up, 32)
+                                    }
+                                    ("z3", true) => {
+                                        intra::dir::z3_high_scalar(dst, bw, bw, bh, &l, up, 32)
+                                    }
+                                    ("z3", false) => {
+                                        intra::dir::z3_high(dst, bw, bw, bh, &l, up, 32)
+                                    }
+                                    ("z2", true) => intra::dir::z2_high_scalar(
+                                        dst, bw, bw, bh, &a, &l, up, up, 32, 32,
+                                    ),
+                                    (_, false) => intra::dir::z2_high(
+                                        dst, bw, bw, bh, &a, &l, up, up, 32, 32,
+                                    ),
+                                    (_, true) => {
+                                        intra::dir::z1_high_scalar(dst, bw, bw, bh, &a, up, 32)
+                                    }
+                                }
+                            };
+                            call(&mut want, &above, &left, true);
+                            call(&mut got, &above, &left, false);
+                            assert_eq!(got, want);
+                            b.with_input(move || (above.clone(), left.clone(), dst.clone()))
+                                .run(move |(above, left, mut dst)| {
+                                    for _ in 0..reps {
+                                        call(&mut dst, &above, &left, reference);
+                                    }
+                                    dst
+                                });
+                        });
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// Hadamard transforms — the fp family (`tx_search`'s SATD forwards) and
+/// the lp variants (`nonrd_pickmode`'s `nonrd_block_yrd_lp`). The `fp_*`
+/// cells return `[i32; n*n]`; the `lp_*` cells fill an i16 `coeff` scratch.
+/// All scalar on aarch64 before this lane's NEON tier (forced_scalar is the
+/// true scalar reference — there is no exported always-scalar twin).
+fn bench_hadamard(suite: &mut Suite) {
+    for (n, name) in [
+        (8usize, "fp_08x08"),
+        (16, "fp_16x16"),
+        (32, "fp_32x32"),
+        (8, "lp_08x08"),
+        (16, "lp_16x16"),
+    ] {
+        let lp = name.starts_with("lp");
+        let reps = WORK_PX / (n * n);
+        suite.compare(format!("hadamard/{name}"), |g| {
+            tune(g);
+            g.throughput(Throughput::Elements(WORK_PX as u64));
+            for (label, enabled) in [("native_simd", true), ("forced_scalar", false)] {
+                g.bench(label, move |b| {
+                    set_simd(enabled);
+                    let mut rng = Rng(0x5EED_0014 ^ (n as u64) << 8 ^ lp as u64);
+                    let stride = n + 4;
+                    let hi = if lp { 255 } else { 511 };
+                    let lo = if lp { -127 } else { -255 };
+                    let src: Vec<i16> = (0..stride * n)
+                        .map(|_| (rng.next_u32() % hi) as i16 + lo)
+                        .collect();
+                    let out32 = vec![0i32; n * n];
+                    let out16 = vec![0i16; n * n];
+                    b.with_input(move || (src.clone(), out32.clone(), out16.clone()))
+                        .run(move |(src, mut out32, mut out16)| {
+                            for _ in 0..reps {
+                                match (lp, n) {
+                                    (false, 8) => {
+                                        dist::hadamard::hadamard_8x8_into(
+                                            &src,
+                                            stride,
+                                            (&mut out32[..64]).try_into().unwrap(),
+                                        );
+                                    }
+                                    (false, 16) => {
+                                        dist::hadamard::hadamard_16x16_into(
+                                            &src,
+                                            stride,
+                                            (&mut out32[..]).try_into().unwrap(),
+                                        );
+                                    }
+                                    (false, _) => {
+                                        dist::hadamard::hadamard_32x32_into(
+                                            &src,
+                                            stride,
+                                            (&mut out32[..]).try_into().unwrap(),
+                                        );
+                                    }
+                                    (true, 8) => {
+                                        dist::hadamard::hadamard_lp_8x8(
+                                            &src,
+                                            stride,
+                                            &mut out16,
+                                        );
+                                    }
+                                    (true, _) => {
+                                        dist::hadamard::hadamard_lp_16x16(
+                                            &src,
+                                            stride,
+                                            &mut out16,
+                                        );
+                                    }
+                                }
+                            }
+                            out32[0] as i64 + out16[0] as i64
+                        });
+                });
+            }
+        });
+    }
+}
+
 fn main() {
     assert!(
         !aom_dsp::dispatch::scalar_forced(),
@@ -702,6 +866,8 @@ fn main() {
         bench_sad_dispatch(suite);
         bench_quant_dispatch(suite);
         bench_intra_dispatch(suite);
+        bench_intra_dir(suite);
+        bench_hadamard(suite);
         bench_quant(suite);
         bench_intra(suite);
     });

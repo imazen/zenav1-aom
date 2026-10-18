@@ -125,8 +125,7 @@ pub fn hadamard_8x8(src: &[i16], src_stride: usize) -> [i32; 64] {
 /// `hadamard_diff` against the real exported C, not by inspection.
 /// The `incant!` fallback: decline, routing to the scalar core. Also what the
 /// `AOM_FORCE_SCALAR` pin selects.
-#[cfg(target_arch = "x86_64")]
-fn hadamard_8x8_avx2_scalar(
+fn hadamard_8x8_simd_scalar(
     _t: archmage::ScalarToken,
     _src: &[i16],
     _src_stride: usize,
@@ -137,7 +136,7 @@ fn hadamard_8x8_avx2_scalar(
 
 #[cfg(target_arch = "x86_64")]
 #[magetypes(define(i16x8), v3, -scalar)]
-fn hadamard_8x8_avx2(
+fn hadamard_8x8_simd(
     _token: Token,
     src: &[i16],
     src_stride: usize,
@@ -235,15 +234,12 @@ fn hadamard_8x8_avx2(
 /// reaches via its trailing `coeff[i*8+j] = buffer2[j*8+i]` — the transpose
 /// documented on the aom-encode scalar twin (KB-12's eob order).
 pub fn hadamard_lp_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16]) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = crate::dispatch::scalar_forced();
-        if let Some(()) = archmage::incant!(
-            hadamard_lp_8x8_v3(src_diff, src_stride, coeff),
-            [v3, scalar]
-        ) {
-            return;
-        }
+    let _ = crate::dispatch::scalar_forced();
+    if let Some(()) = archmage::incant!(
+        hadamard_lp_8x8_simd(src_diff, src_stride, coeff),
+        [v3, neon, scalar]
+    ) {
+        return;
     }
     hadamard_lp_8x8_scalar(src_diff, src_stride, coeff);
 }
@@ -265,18 +261,15 @@ pub fn hadamard_lp_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i16])
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
         hadamard_lp_8x8(&src_diff[off..], src_stride, &mut coeff[idx * 64..]);
     }
-    #[cfg(target_arch = "x86_64")]
+    let _ = crate::dispatch::scalar_forced();
+    if let Some(()) = archmage::incant!(hadamard_lp_16_combine_simd(coeff), [v3, neon, scalar])
     {
-        let _ = crate::dispatch::scalar_forced();
-        if let Some(()) = archmage::incant!(hadamard_lp_16_combine_v3(coeff), [v3, scalar]) {
-            return;
-        }
+        return;
     }
     hadamard_lp_16_combine_scalar(coeff);
 }
 
-#[cfg(target_arch = "x86_64")]
-fn hadamard_lp_8x8_v3_scalar(
+fn hadamard_lp_8x8_simd_scalar(
     _t: archmage::ScalarToken,
     _src: &[i16],
     _src_stride: usize,
@@ -292,7 +285,7 @@ fn hadamard_lp_8x8_v3_scalar(
 /// with no 16-byte guarantee.
 #[cfg(target_arch = "x86_64")]
 #[magetypes(define(i16x8), v3, -scalar)]
-fn hadamard_lp_8x8_v3(
+fn hadamard_lp_8x8_simd(
     _token: Token,
     src: &[i16],
     src_stride: usize,
@@ -300,7 +293,7 @@ fn hadamard_lp_8x8_v3(
 ) -> Option<()> {
     use archmage::intrinsics::x86_64::*;
 
-    // Same network as hadamard_8x8_avx2's col8 — naturally-ordered output.
+    // Same network as hadamard_8x8_simd's col8 — naturally-ordered output.
     let col8 = |s: [__m128i; 8]| -> [__m128i; 8] {
         let b0 = _mm_add_epi16(s[0], s[1]);
         let b1 = _mm_sub_epi16(s[0], s[1]);
@@ -375,8 +368,7 @@ fn hadamard_lp_8x8_v3(
     Some(())
 }
 
-#[cfg(target_arch = "x86_64")]
-fn hadamard_lp_16_combine_v3_scalar(_t: archmage::ScalarToken, _out: &mut [i16]) -> Option<()> {
+fn hadamard_lp_16_combine_simd_scalar(_t: archmage::ScalarToken, _out: &mut [i16]) -> Option<()> {
     None
 }
 
@@ -384,7 +376,7 @@ fn hadamard_lp_16_combine_v3_scalar(_t: archmage::ScalarToken, _out: &mut [i16])
 /// add/sub, `srai(.., 1)` (truncate-then-shift — see the doc above), 4 stores.
 #[cfg(target_arch = "x86_64")]
 #[magetypes(define(i16x8), v3, -scalar)]
-fn hadamard_lp_16_combine_v3(_token: Token, coeff: &mut [i16]) -> Option<()> {
+fn hadamard_lp_16_combine_simd(_token: Token, coeff: &mut [i16]) -> Option<()> {
     use archmage::intrinsics::x86_64::*;
     for idx in (0..64).step_by(8) {
         let c0: &[i16; 8] = coeff[idx..idx + 8].try_into().ok()?;
@@ -471,12 +463,10 @@ fn hadamard_8x8_scalar_core(src: &[i16], src_stride: usize) -> [i32; 64] {
 /// AVX2 tier writes `out` in place so the 256-byte result never moves through
 /// an `Option<[i32; 64]>` return.
 pub fn hadamard_8x8_into(src: &[i16], src_stride: usize, out: &mut [i32; 64]) {
-    #[cfg(target_arch = "x86_64")]
+    let _ = crate::dispatch::scalar_forced();
+    if let Some(()) = archmage::incant!(hadamard_8x8_simd(src, src_stride, out), [v3, neon, scalar])
     {
-        let _ = crate::dispatch::scalar_forced();
-        if let Some(()) = archmage::incant!(hadamard_8x8_avx2(src, src_stride, out), [v3, scalar]) {
-            return;
-        }
+        return;
     }
     *out = hadamard_8x8_scalar_core(src, src_stride);
 }
@@ -767,4 +757,214 @@ fn satd_lp_impl_v3(_t: archmage::X64V3Token, coeff: &[i16], length: usize) -> i3
     let d = _mm256_add_epi32(b, c2);
     let acc128 = _mm_add_epi32(_mm256_castsi256_si128(d), _mm256_extracti128_si256::<1>(d));
     _mm_cvtsi128_si32(acc128)
+}
+
+// ---------------------------------------------------------------------------
+// aarch64 NEON tier — verbatim transcription of `aom_hadamard_8x8_neon`,
+// `aom_hadamard_lp_8x8_neon` and the `aom_hadamard_lp_16x16_neon` combine
+// (aom_dsp/arm/hadamard_neon.c) plus `transpose_elems_inplace_s16_8x8`
+// (aom_dsp/arm/transpose_neon.h:930). `hadamard_16x16`/`_32x32`/`lp_dual`
+// get the tier free through `hadamard_8x8_into`/`hadamard_lp_8x8`; their
+// combine passes stay scalar.
+//
+// The lp-16 combine uses `vshrq_n_s16` on the wrapped `vaddq`/`vsubq` — the
+// port's `(a +/- b) >> 1` wrap-then-shift on ALL inputs, matching the v3
+// tier's `srai(add, 1)`. Upstream NEON writes `vhaddq`/`vhsubq` (halving
+// add/sub on the true sum), which differs only when |a +/- b| exceeds i16
+// — unreachable on the lp path's 9-bit `diff` inputs; `vaddq`+`vshrq`
+// keeps the tier byte-exact with the port's scalar on the full domain.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "aarch64")]
+use archmage::intrinsics::aarch64::int16x8_t;
+
+/// `hadamard8x8_one_pass` (hadamard_neon.c:51) — the 8-lane add/sub
+/// butterfly, the same network `hadamard_col8` and the v3 `col8` share,
+/// including the `a1 = c2 - c6` / `a6 = c1 - c5` output permutation.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+fn hadamard8x8_one_pass_neon(a: &mut [int16x8_t; 8]) {
+    use archmage::intrinsics::aarch64::*;
+    let b0 = vaddq_s16(a[0], a[1]);
+    let b1 = vsubq_s16(a[0], a[1]);
+    let b2 = vaddq_s16(a[2], a[3]);
+    let b3 = vsubq_s16(a[2], a[3]);
+    let b4 = vaddq_s16(a[4], a[5]);
+    let b5 = vsubq_s16(a[4], a[5]);
+    let b6 = vaddq_s16(a[6], a[7]);
+    let b7 = vsubq_s16(a[6], a[7]);
+    let c0 = vaddq_s16(b0, b2);
+    let c1 = vaddq_s16(b1, b3);
+    let c2 = vsubq_s16(b0, b2);
+    let c3 = vsubq_s16(b1, b3);
+    let c4 = vaddq_s16(b4, b6);
+    let c5 = vaddq_s16(b5, b7);
+    let c6 = vsubq_s16(b4, b6);
+    let c7 = vsubq_s16(b5, b7);
+    a[0] = vaddq_s16(c0, c4);
+    a[1] = vsubq_s16(c2, c6);
+    a[2] = vsubq_s16(c0, c4);
+    a[3] = vaddq_s16(c2, c6);
+    a[4] = vaddq_s16(c3, c7);
+    a[5] = vsubq_s16(c3, c7);
+    a[6] = vsubq_s16(c1, c5);
+    a[7] = vaddq_s16(c1, c5);
+}
+
+/// `transpose_elems_inplace_s16_8x8` (transpose_neon.h:930) — three `vtrn`
+/// levels (16/32/64-bit lanes); `aom_vtrnq_s64_to_s16` inlined as s64
+/// reinterprets. Lane order is load-bearing (KB-12: a lost transpose order
+/// perturbs `eob` and reads as an RD near-tie).
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+fn transpose_s16_8x8_neon(a: &mut [int16x8_t; 8]) {
+    use archmage::intrinsics::aarch64::*;
+    let b0 = vtrnq_s16(a[0], a[1]);
+    let b1 = vtrnq_s16(a[2], a[3]);
+    let b2 = vtrnq_s16(a[4], a[5]);
+    let b3 = vtrnq_s16(a[6], a[7]);
+    let c0 = vtrnq_s32(vreinterpretq_s32_s16(b0.0), vreinterpretq_s32_s16(b1.0));
+    let c1 = vtrnq_s32(vreinterpretq_s32_s16(b0.1), vreinterpretq_s32_s16(b1.1));
+    let c2 = vtrnq_s32(vreinterpretq_s32_s16(b2.0), vreinterpretq_s32_s16(b3.0));
+    let c3 = vtrnq_s32(vreinterpretq_s32_s16(b2.1), vreinterpretq_s32_s16(b3.1));
+    // `aom_vtrnq_s64_to_s16` (transpose_neon.h) — `vtrnq_s64` on s64
+    // reinterprets, written here as `vtrn1q`/`vtrn2q` (the pair form Rust's
+    // stdarch exposes instead of `vtrnq_*` for 64-bit lanes).
+    a[0] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c0.0),
+        vreinterpretq_s64_s32(c2.0),
+    ));
+    a[4] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c0.0),
+        vreinterpretq_s64_s32(c2.0),
+    ));
+    a[1] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c1.0),
+        vreinterpretq_s64_s32(c3.0),
+    ));
+    a[5] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c1.0),
+        vreinterpretq_s64_s32(c3.0),
+    ));
+    a[2] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c0.1),
+        vreinterpretq_s64_s32(c2.1),
+    ));
+    a[6] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c0.1),
+        vreinterpretq_s64_s32(c2.1),
+    ));
+    a[3] = vreinterpretq_s16_s64(vtrn1q_s64(
+        vreinterpretq_s64_s32(c1.1),
+        vreinterpretq_s64_s32(c3.1),
+    ));
+    a[7] = vreinterpretq_s16_s64(vtrn2q_s64(
+        vreinterpretq_s64_s32(c1.1),
+        vreinterpretq_s64_s32(c3.1),
+    ));
+}
+
+/// `aom_hadamard_8x8_neon` (hadamard_neon.c:82): eight strided row loads,
+/// butterfly, transpose, butterfly, then `store_s16q_to_tran_low`'s
+/// sign-extend into `out` (`vmovl_s16` + two `vst1q_s32` per row). `None`
+/// on a short `src`, routing to the scalar core — same decline contract as
+/// the v3 tier.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+fn hadamard_8x8_simd_neon(
+    _t: archmage::NeonToken,
+    src: &[i16],
+    src_stride: usize,
+    out: &mut [i32; 64],
+) -> Option<()> {
+    use archmage::intrinsics::aarch64::*;
+    let mut v = [vdupq_n_s16(0); 8];
+    for (k, vk) in v.iter_mut().enumerate() {
+        let row: &[i16; 8] = src
+            .get(k * src_stride..k * src_stride + 8)?
+            .try_into()
+            .ok()?;
+        *vk = vld1q_s16(row);
+    }
+    hadamard8x8_one_pass_neon(&mut v);
+    transpose_s16_8x8_neon(&mut v);
+    hadamard8x8_one_pass_neon(&mut v);
+    for (i, vi) in v.iter().enumerate() {
+        vst1q_s32(
+            (&mut out[i * 8..i * 8 + 4]).try_into().ok()?,
+            vmovl_s16(vget_low_s16(*vi)),
+        );
+        vst1q_s32(
+            (&mut out[i * 8 + 4..i * 8 + 8]).try_into().ok()?,
+            vmovl_s16(vget_high_s16(*vi)),
+        );
+    }
+    Some(())
+}
+
+/// `aom_hadamard_lp_8x8_neon` (hadamard_neon.c:111) — the same network as
+/// [`hadamard_8x8_simd_neon`] with plain `vst1q_s16` stores into the i16
+/// `coeff` slice.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+fn hadamard_lp_8x8_simd_neon(
+    _t: archmage::NeonToken,
+    src: &[i16],
+    src_stride: usize,
+    out: &mut [i16],
+) -> Option<()> {
+    use archmage::intrinsics::aarch64::*;
+    let mut v = [vdupq_n_s16(0); 8];
+    for (k, vk) in v.iter_mut().enumerate() {
+        let row: &[i16; 8] = src
+            .get(k * src_stride..k * src_stride + 8)?
+            .try_into()
+            .ok()?;
+        *vk = vld1q_s16(row);
+    }
+    hadamard8x8_one_pass_neon(&mut v);
+    transpose_s16_8x8_neon(&mut v);
+    hadamard8x8_one_pass_neon(&mut v);
+    for (i, vi) in v.iter().enumerate() {
+        let d: &mut [i16; 8] = (&mut out[i * 8..i * 8 + 8]).try_into().ok()?;
+        vst1q_s16(d, *vi);
+    }
+    Some(())
+}
+
+/// `aom_hadamard_lp_16x16_neon`'s combine pass (hadamard_neon.c:163): 8
+/// iterations of 4 loads, add/sub, `vshrq_n_s16<1>` (wrap-then-shift — see
+/// the section doc), 4 stores. Mirror of [`hadamard_lp_16_combine_simd`]'s
+/// v3 body.
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+fn hadamard_lp_16_combine_simd_neon(_t: archmage::NeonToken, coeff: &mut [i16]) -> Option<()> {
+    use archmage::intrinsics::aarch64::*;
+    for idx in (0..64).step_by(8) {
+        let a0 = vld1q_s16(coeff[idx..idx + 8].try_into().ok()?);
+        let a1 = vld1q_s16(coeff[idx + 64..idx + 72].try_into().ok()?);
+        let a2 = vld1q_s16(coeff[idx + 128..idx + 136].try_into().ok()?);
+        let a3 = vld1q_s16(coeff[idx + 192..idx + 200].try_into().ok()?);
+        let b0 = vshrq_n_s16::<1>(vaddq_s16(a0, a1));
+        let b1 = vshrq_n_s16::<1>(vsubq_s16(a0, a1));
+        let b2 = vshrq_n_s16::<1>(vaddq_s16(a2, a3));
+        let b3 = vshrq_n_s16::<1>(vsubq_s16(a2, a3));
+        vst1q_s16(
+            (&mut coeff[idx..idx + 8]).try_into().ok()?,
+            vaddq_s16(b0, b2),
+        );
+        vst1q_s16(
+            (&mut coeff[idx + 64..idx + 72]).try_into().ok()?,
+            vaddq_s16(b1, b3),
+        );
+        vst1q_s16(
+            (&mut coeff[idx + 128..idx + 136]).try_into().ok()?,
+            vsubq_s16(b0, b2),
+        );
+        vst1q_s16(
+            (&mut coeff[idx + 192..idx + 200]).try_into().ok()?,
+            vsubq_s16(b1, b3),
+        );
+    }
+    Some(())
 }
