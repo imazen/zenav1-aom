@@ -733,9 +733,9 @@ fn quantize_fp_impl_neon(
     // n == 16 runs the assert-violating-but-defined path the shipped kernel
     // actually executes (the assert is NDEBUG-compiled out in the oracle).
     // Malformed shapes take the scalar port, same policy as the v3 mirror.
-    if n % 8 != 0
+    if !n.is_multiple_of(8)
         || n < 16
-        || (log_scale > 0 && n % 16 != 0)
+        || (log_scale > 0 && !n.is_multiple_of(16))
         || iscan.len() < n
         || qcoeff.len() < n
         || dqcoeff.len() < n
@@ -935,7 +935,7 @@ fn quantize_lp_impl_neon(
     let n = n_coeffs;
     // C peels 8 then do-whiles; n < 16 or n % 8 != 0 would overread.
     if n < 16
-        || n % 8 != 0
+        || !n.is_multiple_of(8)
         || coeff.len() < n
         || iscan.len() < n
         || qcoeff.len() < n

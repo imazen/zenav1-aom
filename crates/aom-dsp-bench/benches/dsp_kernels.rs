@@ -704,13 +704,11 @@ fn bench_intra_dir(suite: &mut Suite) {
                     ] {
                         g.bench(label, move |b| {
                             set_simd(enabled);
-                            let mut rng = Rng(
-                                0x5EED_0010 ^ (bw as u64) << 8 ^ (up as u64) << 4 ^ ki as u64,
-                            );
+                            let mut rng =
+                                Rng(0x5EED_0010 ^ (bw as u64) << 8 ^ (up as u64) << 4 ^ ki as u64);
                             let above: Vec<u16> =
                                 (0..BUF).map(|_| u16::from(rng.pixel())).collect();
-                            let left: Vec<u16> =
-                                (0..BUF).map(|_| u16::from(rng.pixel())).collect();
+                            let left: Vec<u16> = (0..BUF).map(|_| u16::from(rng.pixel())).collect();
                             let dst = vec![0u16; bw * bh];
                             let mut want = dst.clone();
                             let mut got = dst.clone();
@@ -739,9 +737,9 @@ fn bench_intra_dir(suite: &mut Suite) {
                                     ("z2", true) => intra::dir::z2_high_scalar(
                                         dst, bw, bw, bh, &a, &l, up, up, 32, 32,
                                     ),
-                                    (_, false) => intra::dir::z2_high(
-                                        dst, bw, bw, bh, &a, &l, up, up, 32, 32,
-                                    ),
+                                    (_, false) => {
+                                        intra::dir::z2_high(dst, bw, bw, bh, &a, &l, up, up, 32, 32)
+                                    }
                                     (_, true) => {
                                         intra::dir::z1_high_scalar(dst, bw, bw, bh, &a, up, 32)
                                     }
@@ -821,18 +819,10 @@ fn bench_hadamard(suite: &mut Suite) {
                                         );
                                     }
                                     (true, 8) => {
-                                        dist::hadamard::hadamard_lp_8x8(
-                                            &src,
-                                            stride,
-                                            &mut out16,
-                                        );
+                                        dist::hadamard::hadamard_lp_8x8(&src, stride, &mut out16);
                                     }
                                     (true, _) => {
-                                        dist::hadamard::hadamard_lp_16x16(
-                                            &src,
-                                            stride,
-                                            &mut out16,
-                                        );
+                                        dist::hadamard::hadamard_lp_16x16(&src, stride, &mut out16);
                                     }
                                 }
                             }

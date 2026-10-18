@@ -22,13 +22,14 @@ mod bench {
     // TX_SIZE indices: 0=4x4 1=8x8 2=16x16 3=32x32 4=64x64 5=4x8 6=8x4 7=8x16 8=16x8
     pub fn main() {
         aom_sys_ref::ref_init();
-        let shapes: &[(
-            &str,
+        type Shape = (
+            &'static str,
             usize,
             usize,
             usize,
             unsafe extern "C" fn(*const i16, *mut i32, i32, i32, i32),
-        )] = &[
+        );
+        let shapes: &[Shape] = &[
             ("4x4", 0, 4, 4, av1_fwd_txfm2d_4x4_neon),
             ("8x8", 1, 8, 8, av1_fwd_txfm2d_8x8_neon),
             ("16x16", 2, 16, 16, av1_fwd_txfm2d_16x16_neon),
@@ -49,13 +50,14 @@ mod bench {
                 let reps = 200_000usize;
                 let t = Instant::now();
                 for _ in 0..reps {
-                    std::hint::black_box(av1_fwd_txfm2d(
+                    av1_fwd_txfm2d(
                         black(input.as_slice()),
                         black(out_p.as_mut_slice()),
                         w,
                         tx,
                         idx,
-                    ));
+                    );
+                    std::hint::black_box(());
                 }
                 let port = t.elapsed();
                 let t = Instant::now();

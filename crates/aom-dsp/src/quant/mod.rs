@@ -1519,7 +1519,7 @@ fn quantize_b_impl_neon(
     // C peels chunk 0 then strides 8; a %8 tail would be silently skipped
     // (production n is always a multiple of 8). Malformed shapes take the
     // scalar port, same policy as the v3 mirror.
-    if n < 8 || n % 8 != 0 || iscan.len() < n || qcoeff.len() < n || dqcoeff.len() < n {
+    if n < 8 || !n.is_multiple_of(8) || iscan.len() < n || qcoeff.len() < n || dqcoeff.len() < n {
         return quantize_b_scalar(
             zbin,
             round,

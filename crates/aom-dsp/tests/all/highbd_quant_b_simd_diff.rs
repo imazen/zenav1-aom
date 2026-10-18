@@ -135,7 +135,8 @@ fn highbd_quantize_b_simd_bit_identical_to_c_at_every_tier() {
                 // `_c` is signed-overflow UB whose x86 clang shape the port
                 // mirrors (e0a1b95); aarch64 clang differs (CI 2026-09-25,
                 // KB-ARM-FLOAT root #3 precedent).
-                for rep in 0..if cfg!(target_arch = "x86_64") { 4 } else { 0 } {
+                let adv_reps = if cfg!(target_arch = "x86_64") { 4 } else { 0 };
+                for rep in 0..adv_reps {
                     let zbin = [rng.pos_i16(1, 1500), rng.pos_i16(1, 1500)];
                     let round = [rng.pos_i16(1, 2000), rng.pos_i16(1, 2000)];
                     let quant = [rng.pos_i16(1, 32767), rng.pos_i16(1, 32767)];

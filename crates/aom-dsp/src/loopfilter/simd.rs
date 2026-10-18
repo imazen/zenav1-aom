@@ -255,15 +255,17 @@ fn lpf_impl(
     // (immutable) `load` closure's borrow has ended by this point. `c` is taken
     // as an argument (like `load!`): a free `c` would resolve with def-site
     // hygiene under the `magetypes` tier expansion and not see the loop local.
+    // `ts.wrapping_mul($k)` keeps the signed tap offset literal — neg_multiply
+    // only inspects `*` BinOps, and these offsets can't overflow.
     macro_rules! store {
         ($c:expr, $($k:expr => $v:expr),+ $(,)?) => {{
             let c = $c;
             $(
                 let a = ($v).to_array();
-                buf[(c + ($k) * ts) as usize] = a[0] as u16;
-                buf[(c + step + ($k) * ts) as usize] = a[1] as u16;
-                buf[(c + 2 * step + ($k) * ts) as usize] = a[2] as u16;
-                buf[(c + 3 * step + ($k) * ts) as usize] = a[3] as u16;
+                buf[(c + ts.wrapping_mul($k)) as usize] = a[0] as u16;
+                buf[(c + step + ts.wrapping_mul($k)) as usize] = a[1] as u16;
+                buf[(c + 2 * step + ts.wrapping_mul($k)) as usize] = a[2] as u16;
+                buf[(c + 3 * step + ts.wrapping_mul($k)) as usize] = a[3] as u16;
             )+
         }};
     }
@@ -1249,16 +1251,17 @@ fn lpf_impl_u8(
 
     // `c` is taken as an argument (like the u16 twin's `store!`): a free `c`
     // would resolve with def-site hygiene under the `magetypes` tier
-    // expansion and not see the loop local.
+    // expansion and not see the loop local. `ts.wrapping_mul($k)` keeps the
+    // signed tap offset literal (neg_multiply only inspects `*` BinOps).
     macro_rules! store {
         ($c:expr, $($k:expr => $v:expr),+ $(,)?) => {{
             let c = $c;
             $(
                 let a = ($v).to_array();
-                buf[(c + ($k) * ts) as usize] = a[0] as u8;
-                buf[(c + step + ($k) * ts) as usize] = a[1] as u8;
-                buf[(c + 2 * step + ($k) * ts) as usize] = a[2] as u8;
-                buf[(c + 3 * step + ($k) * ts) as usize] = a[3] as u8;
+                buf[(c + ts.wrapping_mul($k)) as usize] = a[0] as u8;
+                buf[(c + step + ts.wrapping_mul($k)) as usize] = a[1] as u8;
+                buf[(c + 2 * step + ts.wrapping_mul($k)) as usize] = a[2] as u8;
+                buf[(c + 3 * step + ts.wrapping_mul($k)) as usize] = a[3] as u8;
             )+
         }};
     }

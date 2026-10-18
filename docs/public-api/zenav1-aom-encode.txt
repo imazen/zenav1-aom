@@ -7,7 +7,7 @@
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
 # files: zenav1-aom-encode.txt 289 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-encode.internal.txt 4999 lines (339 hidden + 7838 excluded-feature)
-# arch-unique surface: aarch64 39
+# arch-unique surface: (none — portable on every target)
 
 ## summary
 #
@@ -324,45 +324,3 @@ aom_encode::key_frame::Tune: Clone, Copy, Debug, Default, Eq, PartialEq
 
 27 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 aom_encode::key_frame::EncodeConfig<'a>: !RefUnwindSafe !UnwindSafe
-
-## arch surface: aarch64 (39 lines)
-
-impl<'a> core::marker::Freeze for aom_encode::rdopt_sse::SsePlane<'a>
-impl<'a> core::marker::Send for aom_encode::rdopt_sse::SsePlane<'a>
-impl<'a> core::marker::Sync for aom_encode::rdopt_sse::SsePlane<'a>
-impl<'a> core::marker::Unpin for aom_encode::rdopt_sse::SsePlane<'a>
-impl<'a> core::marker::UnsafeUnpin for aom_encode::rdopt_sse::SsePlane<'a>
-impl<'a> core::panic::unwind_safe::RefUnwindSafe for aom_encode::rdopt_sse::SsePlane<'a>
-impl<'a> core::panic::unwind_safe::UnwindSafe for aom_encode::rdopt_sse::SsePlane<'a>
-pub aom_encode::compound_type::SegPick::sse: u64
-pub aom_encode::compound_type::WedgePick::sse: u64
-pub aom_encode::inter_fullpel::ObmcSubpelResult::sse: u32
-pub aom_encode::inter_me::SingleMotionResult::sse: u32
-pub aom_encode::inter_me::SubpelResult::sse: u32
-pub aom_encode::intra_uv_rd::CflRdStats::sse: i64
-pub aom_encode::nonrd_idtx::IdtxRd::sse: i64
-pub aom_encode::nonrd_idtx::UvModelRd::tot_sse: i64
-pub aom_encode::rdopt_single_state::InterModeInfoEntry::sse: i64
-pub aom_encode::rdopt_sse::SsePlane::dst: &'a [u8]
-pub aom_encode::rdopt_sse::SsePlane::dst_stride: usize
-pub aom_encode::rdopt_sse::SsePlane::h: usize
-pub aom_encode::rdopt_sse::SsePlane::src: &'a [u8]
-pub aom_encode::rdopt_sse::SsePlane::src_stride: usize
-pub aom_encode::rdopt_sse::SsePlane::w: usize
-pub aom_encode::tpl_model::TplDepStats::intra_sse: i64
-pub aom_encode::tpl_model::TplDepStats::recrf_sse: i64
-pub aom_encode::tpl_model::TplDepStats::srcrf_sse: i64
-pub aom_encode::tx_search::RdStats::sse: i64
-pub aom_encode::tx_search::TxTypeSearchResult::sse: i64
-pub aom_encode::tx_search::TxTypeSearchSummary::sse: i64
-pub aom_encode::var_tx::InterLeafResult::sse: i64
-pub aom_encode::var_tx::InterUvResult::sse: i64
-pub aom_encode::var_tx::VarTxResult::sse: i64
-pub const aom_encode::rdopt_sse::AOM_PLANE_Y: usize
-pub const aom_encode::rdopt_sse::IDENTITY: i32
-pub const aom_encode::rdopt_sse::NO_SINGLE_SSE: u32
-pub fn aom_encode::inter_me::get_mvpred_sse((i32, i32), &[u16], usize, usize, &[u16], usize, usize, usize, usize, (i32, i32), &[i32; 4], &[i32], &[i32], i32) -> u32
-pub fn aom_encode::rdopt_sse::get_sse(&[aom_encode::rdopt_sse::SsePlane<'_>], bool) -> (i64, i64)
-pub fn aom_encode::rdopt_sse::prune_zero_mv_with_sse([i32; 2], &[i32; 8], &[u32; 8], &[u32], i32) -> bool
-pub mod aom_encode::rdopt_sse
-pub struct aom_encode::rdopt_sse::SsePlane<'a>

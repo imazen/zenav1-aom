@@ -17,10 +17,10 @@
 //! this port computes `h + 7` for both (verified byte-identical to both C
 //! variants in tests/wiener_diff.rs).
 
-// The generic i32x8 body is only emitted for the neon/wasm128 tiers — on
-// x86-64 the v3 mirror and the scalar port cover dispatch, so the prelude is
-// unused there.
-#[cfg(not(target_arch = "x86_64"))]
+// The generic i32x8 body is only emitted for the wasm128 tier — on x86-64 the
+// v3 mirror and the scalar port cover dispatch, and aarch64 has a hand-written
+// NEON arm, so the prelude is only referenced under wasm32.
+#[cfg(target_arch = "wasm32")]
 use archmage::prelude::*;
 
 /// `FILTER_BITS` (av1/common/filter.h).
@@ -174,8 +174,8 @@ fn wiener_impl_scalar<P: crate::restore::pick::LrPixel>(
 
 /// `ROUND_POWER_OF_TWO` on 8 lanes with a runtime shift in 1..=15 (the
 /// wiener rounds are per-call bd-derived constants; the match arm is
-/// perfectly predicted). Used only by the neon/wasm128 body.
-#[cfg(not(target_arch = "x86_64"))]
+/// perfectly predicted). Used only by the wasm128 body.
+#[cfg(target_arch = "wasm32")]
 macro_rules! shr_round_by {
     ($v:expr, $n:expr, $half:expr) => {
         match $n {

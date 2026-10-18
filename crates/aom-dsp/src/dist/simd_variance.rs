@@ -55,7 +55,10 @@ pub(crate) fn highbd_variance64_impl(
         // is `dist_block_px_domain`, an x86-heavy path).
         return crate::dist::highbd_variance64_scalar(a, a_stride, b, b_stride, w, h);
     }
-    assert!(w >= 8 && w % 8 == 0, "block widths are powers of two");
+    assert!(
+        w >= 8 && w.is_multiple_of(8),
+        "block widths are powers of two"
+    );
     let widen = |s: &[u16]| -> i32x8 {
         let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
         i32x8::from_array(token, arr)
@@ -73,10 +76,10 @@ pub(crate) fn highbd_variance64_impl(
         let mut sse_v = i32x8::zero(token);
         for c in (0..w).step_by(8) {
             let d = widen(&a[ra + c..ra + c + 8]) - widen(&b[rb + c..rb + c + 8]);
-            sum_v = sum_v + d;
+            sum_v += d;
             // (diff*diff) as u32 — the lane mullo wraps exactly like the
             // scalar's i32 multiply.
-            sse_v = sse_v + d * d;
+            sse_v += d * d;
         }
         tsum += i64::from(sum_v.reduce_add());
         tsse += u64::from(sse_v.reduce_add() as u32);
@@ -117,7 +120,10 @@ pub(crate) fn sse_u16_u8_impl(
     if w == 4 {
         return crate::dist::sse_u16_u8_scalar(a, a_stride, b, b_stride, w, h);
     }
-    assert!(w >= 8 && w % 8 == 0, "block widths are powers of two");
+    assert!(
+        w >= 8 && w.is_multiple_of(8),
+        "block widths are powers of two"
+    );
     let widen_a = |s: &[u16]| -> i32x8 {
         let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
         i32x8::from_array(token, arr)
@@ -133,7 +139,7 @@ pub(crate) fn sse_u16_u8_impl(
         let mut sse_v = i32x8::zero(token);
         for c in (0..w).step_by(8) {
             let d = widen_a(&a[ra + c..ra + c + 8]) - widen_b(&b[rb + c..rb + c + 8]);
-            sse_v = sse_v + d * d;
+            sse_v += d * d;
         }
         tsse += i64::from(sse_v.reduce_add() as u32);
     }
@@ -368,7 +374,10 @@ pub(crate) fn sse_u8_impl(
     if w == 4 {
         return crate::dist::sse_scalar(a, a_stride, b, b_stride, w, h);
     }
-    assert!(w >= 8 && w % 8 == 0, "block widths are powers of two");
+    assert!(
+        w >= 8 && w.is_multiple_of(8),
+        "block widths are powers of two"
+    );
     let widen = |s: &[u8]| -> i32x8 {
         let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
         i32x8::from_array(token, arr)
@@ -380,7 +389,7 @@ pub(crate) fn sse_u8_impl(
         let mut sse_v = i32x8::zero(token);
         for c in (0..w).step_by(8) {
             let d = widen(&a[ra + c..ra + c + 8]) - widen(&b[rb + c..rb + c + 8]);
-            sse_v = sse_v + d * d;
+            sse_v += d * d;
         }
         tsse += i64::from(sse_v.reduce_add() as u32);
     }

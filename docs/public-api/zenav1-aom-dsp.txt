@@ -7,7 +7,7 @@
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
 # files: zenav1-aom-dsp.txt 1855 lines (supported surface) | zenav1-aom-dsp.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-dsp.internal.txt 130 lines (75 hidden + 89 excluded-feature)
-# arch-unique surface: aarch64 2 | x86_64 8
+# arch-unique surface: aarch64 5 | x86_64 8
 
 ## summary
 #
@@ -1890,19 +1890,25 @@ aom_dsp::loopfilter::frame::LfFrameBuf<'a>: !UnwindSafe
 aom_dsp::loopfilter::frame::LfFrameBufU8<'a>: !UnwindSafe
 aom_dsp::restore::frame::LrPlaneInput<'a>: !UnwindSafe
 aom_dsp::trace::TraceConfig: !RefUnwindSafe !UnwindSafe
-## arch shapes (8 shapes: 2 on every recorded arch, 6 arch-unique)
+## arch shapes (11 shapes: 2 on every recorded arch, 9 arch-unique)
 
 [x86_64] pub const aom_dsp::restore::pick::LrPixel::LD16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[Self; 16]) -> core::core_arch::<arch>::__m256i
 [x86_64] pub const aom_dsp::restore::pick::LrPixel::LD8: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[Self; 8]) -> core::core_arch::<arch>::__m256i
+[aarch64] pub const aom_dsp::restore::pick::LrPixel::LD8_S16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[Self; 8]) -> core::core_arch::arm_shared::<tier>::int16x8_t
 [x86_64] pub const u16::LD16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u16; 16]) -> core::core_arch::<arch>::__m256i
 [x86_64] pub const u16::LD8: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u16; 8]) -> core::core_arch::<arch>::__m256i
+[aarch64] pub const u16::LD8_S16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u16; 8]) -> core::core_arch::arm_shared::<tier>::int16x8_t
 [x86_64] pub const u8::LD16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u8; 16]) -> core::core_arch::<arch>::__m256i
 [x86_64] pub const u8::LD8: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u8; 8]) -> core::core_arch::<arch>::__m256i
+[aarch64] pub const u8::LD8_S16: fn(archmage::tokens::generated::<arch>::<ArchToken>, &[u8; 8]) -> core::core_arch::arm_shared::<tier>::int16x8_t
 [all] pub fn aom_dsp::dist::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> i64
 [all] pub fn aom_dsp::dist::highbd_<tier>(&[u16], usize, &[u16], usize, usize, usize) -> i64
 
-## arch surface: aarch64 (2 lines)
+## arch surface: aarch64 (5 lines)
 
+pub const aom_dsp::restore::pick::LrPixel::LD8_S16: fn(archmage::tokens::generated::arm::NeonToken, &[Self; 8]) -> core::core_arch::arm_shared::neon::int16x8_t
+pub const u16::LD8_S16: fn(archmage::tokens::generated::arm::NeonToken, &[u16; 8]) -> core::core_arch::arm_shared::neon::int16x8_t
+pub const u8::LD8_S16: fn(archmage::tokens::generated::arm::NeonToken, &[u8; 8]) -> core::core_arch::arm_shared::neon::int16x8_t
 pub fn aom_dsp::dist::highbd_sse(&[u16], usize, &[u16], usize, usize, usize) -> i64
 pub fn aom_dsp::dist::sse(&[u8], usize, &[u8], usize, usize, usize) -> i64
 

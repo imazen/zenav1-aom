@@ -262,8 +262,7 @@ pub fn hadamard_lp_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i16])
         hadamard_lp_8x8(&src_diff[off..], src_stride, &mut coeff[idx * 64..]);
     }
     let _ = crate::dispatch::scalar_forced();
-    if let Some(()) = archmage::incant!(hadamard_lp_16_combine_simd(coeff), [v3, neon, scalar])
-    {
+    if let Some(()) = archmage::incant!(hadamard_lp_16_combine_simd(coeff), [v3, neon, scalar]) {
         return;
     }
     hadamard_lp_16_combine_scalar(coeff);

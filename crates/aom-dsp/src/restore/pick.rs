@@ -553,7 +553,7 @@ fn acc_stat_line_impl<P: LrPixel>(
         }};
     }
 
-    debug_assert!(hstride >= wiener_win2 && hstride % 8 == 0);
+    debug_assert!(hstride >= wiener_win2 && hstride.is_multiple_of(8));
     // Each `y` is zero-padded to a whole vector and NEVER written past
     // `win2`, so the padding lanes contribute `0 * anything` — see
     // `WIENER_H_STRIDE`.
@@ -2047,27 +2047,25 @@ fn pixel_proj_error_impl<P: LrPixel>(
             let d = widen(&dat[dr + j..dr + j + 8]);
             let sv = widen(&src[sr + j..sr + j + 8]);
             let e = if r0 || r1 {
-                let u = d.shl_const::<{ SGRPROJ_RST_BITS as i32 }>();
+                let u = d.shl_const::<{ SGRPROJ_RST_BITS }>();
                 // lowbd starts from `u << PRJ_BITS`; highbd starts from the
                 // rounding constant and adds `d` after the shift. Both are the
                 // scalar tier's own expressions, lane for lane.
                 let mut v = if highbd {
                     half
                 } else {
-                    u.shl_const::<{ SGRPROJ_PRJ_BITS as i32 }>()
+                    u.shl_const::<{ SGRPROJ_PRJ_BITS }>()
                 };
                 if r0 {
-                    v = v + xq0 * (ld32(&flt0[f0r + j..]) - u);
+                    v += xq0 * (ld32(&flt0[f0r + j..]) - u);
                 }
                 if r1 {
-                    v = v + xq1 * (ld32(&flt1[f1r + j..]) - u);
+                    v += xq1 * (ld32(&flt1[f1r + j..]) - u);
                 }
                 if highbd {
-                    v.shr_arithmetic_const::<{ (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS) as i32 }>() + d
-                        - sv
+                    v.shr_arithmetic_const::<{ SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS }>() + d - sv
                 } else {
-                    (v + half)
-                        .shr_arithmetic_const::<{ (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS) as i32 }>()
+                    (v + half).shr_arithmetic_const::<{ SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS }>()
                         - sv
                 }
             } else {

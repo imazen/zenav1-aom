@@ -31,9 +31,6 @@
 //! shapes every access is provably in-bounds (see each kernel); slice indexing
 //! keeps the same panic surface as the scalar recipe.
 
-use archmage::magetypes;
-use archmage::prelude::*;
-
 /// One conv layer of `av1_cnn_convolve_no_maxpool_padding_valid_avx2`.
 ///
 /// `input` is the flat `[channel][row][col]` plane (`channel k` at

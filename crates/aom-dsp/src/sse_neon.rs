@@ -999,7 +999,7 @@ mod imp {
     pub fn _mm256_insert_epi16<const IMM: i32>(a: __m256i, x: i16) -> __m256i {
         let lane = (IMM & 15) as usize;
         let mut r = a;
-        let half = (lane / 8) as usize;
+        let half = lane / 8;
         let mut v = s16(r[half]);
         v = match lane & 7 {
             0 => vsetq_lane_s16::<0>(x, v),

@@ -18,7 +18,7 @@
 
 use archmage::prelude::*;
 
-use crate::txb::{TxClass, TX_PAD_BOTTOM, TX_PAD_END, TX_PAD_HOR};
+use crate::txb::{TxClass, TX_PAD_HOR};
 
 /// Scalar tier = the transcribed port, verbatim.
 pub(crate) fn txb_init_levels_impl_scalar(
@@ -57,7 +57,7 @@ pub(crate) fn txb_init_levels_impl(
         // One 8-lane vector = TWO 4-coeff columns; each column's 4 levels +
         // 4 pad zeros are 8 output bytes, so a pair writes bytes 0..4 and
         // 8..12 of a 16-byte window. Widths are powers of two >= 4.
-        debug_assert!(width % 2 == 0);
+        debug_assert!(width.is_multiple_of(2));
         debug_assert_eq!(stride, 8, "height 4 + TX_PAD_HOR 4");
         for p in 0..width / 2 {
             let a = abs127(i32x8::from_slice(token, &coeff[p * 8..p * 8 + 8])).to_array();
@@ -73,7 +73,7 @@ pub(crate) fn txb_init_levels_impl(
         return;
     }
 
-    assert!(height % 8 == 0);
+    assert!(height.is_multiple_of(8));
     for i in 0..width {
         let col = &coeff[i * height..(i + 1) * height];
         let out = &mut levels[i * stride..i * stride + stride];

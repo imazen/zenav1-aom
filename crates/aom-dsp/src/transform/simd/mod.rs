@@ -181,6 +181,9 @@ fn half_batch_pays(kernel_points: usize) -> bool {
 /// u8-ranged.
 pub(crate) enum InvDst<'a> {
     U16(&'a mut [u16]),
+    // Constructed only by the x86-64 u8 fused paths in inv_txfm2d.rs; the
+    // aarch64 match arms stay so the NEON fused tiers can adopt it directly.
+    #[cfg_attr(not(target_arch = "x86_64"), expect(dead_code))]
     U8(&'a mut [u8]),
 }
 
@@ -1229,7 +1232,7 @@ fn inv_rect48_fused_i16(
 }
 
 /// The `incant!` fallback: decline to the generic two-pass driver.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::too_many_arguments)]
 fn inv_rect48_fused_i16_u8_scalar(
     _t: archmage::ScalarToken,

@@ -11,11 +11,11 @@
 //! domain (any i32 coeff incl. MIN/MAX, any i16 tables), which is only
 //! possible because the port kernel is an instruction-level mirror.
 
-use aom_dsp::quant::simd::av1_quantize_fp_no_qmatrix_dispatch;
-use aom_sys_ref as c;
-use archmage::SimdToken;
-
+// The whole test is x86-64-only (see the note on the test fn); gate the
+// helpers the same way so the aarch64 build holds no dead code.
+#[cfg(target_arch = "x86_64")]
 struct Rng(u64);
+#[cfg(target_arch = "x86_64")]
 impl Rng {
     fn next(&mut self) -> u64 {
         let mut x = self.0;
@@ -37,6 +37,7 @@ impl Rng {
 }
 
 /// Random permutation of 0..n plus its inverse (real scan-order shapes).
+#[cfg(target_arch = "x86_64")]
 fn perm_pair(rng: &mut Rng, n: usize) -> (Vec<i16>, Vec<i16>) {
     let mut v: Vec<i16> = (0..n as i16).collect();
     for i in (1..n).rev() {

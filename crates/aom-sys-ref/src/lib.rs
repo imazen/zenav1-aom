@@ -262,15 +262,15 @@ unsafe extern "C" {
     );
 }
 
-/// The architecture-specialised tier of the same two kernels, named directly
-/// rather than reached through RTCD's pointer (arm64 binds some kernels at
-/// compile time anyway — LIBAOM_UPSTREAM_NOTES A5).
-///
-/// x86 uses the **SSE2** tier deliberately: it is baseline on x86-64 so calling
-/// it unconditionally cannot fault, and `aom_hadamard_lp_8x8` has no AVX2 tier
-/// at all (`aom_dsp/aom_dsp_rtcd_defs.pl:1288` specialises `sse2 neon`).
-/// `aom_hadamard_lp_16x16` additionally has an AVX2 tier (`:1291`) that makes
-/// the same int16 arithmetic choice as SSE2, so SSE2 is representative.
+// The architecture-specialised tier of the same two kernels, named directly
+// rather than reached through RTCD's pointer (arm64 binds some kernels at
+// compile time anyway — LIBAOM_UPSTREAM_NOTES A5).
+//
+// x86 uses the **SSE2** tier deliberately: it is baseline on x86-64 so calling
+// it unconditionally cannot fault, and `aom_hadamard_lp_8x8` has no AVX2 tier
+// at all (`aom_dsp/aom_dsp_rtcd_defs.pl:1288` specialises `sse2 neon`).
+// `aom_hadamard_lp_16x16` additionally has an AVX2 tier (`:1291`) that makes
+// the same int16 arithmetic choice as SSE2, so SSE2 is representative.
 #[cfg(target_arch = "aarch64")]
 unsafe extern "C" {
     pub fn aom_hadamard_lp_8x8_neon(src: *const i16, stride: isize, coeff: *mut i16);
@@ -502,7 +502,7 @@ pub fn ref_satd_lp_simd(coeff: &[i16]) -> i32 {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        assert!(coeff.len() % 8 == 0);
+        assert!(coeff.len().is_multiple_of(8));
         unsafe { aom_satd_lp_neon(coeff.as_ptr(), coeff.len() as i32) }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -528,7 +528,7 @@ pub fn ref_block_error_lp_simd(coeff: &[i16], dqcoeff: &[i16]) -> i64 {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        assert!(coeff.len() % 8 == 0);
+        assert!(coeff.len().is_multiple_of(8));
         unsafe { av1_block_error_lp_neon(coeff.as_ptr(), dqcoeff.as_ptr(), coeff.len() as isize) }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -7428,10 +7428,10 @@ pub fn ref_quantize_b(
     (qcoeff, dqcoeff, eob)
 }
 
-/// Real exported C NEON `aom_quantize_b` tier — the oracle for the port's
-/// `quantize_b_impl_neon` mirror. Dispatches by `log_scale` the same way C's
-/// rtcd table does: 0 -> `aom_quantize_b_neon`, 1 -> `_32x32_neon`,
-/// 2 -> `_64x64_neon`. aarch64 only.
+// Real exported C NEON `aom_quantize_b` tier — the oracle for the port's
+// `quantize_b_impl_neon` mirror. Dispatches by `log_scale` the same way C's
+// rtcd table does: 0 -> `aom_quantize_b_neon`, 1 -> `_32x32_neon`,
+// 2 -> `_64x64_neon`. aarch64 only.
 #[cfg(target_arch = "aarch64")]
 unsafe extern "C" {
     #[allow(clippy::too_many_arguments)]
@@ -9466,6 +9466,7 @@ extern "C" {
         vf: *const i16,
         bd: i32,
     ) -> i32;
+    #[cfg(target_arch = "x86_64")]
     #[allow(clippy::too_many_arguments)]
     fn shim_wiener_convolve_hbd_avx2(
         src: *const u16,
