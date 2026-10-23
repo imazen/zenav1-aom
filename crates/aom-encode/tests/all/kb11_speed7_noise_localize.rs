@@ -389,6 +389,7 @@ fn run_and_localize(cq_level: i32, mono: bool) -> bool {
 
     let sf = SpeedFeatures::set_allintra(speed, p.allow_screen_content_tools, false);
     let env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: SB,
         mi_rows,

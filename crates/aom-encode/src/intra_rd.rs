@@ -936,6 +936,11 @@ pub struct IntraSbySearchCfg<'a> {
     /// carries the size/colour cost tables + neighbour palette state + the
     /// palette speed-feature levels.
     pub palette: Option<PaletteModeCfg<'a>>,
+    /// Cooperative cancellation, polled per luma candidate (the 61-entry
+    /// `mode_idx` loop is the deepest pollable unit below the leaf's own
+    /// entry check — a single candidate's full tx search is the residual
+    /// unpolled span). `None` on every non-stop caller — byte-inert.
+    pub stop: Option<&'a dyn enough::Stop>,
 }
 
 /// The palette-search slice of [`IntraSbySearchCfg`] (present iff
@@ -1226,6 +1231,17 @@ pub fn rd_pick_intra_sby_mode_y(
     let model_tx_size = MAX_TXSIZE_LOOKUP[bsize].min(3);
 
     for mode_idx in 0..LUMA_MODE_COUNT {
+        // Strided candidate poll: a pruned-mode iteration costs single-digit
+        // µs, so polling every one would be millions of sub-ms calls for no
+        // latency gain; every 32nd bounds the unpolled leaf span to ~32
+        // candidates while a fire still breaks the sweep — the partial
+        // outcome reads as an ordinary no-winner leaf and the caller's next
+        // check unwinds before it can be emitted.
+        if mode_idx % 32 == 0 && let Some(s) = cfg.stop {
+            if s.check().is_err() {
+                break;
+            }
+        }
         let (mode, luma_delta_angle) =
             set_y_mode_and_delta_angle(mode_idx, cfg.gates.prune_luma_odd_delta_angles_in_intra);
         // The C mutates mbmi BEFORE the gate chain (set_y_mode_and_delta_angle
@@ -1734,6 +1750,11 @@ pub fn rd_pick_filter_intra_sby_y(
 
     let mut selected: Option<IntraSbyBest> = None;
     for fi_mode in 0..FILTER_INTRA_MODES {
+        if fi_mode % 4 == 0 && let Some(s) = cfg.stop {
+            if s.check().is_err() {
+                break;
+            }
+        }
         if cfg.gates.prune_filter_intra_level == 1
             && (AV1_DERIVED_FILTER_INTRA_MODE_USED_FLAG[best_mode_so_far] & (1 << fi_mode)) == 0
         {

@@ -987,6 +987,19 @@ pub fn av1_cdef_search_adaptive(
     pick_method: i32,
     adaptive: Option<CdefAdaptive>,
 ) -> CdefSearchResult {
+    av1_cdef_search_adaptive_stop(f, pick_method, adaptive, None)
+        .expect("a None stop token never fires")
+}
+
+/// [`av1_cdef_search_adaptive`] with a cooperative stop token polled once
+/// per 64-pixel filter block in the frame-level MSE sweep — the dominant
+/// O(pixels x strengths) pass of the search.
+pub fn av1_cdef_search_adaptive_stop(
+    f: &CdefSearchFrame,
+    pick_method: i32,
+    adaptive: Option<CdefAdaptive>,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<CdefSearchResult, enough::StopReason> {
     let num_planes = f.num_planes();
     let damping = 3 + (f.base_qindex >> 6);
     let nvfb = (f.mi_rows + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
@@ -1002,7 +1015,7 @@ pub fn av1_cdef_search_adaptive(
     // strengths are all zero so the value is pixel-inert; it is coded, so it
     // must be reproduced.
     if adaptive.is_some_and(|a| a.cq_level <= 32) {
-        return CdefSearchResult {
+        return Ok(CdefSearchResult {
             cdef_bits: 0,
             nb_cdef_strengths: 1,
             cdef_strengths: [0; 8],
@@ -1011,7 +1024,7 @@ pub fn av1_cdef_search_adaptive(
             unit_strength: vec![0i32; (nvfb * nhfb) as usize],
             nvfb,
             nhfb,
-        };
+        });
     }
 
     // pickcdef.c:866-881 — the allintra speed>=7 arm. `skip_cdef` is
@@ -1022,7 +1035,7 @@ pub fn av1_cdef_search_adaptive(
     // `avoid_uv_cdef` is `apply_adaptive_cdef` (CDEF_ADAPTIVE under AOM_Q —
     // `adaptive.is_some()` exactly).
     if pick_method == crate::speed_features::CDEF_PICK_FROM_Q {
-        return av1_pick_cdef_from_qp(
+        return Ok(av1_pick_cdef_from_qp(
             f.mi_rows,
             f.mi_cols,
             f.bd,
@@ -1030,7 +1043,7 @@ pub fn av1_cdef_search_adaptive(
             false,
             false,
             adaptive.is_some(),
-        );
+        ));
     }
 
     assert!(
@@ -1052,6 +1065,9 @@ pub fn av1_cdef_search_adaptive(
     let mut tmp = vec![0u16; MAX_SB * MAX_SB];
     for fbr in 0..nvfb {
         for fbc in 0..nhfb {
+            if let Some(s) = stop {
+                s.check()?;
+            }
             if cdef_sb_skip(f, fbr, fbc) {
                 continue;
             }
@@ -1220,7 +1236,7 @@ pub fn av1_cdef_search_adaptive(
         }
     }
 
-    CdefSearchResult {
+    Ok(CdefSearchResult {
         cdef_bits: nb_strength_bits,
         nb_cdef_strengths,
         cdef_strengths,
@@ -1229,7 +1245,7 @@ pub fn av1_cdef_search_adaptive(
         unit_strength,
         nvfb,
         nhfb,
-    }
+    })
 }
 
 /// `av1_pick_cdef_from_qp` (pickcdef.c:744-835) — the `CDEF_PICK_FROM_Q`

@@ -1022,6 +1022,19 @@ pub fn loop_filter_frame_opt(
     let _ = loop_filter_frame_impl(buf, grid, p, plane_start, plane_end, None, true);
 }
 
+/// [`loop_filter_frame_opt`] with a cooperative stop token — the encoder-side
+/// `lpf_opt` walk's counterpart of [`loop_filter_frame_stop`].
+pub fn loop_filter_frame_opt_stop(
+    buf: &mut LfFrameBuf,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    loop_filter_frame_impl(buf, grid, p, plane_start, plane_end, stop, true)
+}
+
 /// [`loop_filter_frame`] with a cooperative stop token polled once per 32-mi
 /// (128-pixel) superblock-row strip — the outermost loop of the walk, so the
 /// poll costs one predictable branch per strip and cannot touch a pixel.
@@ -1387,6 +1400,19 @@ pub fn loop_filter_frame_u8_opt(
     plane_end: usize,
 ) {
     let _ = loop_filter_frame_u8_impl(buf, grid, p, plane_start, plane_end, None, true);
+}
+
+/// [`loop_filter_frame_u8_opt`] with a cooperative stop token — the
+/// encoder-side `lpf_opt` walk's counterpart of [`loop_filter_frame_u8_stop`].
+pub fn loop_filter_frame_u8_opt_stop(
+    buf: &mut LfFrameBufU8,
+    grid: &LfMiGrid,
+    p: &LfParams,
+    plane_start: usize,
+    plane_end: usize,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<(), enough::StopReason> {
+    loop_filter_frame_u8_impl(buf, grid, p, plane_start, plane_end, stop, true)
 }
 
 /// [`loop_filter_frame_u8`] with a cooperative stop token polled once per

@@ -357,6 +357,7 @@ fn rd_pick_intra_sbuv_mode_matches_c() {
                 &pol,
                 &lp,
                 None,
+                None,
             );
 
             let cenv = CUvEnv {

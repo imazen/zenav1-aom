@@ -437,8 +437,11 @@ fn search_filter_level<P: LfTrialPixel>(
     held_horiz: i32,
     sharpness: i32,
     scratch: &mut Vec<P>,
-) -> i32 {
-    search_filter_level_impl(f, plane, dir, held_vert, held_horiz, sharpness, scratch, false)
+    stop: Option<&dyn enough::Stop>,
+) -> Result<i32, enough::StopReason> {
+    search_filter_level_impl(
+        f, plane, dir, held_vert, held_horiz, sharpness, scratch, false, stop,
+    )
 }
 
 /// The step search itself is sequential (each iteration's direction/step
@@ -456,7 +459,8 @@ fn search_filter_level_impl<P: LfTrialPixel>(
     sharpness: i32,
     scratch: &mut Vec<P>,
     par: bool,
-) -> i32 {
+    stop: Option<&dyn enough::Stop>,
+) -> Result<i32, enough::StopReason> {
     const MIN_FILTER_LEVEL: i32 = 0;
     let max_filter_level = MAX_LOOP_FILTER; // one-pass envelope: always 63 (module docs)
     let mut filt_mid = 0i32; // last_frame_filter_level always 0 in this envelope
@@ -480,6 +484,9 @@ fn search_filter_level_impl<P: LfTrialPixel>(
     let mut filt_best = filt_mid;
 
     while filter_step > 0 {
+        if let Some(s) = stop {
+            s.check()?;
+        }
         let filt_high = (filt_mid + filter_step).min(max_filter_level);
         let filt_low = (filt_mid - filter_step).max(MIN_FILTER_LEVEL);
 
@@ -535,7 +542,7 @@ fn search_filter_level_impl<P: LfTrialPixel>(
             filt_mid = filt_best;
         }
     }
-    filt_best
+    Ok(filt_best)
 }
 
 /// `av1_pick_filter_level` (picklpf.c) for this port's envelope — see the
@@ -586,6 +593,20 @@ pub fn pick_filter_level<P: LfTrialPixel>(
     sharpness_cfg: i32,
     non_dual: bool,
 ) -> LoopFilterLevels {
+    pick_filter_level_stop(f, allintra, sharpness_cfg, non_dual, None)
+        .expect("a None stop token never fires")
+}
+
+/// [`pick_filter_level`] with a cooperative stop token polled once per
+/// step-search iteration — each iteration runs one or two full-plane trial
+/// filters, so the poll cadence stays at coarse millisecond grain.
+pub fn pick_filter_level_stop<P: LfTrialPixel>(
+    f: &LfSearchFrame<P>,
+    allintra: bool,
+    sharpness_cfg: i32,
+    non_dual: bool,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<LoopFilterLevels, enough::StopReason> {
     let sharpness = if allintra { sharpness_cfg } else { 0 };
 
     // Y: combined search first (both directions equal), then -- for the DUAL
@@ -600,30 +621,30 @@ pub fn pick_filter_level<P: LfTrialPixel>(
     // copies reuse — the port's `to_vec`-per-trial paid a full-plane malloc
     // on every level probe.
     let mut scratch = Vec::new();
-    let combined = search_filter_level(f, 0, 2, 0, 0, sharpness, &mut scratch);
+    let combined = search_filter_level(f, 0, 2, 0, 0, sharpness, &mut scratch, stop)?;
     let mut filter_level = [combined, combined];
     if !non_dual {
         filter_level[0] =
-            search_filter_level(f, 0, 0, 0, filter_level[1], sharpness, &mut scratch);
+            search_filter_level(f, 0, 0, 0, filter_level[1], sharpness, &mut scratch, stop)?;
         filter_level[1] =
-            search_filter_level(f, 0, 1, filter_level[0], 0, sharpness, &mut scratch);
+            search_filter_level(f, 0, 1, filter_level[0], 0, sharpness, &mut scratch, stop)?;
     }
 
     let (filter_level_u, filter_level_v) = if f.monochrome {
         (0, 0)
     } else {
         (
-            search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch),
-            search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch),
+            search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch, stop)?,
+            search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch, stop)?,
         )
     };
 
-    LoopFilterLevels {
+    Ok(LoopFilterLevels {
         filter_level,
         filter_level_u,
         filter_level_v,
         sharpness,
-    }
+    })
 }
 
 /// `pick_filter_level` with the independent passes on workers: the luma
@@ -638,8 +659,22 @@ pub fn pick_filter_level_mt<P: LfTrialPixel>(
     non_dual: bool,
     workers: usize,
 ) -> LoopFilterLevels {
+    pick_filter_level_mt_stop(f, allintra, sharpness_cfg, non_dual, workers, None)
+        .expect("a None stop token never fires")
+}
+
+/// [`pick_filter_level_mt`] with a cooperative stop token — every worker's
+/// step-search loop polls it, so a fire unwinds all three disjoint walks.
+pub fn pick_filter_level_mt_stop<P: LfTrialPixel>(
+    f: &LfSearchFrame<P>,
+    allintra: bool,
+    sharpness_cfg: i32,
+    non_dual: bool,
+    workers: usize,
+    stop: Option<&dyn enough::Stop>,
+) -> Result<LoopFilterLevels, enough::StopReason> {
     if workers <= 1 || f.monochrome {
-        return pick_filter_level(f, allintra, sharpness_cfg, non_dual);
+        return pick_filter_level_stop(f, allintra, sharpness_cfg, non_dual, stop);
     }
     let sharpness = if allintra { sharpness_cfg } else { 0 };
     // Y(2)+U(1)+V(1) = 4-way under `par` (std scope by default, the host's
@@ -649,35 +684,37 @@ pub fn pick_filter_level_mt<P: LfTrialPixel>(
         || {
             let mut scratch = Vec::new();
             let combined =
-                search_filter_level_impl(f, 0, 2, 0, 0, sharpness, &mut scratch, true);
+                search_filter_level_impl(f, 0, 2, 0, 0, sharpness, &mut scratch, true, stop)?;
             let mut fl = [combined, combined];
             if !non_dual {
-                fl[0] =
-                    search_filter_level_impl(f, 0, 0, 0, fl[1], sharpness, &mut scratch, true);
-                fl[1] =
-                    search_filter_level_impl(f, 0, 1, fl[0], 0, sharpness, &mut scratch, true);
+                fl[0] = search_filter_level_impl(
+                    f, 0, 0, 0, fl[1], sharpness, &mut scratch, true, stop,
+                )?;
+                fl[1] = search_filter_level_impl(
+                    f, 0, 1, fl[0], 0, sharpness, &mut scratch, true, stop,
+                )?;
             }
-            fl
+            Ok(fl)
         },
         || {
             aom_dsp::par::join(
                 || {
                     let mut scratch = Vec::new();
-                    search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch)
+                    search_filter_level(f, 1, 0, 0, 0, sharpness, &mut scratch, stop)
                 },
                 || {
                     let mut scratch = Vec::new();
-                    search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch)
+                    search_filter_level(f, 2, 0, 0, 0, sharpness, &mut scratch, stop)
                 },
             )
         },
     );
-    LoopFilterLevels {
-        filter_level: level_y,
-        filter_level_u: level_u,
-        filter_level_v: level_v,
+    Ok(LoopFilterLevels {
+        filter_level: level_y?,
+        filter_level_u: level_u?,
+        filter_level_v: level_v?,
         sharpness,
-    }
+    })
 }
 
 /// `av1_pick_filter_level`'s `method >= LPF_PICK_FROM_Q` arm (picklpf.c:
