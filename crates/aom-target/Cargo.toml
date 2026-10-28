@@ -30,7 +30,7 @@ publish = false
 # zenavif's `two-pass-zensim` harness, pinned to an explicit rev here so the
 # census is reproducible. Bump it deliberately: the judge bake and the
 # extraction regime are what the census numbers are measured against.
-zensim = { git = "https://github.com/imazen/zensim", rev = "f70511133d3056099de2ddc73a064ce417f4f593", features = [
+zensim = { git = "https://github.com/imazen/zensimx", rev = "f70511133d3056099de2ddc73a064ce417f4f593", features = [
     "feature-regime-v2",
     "custom-profiles",
 ], optional = true }
