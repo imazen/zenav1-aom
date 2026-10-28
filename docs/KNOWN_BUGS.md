@@ -5,6 +5,50 @@
 Record real bugs here immediately with file:line refs (survives context loss). Do NOT close
 an entry by relaxing/excluding a test — only by a landed fix verified on `origin/main`.
 
+### KB-71 — Encoder: `src_var`'s stride-0 zero reference was sized for the RU size, not the max unit width — every plane width `256k+r`, `k>=1`, `r in 1..=127` PANICKED `highbd_variance` — FIXED ✅ 2026-10-28
+
+**Where it came from.** The zenmetrics fleet's `jxlav1-enc-20261028` wave
+(96-image imazen-26 subset x 30 q x 3 speeds x 2 backends) recorded 448 dead
+cells; 447 of them were `aom-rs` `--cpu-used 4` `encoder_panic` rows covering
+EVERY quantizer on 17 distinct sources — content-independent once the source
+hit the geometry — plus one speed-8 sibling. Reproduced locally:
+`index out of bounds: the len is 256 but the index is 256` at
+`aom-dsp/src/dist/mod.rs:333` inside `highbd_variance64`, reached from
+`restoration_search_rows` -> `search_*` -> `src_var`
+(`aom-dsp/src/restore/pick.rs`).
+
+**Root.** `src_var` computes the source variance against a zero reference
+passed with `b_stride = 0`, so `highbd_variance` indexes `b[x]` for `x` in
+`0..w` — the buffer must be at least `w` long, but it was declared
+`[u16; 256]` and sliced `..w.min(256)`. A unit's rect width is
+`min(remaining_w, ext_size)` with `remaining_w = pw - x0`; since
+`lr_count_units` ROUNDS (`(pw + size/2) / size`), the last unit column gets
+`w = 256 + (pw mod 256)` whenever `pw mod 256` lands in `1..=127` — i.e.
+`w` in `257..=383` at the AV1-max `ru_size` of 256 (`ext_size = 384`).
+`b[256]` on a 256-element buffer panics. The band repeats per 256:
+`pw mod 256 in 1..=127` fails, `0` and `128..=255` are safe; chroma planes
+hit it at 4:2:0 luma widths of `513..=766`, `1025..=1278`, etc. — exactly
+the band of the 17 dead sources (e.g. luma 1169 -> chroma 585, mod 73).
+
+**Why the gates missed it.** Every in-repo size sweep tops out below 257
+px (the awkward-size census maxes at 129x128; the knob-range cells run
+65x67 / 200x136), so no test ever produced a unit rect wider than 256.
+The 45k-input fuzz sweep randomizes knobs, not the geometry band, and
+predates the LR search landing on this path.
+
+**Fix.** `ZEROS` is now `[u16; 384]` sliced `..w.min(384)` — wide enough
+for the contract's proven max (`ru_size*3/2 - 1 = 383`), still a loud
+panic on a truly out-of-contract `w` rather than a truncated variance.
+Byte-identity: the reference is all zeros either way; only the legal
+index range grew, so every previously-non-panicking encode is
+bit-identical.
+
+**Regression gate.** `refusal_census::lr_search_encodes_at_mod256_unit_edge_widths`
+— `cpu_used 4`, `enable_restoration`, `w in {257, 520, 1030}` on luma AND
+chroma plus the immediately-safe `{256, 384, 511, 640}` controls, mono and
+4:2:0. RED on the bug (7/14 cells panic, including 640's chroma-320 —
+the band mislabels only mono as safe, exactly as derived), GREEN after.
+
 ### KB-70 — aarch64 CI: ten differentials red on the first ARM run of the merged branch — three x86-only contracts and three UB-domain harness draws FIXED ✅ 2026-09-25; the five encode-level `_c`-chain unit tests are asserted on the forced-scalar ARM leg only — OPEN for a NEON-chain oracle (needs ARM hardware)
 
 **Where it came from.** `perf/gate3-txfm-i16-batch` merged into `main` at `75b5abc` with zero

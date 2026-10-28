@@ -2848,13 +2848,19 @@ impl<'a> PlaneCtx<'a> {
     /// the bd>8 normalisation shifts would scale the raw sums, so bd stays 8
     /// regardless of stream depth.
     fn src_var(&self, limits: (i32, i32, i32, i32)) -> u64 {
-        const ZEROS: [u16; 256] = [0; 256];
+        // The stride-0 zero reference is indexed `b[x]` for x in 0..w, and a
+        // unit rect can reach `ext_size - 1 = ru_size*3/2 - 1` wide — 383 at
+        // the AV1-max ru_size of 256. Sizing this to 256 panicked (index 256
+        // on len 256) on every plane whose width mod 256 lands in 1..=127 —
+        // the `..w.min(384)` bound keeps an out-of-contract w a loud panic
+        // rather than a silently truncated variance (KB-71).
+        const ZEROS: [u16; 384] = [0; 384];
         let (v0, v1, h0, h1) = limits;
         let (w, h) = ((h1 - h0) as usize, (v1 - v0) as usize);
         let (var, _sse) = crate::dist::highbd_variance(
             &self.src[v0 as usize * self.src_stride + h0 as usize..],
             self.src_stride,
-            &ZEROS[..w.min(256)],
+            &ZEROS[..w.min(384)],
             0,
             w,
             h,

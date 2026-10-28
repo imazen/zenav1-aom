@@ -160,6 +160,47 @@ fn every_format_and_depth_encodes_at_an_awkward_size() {
     assert_eq!(ok, cells.len());
 }
 
+/// KB-71 regression: `RestorationSearch::src_var`'s stride-0 zero reference is
+/// indexed `b[x]` over the whole unit rect, and a unit at the right edge spans
+/// `pw - x0` up to `ru_size*3/2 - 1 = 383` wide (`horz_units` rounds, so any
+/// plane width `256k + r`, `k >= 1`, `r in 1..=127` produces a `w > 256` rect).
+/// The reference was sized 256 — every such plane width PANICKED
+/// `highbd_variance` inside `restoration_search_rows` (found by the
+/// zenmetrics fleet: 447 `encoder_panic` cells, every q, on 17 real images).
+/// Sizes here cover the band on luma AND 4:2:0 chroma plus the just-safe
+/// widths on either side, at `cpu_used 4` where the search runs.
+#[test]
+fn lr_search_encodes_at_mod256_unit_edge_widths() {
+    let mut cells = Vec::new();
+    // (w, h): panicking band = plane width 256k+r, k>=1, r in 1..=127.
+    // (257, 64): luma w=257 panics at the first unit. (520, 64): luma 520
+    // (520 mod 256 = 8) AND chroma 260 (mod 4) both land in the band.
+    // (1030, 64): luma mod 6 / chroma mod 3. Controls: 256 (exact multiple),
+    // 384 (mod 128), 511 (mod 255), 640 (mod 128, chroma 320 mod 64) are the
+    // widths immediately OUTSIDE the band and must keep working.
+    for &(w, h) in &[
+        (257, 64),
+        (520, 64),
+        (1030, 64),
+        (256, 64),
+        (384, 64),
+        (511, 64),
+        (640, 64),
+    ] {
+        for (mono, sx, sy) in [(false, 1, 1), (true, 1, 1)] {
+            let mut cfg = KeyFrameConfig::allintra_speed0(w, h, 8, mono, sx, sy, 32);
+            cfg.cpu_used = 4;
+            cfg.enable_restoration = true;
+            let label = format!("{w}x{h} {}", if mono { "mono" } else { "ss11" });
+            cells.push((label, attempt(&cfg)));
+        }
+    }
+    assert_no_panics("lr mod-256 band", &cells);
+    let (ok, refused) = summarise("lr mod-256 band", &cells);
+    assert_eq!(refused, 0);
+    assert_eq!(ok, cells.len());
+}
+
 /// The enumerated fields, at both ends of every range plus the interior:
 /// quantizer, speed, superblock size, tiles, and the two post-filter knobs.
 #[test]
