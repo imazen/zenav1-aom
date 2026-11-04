@@ -234,7 +234,14 @@ fn no_config_or_plane_input_can_panic_the_encoder() {
         let deadline = Deadline::after(std::time::Duration::from_secs(60));
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             encode_key_frame_with(
-                KeyFramePlanes::new(&y, &u, &v),
+                KeyFramePlanes::new(
+                    &y,
+                    cfg.width,
+                    &u,
+                    cfg.chroma_dims().0,
+                    &v,
+                    cfg.chroma_dims().0,
+                ),
                 &cfg,
                 &EncodeConfig::new().with_limits(limits).with_stop(&deadline),
             )

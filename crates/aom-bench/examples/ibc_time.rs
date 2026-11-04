@@ -66,9 +66,19 @@ fn main() {
                 cfg.enable_palette = true;
                 cfg.enable_intrabc = true;
                 let t0 = Instant::now();
-                let ps = encode_key_frame(KeyFramePlanes::new(&c.y, &c.u, &c.v), &cfg)
-                    .expect("encode")
-                    .len();
+                let ps = encode_key_frame(
+                    KeyFramePlanes::new(
+                        &c.y,
+                        cfg.width,
+                        &c.u,
+                        cfg.chroma_dims().0,
+                        &c.v,
+                        cfg.chroma_dims().0,
+                    ),
+                    &cfg,
+                )
+                .expect("encode")
+                .len();
                 let p_ms = t0.elapsed().as_secs_f64() * 1e3;
                 println!(
                     "{w}x{h} cq{cq} s{speed}\t{c_ms:.0}\t{p_ms:.0}\t{:.1}\tcs={cs} ps={ps}",

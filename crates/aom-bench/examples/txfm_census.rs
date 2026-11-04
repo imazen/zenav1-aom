@@ -73,7 +73,18 @@ fn main() {
     cfg.enable_cdef = false;
     cfg.enable_restoration = true;
     aom_dsp::census::reset();
-    let _ = encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), &cfg).unwrap();
+    let _ = encode_key_frame(
+        KeyFramePlanes::new(
+            &cell.y,
+            cfg.width,
+            &cell.u,
+            cfg.chroma_dims().0,
+            &cell.v,
+            cfg.chroma_dims().0,
+        ),
+        &cfg,
+    )
+    .unwrap();
     let cs = aom_dsp::census::snapshot();
     let names = [
         "4x4", "8x8", "16x16", "32x32", "64x64", "4x8", "8x4", "8x16", "16x8", "16x32", "32x16",

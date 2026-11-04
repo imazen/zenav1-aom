@@ -153,6 +153,7 @@ mod seq_header_matches_real_encoder;
 mod seq_level_idx_diff;
 mod single_motion_search_composition;
 mod standalone_avif_parse_readback;
+mod strided_planes;
 mod subpel_params_diff;
 mod subpel_tree_diff;
 mod superres_select_diff;
