@@ -46,7 +46,7 @@ fn intra_model_rd_matches_c_chain() {
         lps: [0i32; 21 * 26],
     };
     let coeff_costs = CoeffCostSet {
-        by_txs_ctx: core::array::from_fn(|_| zero_lv_map.clone()),
+        by_txs_ctx: Box::new(core::array::from_fn(|_| zero_lv_map.clone())),
         eob_by_multi_size: [[0i32; 22]; 7],
     };
     let tx_type_costs = TxTypeCosts::zeroed();

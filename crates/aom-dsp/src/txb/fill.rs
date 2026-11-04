@@ -224,7 +224,10 @@ pub(crate) fn fill_eob_cost_from_arena(
 /// `[_; 5]` table indexed by `txs_ctx` alone.
 pub struct CoeffCostSet {
     /// `coeff_costs[txs_ctx][plane]`, `txs_ctx` = [`crate::txb::txsize_entropy_ctx`]`(tx_size)`.
-    pub by_txs_ctx: [LvMapCoeffCost; 5],
+    /// Boxed: five `LvMapCoeffCost`s are ~18.8 KiB inline — heap-first
+    /// construction keeps it off the stack (this struct sits inside the
+    /// ~44 KiB `RealCosts` the key-frame path carries per q-index).
+    pub by_txs_ctx: Box<[LvMapCoeffCost; 5]>,
     /// `eob_costs[eob_multi_size][plane]`, flattened `[2][11]` per entry.
     pub eob_by_multi_size: [[i32; 22]; 7],
 }
@@ -249,9 +252,15 @@ impl CoeffCostSet {
 /// `eob_costs[..][plane]`).
 pub fn fill_coeff_cost_set_from_arena(arena: &[u16], plane_type: usize) -> CoeffCostSet {
     CoeffCostSet {
-        by_txs_ctx: core::array::from_fn(|txs_ctx| {
-            fill_lv_map_coeff_cost_from_arena(arena, txs_ctx, plane_type)
-        }),
+        // Heap-first: collect into a Vec writes each element directly into
+        // the heap buffer, where `Box::new(array)`/`array::from_fn` would
+        // materialize the whole ~18.8 KiB array on the stack first.
+        by_txs_ctx: (0..5)
+            .map(|txs_ctx| fill_lv_map_coeff_cost_from_arena(arena, txs_ctx, plane_type))
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!()),
         eob_by_multi_size: core::array::from_fn(|eob_multi_size| {
             fill_eob_cost_from_arena(arena, eob_multi_size, plane_type)
         }),

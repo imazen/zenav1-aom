@@ -681,7 +681,7 @@ fn random_coeff_set(rng: &mut Rng) -> CoeffCostSet {
         }
     }
     CoeffCostSet {
-        by_txs_ctx,
+        by_txs_ctx: Box::new(by_txs_ctx),
         eob_by_multi_size,
     }
 }

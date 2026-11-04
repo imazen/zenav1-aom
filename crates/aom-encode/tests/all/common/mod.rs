@@ -77,7 +77,7 @@ pub fn coeff_cost_set_from_tables(
     let mut eob_row = [0i32; 22];
     eob_row[..eob.len()].copy_from_slice(eob);
     CoeffCostSet {
-        by_txs_ctx: core::array::from_fn(|_| single.clone()),
+        by_txs_ctx: Box::new(core::array::from_fn(|_| single.clone())),
         eob_by_multi_size: [eob_row; 7],
     }
 }
