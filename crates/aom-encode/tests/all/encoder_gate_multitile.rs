@@ -675,13 +675,33 @@ fn encoder_threaded_row_bands_match_serial() {
         base.tile_columns_log2 = *tcl;
         base.tile_rows_log2 = *trl;
         base.cpu_used = 3;
-        let serial = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &base)
-            .unwrap_or_else(|e| panic!("{name}: serial encode refused: {e}"));
+        let serial = encode_key_frame(
+            KeyFramePlanes::new(
+                &y,
+                base.width,
+                &u,
+                base.chroma_dims().0,
+                &v,
+                base.chroma_dims().0,
+            ),
+            &base,
+        )
+        .unwrap_or_else(|e| panic!("{name}: serial encode refused: {e}"));
         for threads in [2usize, 4] {
             let mut cfg = base;
             cfg.threads = threads;
-            let got = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
-                .unwrap_or_else(|e| panic!("{name}: threads={threads} refused: {e}"));
+            let got = encode_key_frame(
+                KeyFramePlanes::new(
+                    &y,
+                    cfg.width,
+                    &u,
+                    cfg.chroma_dims().0,
+                    &v,
+                    cfg.chroma_dims().0,
+                ),
+                &cfg,
+            )
+            .unwrap_or_else(|e| panic!("{name}: threads={threads} refused: {e}"));
             assert_eq!(
                 got,
                 serial,

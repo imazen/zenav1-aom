@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-aom-encode.txt 289 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-encode.internal.txt 4999 lines (339 hidden + 7838 excluded-feature)
+# files: zenav1-aom-encode.txt 294 lines (supported surface) | zenav1-aom-encode.features.txt 0 added (features: avx512,census,rayon,trace-env) | zenav1-aom-encode.internal.txt 4999 lines (339 hidden + 7838 excluded-feature)
 # arch-unique surface: (none — portable on every target)
 
 ## summary
@@ -16,8 +16,8 @@
 #   pub consts/statics                         11
 #   free functions                             24
 #   inherent methods                           28
-#   struct fields                             139
-#   enum variants                              25
+#   struct fields                             143
+#   enum variants                              26
 #   re-exports                                  1
 #   trait roster entries (type × trait)       131
 #   auto-trait-complete types                  27
@@ -25,9 +25,9 @@
 #
 # per-module pub lines:
 #   (root)                            7
-#   aom_encode                      251
+#   aom_encode                      256
 
-## items (258 lines)
+## items (263 lines)
 
 pub mod aom_encode
 pub use aom_encode::reconstruct_txb
@@ -54,6 +54,10 @@ pub aom_encode::key_frame::KeyFrameError::PlaneSize
 pub aom_encode::key_frame::KeyFrameError::PlaneSize::expected: usize
 pub aom_encode::key_frame::KeyFrameError::PlaneSize::got: usize
 pub aom_encode::key_frame::KeyFrameError::PlaneSize::plane: usize
+pub aom_encode::key_frame::KeyFrameError::PlaneStride
+pub aom_encode::key_frame::KeyFrameError::PlaneStride::plane: usize
+pub aom_encode::key_frame::KeyFrameError::PlaneStride::stride: usize
+pub aom_encode::key_frame::KeyFrameError::PlaneStride::width: usize
 pub aom_encode::key_frame::KeyFrameError::SampleRange
 pub aom_encode::key_frame::KeyFrameError::SampleRange::got: u16
 pub aom_encode::key_frame::KeyFrameError::SampleRange::max: u16
@@ -165,10 +169,11 @@ pub fn aom_encode::key_frame::KeyFrameConfig::profile(&self) -> i32
 pub fn aom_encode::key_frame::KeyFrameConfig::resolved_threads(&self) -> usize
 pub fn aom_encode::key_frame::KeyFrameConfig::validate_configuration(&self) -> core::result::Result<(), aom_encode::key_frame::KeyFrameError>
 #[non_exhaustive] pub struct aom_encode::key_frame::KeyFramePlanes<'a>
+pub aom_encode::key_frame::KeyFramePlanes::strides: [usize; 3]
 pub aom_encode::key_frame::KeyFramePlanes::u: &'a [u16]
 pub aom_encode::key_frame::KeyFramePlanes::v: &'a [u16]
 pub aom_encode::key_frame::KeyFramePlanes::y: &'a [u16]
-pub const fn aom_encode::key_frame::KeyFramePlanes<'a>::new(&'a [u16], &'a [u16], &'a [u16]) -> Self
+pub const fn aom_encode::key_frame::KeyFramePlanes<'a>::new(&'a [u16], usize, &'a [u16], usize, &'a [u16], usize) -> Self
 #[non_exhaustive] pub struct aom_encode::key_frame::QualityTools
 pub aom_encode::key_frame::QualityTools::adaptive_sharpness: bool
 pub aom_encode::key_frame::QualityTools::cdef_adaptive: bool

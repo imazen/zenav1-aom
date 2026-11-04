@@ -244,8 +244,18 @@ fn run(label: &str, cfg: &KeyFrameConfig, grain_table: Option<std::path::PathBuf
         cfg.ss_y,
         7,
     );
-    let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg)
-        .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
+    let port = encode_key_frame(
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
+        cfg,
+    )
+    .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
     let c_tu = c::ref_encode_av1_kf_cfg(
         &y,
         &u,
@@ -724,8 +734,18 @@ fn film_grain_table_byte_matches_real_aomenc() {
             // the byte leg holds everywhere.
             let c_accepts =
                 std::panic::catch_unwind(|| c::ref_decode_av1_kf(&c_tu, 128, 128)).is_ok();
-            let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
-                .unwrap_or_else(|e| panic!("grain tv{tv} {fmt}: refused: {e}"));
+            let port = encode_key_frame(
+                KeyFramePlanes::new(
+                    &y,
+                    cfg.width,
+                    &u,
+                    cfg.chroma_dims().0,
+                    &v,
+                    cfg.chroma_dims().0,
+                ),
+                &cfg,
+            )
+            .unwrap_or_else(|e| panic!("grain tv{tv} {fmt}: refused: {e}"));
             if c_accepts {
                 let c_dec = c::ref_decode_av1_kf(&port, 128, 128);
                 let p_dec = aom_decode::frame::decode_frame_obus(&port).expect("port decode");
@@ -819,7 +839,17 @@ fn new_knob_refusals_are_named() {
             matches!(q, Err(KeyFrameError::Unsupported(_))),
             "{name}: support query must refuse by name, got {q:?}"
         );
-        let e = encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &cfg);
+        let e = encode_key_frame(
+            KeyFramePlanes::new(
+                &[],
+                cfg.width,
+                &[],
+                cfg.chroma_dims().0,
+                &[],
+                cfg.chroma_dims().0,
+            ),
+            &cfg,
+        );
         assert!(
             matches!(e, Err(KeyFrameError::Unsupported(_))),
             "{name}: encoder must refuse the same way, got {e:?}"

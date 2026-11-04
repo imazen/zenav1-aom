@@ -54,7 +54,11 @@ fn port(
     cfg.enable_restoration = true;
     cfg.enable_palette = pal;
     cfg.enable_intrabc = ibc;
-    encode_key_frame(KeyFramePlanes::new(y, u, v), &cfg).expect("encode")
+    encode_key_frame(
+        KeyFramePlanes::new(y, cfg.width, u, cfg.chroma_dims().0, v, cfg.chroma_dims().0),
+        &cfg,
+    )
+    .expect("encode")
 }
 
 fn main() {

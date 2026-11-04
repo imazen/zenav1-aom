@@ -81,7 +81,16 @@ fn cell() -> KeyFrameConfig {
 fn a_never_firing_token_is_byte_inert_and_polled_per_superblock_row() {
     let cfg = cell();
     let (y, u, v) = planes(&cfg);
-    let p = || KeyFramePlanes::new(&y, &u, &v);
+    let p = || {
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        )
+    };
 
     let baseline = encode_key_frame(p(), &cfg).expect("baseline encode");
     let counter = CountingStop(AtomicUsize::new(0));
@@ -116,7 +125,16 @@ fn a_never_firing_token_is_byte_inert_and_polled_per_superblock_row() {
 fn a_firing_token_cancels_the_encode_at_a_bounded_point() {
     let cfg = cell();
     let (y, u, v) = planes(&cfg);
-    let p = || KeyFramePlanes::new(&y, &u, &v);
+    let p = || {
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        )
+    };
 
     // How many polls a full encode takes, so "partway" is a measured fraction
     // rather than a guess.
@@ -154,7 +172,14 @@ fn cancellation_is_its_own_error_and_does_not_collide_with_unsupported() {
     let (y, u, v) = planes(&cfg);
     let token = StopAfter(AtomicUsize::new(0));
     let cancelled = encode_key_frame_with(
-        KeyFramePlanes::new(&y, &u, &v),
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
         &cfg,
         &EncodeConfig::new().with_stop(&token),
     )
@@ -162,8 +187,18 @@ fn cancellation_is_its_own_error_and_does_not_collide_with_unsupported() {
 
     let mut bad = cfg;
     bad.cq_level = 64;
-    let unsupported =
-        encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &bad).expect_err("must refuse");
+    let unsupported = encode_key_frame(
+        KeyFramePlanes::new(
+            &[],
+            bad.width,
+            &[],
+            bad.chroma_dims().0,
+            &[],
+            bad.chroma_dims().0,
+        ),
+        &bad,
+    )
+    .expect_err("must refuse");
 
     assert_ne!(cancelled, unsupported);
     assert!(matches!(cancelled, KeyFrameError::Cancelled(_)));
@@ -183,7 +218,16 @@ fn cancellation_is_its_own_error_and_does_not_collide_with_unsupported() {
 fn deadline_token_times_out_the_encode() {
     let cfg = cell();
     let (y, u, v) = planes(&cfg);
-    let p = || KeyFramePlanes::new(&y, &u, &v);
+    let p = || {
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        )
+    };
 
     let elapsed = Deadline::after(Duration::ZERO);
     let r = encode_key_frame_with(p(), &cfg, &EncodeConfig::new().with_stop(&elapsed));

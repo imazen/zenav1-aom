@@ -187,11 +187,7 @@ fn main() {
             cfg.enable_palette = false;
             cfg.enable_intrabc = false;
         }
-        let planes = KeyFramePlanes {
-            y: &cell.y,
-            u: &cell.u,
-            v: &cell.v,
-        };
+        let planes = KeyFramePlanes::new(&cell.y, cfg.width, &cell.u, cfg.chroma_dims().0, &cell.v, cfg.chroma_dims().0);
         for _ in 0..warmup {
             let _ = encode_key_frame(planes, &cfg).expect("encode_key_frame");
         }

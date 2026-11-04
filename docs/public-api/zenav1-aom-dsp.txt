@@ -1711,7 +1711,7 @@ pub aom_dsp::txb::TxClass::TwoD = 0
 pub aom_dsp::txb::TxClass::Vert = 2
 pub fn aom_dsp::txb::TxClass::from_c(i32) -> aom_dsp::txb::TxClass
 pub struct aom_dsp::txb::CoeffCostSet
-pub aom_dsp::txb::CoeffCostSet::by_txs_ctx: [aom_dsp::txb::LvMapCoeffCost; 5]
+pub aom_dsp::txb::CoeffCostSet::by_txs_ctx: alloc::boxed::Box<[aom_dsp::txb::LvMapCoeffCost; 5]>
 pub aom_dsp::txb::CoeffCostSet::eob_by_multi_size: [[i32; 22]; 7]
 pub fn aom_dsp::txb::CoeffCostSet::tables(&self, usize) -> aom_dsp::txb::CoeffCostTables<'_>
 pub struct aom_dsp::txb::CoeffCostTables<'a>
