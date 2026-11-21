@@ -65,7 +65,17 @@ enum Outcome {
 fn attempt(cfg: &KeyFrameConfig) -> Outcome {
     let (y, u, v) = planes(cfg);
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg)
+        encode_key_frame(
+            KeyFramePlanes::new(
+                &y,
+                cfg.width,
+                &u,
+                cfg.chroma_dims().0,
+                &v,
+                cfg.chroma_dims().0,
+            ),
+            cfg,
+        )
     }));
     match r {
         Ok(Ok(bytes)) => Outcome::Ok(bytes.len()),
@@ -279,7 +289,17 @@ fn the_documented_refusals_are_exactly_these() {
         // The planes are deliberately empty here: a config-level refusal must
         // come back BEFORE any source sample is read.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &cfg)
+            encode_key_frame(
+                KeyFramePlanes::new(
+                    &[],
+                    cfg.width,
+                    &[],
+                    cfg.chroma_dims().0,
+                    &[],
+                    cfg.chroma_dims().0,
+                ),
+                &cfg,
+            )
         }));
         let o = match r {
             Ok(Ok(b)) => Outcome::Ok(b.len()),
@@ -338,8 +358,18 @@ fn a_non_power_of_two_tile_grid_encodes_and_decodes() {
     );
 
     let (y, u, v) = planes(&cfg);
-    let stream = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
-        .expect("a 4x3 tile grid must encode");
+    let stream = encode_key_frame(
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
+        &cfg,
+    )
+    .expect("a 4x3 tile grid must encode");
 
     // The REAL C decoder is the authority on whether the tile syntax is well
     // formed: a wrong `context_update_tile_id` width or a tile count that
@@ -381,8 +411,18 @@ fn every_error_variant_carries_a_category_and_a_retry_verdict() {
     let unsupported = c.validate_configuration().expect_err("cq 64 must refuse");
 
     // invalid-input: a config that VALIDATES but whose planes do not match.
-    let plane_size = encode_key_frame(KeyFramePlanes::new(&[0u16; 4], &[], &[]), &base)
-        .expect_err("mismatched planes must refuse");
+    let plane_size = encode_key_frame(
+        KeyFramePlanes::new(
+            &[0u16; 4],
+            base.width,
+            &[],
+            base.chroma_dims().0,
+            &[],
+            base.chroma_dims().0,
+        ),
+        &base,
+    )
+    .expect_err("mismatched planes must refuse");
 
     // limit-exceeded
     let limit = base
@@ -398,7 +438,14 @@ fn every_error_variant_carries_a_category_and_a_retry_verdict() {
     }
     let (y, u, v) = planes(&base);
     let cancelled = aom_encode::key_frame::encode_key_frame_with(
-        KeyFramePlanes::new(&y, &u, &v),
+        KeyFramePlanes::new(
+            &y,
+            base.width,
+            &u,
+            base.chroma_dims().0,
+            &v,
+            base.chroma_dims().0,
+        ),
         &base,
         &EncodeConfig::new().with_stop(&Always),
     )
@@ -548,7 +595,17 @@ fn screen_shaped_tiny_cells_encode_rather_than_refuse() {
                 }
 
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
+                    encode_key_frame(
+                        KeyFramePlanes::new(
+                            &y,
+                            cfg.width,
+                            &u,
+                            cfg.chroma_dims().0,
+                            &v,
+                            cfg.chroma_dims().0,
+                        ),
+                        &cfg,
+                    )
                 }));
                 let o = match r {
                     Ok(Ok(b)) => Outcome::Ok(b.len()),

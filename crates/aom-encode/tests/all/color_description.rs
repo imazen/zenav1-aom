@@ -61,7 +61,18 @@ fn planes(cfg: &KeyFrameConfig) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
 
 fn encode(cfg: &KeyFrameConfig) -> Vec<u8> {
     let (y, u, v) = planes(cfg);
-    encode_key_frame(KeyFramePlanes::new(&y, &u, &v), cfg).expect("the cell must encode")
+    encode_key_frame(
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
+        cfg,
+    )
+    .expect("the cell must encode")
 }
 
 /// Walk the temporal unit to the sequence-header OBU and parse its

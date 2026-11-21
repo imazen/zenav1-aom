@@ -88,7 +88,11 @@ fn cfg_for(w: usize, h: usize, cq: i32, speed: i32, mode: KeyFrameMode) -> KeyFr
 }
 
 fn port(y: &[u16], u: &[u16], v: &[u16], cfg: &KeyFrameConfig) -> Vec<u8> {
-    encode_key_frame(KeyFramePlanes::new(y, u, v), cfg).expect("encode_key_frame refused")
+    encode_key_frame(
+        KeyFramePlanes::new(y, cfg.width, u, cfg.chroma_dims().0, v, cfg.chroma_dims().0),
+        cfg,
+    )
+    .expect("encode_key_frame refused")
 }
 
 /// C's ONE-PASS stream (aomenc allintra default envelope — the trial is

@@ -82,9 +82,19 @@ fn main() {
                     cfg.enable_restoration = true;
                     cfg.enable_palette = pal;
                     cfg.enable_intrabc = ibc;
-                    encode_key_frame(KeyFramePlanes::new(&c.y, &c.u, &c.v), &cfg)
-                        .expect("encode_key_frame")
-                        .len()
+                    encode_key_frame(
+                        KeyFramePlanes::new(
+                            &c.y,
+                            cfg.width,
+                            &c.u,
+                            cfg.chroma_dims().0,
+                            &c.v,
+                            cfg.chroma_dims().0,
+                        ),
+                        &cfg,
+                    )
+                    .expect("encode_key_frame")
+                    .len()
                 };
                 let (po, pp, pb) = (port(false, false), port(true, false), port(true, true));
                 println!(

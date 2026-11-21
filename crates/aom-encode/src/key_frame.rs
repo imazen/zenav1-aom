@@ -1169,11 +1169,12 @@ impl KeyFrameConfig {
     }
 }
 
-/// Source planes for [`encode_key_frame`]: tightly packed `u16` samples in the
-/// `bit_depth`-bit range (8-bit sources carry 8-bit values), `y.len() == w*h`
-/// and, when not monochrome, `u.len() == v.len() == cw*ch`. Same convention as
-/// `aom_sys_ref::ref_encode_av1_kf`, so a caller can hand the identical buffers
-/// to both sides of a differential.
+/// Source planes for [`encode_key_frame`]: `u16` samples in the `bit_depth`-bit
+/// range (8-bit sources carry 8-bit values), each plane at its own stride in samples,
+/// at least its width. A plane needs `(rows - 1) * stride + width` samples, and
+/// padding is never read, so it may hold anything. Tight planes, which pass their
+/// widths, are the convention of `aom_sys_ref::ref_encode_av1_kf`, so a caller can
+/// hand the identical buffers to both sides of a differential.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct KeyFramePlanes<'a> {
@@ -1183,13 +1184,62 @@ pub struct KeyFramePlanes<'a> {
     pub u: &'a [u16],
     /// Cr (empty when monochrome).
     pub v: &'a [u16],
+    /// Row pitch of `[y, u, v]` in samples. Chroma's are not read on a monochrome
+    /// encode.
+    pub strides: [usize; 3],
 }
 
 impl<'a> KeyFramePlanes<'a> {
-    /// Tightly packed `y`/`u`/`v` slices; pass `&[]` for `u` and `v` on a
+    /// Each plane at its own stride; pass `&[]` and any strides for `u` and `v` on a
     /// monochrome encode.
-    pub const fn new(y: &'a [u16], u: &'a [u16], v: &'a [u16]) -> Self {
-        KeyFramePlanes { y, u, v }
+    pub const fn new(
+        y: &'a [u16],
+        y_stride: usize,
+        u: &'a [u16],
+        u_stride: usize,
+        v: &'a [u16],
+        v_stride: usize,
+    ) -> Self {
+        KeyFramePlanes {
+            y,
+            u,
+            v,
+            strides: [y_stride, u_stride, v_stride],
+        }
+    }
+
+    /// Check one strided plane against its dimensions, with checked arithmetic.
+    fn check_strided(
+        plane: usize,
+        samples: &[u16],
+        width: usize,
+        height: usize,
+        stride: usize,
+    ) -> Result<(), KeyFrameError> {
+        if stride < width {
+            return Err(KeyFrameError::PlaneStride {
+                plane,
+                width,
+                stride,
+            });
+        }
+        let expected = height
+            .saturating_sub(1)
+            .checked_mul(stride)
+            .and_then(|start| start.checked_add(width))
+            .ok_or(KeyFrameError::PlaneSize {
+                plane,
+                expected: usize::MAX,
+                got: samples.len(),
+            })?;
+        if samples.len() < expected {
+            return Err(KeyFrameError::PlaneSize {
+                plane,
+                expected,
+                got: samples.len(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1206,6 +1256,15 @@ pub enum KeyFrameError {
         expected: usize,
         /// What was handed in.
         got: usize,
+    },
+    /// A plane's stride is below its width.
+    PlaneStride {
+        /// 0 = Y, 1 = U, 2 = V.
+        plane: usize,
+        /// The plane's width.
+        width: usize,
+        /// The stride handed in.
+        stride: usize,
     },
     /// A config field is outside this shell's gated envelope. Carries the
     /// field name and the reason.
@@ -1279,7 +1338,9 @@ impl KeyFrameError {
     /// added here.
     pub fn category(&self) -> &'static str {
         match self {
-            KeyFrameError::PlaneSize { .. } | KeyFrameError::SampleRange { .. } => "invalid-input",
+            KeyFrameError::PlaneSize { .. }
+            | KeyFrameError::PlaneStride { .. }
+            | KeyFrameError::SampleRange { .. } => "invalid-input",
             KeyFrameError::Unsupported(_) => "unsupported",
             KeyFrameError::LimitExceeded { .. } => "limit-exceeded",
             KeyFrameError::AllocFailed { .. } => "alloc-failed",
@@ -1300,6 +1361,7 @@ impl KeyFrameError {
     pub fn is_transient(&self) -> bool {
         match self {
             KeyFrameError::PlaneSize { .. }
+            | KeyFrameError::PlaneStride { .. }
             | KeyFrameError::SampleRange { .. }
             | KeyFrameError::Unsupported(_)
             | KeyFrameError::LimitExceeded { .. }
@@ -1321,6 +1383,14 @@ impl core::fmt::Display for KeyFrameError {
                 expected,
                 got,
             } => write!(f, "plane {plane}: expected {expected} samples, got {got}"),
+            KeyFrameError::PlaneStride {
+                plane,
+                width,
+                stride,
+            } => write!(
+                f,
+                "plane {plane}: stride {stride} is below its width {width}"
+            ),
             KeyFrameError::SampleRange { plane, max, got } => write!(
                 f,
                 "plane {plane}: sample {got} exceeds the bit depth's maximum {max} \
@@ -2933,41 +3003,32 @@ pub fn encode_key_frame_with(
     opts.check_alloc_budget(cfg.estimate().peak_memory_bytes)?;
     let (w, h) = (cfg.width, cfg.height);
     let (cw, ch) = cfg.chroma_dims();
-    if planes.y.len() != w * h {
-        return Err(KeyFrameError::PlaneSize {
-            plane: 0,
-            expected: w * h,
-            got: planes.y.len(),
-        });
-    }
+    let strides = planes.strides;
+    KeyFramePlanes::check_strided(0, planes.y, w, h, strides[0])?;
     if !cfg.monochrome {
-        if planes.u.len() != cw * ch {
-            return Err(KeyFrameError::PlaneSize {
-                plane: 1,
-                expected: cw * ch,
-                got: planes.u.len(),
-            });
-        }
-        if planes.v.len() != cw * ch {
-            return Err(KeyFrameError::PlaneSize {
-                plane: 2,
-                expected: cw * ch,
-                got: planes.v.len(),
-            });
-        }
+        KeyFramePlanes::check_strided(1, planes.u, cw, ch, strides[1])?;
+        KeyFramePlanes::check_strided(2, planes.v, cw, ch, strides[2])?;
     }
     // Sample range. One O(pixels) pass, which is nothing beside an encode, and
     // it is the difference between a named refusal and an arithmetic-overflow
     // PANIC deep in a distortion kernel — see `KeyFrameError::SampleRange`.
     // Short-circuits, so an out-of-range plane exits at the first bad sample.
     let max_sample: u16 = ((1u32 << cfg.bit_depth) - 1) as u16;
-    for (idx, plane) in [planes.y, planes.u, planes.v].into_iter().enumerate() {
-        if let Some(&got) = plane.iter().find(|&&v| v > max_sample) {
-            return Err(KeyFrameError::SampleRange {
-                plane: idx,
-                max: max_sample,
-                got,
-            });
+    // Padding has no sample meaning: only image samples are read.
+    let image = [(planes.y, w, h), (planes.u, cw, ch), (planes.v, cw, ch)];
+    for (idx, (plane, pw, ph)) in image.into_iter().enumerate() {
+        if idx > 0 && cfg.monochrome {
+            break;
+        }
+        for row in 0..ph {
+            let start = row * strides[idx];
+            if let Some(&got) = plane[start..start + pw].iter().find(|&&v| v > max_sample) {
+                return Err(KeyFrameError::SampleRange {
+                    plane: idx,
+                    max: max_sample,
+                    got,
+                });
+            }
         }
     }
 
@@ -3027,6 +3088,37 @@ pub fn encode_key_frame_with(
     // `av1_superres_downscale`: libaom's optimized 8-bit scaler is
     // all-planes-or-none (`av1_has_optimized_scaler` on every plane), else the
     // non-normative `resize_plane`; bd10/12 always take `highbd_resize_plane`.
+    // The downscale and the full-width screen detector below read tight planes,
+    // so superres packs a strided source once; a tight one, and every other encode,
+    // reads its planes where they are.
+    let tight_source = strides[0] == w && (cfg.monochrome || strides[1..] == [cw, cw]);
+    let packed: Option<[Vec<u16>; 3]> = (superres && !tight_source).then(|| {
+        let pack = |plane: &[u16], pw: usize, ph: usize, stride: usize| -> Vec<u16> {
+            let mut out = Vec::with_capacity(pw * ph);
+            for row in 0..ph {
+                out.extend_from_slice(&plane[row * stride..row * stride + pw]);
+            }
+            out
+        };
+        if cfg.monochrome {
+            [pack(planes.y, w, h, strides[0]), Vec::new(), Vec::new()]
+        } else {
+            [
+                pack(planes.y, w, h, strides[0]),
+                pack(planes.u, cw, ch, strides[1]),
+                pack(planes.v, cw, ch, strides[2]),
+            ]
+        }
+    });
+    let (full_y, full_u, full_v): (&[u16], &[u16], &[u16]) = match &packed {
+        Some([y, u, v]) => (y, u, v),
+        None if superres => (
+            &planes.y[..w * h],
+            &planes.u[..cw * ch],
+            &planes.v[..cw * ch],
+        ),
+        None => (planes.y, planes.u, planes.v),
+    };
     let ds_y: Vec<u16>;
     let ds_u: Vec<u16>;
     let ds_v: Vec<u16>;
@@ -3040,22 +3132,27 @@ pub fn encode_key_frame_with(
                     enc_cw as i32,
                     ch as i32,
                 ));
-        ds_y = superres_downscale_plane(planes.y, w, h, enc_w, bd, use_opt);
+        ds_y = superres_downscale_plane(full_y, w, h, enc_w, bd, use_opt);
         if cfg.monochrome {
             ds_u = Vec::new();
             ds_v = Vec::new();
         } else {
-            ds_u = superres_downscale_plane(planes.u, cw, ch, enc_cw, bd, use_opt);
-            ds_v = superres_downscale_plane(planes.v, cw, ch, enc_cw, bd, use_opt);
+            ds_u = superres_downscale_plane(full_u, cw, ch, enc_cw, bd, use_opt);
+            ds_v = superres_downscale_plane(full_v, cw, ch, enc_cw, bd, use_opt);
         }
         (&ds_y, &ds_u, &ds_v)
     } else {
         (planes.y, planes.u, planes.v)
     };
+    let [y_pitch, u_pitch, v_pitch] = if superres {
+        [enc_w, enc_cw, enc_cw]
+    } else {
+        strides
+    };
     let mut src_y = vec![0u16; stride * buf_h];
     for r in 0..h {
         src_y[r * stride..r * stride + enc_w]
-            .copy_from_slice(&tight_y[r * enc_w..r * enc_w + enc_w]);
+            .copy_from_slice(&tight_y[r * y_pitch..r * y_pitch + enc_w]);
     }
     extend_plane(&mut src_y, enc_w, h);
     let mut src_u = vec![0u16; stride * buf_h];
@@ -3063,9 +3160,9 @@ pub fn encode_key_frame_with(
     if !cfg.monochrome {
         for r in 0..ch {
             src_u[r * stride..r * stride + enc_cw]
-                .copy_from_slice(&tight_u[r * enc_cw..r * enc_cw + enc_cw]);
+                .copy_from_slice(&tight_u[r * u_pitch..r * u_pitch + enc_cw]);
             src_v[r * stride..r * stride + enc_cw]
-                .copy_from_slice(&tight_v[r * enc_cw..r * enc_cw + enc_cw]);
+                .copy_from_slice(&tight_v[r * v_pitch..r * v_pitch + enc_cw]);
         }
         extend_plane(&mut src_u, enc_cw, ch);
         extend_plane(&mut src_v, enc_cw, ch);
@@ -3094,7 +3191,7 @@ pub fn encode_key_frame_with(
     } else if superres {
         let det_stride = w;
         crate::screen_detect::estimate_screen_content_antialiasing_aware(
-            planes.y,
+            full_y,
             0,
             det_stride,
             (w + 7) & !7,

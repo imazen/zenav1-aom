@@ -1082,6 +1082,13 @@ behaviour change that follows from it — the `--cpu-used` 8/9 flat-edge transfo
 
 ### QUEUED BREAKING CHANGES
 
+- **`zenav1-aom-encode`: `KeyFramePlanes::new` takes a stride per plane**:
+  `new(y, y_stride, u, u_stride, v, v_stride)`, with a new public field
+  `strides: [usize; 3]` and a new `KeyFrameError::PlaneStride`. A tight caller passes its
+  widths. A plane needs `(rows - 1) * stride + width` samples, so a longer plane at
+  `stride == width` is now accepted and its extra samples are not read; the range check
+  reads image samples only. (930042e6)
+
 - **`zenav1-aom-decode`: `KfTileDecode.recon/recon_u/recon_v` are now
   `ReconPlane { LowBd(Vec<u8>), HighBd(Vec<u16>) }` instead of `Vec<u16>`**
   (bd8 frames store `u8` planes; `ReconPlane::to_u16()`/`px()` widen

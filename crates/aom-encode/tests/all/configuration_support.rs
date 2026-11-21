@@ -90,8 +90,18 @@ fn query_and_encoder_reject_invalid_config_before_reading_planes() {
         let query = config
             .validate_configuration()
             .expect_err(&format!("case {i} must be refused by the query"));
-        let actual = encode_key_frame(KeyFramePlanes::new(&[], &[], &[]), &config)
-            .expect_err(&format!("case {i} must be refused by the encoder"));
+        let actual = encode_key_frame(
+            KeyFramePlanes::new(
+                &[],
+                config.width,
+                &[],
+                config.chroma_dims().0,
+                &[],
+                config.chroma_dims().0,
+            ),
+            &config,
+        )
+        .expect_err(&format!("case {i} must be refused by the encoder"));
         assert_eq!(query, actual, "case {i}: query and encoder must agree");
     }
 }

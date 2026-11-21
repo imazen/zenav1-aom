@@ -1093,8 +1093,18 @@ fn cell_cfg(cell: &Cell) -> KeyFrameConfig {
 
 /// Run the port's bootstrap-free encoder for a cell.
 fn port_stream(cell: &Cell, y: &[u16], u: &[u16], v: &[u16]) -> Vec<u8> {
-    encode_key_frame(KeyFramePlanes::new(y, u, v), &cell_cfg(cell))
-        .unwrap_or_else(|e| panic!("{}: encode_key_frame refused: {e}", cell.label))
+    encode_key_frame(
+        KeyFramePlanes::new(
+            y,
+            cell_cfg(cell).width,
+            u,
+            cell_cfg(cell).chroma_dims().0,
+            v,
+            cell_cfg(cell).chroma_dims().0,
+        ),
+        &cell_cfg(cell),
+    )
+    .unwrap_or_else(|e| panic!("{}: encode_key_frame refused: {e}", cell.label))
 }
 
 /// Real aomenc's stream for the same cell + config. A cell with an explicit
@@ -1390,8 +1400,18 @@ fn mutated_sequence_header_is_caught() {
     // only its frame OBU, behind the original (unmutated) TD + sequence header.
     let mut mutated_cell_cfg = cell_cfg(cell);
     mutated_cell_cfg.cq_level = cell.cq + 20;
-    let other = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &mutated_cell_cfg)
-        .expect("the mutated config is inside the envelope");
+    let other = encode_key_frame(
+        KeyFramePlanes::new(
+            &y,
+            mutated_cell_cfg.width,
+            &u,
+            mutated_cell_cfg.chroma_dims().0,
+            &v,
+            mutated_cell_cfg.chroma_dims().0,
+        ),
+        &mutated_cell_cfg,
+    )
+    .expect("the mutated config is inside the envelope");
 
     let truth_obus = walk_obus(&truth);
     let other_obus = walk_obus(&other);
@@ -1442,7 +1462,7 @@ fn mutated_sequence_header_is_caught() {
 fn refuses_configurations_it_has_no_gate_for() {
     let base = KeyFrameConfig::allintra_speed0(64, 64, 8, true, 1, 1, 32);
     let y = vec![128u16; 64 * 64];
-    let planes = KeyFramePlanes::new(&y, &[], &[]);
+    let planes = KeyFramePlanes::new(&y, base.width, &[], 0, &[], 0);
 
     // All four post-filter combinations are SUPPORTED (axis G of the sweep) --
     // asserted here too so this test can never silently become the reason a
@@ -1482,7 +1502,7 @@ fn refuses_configurations_it_has_no_gate_for() {
     ));
 
     // Plane-size validation, not a panic.
-    let short = KeyFramePlanes::new(&y[..64], &[], &[]);
+    let short = KeyFramePlanes::new(&y[..64], base.width, &[], 0, &[], 0);
     assert!(matches!(
         encode_key_frame(short, &base),
         Err(KeyFrameError::PlaneSize { plane: 0, .. })
@@ -1496,7 +1516,17 @@ fn refuses_configurations_it_has_no_gate_for() {
     let cy = vec![128u16; 64 * 64];
     let cuv = vec![128u16; 64 * 32];
     assert!(matches!(
-        encode_key_frame(KeyFramePlanes::new(&cy, &cuv, &cuv), &bad_ss),
+        encode_key_frame(
+            KeyFramePlanes::new(
+                &cy,
+                bad_ss.width,
+                &cuv,
+                bad_ss.chroma_dims().0,
+                &cuv,
+                bad_ss.chroma_dims().0
+            ),
+            &bad_ss
+        ),
         Err(KeyFrameError::Unsupported(_))
     ));
 
@@ -1514,7 +1544,17 @@ fn refuses_configurations_it_has_no_gate_for() {
                 .collect();
             let uv = vec![128u16; w.div_ceil(2) * h.div_ceil(2)];
             let r = std::panic::catch_unwind(|| {
-                encode_key_frame(KeyFramePlanes::new(&y, &uv, &uv), &cfg)
+                encode_key_frame(
+                    KeyFramePlanes::new(
+                        &y,
+                        cfg.width,
+                        &uv,
+                        cfg.chroma_dims().0,
+                        &uv,
+                        cfg.chroma_dims().0,
+                    ),
+                    &cfg,
+                )
             });
             assert!(
                 r.is_ok(),
@@ -1533,7 +1573,18 @@ fn refuses_configurations_it_has_no_gate_for() {
     let wide = KeyFrameConfig::allintra_speed0(4160, 64, 8, true, 1, 1, 32);
     let wide_y = vec![128u16; 4160 * 64];
     assert!(
-        encode_key_frame(KeyFramePlanes::new(&wide_y, &[], &[]), &wide).is_ok(),
+        encode_key_frame(
+            KeyFramePlanes::new(
+                &wide_y,
+                wide.width,
+                &[],
+                wide.chroma_dims().0,
+                &[],
+                wide.chroma_dims().0
+            ),
+            &wide
+        )
+        .is_ok(),
         "a mandatory-tile-split frame must encode"
     );
 }
@@ -2089,7 +2140,17 @@ fn coded_lossless_reconstructs_the_source_exactly() {
         // zenavif#45's own shape: a panic out of a library entry point is a
         // defect regardless of the bytes it would have produced.
         let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cell_cfg(cell))
+            encode_key_frame(
+                KeyFramePlanes::new(
+                    &y,
+                    cell_cfg(cell).width,
+                    &u,
+                    cell_cfg(cell).chroma_dims().0,
+                    &v,
+                    cell_cfg(cell).chroma_dims().0,
+                ),
+                &cell_cfg(cell),
+            )
         }))
         .unwrap_or_else(|_| {
             panic!(
@@ -2234,8 +2295,18 @@ fn screen_content_tools_byte_match_real_aomenc() {
                     cfg.enable_restoration = true;
                     cfg.enable_palette = true;
                     cfg.enable_intrabc = true;
-                    let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
-                        .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
+                    let port = encode_key_frame(
+                        KeyFramePlanes::new(
+                            &y,
+                            cfg.width,
+                            &u,
+                            cfg.chroma_dims().0,
+                            &v,
+                            cfg.chroma_dims().0,
+                        ),
+                        &cfg,
+                    )
+                    .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
 
                     // CONFORMANCE, not just parity. A screen frame sets
                     // `allow_intrabc`, which makes `uncompressed_header` SKIP
@@ -2281,8 +2352,18 @@ fn screen_content_tools_byte_match_real_aomenc() {
                     let mut cfg_off = cfg;
                     cfg_off.enable_palette = false;
                     cfg_off.enable_intrabc = false;
-                    let port_off = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg_off)
-                        .unwrap_or_else(|e| panic!("{label}: tools-off encode refused: {e}"));
+                    let port_off = encode_key_frame(
+                        KeyFramePlanes::new(
+                            &y,
+                            cfg_off.width,
+                            &u,
+                            cfg_off.chroma_dims().0,
+                            &v,
+                            cfg_off.chroma_dims().0,
+                        ),
+                        &cfg_off,
+                    )
+                    .unwrap_or_else(|e| panic!("{label}: tools-off encode refused: {e}"));
                     if port_off != c_off {
                         open.push(format!(
                             "{label}: tools-OFF port {} bytes vs C {} bytes",

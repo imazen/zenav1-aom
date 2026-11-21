@@ -170,8 +170,18 @@ fn main() {
     cfg.quality.chroma_deltaq = chroma_dq;
     cfg.tools.use_intra_dct_only = dctonly;
 
-    let port = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
-        .expect("the port must encode this cell");
+    let port = encode_key_frame(
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
+        &cfg,
+    )
+    .expect("the port must encode this cell");
     let cref = c::ref_encode_av1_kf_cfg(
         &y,
         &u,

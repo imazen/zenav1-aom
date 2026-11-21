@@ -97,8 +97,18 @@ fn main() {
 
     let run = |arm: &str| -> Vec<u8> {
         match arm {
-            "port" => encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), &cfg)
-                .expect("the port must encode this cell"),
+            "port" => encode_key_frame(
+                KeyFramePlanes::new(
+                    &cell.y,
+                    cfg.width,
+                    &cell.u,
+                    cfg.chroma_dims().0,
+                    &cell.v,
+                    cfg.chroma_dims().0,
+                ),
+                &cfg,
+            )
+            .expect("the port must encode this cell"),
             "c" => c::ref_encode_av1_kf_screen_content(
                 &cell.y,
                 &cell.u,

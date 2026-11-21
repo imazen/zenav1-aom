@@ -115,8 +115,18 @@ fn run_cell(
     let mut cfg = KeyFrameConfig::allintra_speed0(w, h, bd, mono, ss_x, ss_y, cq);
     cfg.sb_size_128 = sb128;
     let (y, u, v) = planes(w, h, bd, mono, ss_x, ss_y);
-    let stream = encode_key_frame(KeyFramePlanes::new(&y, &u, &v), &cfg)
-        .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
+    let stream = encode_key_frame(
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
+        &cfg,
+    )
+    .unwrap_or_else(|e| panic!("{label}: encode_key_frame refused: {e}"));
     let payload = strip_temporal_delimiter(&stream);
 
     // ---- mux into an AVIF still --------------------------------------

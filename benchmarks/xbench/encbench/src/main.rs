@@ -109,11 +109,7 @@ fn enc_aom(s: &Source) -> usize {
     cfg.cpu_used = SPEED_AOM;
     cfg.enable_restoration = true;
     encode_key_frame(
-        KeyFramePlanes {
-            y: &y,
-            u: &u,
-            v: &v,
-        },
+        KeyFramePlanes::new(&y, cfg.width, &u, cfg.chroma_dims().0, &v, cfg.chroma_dims().0),
         &cfg,
     )
     .expect("zenav1-aom encode")

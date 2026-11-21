@@ -135,8 +135,18 @@ fn main() {
     cfg.enable_restoration = cdef_mode == 0;
     cfg.quality.cdef_adaptive = cdef_mode == 3;
 
-    let port = encode_key_frame(KeyFramePlanes::new(&cell.y, &cell.u, &cell.v), &cfg)
-        .expect("the port must encode this cell");
+    let port = encode_key_frame(
+        KeyFramePlanes::new(
+            &cell.y,
+            cfg.width,
+            &cell.u,
+            cfg.chroma_dims().0,
+            &cell.v,
+            cfg.chroma_dims().0,
+        ),
+        &cfg,
+    )
+    .expect("the port must encode this cell");
     let cref = if cdef_mode == 3 {
         c::ref_encode_av1_kf_cfg(
             &cell.y,

@@ -109,7 +109,14 @@ fn measure_peak(cfg: &KeyFrameConfig) -> (u64, usize) {
     let base = LIVE.load(Relaxed);
     PEAK.store(base, Relaxed);
     let bytes = encode_key_frame_with(
-        KeyFramePlanes::new(&y, &u, &v),
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
         cfg,
         &EncodeConfig::new().with_alloc(AllocMode::Infallible),
     )
@@ -274,7 +281,14 @@ fn every_limit_refuses_by_name_and_before_allocating() {
         // Empty planes: a limit must be refused before a single source sample
         // is read, so the plane-size check must not fire first.
         let e = encode_key_frame_with(
-            KeyFramePlanes::new(&[], &[], &[]),
+            KeyFramePlanes::new(
+                &[],
+                cfg.width,
+                &[],
+                cfg.chroma_dims().0,
+                &[],
+                cfg.chroma_dims().0,
+            ),
             &cfg,
             &EncodeConfig::new().with_limits(limits),
         )
@@ -300,7 +314,14 @@ fn every_limit_refuses_by_name_and_before_allocating() {
     cfg.check_limits(&ok).expect("generous caps must pass");
     let (y, u, v) = planes(&cfg);
     encode_key_frame_with(
-        KeyFramePlanes::new(&y, &u, &v),
+        KeyFramePlanes::new(
+            &y,
+            cfg.width,
+            &u,
+            cfg.chroma_dims().0,
+            &v,
+            cfg.chroma_dims().0,
+        ),
         &cfg,
         &EncodeConfig::new().with_limits(ok),
     )
@@ -363,13 +384,13 @@ fn the_allocation_mode_is_honoured_and_alloc_failure_is_the_transient_case() {
     let ok = cell(64, 64, 8, false, 1, 1, false, 6);
     let (y, u, v) = planes(&ok);
     let a = encode_key_frame_with(
-        KeyFramePlanes::new(&y, &u, &v),
+        KeyFramePlanes::new(&y, ok.width, &u, ok.chroma_dims().0, &v, ok.chroma_dims().0),
         &ok,
         &EncodeConfig::new().with_alloc(AllocMode::Fallible),
     )
     .expect("fallible mode must still encode");
     let b = encode_key_frame_with(
-        KeyFramePlanes::new(&y, &u, &v),
+        KeyFramePlanes::new(&y, ok.width, &u, ok.chroma_dims().0, &v, ok.chroma_dims().0),
         &ok,
         &EncodeConfig::new().with_alloc(AllocMode::Infallible),
     )
@@ -392,7 +413,14 @@ fn the_allocation_mode_is_honoured_and_alloc_failure_is_the_transient_case() {
         "the cell must estimate beyond any plausible machine ({est} bytes)"
     );
     match encode_key_frame_with(
-        KeyFramePlanes::new(&[], &[], &[]),
+        KeyFramePlanes::new(
+            &[],
+            huge.width,
+            &[],
+            huge.chroma_dims().0,
+            &[],
+            huge.chroma_dims().0,
+        ),
         &huge,
         &EncodeConfig::new(),
     ) {
