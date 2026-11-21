@@ -1191,6 +1191,59 @@ impl<'a> KeyFramePlanes<'a> {
     pub const fn new(y: &'a [u16], u: &'a [u16], v: &'a [u16]) -> Self {
         KeyFramePlanes { y, u, v }
     }
+
+    /// Borrow three [`zenpixels::plane::PlaneRef`] planes without copying.
+    ///
+    /// Returns `None` unless every plane is tight (`stride() == width()`),
+    /// because `KeyFramePlanes` carries no stride. Geometry stays in
+    /// [`KeyFrameConfig`]; `encode_key_frame` checks the lengths against it.
+    /// For a monochrome encode pass empty (0-sized) `u`/`v` planes.
+    #[cfg(feature = "zenpixels")]
+    pub fn from_planes(
+        y: zenpixels::plane::PlaneRef<'a, u16>,
+        u: zenpixels::plane::PlaneRef<'a, u16>,
+        v: zenpixels::plane::PlaneRef<'a, u16>,
+    ) -> Option<Self> {
+        fn tight(p: zenpixels::plane::PlaneRef<'_, u16>) -> Option<&[u16]> {
+            if p.stride() != p.width() {
+                return None;
+            }
+            let s = p.into_strided_samples();
+            (s.len() == p.width() * p.height()).then_some(s)
+        }
+        Some(KeyFramePlanes {
+            y: tight(y)?,
+            u: tight(u)?,
+            v: tight(v)?,
+        })
+    }
+}
+
+#[cfg(all(test, feature = "zenpixels"))]
+mod zenpixels_planes_tests {
+    use super::KeyFramePlanes;
+    use zenpixels::plane::PlaneRef;
+
+    #[test]
+    fn tight_planes_borrow_same_samples_and_strided_planes_refuse() {
+        let y = [1u16; 4 * 2];
+        let u = [2u16; 2];
+        let v = [3u16; 2];
+        fn p(s: &[u16], w: usize, h: usize, st: usize) -> PlaneRef<'_, u16> {
+            PlaneRef::new(s, w, h, st).unwrap()
+        }
+        let kf = KeyFramePlanes::from_planes(p(&y, 4, 2, 4), p(&u, 2, 1, 2), p(&v, 2, 1, 2))
+            .expect("tight planes");
+        assert_eq!(kf.y.as_ptr(), y.as_ptr());
+        assert_eq!(kf.y.len(), y.len());
+        assert_eq!(kf.u.as_ptr(), u.as_ptr());
+        assert_eq!(kf.v.as_ptr(), v.as_ptr());
+
+        // Width 3 inside stride 4: not representable without a stride.
+        let strided =
+            KeyFramePlanes::from_planes(p(&y, 3, 2, 4), p(&u, 2, 1, 2), p(&v, 2, 1, 2));
+        assert!(strided.is_none());
+    }
 }
 
 /// Why [`encode_key_frame`] refused. Every variant is a configuration this

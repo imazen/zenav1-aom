@@ -46,6 +46,10 @@ zenav1-aom-dsp = { path = "../aom-dsp", version = "0.0.1", default-features = fa
 # decoder depends on so the `dyn Stop` vtable is the same trait; a mismatched
 # major would not type-check across the crate boundary.
 enough = "0.4.4"
+# Optional: `KeyFramePlanes::from_planes` borrows zenpixels `PlaneRef<u16>`
+# planes without copying. DEFAULT OFF. Pinned to the feat/plane-types rev
+# until the plane types ship in a zenpixels release.
+zenpixels = { git = "https://github.com/imazen/zenpixels", rev = "5bf81d640752793454802d7a94346c3c1e97c81e", optional = true }
 
 [features]
 # Forwards `aom_dsp/census` and adds this crate's own hook (the coded-leaf
@@ -72,6 +76,8 @@ rayon = ["zenav1-aom-dsp/rayon"]
 # genuinely hides them (E0603), which is the whole point.
 __internals = ["trace-env", "zenav1-aom-dsp/__internals"]
 trace-env = ["zenav1-aom-dsp/trace-env"]
+# `KeyFramePlanes::from_planes` from zenpixels planes.
+zenpixels = ["dep:zenpixels"]
 
 [dev-dependencies]
 zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
