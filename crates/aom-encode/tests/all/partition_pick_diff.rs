@@ -311,6 +311,7 @@ impl CPick<'_> {
             qm_levels: None,
         };
         let sby_cfg = IntraSbySearchCfg {
+            stop: None,
             gates: &gates,
             top_intra_model_count_allowed: 4,
             adapt_top_model_rd_count_using_neighbors: false,
@@ -1426,6 +1427,7 @@ fn rd_pick_partition_real_matches_c_recursion() {
         let tile0 = tile.clone();
 
         let env = SbEncodeEnv {
+            stop: None,
             ref_frame: None,
             sb_size: sb,
             mi_rows: 512,

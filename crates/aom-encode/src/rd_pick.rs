@@ -591,6 +591,7 @@ pub fn rd_pick_intra_mode_sb(
                     sby_cfg.pol,
                     args.lp,
                     args.palette.as_ref(),
+                    sby_cfg.stop,
                 );
                 RdPickUvOutcome::Searched(win, visits)
             }

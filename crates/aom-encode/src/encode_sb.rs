@@ -585,6 +585,12 @@ pub struct SbEncodeEnv<'a> {
     /// it, and [`encode_b_intra_dry`]'s inter arm reconstructs from it).
     /// `None` on every KEY/intra envelope — byte-inert by construction.
     pub ref_frame: Option<&'a crate::inter_frame::RefFrame>,
+    /// Cooperative cancellation token, polled at partition-node and leaf
+    /// granularity inside the RD walk ([`crate::pack::pack_tile_lr_stop`]'s
+    /// per-superblock cadence alone leaves a ~850 ms blind spot at
+    /// `cpu_used=0`). `None` (every non-stop caller) is byte-inert by
+    /// construction.
+    pub stop: Option<&'a dyn enough::Stop>,
 }
 
 impl SbEncodeEnv<'_> {

@@ -683,6 +683,7 @@ fn run_pack_roundtrip_case(ss_x: usize, ss_y: usize, allintra: bool, qindex: usi
         let rdmult = 4000 + rng.range(0, 1 << 16);
 
         let env = SbEncodeEnv {
+            stop: None,
             ref_frame: None,
             sb_size: SB,
             mi_rows,
@@ -1189,6 +1190,7 @@ fn pack_tile_roundtrips_with_real_costs() {
         let rdmult = 4000 + rng.range(0, 1 << 16);
 
         let env = SbEncodeEnv {
+            stop: None,
             ref_frame: None,
             sb_size: SB,
             mi_rows,

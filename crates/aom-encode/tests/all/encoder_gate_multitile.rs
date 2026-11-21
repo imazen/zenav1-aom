@@ -373,6 +373,7 @@ fn attempt_multitile_case(
             let n_sb_cols = ti.col_start_sb[tcol + 1] - ti.col_start_sb[tcol];
 
             let env = SbEncodeEnv {
+                stop: None,
                 ref_frame: None,
                 sb_size: SB,
                 mi_rows,

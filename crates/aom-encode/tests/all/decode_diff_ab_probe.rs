@@ -473,6 +473,7 @@ fn run_one(name: &str, content: impl Fn(usize, usize) -> u8) {
     let src_v_strided = vec![0u16; STRIDE * (h + 4)];
 
     let env = SbEncodeEnv {
+        stop: None,
         ref_frame: None,
         sb_size: SB,
         mi_rows,
