@@ -147,8 +147,8 @@ pub(crate) fn inv_col_pass_u8_i16(
 ) -> bool {
     debug_assert!(row_n <= 64 && (col_n.is_multiple_of(16) || col_n == 4 || col_n == 8));
     if row_n <= 8 {
-        let mut tin = [i16x16::zero(t); 8];
-        let mut tout = [i16x16::zero(t); 8];
+        let mut tin = [i16x16::zero_t(t); 8];
+        let mut tout = [i16x16::zero_t(t); 8];
         incant!(
             inv_col_pass_u8_i16_core(
                 kernel, buf, output, stride, col_n, row_n, ud_flip, lr_flip, &mut tin, &mut tout,
@@ -156,8 +156,8 @@ pub(crate) fn inv_col_pass_u8_i16(
             [v3, neon]
         );
     } else if row_n <= 16 {
-        let mut tin = [i16x16::zero(t); 16];
-        let mut tout = [i16x16::zero(t); 16];
+        let mut tin = [i16x16::zero_t(t); 16];
+        let mut tout = [i16x16::zero_t(t); 16];
         incant!(
             inv_col_pass_u8_i16_core(
                 kernel, buf, output, stride, col_n, row_n, ud_flip, lr_flip, &mut tin, &mut tout,
@@ -165,8 +165,8 @@ pub(crate) fn inv_col_pass_u8_i16(
             [v3, neon]
         );
     } else {
-        let mut tin = [i16x16::zero(t); 64];
-        let mut tout = [i16x16::zero(t); 64];
+        let mut tin = [i16x16::zero_t(t); 64];
+        let mut tout = [i16x16::zero_t(t); 64];
         incant!(
             inv_col_pass_u8_i16_core(
                 kernel, buf, output, stride, col_n, row_n, ud_flip, lr_flip, &mut tin, &mut tout,
@@ -199,8 +199,8 @@ fn inv_col_pass_u8_i16_core(
             let base = r * col_n;
             *ti = if active == 16 {
                 let src = if lr_flip { col_n - c - 16 } else { c };
-                let a = i32x8::from_slice(t, &buf[base + src..base + src + 8]);
-                let b = i32x8::from_slice(t, &buf[base + src + 8..base + src + 16]);
+                let a = i32x8::from_slice_t(t, &buf[base + src..base + src + 8]);
+                let b = i32x8::from_slice_t(t, &buf[base + src + 8..base + src + 16]);
                 let v = pack_clamp16(t, a, b);
                 if lr_flip {
                     rev16(t, v)
@@ -211,25 +211,25 @@ fn inv_col_pass_u8_i16_core(
                 // col_n == 8: the whole row is one half-group.
                 let row: &[i32; 8] = buf[base..base + 8].try_into().unwrap();
                 let a = if lr_flip {
-                    i32x8::from_array(
+                    i32x8::from_array_t(
                         t,
                         [
                             row[7], row[6], row[5], row[4], row[3], row[2], row[1], row[0],
                         ],
                     )
                 } else {
-                    i32x8::from_array(t, *row)
+                    i32x8::from_array_t(t, *row)
                 };
-                pack_clamp16(t, a, i32x8::zero(t))
+                pack_clamp16(t, a, i32x8::zero_t(t))
             } else {
                 // col_n == 4.
                 let row: &[i32; 4] = buf[base..base + 4].try_into().unwrap();
                 let a = if lr_flip {
-                    i32x8::from_array(t, [row[3], row[2], row[1], row[0], 0, 0, 0, 0])
+                    i32x8::from_array_t(t, [row[3], row[2], row[1], row[0], 0, 0, 0, 0])
                 } else {
-                    i32x8::from_array(t, [row[0], row[1], row[2], row[3], 0, 0, 0, 0])
+                    i32x8::from_array_t(t, [row[0], row[1], row[2], row[3], 0, 0, 0, 0])
                 };
-                pack_clamp16(t, a, i32x8::zero(t))
+                pack_clamp16(t, a, i32x8::zero_t(t))
             };
         }
         incant!(
@@ -331,8 +331,8 @@ pub(crate) fn inv_row_pass_i16(
 ) -> bool {
     debug_assert!(row_n.is_multiple_of(16) && row_n <= 64 && (0..=2).contains(&shift0_bit));
     if col_n <= 8 {
-        let mut tin = [i16x16::zero(t); 8];
-        let mut tout = [i16x16::zero(t); 8];
+        let mut tin = [i16x16::zero_t(t); 8];
+        let mut tout = [i16x16::zero_t(t); 8];
         incant!(
             inv_row_pass_i16_core(
                 kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, &mut tin, &mut tout,
@@ -340,8 +340,8 @@ pub(crate) fn inv_row_pass_i16(
             [v3, neon]
         );
     } else if col_n <= 16 {
-        let mut tin = [i16x16::zero(t); 16];
-        let mut tout = [i16x16::zero(t); 16];
+        let mut tin = [i16x16::zero_t(t); 16];
+        let mut tout = [i16x16::zero_t(t); 16];
         incant!(
             inv_row_pass_i16_core(
                 kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, &mut tin, &mut tout,
@@ -349,8 +349,8 @@ pub(crate) fn inv_row_pass_i16(
             [v3, neon]
         );
     } else {
-        let mut tin = [i16x16::zero(t); 64];
-        let mut tout = [i16x16::zero(t); 64];
+        let mut tin = [i16x16::zero_t(t); 64];
+        let mut tout = [i16x16::zero_t(t); 64];
         incant!(
             inv_row_pass_i16_core(
                 kernel, mod_input, buf, col_n, row_n, rect1, shift0_bit, &mut tin, &mut tout,
@@ -384,8 +384,8 @@ fn inv_row_pass_i16_core(
         // driver's clamp_buf(16) as the saturating narrow.
         for (c, ti) in tin[..col_n].iter_mut().enumerate() {
             let base = c * row_n + rg;
-            let mut a = i32x8::from_slice(t, &mod_input[base..base + 8]);
-            let mut b = i32x8::from_slice(t, &mod_input[base + 8..base + 16]);
+            let mut a = i32x8::from_slice_t(t, &mod_input[base..base + 8]);
+            let mut b = i32x8::from_slice_t(t, &mod_input[base + 8..base + 16]);
             if rect1 {
                 a = super::prims::mul_rshiftv(t, a, NEW_INV_SQRT2, NEW_SQRT2_BITS);
                 b = super::prims::mul_rshiftv(t, b, NEW_INV_SQRT2, NEW_SQRT2_BITS);
@@ -416,7 +416,7 @@ fn inv_row_pass_i16_core(
         let full = col_n & !7;
         let mut cg = 0usize;
         while cg < full {
-            let mut half = [i32x8::zero(t); 8];
+            let mut half = [i32x8::zero_t(t); 8];
             for (j, h) in half.iter_mut().enumerate() {
                 *h = widen_lo(t, tout[cg + j]);
             }
@@ -500,11 +500,11 @@ mod tests {
         cols: &[[i16; 16]],
         label: &str,
     ) {
-        let mut vin = vec![i16x16::zero(t); n];
+        let mut vin = vec![i16x16::zero_t(t); n];
         for (r, c) in cols.iter().enumerate() {
-            vin[r] = i16x16::from_array(t, *c);
+            vin[r] = i16x16::from_array_t(t, *c);
         }
-        let mut vout = vec![i16x16::zero(t); n];
+        let mut vout = vec![i16x16::zero_t(t); n];
         incant!(run_inv1d_i16(kernel, &vin, &mut vout), [v3, neon]);
 
         let stage_range = [16i8; 12];

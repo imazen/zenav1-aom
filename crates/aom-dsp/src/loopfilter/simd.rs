@@ -128,11 +128,11 @@ fn lpf_impl(
     let shift = bd - 8;
     let bias: i32 = 0x80 << shift;
     let lim: i32 = 128 << shift;
-    let neg_lim = i32x4::splat(token, -lim);
-    let lim_hi = i32x4::splat(token, lim - 1);
-    let l = i32x4::splat(token, (li as i32) << shift); // limit
-    let blv = i32x4::splat(token, (bl as i32) << shift); // blimit
-    let ft = i32x4::splat(token, 1 << shift); // flat_mask thresh (== 1)
+    let neg_lim = i32x4::splat_t(token, -lim);
+    let lim_hi = i32x4::splat_t(token, lim - 1);
+    let l = i32x4::splat_t(token, (li as i32) << shift); // limit
+    let blv = i32x4::splat_t(token, (bl as i32) << shift); // blimit
+    let ft = i32x4::splat_t(token, 1 << shift); // flat_mask thresh (== 1)
 
     // signed_char_clamp_high
     let scc = |v: i32x4| v.clamp(neg_lim, lim_hi);
@@ -150,7 +150,7 @@ fn lpf_impl(
         ($c:expr, $k:expr) => {{
             let c = $c;
             let k = $k;
-            i32x4::from_array(
+            i32x4::from_array_t(
                 token,
                 [
                     buf[(c + k * ts) as usize] as i32,
@@ -174,7 +174,7 @@ fn lpf_impl(
         let ps0 = op0 - bias;
         let qs0 = oq0 - bias;
         let qs1 = oq1 - bias;
-        let t_hev = i32x4::splat(token, (th as i32) << shift);
+        let t_hev = i32x4::splat_t(token, (th as i32) << shift);
         let hev = iabs(op1, op0).simd_gt(t_hev) | iabs(oq1, oq0).simd_gt(t_hev);
 
         let mut filter = scc(ps1 - qs1) & hev;
@@ -1155,11 +1155,11 @@ fn lpf_impl_u8(
 ) {
     // bd == 8 ⇒ shift == 0: bias 0x80, clamp [-128,127], thresholds unshifted.
     const BIAS: i32 = 0x80;
-    let neg_lim = i32x4::splat(token, -128);
-    let lim_hi = i32x4::splat(token, 127);
-    let l = i32x4::splat(token, li as i32); // limit
-    let blv = i32x4::splat(token, bl as i32); // blimit
-    let ft = i32x4::splat(token, 1); // flat_mask thresh (== 1)
+    let neg_lim = i32x4::splat_t(token, -128);
+    let lim_hi = i32x4::splat_t(token, 127);
+    let l = i32x4::splat_t(token, li as i32); // limit
+    let blv = i32x4::splat_t(token, bl as i32); // blimit
+    let ft = i32x4::splat_t(token, 1); // flat_mask thresh (== 1)
 
     // signed_char_clamp
     let scc = |v: i32x4| v.clamp(neg_lim, lim_hi);
@@ -1177,7 +1177,7 @@ fn lpf_impl_u8(
         let ps0 = op0 - BIAS;
         let qs0 = oq0 - BIAS;
         let qs1 = oq1 - BIAS;
-        let t_hev = i32x4::splat(token, th as i32);
+        let t_hev = i32x4::splat_t(token, th as i32);
         let hev = iabs(op1, op0).simd_gt(t_hev) | iabs(oq1, oq0).simd_gt(t_hev);
 
         let mut filter = scc(ps1 - qs1) & hev;
@@ -1283,7 +1283,7 @@ fn lpf_impl_u8(
     //    values — byte-identical in the sequential walk.
     // Anything else (never produced by the walk, possible in a synthetic
     // harness) takes the original strided-gather path unchanged.
-    let z4 = i32x4::splat(token, 0);
+    let z4 = i32x4::splat_t(token, 0);
     macro_rules! load_taps {
         ($c:expr, $load:expr, $t:ident, $rows:ident, $kmin:expr, $vfast:expr, $hfast:expr) => {{
             let c = $c;
@@ -1295,7 +1295,7 @@ fn lpf_impl_u8(
                     *row = buf[s..s + w].try_into().unwrap();
                 }
                 for (i, tv) in $t.iter_mut().enumerate() {
-                    *tv = i32x4::from_array(
+                    *tv = i32x4::from_array_t(
                         token,
                         [
                             $rows[0][i] as i32,
@@ -1309,7 +1309,7 @@ fn lpf_impl_u8(
                 for (i, tv) in $t.iter_mut().enumerate() {
                     let s = (c + (i as isize + $kmin) * ts) as usize;
                     let b: [u8; 4] = buf[s..s + 4].try_into().unwrap();
-                    *tv = i32x4::from_array(
+                    *tv = i32x4::from_array_t(
                         token,
                         [b[0] as i32, b[1] as i32, b[2] as i32, b[3] as i32],
                     );
@@ -1353,7 +1353,7 @@ fn lpf_impl_u8(
     for s in 0..nseg {
         let c = center as isize + s as isize * 4 * step;
         let load = |k: isize| -> i32x4 {
-            i32x4::from_array(
+            i32x4::from_array_t(
                 token,
                 [
                     buf[(c + k * ts) as usize] as i32,

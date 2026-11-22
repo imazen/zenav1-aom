@@ -114,36 +114,36 @@ fn cfl_predict_impl(
     width: usize,
     height: usize,
 ) {
-    let alpha8 = i32x8::splat(token, alpha_q3);
-    let c32_8 = i32x8::splat(token, 32);
-    let zero8 = i32x8::zero(token);
-    let max8 = i32x8::splat(token, max);
-    let alpha4 = i32x4::splat(token, alpha_q3);
-    let c32_4 = i32x4::splat(token, 32);
-    let zero4 = i32x4::zero(token);
-    let max4 = i32x4::splat(token, max);
+    let alpha8 = i32x8::splat_t(token, alpha_q3);
+    let c32_8 = i32x8::splat_t(token, 32);
+    let zero8 = i32x8::zero_t(token);
+    let max8 = i32x8::splat_t(token, max);
+    let alpha4 = i32x4::splat_t(token, alpha_q3);
+    let c32_4 = i32x4::splat_t(token, 32);
+    let zero4 = i32x4::zero_t(token);
+    let max4 = i32x4::splat_t(token, max);
     for r in 0..height {
         let arow = r * CFL_BUF_LINE;
         let drow = dst_off + r * dst_stride;
         let mut i = 0;
         while i + 8 <= width {
             let a: [i16; 8] = ac[arow + i..arow + i + 8].try_into().unwrap();
-            let v = i32x8::from_array(token, a.map(i32::from)) * alpha8;
+            let v = i32x8::from_array_t(token, a.map(i32::from)) * alpha8;
             let sgn = v.shr_arithmetic_const::<31>();
             let scaled = (((((v ^ sgn) - sgn) + c32_8).shr_arithmetic_const::<6>()) ^ sgn) - sgn;
             let d: [u16; 8] = dst[drow + i..drow + i + 8].try_into().unwrap();
-            let sum = scaled + i32x8::from_array(token, d.map(i32::from));
+            let sum = scaled + i32x8::from_array_t(token, d.map(i32::from));
             let out = sum.clamp(zero8, max8).to_array();
             dst[drow + i..drow + i + 8].copy_from_slice(&out.map(|x| x as u16));
             i += 8;
         }
         if i + 4 <= width {
             let a: [i16; 4] = ac[arow + i..arow + i + 4].try_into().unwrap();
-            let v = i32x4::from_array(token, a.map(i32::from)) * alpha4;
+            let v = i32x4::from_array_t(token, a.map(i32::from)) * alpha4;
             let sgn = v.shr_arithmetic_const::<31>();
             let scaled = (((((v ^ sgn) - sgn) + c32_4).shr_arithmetic_const::<6>()) ^ sgn) - sgn;
             let d: [u16; 4] = dst[drow + i..drow + i + 4].try_into().unwrap();
-            let sum = scaled + i32x4::from_array(token, d.map(i32::from));
+            let sum = scaled + i32x4::from_array_t(token, d.map(i32::from));
             let out = sum.clamp(zero4, max4).to_array();
             dst[drow + i..drow + i + 4].copy_from_slice(&out.map(|x| x as u16));
             i += 4;

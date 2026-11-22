@@ -213,9 +213,9 @@ fn smooth_impl(
         *d = (SCALE - u16::from(w)) * below;
     }
 
-    let scale_v = u16x16::splat(token, SCALE);
-    let right_v = u16x16::splat(token, right);
-    let round = u16x16::splat(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
+    let scale_v = u16x16::splat_t(token, SCALE);
+    let right_v = u16x16::splat_t(token, right);
+    let round = u16x16::splat_t(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
     let mut buf = [0u16; 16];
 
     // Column chunk OUTER, row inner: the above samples, the width weights and
@@ -226,13 +226,13 @@ fn smooth_impl(
     let mut c = 0;
     while c < bw {
         let n = (bw - c).min(16);
-        let above_v = u16x16::from_slice(token, &above_s[c..c + 16]);
-        let ww_v = u16x16::from_slice(token, &sww_s[c..c + 16]);
+        let above_v = u16x16::from_slice_t(token, &above_s[c..c + 16]);
+        let ww_v = u16x16::from_slice_t(token, &sww_s[c..c + 16]);
         let tr_term = (scale_v - ww_v) * right_v;
         for r in 0..bh {
-            let wh_v = u16x16::splat(token, u16::from(sw_h[r]));
-            let below_term = u16x16::splat(token, below_term_s[r]);
-            let left_r_v = u16x16::splat(token, left[r]);
+            let wh_v = u16x16::splat_t(token, u16::from(sw_h[r]));
+            let below_term = u16x16::splat_t(token, below_term_s[r]);
+            let left_r_v = u16x16::splat_t(token, left[r]);
             // A = wh*above + (256-wh)*below   B = ww*left + (256-ww)*right
             let a = wh_v * above_v + below_term;
             let b = ww_v * left_r_v + tr_term;
@@ -303,16 +303,16 @@ fn smooth_v_impl(
     for (d, &w) in below_term_s[..bh].iter_mut().zip(sw_h[..bh].iter()) {
         *d = (SCALE - u16::from(w)) * below;
     }
-    let round = u16x16::splat(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
+    let round = u16x16::splat_t(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
     let mut buf = [0u16; 16];
 
     let mut c = 0;
     while c < bw {
         let n = (bw - c).min(16);
-        let above_v = u16x16::from_slice(token, &above_s[c..c + 16]);
+        let above_v = u16x16::from_slice_t(token, &above_s[c..c + 16]);
         for r in 0..bh {
-            let w_v = u16x16::splat(token, u16::from(sw_h[r]));
-            let below_term = u16x16::splat(token, below_term_s[r]);
+            let w_v = u16x16::splat_t(token, u16::from(sw_h[r]));
+            let below_term = u16x16::splat_t(token, below_term_s[r]);
             let p = w_v * above_v + below_term;
             let out = (p + round).shr_logical_const::<8>();
             let row = r * stride;
@@ -376,18 +376,18 @@ fn smooth_h_impl(
     for (d, &w) in sww_s[..bw].iter_mut().zip(sw_w[..bw].iter()) {
         *d = u16::from(w);
     }
-    let scale_v = u16x16::splat(token, SCALE);
-    let right_v = u16x16::splat(token, right as u16);
-    let round = u16x16::splat(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
+    let scale_v = u16x16::splat_t(token, SCALE);
+    let right_v = u16x16::splat_t(token, right as u16);
+    let round = u16x16::splat_t(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
     let mut buf = [0u16; 16];
 
     let mut c = 0;
     while c < bw {
         let n = (bw - c).min(16);
-        let w_v = u16x16::from_slice(token, &sww_s[c..c + 16]);
+        let w_v = u16x16::from_slice_t(token, &sww_s[c..c + 16]);
         let tr_term = (scale_v - w_v) * right_v; // row-invariant
         for r in 0..bh {
-            let left_r_v = u16x16::splat(token, left[r]);
+            let left_r_v = u16x16::splat_t(token, left[r]);
             let p = w_v * left_r_v + tr_term;
             let out = (p + round).shr_logical_const::<8>();
             let row = r * stride;

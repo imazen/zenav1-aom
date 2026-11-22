@@ -130,28 +130,28 @@ fn quantize_fp_impl(
     // (raster position 0); every other lane/chunk is AC.
     let mk = |dc: i32, ac: i32, first: bool| {
         if first {
-            i32x8::from_array(token, [dc, ac, ac, ac, ac, ac, ac, ac])
+            i32x8::from_array_t(token, [dc, ac, ac, ac, ac, ac, ac, ac])
         } else {
-            i32x8::splat(token, ac)
+            i32x8::splat_t(token, ac)
         }
     };
 
-    let (q_chunks, _) = i32x8::partition_slice_mut(token, &mut qcoeff[..n]);
-    let (dq_chunks, _) = i32x8::partition_slice_mut(token, &mut dqcoeff[..n]);
-    let zero = i32x8::zero(token);
-    let abs_cap = i32x8::splat(token, 1 << 17);
-    let clamp_lo = i32x8::splat(token, i16::MIN as i32);
-    let clamp_hi = i32x8::splat(token, i16::MAX as i32);
+    let (q_chunks, _) = i32x8::partition_slice_mut_t(token, &mut qcoeff[..n]);
+    let (dq_chunks, _) = i32x8::partition_slice_mut_t(token, &mut dqcoeff[..n]);
+    let zero = i32x8::zero_t(token);
+    let abs_cap = i32x8::splat_t(token, 1 << 17);
+    let clamp_lo = i32x8::splat_t(token, i16::MIN as i32);
+    let clamp_hi = i32x8::splat_t(token, i16::MAX as i32);
     let mut eob_v = zero;
 
     // KB-PERF-36: only chunk 0 carries the DC lane, so the AC-only parameter
     // vectors are loop-invariant — building them once instead of four `splat`s
     // per chunk. Same values, same lanes: `mk(.., false)` IS `splat(ac)`.
     let (thr_ac, rnd_ac, qnt_ac, dqv_ac) = (
-        i32x8::splat(token, thr_c[1]),
-        i32x8::splat(token, rounding[1]),
-        i32x8::splat(token, quant[1] as i32),
-        i32x8::splat(token, dequant[1] as i32),
+        i32x8::splat_t(token, thr_c[1]),
+        i32x8::splat_t(token, rounding[1]),
+        i32x8::splat_t(token, quant[1] as i32),
+        i32x8::splat_t(token, dequant[1] as i32),
     );
     for ci in 0..n / 8 {
         let first = ci == 0;
@@ -176,7 +176,7 @@ fn quantize_fp_impl(
             dqv_ac
         };
 
-        let c = i32x8::from_slice(token, &coeff[ci * 8..ci * 8 + 8]);
+        let c = i32x8::from_slice_t(token, &coeff[ci * 8..ci * 8 + 8]);
         // sign = c >> 31 (all-ones for negative); abs = (c ^ sign) - sign (wrapping).
         let sign = c.shr_arithmetic_const::<31>();
         let abs = (c ^ sign) - sign;
@@ -235,7 +235,7 @@ fn quantize_fp_impl(
             Some(a) => a,
             None => [0i16; 8],
         };
-        let isc = i32x8::from_array(token, core::array::from_fn(|k| raw[k] as i32 + 1));
+        let isc = i32x8::from_array_t(token, core::array::from_fn(|k| raw[k] as i32 + 1));
         let nz = tmp.simd_ne(zero);
         eob_v = eob_v.max(i32x8::blend(nz, isc, zero));
     }

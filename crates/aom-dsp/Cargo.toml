@@ -28,8 +28,8 @@ name = "aom_dsp"
 [dependencies]
 # ONE archmage universe workspace-wide (registry, exact version) so the
 # dispatch module's AOM_FORCE_SCALAR process-wide pin reaches every kernel.
-archmage = "0.9.32"
-magetypes = "0.9.32"
+archmage = "0.9.33"
+magetypes = "0.9.33"
 # Cooperative cancellation (`no_std`, zero-dependency). Only the `*_stop`
 # frame-walk entries touch it; the historical entries delegate with `None` and
 # are byte-identical. Same version aom-decode depends on, so the `dyn Stop`
@@ -94,7 +94,7 @@ zenav1-aom-sys-ref = { path = "../aom-sys-ref" }
 # permutations" warnings.) This is what makes the differentials — the byte-exactness
 # mechanism that DOES cover ARM, since the `AOM_FORCE_SCALAR` pin cannot (see
 # `src/dispatch/mod.rs`) — actually load-bearing on aarch64.
-archmage = { version = "0.9.32", features = ["testable_dispatch"] }
+archmage = { version = "0.9.33", features = ["testable_dispatch"] }
 
 # docs.rs builds the default surface; the implementation modules stay behind the
 # default-off `__internals` feature (see docs/public-api/) and are not rendered.

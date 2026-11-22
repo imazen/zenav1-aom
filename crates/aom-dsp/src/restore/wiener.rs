@@ -450,7 +450,7 @@ fn wiener_impl<P: crate::restore::pick::LrPixel>(
     // lane VALUES are identical, so the arithmetic is untouched.
     let widen = |s: &[P]| -> i32x8 {
         let a: [P; 8] = s[..8].try_into().unwrap();
-        i32x8::from_array(
+        i32x8::from_array_t(
             token,
             [
                 a[0] as i32,
@@ -485,11 +485,11 @@ fn wiener_impl<P: crate::restore::pick::LrPixel>(
 
     // ---- horizontal pass (lanes = 8 adjacent output columns) ----
     let clamp_limit = 1i32 << (bd + 1 + FILTER_BITS - round_0);
-    let zero = i32x8::zero(token);
-    let lim_v = i32x8::splat(token, clamp_limit - 1);
-    let h_half = i32x8::splat(token, 1 << (round_0 - 1));
-    let hbias = i32x8::splat(token, 1 << (bd + FILTER_BITS - 1));
-    let htap: [i32x8; 8] = core::array::from_fn(|k| i32x8::splat(token, hfilter[k] as i32));
+    let zero = i32x8::zero_t(token);
+    let lim_v = i32x8::splat_t(token, clamp_limit - 1);
+    let h_half = i32x8::splat_t(token, 1 << (round_0 - 1));
+    let hbias = i32x8::splat_t(token, 1 << (bd + FILTER_BITS - 1));
+    let htap: [i32x8; 8] = core::array::from_fn(|k| i32x8::splat_t(token, hfilter[k] as i32));
     let horiz_base = src_off as isize - 3 * src_stride as isize - 3;
     for y in 0..intermediate_height {
         let row = (horiz_base + (y * src_stride) as isize) as usize;
@@ -514,10 +514,10 @@ fn wiener_impl<P: crate::restore::pick::LrPixel>(
     // ---- vertical pass (lanes = 8 adjacent output columns; iteration order
     // differs from the scalar port's x-outer loop, but every (x, y) output is
     // a pure function of `temp`, so the bytes are identical) ----
-    let pixel_max = i32x8::splat(token, (1i32 << bd) - 1);
-    let v_half = i32x8::splat(token, 1 << (round_1 - 1));
-    let vbias = i32x8::splat(token, 1 << (bd + round_1 - 1));
-    let vtap: [i32x8; 8] = core::array::from_fn(|k| i32x8::splat(token, vfilter[k] as i32));
+    let pixel_max = i32x8::splat_t(token, (1i32 << bd) - 1);
+    let v_half = i32x8::splat_t(token, 1 << (round_1 - 1));
+    let vbias = i32x8::splat_t(token, 1 << (bd + round_1 - 1));
+    let vtap: [i32x8; 8] = core::array::from_fn(|k| i32x8::splat_t(token, vfilter[k] as i32));
     for y in 0..h {
         let mut xs = 0usize;
         loop {

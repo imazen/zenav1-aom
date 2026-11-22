@@ -67,7 +67,7 @@ mod imp {
     /// `from_repr`/`into_repr` directly.
     #[inline(always)]
     pub(crate) fn i16x16_of_m256(t: X64V3Token, m: __m256i) -> i16x16<X64V3Token> {
-        i16x16::from_repr(t, m)
+        i16x16::from_repr_t(t, m)
     }
 
     #[inline(always)]
@@ -1157,7 +1157,7 @@ mod imp {
     #[inline]
     #[target_feature(enable = "neon")]
     pub(crate) fn i16x16_of_m256(t: NeonToken, m: __m256i) -> i16x16<NeonToken> {
-        i16x16::from_repr(t, [s16(m[0]), s16(m[1])])
+        i16x16::from_repr_t(t, [s16(m[0]), s16(m[1])])
     }
 
     #[inline]

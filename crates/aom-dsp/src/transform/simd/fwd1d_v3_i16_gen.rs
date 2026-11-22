@@ -29,7 +29,7 @@ pub(crate) fn av1_fdct8_i16_impl(
     cos_bit: i32,
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i16x16::zero(t); 8];
+    let mut step = [i16x16::zero_t(t); 8];
     out[0] = input[0] + input[7];
     out[1] = input[1] + input[6];
     out[2] = input[2] + input[5];
@@ -96,7 +96,7 @@ pub(crate) fn av1_fdct16_i16_impl(
     cos_bit: i32,
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i16x16::zero(t); 16];
+    let mut step = [i16x16::zero_t(t); 16];
     out[0] = input[0] + input[15];
     out[1] = input[1] + input[14];
     out[2] = input[2] + input[13];
@@ -251,7 +251,7 @@ pub(crate) fn av1_fdct32_i16_impl(
     cos_bit: i32,
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i16x16::zero(t); 32];
+    let mut step = [i16x16::zero_t(t); 32];
     out[0] = input[0] + input[31];
     out[1] = input[1] + input[30];
     out[2] = input[2] + input[29];
@@ -622,7 +622,7 @@ pub(crate) fn av1_fdct64_i16_impl(
     cos_bit: i32,
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i16x16::zero(t); 64];
+    let mut step = [i16x16::zero_t(t); 64];
     out[0] = input[0] + input[63];
     out[1] = input[1] + input[62];
     out[2] = input[2] + input[61];
@@ -1505,7 +1505,7 @@ pub(crate) fn av1_fadst8_i16_impl(
     cos_bit: i32,
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i16x16::zero(t); 8];
+    let mut step = [i16x16::zero_t(t); 8];
     out[0] = input[0];
     out[1] = negv16(t, input[7]);
     out[2] = negv16(t, input[3]);
@@ -1586,7 +1586,7 @@ pub(crate) fn av1_fadst16_i16_impl(
     cos_bit: i32,
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i16x16::zero(t); 16];
+    let mut step = [i16x16::zero_t(t); 16];
     out[0] = input[0];
     out[1] = negv16(t, input[15]);
     out[2] = negv16(t, input[7]);

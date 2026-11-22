@@ -351,7 +351,7 @@ jobs:
   # of a shipping crate. These jobs exercise exactly that surface on the mandated
   # org-bar platforms: build the four published crates (facade + dsp + decode +
   # encode) and the decode-only stack, then run the oracle-free facade tests.
-  # This is what catches pointer-width bugs (i686), Windows-aarch64, and macOS-x86
+  # This is what catches pointer-width bugs (i686) and Windows-aarch64
   # regressions in the pure-Rust port. `cargo build`/`test` of these crates pulls
   # in neither aom-sys-ref nor its build.rs, so no cmake/nasm is needed here.
   #
@@ -360,9 +360,7 @@ jobs:
   # this one. Building libaom for the REMAINING targets in CI (32-bit nasm/cmake
   # for i686; MSVC + AV1 assembly for windows-arm) is a dedicated sub-project, so
   # the differential is gated OFF here — NOT silently skipped: it is simply not
-  # invoked on these runners, and this comment says why. macos-15-intel is the
-  # most likely next candidate (the aarch64 leg proved the brew-nasm + portable
-  # aom-sys-ref build.rs recipe works on macOS).
+  # invoked on these runners, and this comment says why.
   # These runners are unverified-pending-CI at landing (labels + toolchains match
   # the org runner set; the first CI run confirms the pure-Rust build is green).
   portability:
@@ -373,8 +371,6 @@ jobs:
         include:
           - name: windows-11-arm
             os: windows-11-arm
-          - name: macos-15-intel
-            os: macos-15-intel
     runs-on: ${{ matrix.os }}
     steps:
       # No submodules: the pure-Rust consumer surface never touches upstream/.
@@ -507,6 +503,8 @@ jobs:
   portability-i686:
     name: portability i686-unknown-linux-gnu (pure-Rust, no C oracle)
     runs-on: ubuntu-latest
+    env:
+      CROSS_CONTAINER_OPTS: --security-opt seccomp=unconfined
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

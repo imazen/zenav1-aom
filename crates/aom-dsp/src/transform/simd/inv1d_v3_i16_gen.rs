@@ -49,7 +49,7 @@ pub(crate) fn av1_idct4_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [I
 #[allow(unused_variables)]
 pub(crate) fn av1_idct8_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [I16x16<Token>]) {
     let cospi = cospi_arr(12);
-    let mut step = [i16x16::zero(t); 8];
+    let mut step = [i16x16::zero_t(t); 8];
     out[0] = input[0];
     out[1] = input[4];
     out[2] = input[2];
@@ -106,7 +106,7 @@ pub(crate) fn av1_idct8_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [I
 #[allow(unused_variables)]
 pub(crate) fn av1_idct16_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [I16x16<Token>]) {
     let cospi = cospi_arr(12);
-    let mut step = [i16x16::zero(t); 16];
+    let mut step = [i16x16::zero_t(t); 16];
     out[0] = input[0];
     out[1] = input[8];
     out[2] = input[4];
@@ -243,7 +243,7 @@ pub(crate) fn av1_idct16_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [
 #[allow(unused_variables)]
 pub(crate) fn av1_idct32_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [I16x16<Token>]) {
     let cospi = cospi_arr(12);
-    let mut step = [i16x16::zero(t); 32];
+    let mut step = [i16x16::zero_t(t); 32];
     out[0] = input[0];
     out[1] = input[16];
     out[2] = input[8];
@@ -576,7 +576,7 @@ pub(crate) fn av1_idct32_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [
 #[allow(unused_variables)]
 pub(crate) fn av1_idct64_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [I16x16<Token>]) {
     let cospi = cospi_arr(12);
-    let mut step = [i16x16::zero(t); 64];
+    let mut step = [i16x16::zero_t(t); 64];
     out[0] = input[0];
     out[1] = input[32];
     out[2] = input[16];

@@ -646,12 +646,12 @@ fn z2_left_gather_impl(
     frac_y: u32,
     up_left: u32,
 ) {
-    let dyv = i32x8::splat(token, dy);
-    let c63 = i32x8::splat(token, 0x3F);
-    let c16 = i32x8::splat(token, 16);
-    let c32 = i32x8::splat(token, 32);
-    let mask_lo = i32x8::splat(token, 0xFFFF);
-    let step = i32x8::splat(token, 8);
+    let dyv = i32x8::splat_t(token, dy);
+    let c63 = i32x8::splat_t(token, 0x3F);
+    let c16 = i32x8::splat_t(token, 16);
+    let c32 = i32x8::splat_t(token, 32);
+    let mask_lo = i32x8::splat_t(token, 0xFFFF);
+    let step = i32x8::splat_t(token, 8);
     let mut pairs = [0i32; 8];
     for r in 0..bh {
         let y = (r + 1) as i32;
@@ -673,9 +673,9 @@ fn z2_left_gather_impl(
             continue;
         }
         let drow = &mut dst[r * stride..r * stride + c_end];
-        let r6 = i32x8::splat(token, (r as i32) << 6);
+        let r6 = i32x8::splat_t(token, (r as i32) << 6);
         // Lane k holds x2 = c + 1 + k; each chunk advances the base by 8.
-        let mut x2v = i32x8::from_array(token, [1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut x2v = i32x8::from_array_t(token, [1, 2, 3, 4, 5, 6, 7, 8]);
         let mut c = 0usize;
         while c < n8 {
             let y2v = r6 - x2v * dyv;
@@ -690,7 +690,7 @@ fn z2_left_gather_impl(
                 let w = &ld[i0..i0 + 2];
                 *p = i32::from(w[0]) | (i32::from(w[1]) << 16);
             }
-            let pv = i32x8::from_array(token, pairs);
+            let pv = i32x8::from_array_t(token, pairs);
             let a0 = pv & mask_lo;
             let a1 = pv.shr_logical_const::<16>();
             let res = (a0 * c32 + (a1 - a0) * shv + c16).shr_arithmetic_const::<5>();

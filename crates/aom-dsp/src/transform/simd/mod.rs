@@ -481,7 +481,7 @@ fn inv_rect48_fused(
     }
 
     // ---- row pass: lane = r, contiguous (input is column-major) ----
-    let mut k = [i32x8::zero(t); 8];
+    let mut k = [i32x8::zero_t(t); 8];
     for c in 0..col_n {
         let base = c * row_n;
         // KB-PERF-31: at 4x8 a whole vector of coefficients is contiguous, so
@@ -489,7 +489,7 @@ fn inv_rect48_fused(
         // only for the 8x4 shape, whose column is four coefficients long.
         let v = if row_n == 8 {
             match input.get(base..base + 8) {
-                Some(sl) => i32x8::from_slice(t, sl),
+                Some(sl) => i32x8::from_slice_t(t, sl),
                 None => return false,
             }
         } else {
@@ -497,13 +497,13 @@ fn inv_rect48_fused(
                 Some(a) => a,
                 None => return false,
             };
-            i32x8::from_array(t, core::array::from_fn(|j| if j < 4 { a[j] } else { 0 }))
+            i32x8::from_array_t(t, core::array::from_fn(|j| if j < 4 { a[j] } else { 0 }))
         };
         // rect_type == +-1: the NEW_INV_SQRT2 scaling, BEFORE the clamp.
         let v = mul_rshiftv(t, v, NEW_INV_SQRT2, NEW_SQRT2_BITS);
         k[c] = clampv(t, v, row_clamp);
     }
-    let mut w = [i32x8::zero(t); 8];
+    let mut w = [i32x8::zero_t(t); 8];
     incant!(
         run_inv1d(kr, &k[..col_n], &mut w[..col_n], cos_bit, sr_row),
         [v3, neon]
@@ -529,18 +529,18 @@ fn inv_rect48_fused(
     let b6 = _mm256_unpacklo_epi64(a5, a7);
     let b7 = _mm256_unpackhi_epi64(a5, a7);
     let tr: [i32x8; 8] = [
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
     ];
 
     // ---- column pass: lane = output column ----
-    let mut ci = [i32x8::zero(t); 8];
+    let mut ci = [i32x8::zero_t(t); 8];
     for r in 0..row_n {
         // KB-PERF-31: at 8x4 all eight lanes are live, so the flip is the same
         // whole-vector `revv` every unpadded inverse uses; only the 4-wide
@@ -551,7 +551,7 @@ fn inv_rect48_fused(
                 revv(t, tr[r])
             } else {
                 let a = tr[r].to_array();
-                i32x8::from_array(
+                i32x8::from_array_t(
                     t,
                     core::array::from_fn(|j| if j < col_n { a[col_n - 1 - j] } else { 0 }),
                 )
@@ -561,7 +561,7 @@ fn inv_rect48_fused(
         };
         ci[r] = clampv(t, v, col_clamp);
     }
-    let mut co = [i32x8::zero(t); 8];
+    let mut co = [i32x8::zero_t(t); 8];
     incant!(
         run_inv1d(kc, &ci[..row_n], &mut co[..row_n], cos_bit, sr_col),
         [v3, neon]
@@ -571,8 +571,8 @@ fn inv_rect48_fused(
     }
 
     // ---- reconstruction ----
-    let zero = i32x8::zero(t);
-    let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
+    let zero = i32x8::zero_t(t);
+    let pix_hi = i32x8::splat_t(t, (1i32 << bd) - 1);
     for r in 0..row_n {
         let src = co[if ud_flip { row_n - 1 - r } else { r }];
         let idx = r * stride;
@@ -585,7 +585,7 @@ fn inv_rect48_fused(
                 Some(d) => d,
                 None => return false,
             };
-            let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+            let dv = i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32));
             let s = (dv + src).clamp(zero, pix_hi).to_array();
             for j in 0..8 {
                 output[idx + j] = s[j] as u16;
@@ -595,7 +595,7 @@ fn inv_rect48_fused(
                 Some(d) => d,
                 None => return false,
             };
-            let dv = i32x8::from_array(
+            let dv = i32x8::from_array_t(
                 t,
                 core::array::from_fn(|j| if j < 4 { d[j] as i32 } else { 0 }),
             );
@@ -1397,34 +1397,34 @@ fn inv_rect816_fused(
         let b6 = _mm256_unpacklo_epi64(a5, a7);
         let b7 = _mm256_unpackhi_epi64(a5, a7);
         [
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
         ]
     };
 
     // ---- row pass: lane = r within a row group; the input is column-major, so
     // each (column, row group) is a contiguous 8-element run.
-    let mut w = [[i32x8::zero(t); 16]; 2]; // w[rg][c], lane = r within group rg
+    let mut w = [[i32x8::zero_t(t); 16]; 2]; // w[rg][c], lane = r within group rg
     for rg in 0..rg_n {
-        let mut k = [i32x8::zero(t); 16];
+        let mut k = [i32x8::zero_t(t); 16];
         for c in 0..col_n {
             let base = c * row_n + rg * 8;
             let sl = match input.get(base..base + 8) {
                 Some(sl) => sl,
                 None => return false,
             };
-            let v = i32x8::from_slice(t, sl);
+            let v = i32x8::from_slice_t(t, sl);
             // rect_type == +-1: the NEW_INV_SQRT2 scaling, BEFORE the clamp.
             let v = mul_rshiftv(t, v, NEW_INV_SQRT2, NEW_SQRT2_BITS);
             k[c] = clampv(t, v, row_clamp);
         }
-        let mut o = [i32x8::zero(t); 16];
+        let mut o = [i32x8::zero_t(t); 16];
         incant!(
             run_inv1d(kr, &k[..col_n], &mut o[..col_n], cos_bit, sr_row),
             [v3, neon]
@@ -1436,7 +1436,7 @@ fn inv_rect816_fused(
 
     // ---- transpose: CG * RG blocks -> lane = column.
     // `tt[rg][cg * 8 + k]` is row `rg * 8 + k`, columns `cg * 8 .. cg * 8 + 8`.
-    let mut tt = [[i32x8::zero(t); 16]; 2];
+    let mut tt = [[i32x8::zero_t(t); 16]; 2];
     for rg in 0..rg_n {
         for cg in 0..cg_n {
             let blk = tr8(&w[rg][cg * 8..cg * 8 + 8]);
@@ -1447,18 +1447,18 @@ fn inv_rect816_fused(
     }
 
     // ---- column pass: lane = output column, one call per column group ----
-    let mut co = [[i32x8::zero(t); 16]; 2]; // co[cg][r]
+    let mut co = [[i32x8::zero_t(t); 16]; 2]; // co[cg][r]
     for cg in 0..cg_n {
         // Output column c reads buf column col_n-1-c under lr_flip, so the
         // groups exchange AND each group's lanes reverse.
         let sg = if lr_flip { cg_n - 1 - cg } else { cg };
-        let mut ci = [i32x8::zero(t); 16];
+        let mut ci = [i32x8::zero_t(t); 16];
         for r in 0..row_n {
             let v = tt[r / 8][sg * 8 + (r % 8)];
             let v = if lr_flip { revv(t, v) } else { v };
             ci[r] = clampv(t, v, col_clamp);
         }
-        let mut o = [i32x8::zero(t); 16];
+        let mut o = [i32x8::zero_t(t); 16];
         incant!(
             run_inv1d(kc, &ci[..row_n], &mut o[..row_n], cos_bit, sr_col),
             [v3, neon]
@@ -1469,10 +1469,10 @@ fn inv_rect816_fused(
     }
 
     // ---- reconstruction ----
-    let zero = i32x8::zero(t);
+    let zero = i32x8::zero_t(t);
     match output {
         InvDst::U16(output) => {
-            let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
+            let pix_hi = i32x8::splat_t(t, (1i32 << bd) - 1);
             for r in 0..row_n {
                 let src_i = if ud_flip { row_n - 1 - r } else { r };
                 let idx = r * stride;
@@ -1482,7 +1482,7 @@ fn inv_rect816_fused(
                         Some(d) => d,
                         None => return false,
                     };
-                    let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+                    let dv = i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32));
                     let s = (dv + co[cg][src_i]).clamp(zero, pix_hi).to_array();
                     for j in 0..8 {
                         output[o0 + j] = s[j] as u16;
@@ -1491,7 +1491,7 @@ fn inv_rect816_fused(
             }
         }
         InvDst::U8(output) => {
-            let pix_hi = i32x8::splat(t, 255);
+            let pix_hi = i32x8::splat_t(t, 255);
             for r in 0..row_n {
                 let src_i = if ud_flip { row_n - 1 - r } else { r };
                 let idx = r * stride;
@@ -1501,7 +1501,7 @@ fn inv_rect816_fused(
                         Some(d) => d,
                         None => return false,
                     };
-                    let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+                    let dv = i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32));
                     let s = (dv + co[cg][src_i]).clamp(zero, pix_hi).to_array();
                     for j in 0..8 {
                         output[o0 + j] = s[j] as u8;
@@ -1651,31 +1651,31 @@ fn inv_16x16_fused(
         let b6 = _mm256_unpacklo_epi64(a5, a7);
         let b7 = _mm256_unpackhi_epi64(a5, a7);
         [
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
         ]
     };
 
     // ---- row pass: lane = r, contiguous loads (input is column-major) ----
-    let mut ka = [i32x8::zero(t); 16]; // rows 0-7
-    let mut kb = [i32x8::zero(t); 16]; // rows 8-15
+    let mut ka = [i32x8::zero_t(t); 16]; // rows 0-7
+    let mut kb = [i32x8::zero_t(t); 16]; // rows 8-15
     for c in 0..16usize {
         let base = c * 16;
         let (a, b) = match (input.get(base..base + 8), input.get(base + 8..base + 16)) {
             (Some(a), Some(b)) => (a, b),
             _ => return false,
         };
-        ka[c] = clampv(t, i32x8::from_slice(t, a), row_clamp);
-        kb[c] = clampv(t, i32x8::from_slice(t, b), row_clamp);
+        ka[c] = clampv(t, i32x8::from_slice_t(t, a), row_clamp);
+        kb[c] = clampv(t, i32x8::from_slice_t(t, b), row_clamp);
     }
-    let mut wa = [i32x8::zero(t); 16];
-    let mut wb = [i32x8::zero(t); 16];
+    let mut wa = [i32x8::zero_t(t); 16];
+    let mut wb = [i32x8::zero_t(t); 16];
     incant!(run_inv1d(kr, &ka, &mut wa, cos_bit, sr_row), [v3, neon]);
     incant!(run_inv1d(kr, &kb, &mut wb, cos_bit, sr_row), [v3, neon]);
     for i in 0..16usize {
@@ -1692,8 +1692,8 @@ fn inv_16x16_fused(
     // Column pass input: `ci_lo[r]` holds columns 0-7 of row r, `ci_hi[r]`
     // columns 8-15. Under lr_flip output column c reads buf column 15-c, so the
     // halves exchange AND reverse — the same shape as the fused 16x16 forward.
-    let mut cilo = [i32x8::zero(t); 16];
-    let mut cihi = [i32x8::zero(t); 16];
+    let mut cilo = [i32x8::zero_t(t); 16];
+    let mut cihi = [i32x8::zero_t(t); 16];
     for r in 0..16usize {
         let (l, h) = if r < 8 {
             (pa[r], pb[r])
@@ -1708,8 +1708,8 @@ fn inv_16x16_fused(
         cilo[r] = clampv(t, l, col_clamp);
         cihi[r] = clampv(t, h, col_clamp);
     }
-    let mut colo = [i32x8::zero(t); 16];
-    let mut cohi = [i32x8::zero(t); 16];
+    let mut colo = [i32x8::zero_t(t); 16];
+    let mut cohi = [i32x8::zero_t(t); 16];
     incant!(run_inv1d(kc, &cilo, &mut colo, cos_bit, sr_col), [v3, neon]);
     incant!(run_inv1d(kc, &cihi, &mut cohi, cos_bit, sr_col), [v3, neon]);
     for i in 0..16usize {
@@ -1718,10 +1718,10 @@ fn inv_16x16_fused(
     }
 
     // ---- reconstruction ----
-    let zero = i32x8::zero(t);
+    let zero = i32x8::zero_t(t);
     match output {
         InvDst::U16(output) => {
-            let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
+            let pix_hi = i32x8::splat_t(t, (1i32 << bd) - 1);
             for r in 0..16usize {
                 let src_i = if ud_flip { 15 - r } else { r };
                 let idx = r * stride;
@@ -1729,8 +1729,8 @@ fn inv_16x16_fused(
                     Some(d) => d,
                     None => return false,
                 };
-                let dl = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
-                let dh = i32x8::from_array(t, core::array::from_fn(|j| d[j + 8] as i32));
+                let dl = i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32));
+                let dh = i32x8::from_array_t(t, core::array::from_fn(|j| d[j + 8] as i32));
                 let sl = (dl + colo[src_i]).clamp(zero, pix_hi).to_array();
                 let sh = (dh + cohi[src_i]).clamp(zero, pix_hi).to_array();
                 for j in 0..8 {
@@ -1740,7 +1740,7 @@ fn inv_16x16_fused(
             }
         }
         InvDst::U8(output) => {
-            let pix_hi = i32x8::splat(t, 255);
+            let pix_hi = i32x8::splat_t(t, 255);
             for r in 0..16usize {
                 let src_i = if ud_flip { 15 - r } else { r };
                 let idx = r * stride;
@@ -1748,8 +1748,8 @@ fn inv_16x16_fused(
                     Some(d) => d,
                     None => return false,
                 };
-                let dl = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
-                let dh = i32x8::from_array(t, core::array::from_fn(|j| d[j + 8] as i32));
+                let dl = i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32));
+                let dh = i32x8::from_array_t(t, core::array::from_fn(|j| d[j + 8] as i32));
                 let sl = (dl + colo[src_i]).clamp(zero, pix_hi).to_array();
                 let sh = (dh + cohi[src_i]).clamp(zero, pix_hi).to_array();
                 for j in 0..8 {
@@ -1911,15 +1911,15 @@ fn inv_8x8_fused(
     let cos_bit = crate::transform::inv_txfm2d::INV_COS_BIT;
 
     // ---- row pass: lane = r, and the loads are already contiguous ----
-    let mut k = [i32x8::zero(t); 8];
+    let mut k = [i32x8::zero_t(t); 8];
     for (c, kc_) in k.iter_mut().enumerate() {
         let v = match input.get(c * 8..c * 8 + 8) {
-            Some(sl) => i32x8::from_slice(t, sl),
+            Some(sl) => i32x8::from_slice_t(t, sl),
             None => return false,
         };
         *kc_ = clampv(t, v, row_clamp);
     }
-    let mut w = [i32x8::zero(t); 8];
+    let mut w = [i32x8::zero_t(t); 8];
     incant!(run_inv1d(kr, &k, &mut w, cos_bit, sr_row), [v3, neon]);
     for x in w.iter_mut() {
         *x = rshiftv(t, *x, 1); // -shift[0], shift[0] == -1
@@ -1944,31 +1944,31 @@ fn inv_8x8_fused(
     let u6 = _mm256_unpacklo_epi64(t5, t7);
     let u7 = _mm256_unpackhi_epi64(t5, t7);
     let tr: [i32x8; 8] = [
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u0, u4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u1, u5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u2, u6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u3, u7)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u0, u4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u1, u5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u2, u6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u3, u7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u0, u4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u1, u5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u2, u6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u3, u7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u0, u4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u1, u5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u2, u6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u3, u7)),
     ];
 
     // ---- column pass: lane = output column ----
-    let mut ci = [i32x8::zero(t); 8];
+    let mut ci = [i32x8::zero_t(t); 8];
     for (i, x) in ci.iter_mut().enumerate() {
         let v = if lr_flip { revv(t, tr[i]) } else { tr[i] };
         *x = clampv(t, v, col_clamp);
     }
-    let mut co = [i32x8::zero(t); 8];
+    let mut co = [i32x8::zero_t(t); 8];
     incant!(run_inv1d(kc, &ci, &mut co, cos_bit, sr_col), [v3, neon]);
     for x in co.iter_mut() {
         *x = rshiftv(t, *x, 4); // -shift[1], shift[1] == -4
     }
 
     // ---- reconstruction ----
-    let zero = i32x8::zero(t);
-    let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
+    let zero = i32x8::zero_t(t);
+    let pix_hi = i32x8::splat_t(t, (1i32 << bd) - 1);
     for r in 0..8usize {
         let src = co[if ud_flip { 7 - r } else { r }];
         let idx = r * stride;
@@ -1976,7 +1976,7 @@ fn inv_8x8_fused(
             Some(d) => d,
             None => return false,
         };
-        let dv = i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32));
+        let dv = i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32));
         let s = (dv + src).clamp(zero, pix_hi).to_array();
         for (j, &sv) in s.iter().enumerate() {
             output[idx + j] = sv as u16;
@@ -4045,8 +4045,8 @@ fn inv_row_pass(
 ) -> bool {
     debug_assert!(col_n <= 64 && (row_n.is_multiple_of(8) || row_n == 4));
     if col_n <= 8 {
-        let mut tin = [i32x8::zero(t); 8];
-        let mut tout = [i32x8::zero(t); 8];
+        let mut tin = [i32x8::zero_t(t); 8];
+        let mut tout = [i32x8::zero_t(t); 8];
         incant!(
             inv_row_pass_core(
                 kernel,
@@ -4064,8 +4064,8 @@ fn inv_row_pass(
             [v3, neon]
         );
     } else if col_n <= 16 {
-        let mut tin = [i32x8::zero(t); 16];
-        let mut tout = [i32x8::zero(t); 16];
+        let mut tin = [i32x8::zero_t(t); 16];
+        let mut tout = [i32x8::zero_t(t); 16];
         incant!(
             inv_row_pass_core(
                 kernel,
@@ -4083,8 +4083,8 @@ fn inv_row_pass(
             [v3, neon]
         );
     } else {
-        let mut tin = [i32x8::zero(t); 64];
-        let mut tout = [i32x8::zero(t); 64];
+        let mut tin = [i32x8::zero_t(t); 64];
+        let mut tout = [i32x8::zero_t(t); 64];
         incant!(
             inv_row_pass_core(
                 kernel,
@@ -4151,12 +4151,12 @@ fn inv_row_pass_core(
         let active = (row_n - rg).min(8); // 8, or 4 (row_n == 4)
         for (c, ti) in tin[..col_n].iter_mut().enumerate() {
             let mut v = if active == 8 {
-                i32x8::from_slice(t, &mod_input[c * row_n + rg..c * row_n + rg + 8])
+                i32x8::from_slice_t(t, &mod_input[c * row_n + rg..c * row_n + rg + 8])
             } else {
                 let a: [i32; 4] = mod_input[c * row_n + rg..c * row_n + rg + 4]
                     .try_into()
                     .unwrap();
-                i32x8::from_array(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
+                i32x8::from_array_t(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
             };
             if rect1 {
                 // round_shift(x * NewInvSqrt2, NewSqrt2Bits) — the rect scaling.
@@ -4288,21 +4288,21 @@ fn fwd_rect816_fused(
         let b6 = _mm256_unpacklo_epi64(a5, a7);
         let b7 = _mm256_unpackhi_epi64(a5, a7);
         [
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
         ]
     };
 
     // ---- column pass: lane = column, one vector per column group ----
-    let mut w = [[i32x8::zero(t); 16]; 2];
+    let mut w = [[i32x8::zero_t(t); 16]; 2];
     for cg in 0..cg_n {
-        let mut v = [i32x8::zero(t); 16];
+        let mut v = [i32x8::zero_t(t); 16];
         for r in 0..row_n {
             let src_r = if ud_flip { row_n - 1 - r } else { r };
             let base = src_r * stride + cg * 8;
@@ -4310,10 +4310,10 @@ fn fwd_rect816_fused(
                 Some(a) => a,
                 None => return false,
             };
-            let x = i32x8::from_array(t, core::array::from_fn(|j| a[j] as i32));
+            let x = i32x8::from_array_t(t, core::array::from_fn(|j| a[j] as i32));
             v[r] = shl_clamp64v(t, x, 2);
         }
-        let mut o = [i32x8::zero(t); 16];
+        let mut o = [i32x8::zero_t(t); 16];
         incant!(
             run_fwd1d(kc, &v[..row_n], &mut o[..row_n], cos_bit_col, &sr),
             [v3, neon]
@@ -4324,7 +4324,7 @@ fn fwd_rect816_fused(
     }
 
     // ---- transpose: CG * RG blocks -> (column, row-group) ----
-    let mut tt = [[i32x8::zero(t); 16]; 2]; // tt[rg][c], lane = r within group rg
+    let mut tt = [[i32x8::zero_t(t); 16]; 2]; // tt[rg][c], lane = r within group rg
     for cg in 0..cg_n {
         for rg in 0..rg_n {
             let blk = tr8(&w[cg][rg * 8..rg * 8 + 8]);
@@ -4336,7 +4336,7 @@ fn fwd_rect816_fused(
 
     // ---- row pass: one call per row group ----
     for rg in 0..rg_n {
-        let mut ri = [i32x8::zero(t); 16];
+        let mut ri = [i32x8::zero_t(t); 16];
         for p in 0..col_n {
             ri[p] = if lr_flip {
                 tt[rg][col_n - 1 - p]
@@ -4344,7 +4344,7 @@ fn fwd_rect816_fused(
                 tt[rg][p]
             };
         }
-        let mut u = [i32x8::zero(t); 16];
+        let mut u = [i32x8::zero_t(t); 16];
         incant!(
             run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr),
             [v3, neon]
@@ -4497,7 +4497,7 @@ fn fwd_rect48_fused(
     }
 
     // Lane = column; lanes >= col_n stay zero and are never stored.
-    let mut v = [i32x8::zero(t); 8];
+    let mut v = [i32x8::zero_t(t); 8];
     for r in 0..row_n {
         let src_r = if ud_flip { row_n - 1 - r } else { r };
         let base = src_r * stride;
@@ -4505,14 +4505,14 @@ fn fwd_rect48_fused(
             Some(sl) => sl,
             None => return false,
         };
-        let w = i32x8::from_array(
+        let w = i32x8::from_array_t(
             t,
             core::array::from_fn(|j| if j < col_n { sl[j] as i32 } else { 0 }),
         );
         v[r] = shl_clamp64v(t, w, 2);
     }
 
-    let mut w = [i32x8::zero(t); 8];
+    let mut w = [i32x8::zero_t(t); 8];
     incant!(
         run_fwd1d(kc, &v[..row_n], &mut w[..row_n], cos_bit_col, &sr),
         [v3, neon]
@@ -4540,23 +4540,23 @@ fn fwd_rect48_fused(
     let b6 = _mm256_unpacklo_epi64(a5, a7);
     let b7 = _mm256_unpackhi_epi64(a5, a7);
     let tr: [i32x8; 8] = [
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
     ];
 
     // `lr_flip` as an array-order reversal — see the doc comment.
-    let mut ri = [i32x8::zero(t); 8];
+    let mut ri = [i32x8::zero_t(t); 8];
     for p in 0..col_n {
         ri[p] = if lr_flip { tr[col_n - 1 - p] } else { tr[p] };
     }
 
-    let mut u = [i32x8::zero(t); 8];
+    let mut u = [i32x8::zero_t(t); 8];
     incant!(
         run_fwd1d(kr, &ri[..col_n], &mut u[..col_n], cos_bit_row, &sr),
         [v3, neon]
@@ -4712,20 +4712,20 @@ fn fwd_16x16_fused(
         let b6 = _mm256_unpacklo_epi64(a5, a7);
         let b7 = _mm256_unpackhi_epi64(a5, a7);
         [
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-            i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+            i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
         ]
     };
 
     // ---- column pass: lane = column, two vectors per row ----
-    let mut vlo = [i32x8::zero(t); 16];
-    let mut vhi = [i32x8::zero(t); 16];
+    let mut vlo = [i32x8::zero_t(t); 16];
+    let mut vhi = [i32x8::zero_t(t); 16];
     for r in 0..16usize {
         let src_r = if ud_flip { 15 - r } else { r };
         let base = src_r * stride;
@@ -4733,13 +4733,13 @@ fn fwd_16x16_fused(
             Some(a) => a,
             None => return false,
         };
-        let lo = i32x8::from_array(t, core::array::from_fn(|j| a[j] as i32));
-        let hi = i32x8::from_array(t, core::array::from_fn(|j| a[j + 8] as i32));
+        let lo = i32x8::from_array_t(t, core::array::from_fn(|j| a[j] as i32));
+        let hi = i32x8::from_array_t(t, core::array::from_fn(|j| a[j + 8] as i32));
         vlo[r] = shl_clamp64v(t, lo, 2);
         vhi[r] = shl_clamp64v(t, hi, 2);
     }
-    let mut wlo = [i32x8::zero(t); 16];
-    let mut whi = [i32x8::zero(t); 16];
+    let mut wlo = [i32x8::zero_t(t); 16];
+    let mut whi = [i32x8::zero_t(t); 16];
     incant!(run_fwd1d(kc, &vlo, &mut wlo, cos_bit_col, &sr), [v3, neon]);
     incant!(run_fwd1d(kc, &vhi, &mut whi, cos_bit_col, &sr), [v3, neon]);
 
@@ -4763,8 +4763,8 @@ fn fwd_16x16_fused(
     let tc = tr8(&whi[0..8]); // cols 8-15, rows 0-7
     let td = tr8(&whi[8..16]); // cols 8-15, rows 8-15
 
-    let mut ga = [i32x8::zero(t); 16];
-    let mut gb = [i32x8::zero(t); 16];
+    let mut ga = [i32x8::zero_t(t); 16];
+    let mut gb = [i32x8::zero_t(t); 16];
     for c in 0..8usize {
         ga[c] = ta[c];
         ga[c + 8] = tc[c];
@@ -4773,8 +4773,8 @@ fn fwd_16x16_fused(
     }
 
     // ---- row pass: lane = row, one call per 8-row group ----
-    let mut ua = [i32x8::zero(t); 16];
-    let mut ub = [i32x8::zero(t); 16];
+    let mut ua = [i32x8::zero_t(t); 16];
+    let mut ub = [i32x8::zero_t(t); 16];
     incant!(run_fwd1d(kr, &ga, &mut ua, cos_bit_row, &sr), [v3, neon]);
     incant!(run_fwd1d(kr, &gb, &mut ub, cos_bit_row, &sr), [v3, neon]);
 
@@ -5602,7 +5602,7 @@ fn fwd_8x8_fused(
 
     // Lane = column. `shift[0] == 2` -> the NEGATIVE-bit arm of
     // `round_shift_array`, i.e. a clamped left shift, same as `fwd_col_pass`.
-    let mut v = [i32x8::zero(t); 8];
+    let mut v = [i32x8::zero_t(t); 8];
     for (r, vr) in v.iter_mut().enumerate() {
         let src_r = if ud_flip { 7 - r } else { r };
         let base = src_r * stride;
@@ -5610,7 +5610,7 @@ fn fwd_8x8_fused(
             Some(a) => a,
             None => return false,
         };
-        let w = i32x8::from_array(
+        let w = i32x8::from_array_t(
             t,
             [
                 a[0] as i32,
@@ -5626,7 +5626,7 @@ fn fwd_8x8_fused(
         *vr = shl_clamp64v(t, w, 2);
     }
 
-    let mut w = [i32x8::zero(t); 8];
+    let mut w = [i32x8::zero_t(t); 8];
     incant!(run_fwd1d(kc, &v, &mut w, cos_bit_col, &sr), [v3, neon]);
 
     // `round_shift_array(_, -shift[1])` with shift[1] == -1, then the lr flip:
@@ -5657,17 +5657,17 @@ fn fwd_8x8_fused(
     let u6 = _mm256_unpacklo_epi64(t5, t7);
     let u7 = _mm256_unpackhi_epi64(t5, t7);
     let tr: [i32x8; 8] = [
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u0, u4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u1, u5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u2, u6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x20>(u3, u7)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u0, u4)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u1, u5)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u2, u6)),
-        i32x8::from_repr(t, _mm256_permute2x128_si256::<0x31>(u3, u7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u0, u4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u1, u5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u2, u6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x20>(u3, u7)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u0, u4)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u1, u5)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u2, u6)),
+        i32x8::from_repr_t(t, _mm256_permute2x128_si256::<0x31>(u3, u7)),
     ];
 
-    let mut u = [i32x8::zero(t); 8];
+    let mut u = [i32x8::zero_t(t); 8];
     incant!(run_fwd1d(kr, &tr, &mut u, cos_bit_row, &sr), [v3, neon]);
 
     // shift[2] == 0 and rect_type == 0, so no tail. `output[k*8 + r]` is
@@ -7498,7 +7498,7 @@ fn fwd_16x16_fused_i16_w16(
     // the 8-lane version does.
     let bound = FWD16_I16_BOUND[fwd16_idx(kc)][fwd16_idx(kr)];
     let mut mx = _mm256_setzero_si256();
-    let mut rows = [i16x16::zero(t); 16];
+    let mut rows = [i16x16::zero_t(t); 16];
     for (r, v) in rows.iter_mut().enumerate() {
         let src = if ud_flip { 15 - r } else { r };
         let row: &[i16; 16] = match input
@@ -7520,7 +7520,7 @@ fn fwd_16x16_fused_i16_w16(
     // Column pass; `round_shift_16bit_w16(shift[1] = -2)` is `adds(_, 2)` +
     // `srai 2` — `mulhrs16(v, 1<<13)` == `(v + 2) >> 2` exactly (rshift_mul's
     // proof covers bit 2).
-    let mut col = [i16x16::zero(t); 16];
+    let mut col = [i16x16::zero_t(t); 16];
     incant!(
         run_fwd1d_i16(k16(kc), &rows, &mut col, cos_bit_col),
         [v3, neon]
@@ -7558,7 +7558,7 @@ fn fwd_16x16_fused_i16_w16(
     };
     let tlo = tr8x8(<&[__m256i; 8]>::try_from(&tt[..8]).unwrap());
     let thi = tr8x8(<&[__m256i; 8]>::try_from(&tt[8..]).unwrap());
-    let mut buf = [i16x16::zero(t); 16];
+    let mut buf = [i16x16::zero_t(t); 16];
     for i in 0..8 {
         buf[i] = i16x16_of_m256(t, tlo[i]);
         buf[8 + i] = i16x16_of_m256(t, thi[i]);
@@ -7569,7 +7569,7 @@ fn fwd_16x16_fused_i16_w16(
     }
 
     // Row pass; shift[2] == 0 for 16x16 — widen straight into the output.
-    let mut outv = [i16x16::zero(t); 16];
+    let mut outv = [i16x16::zero_t(t); 16];
     incant!(
         run_fwd1d_i16(k16(kr), &buf, &mut outv, cos_bit_row),
         [v3, neon]
@@ -8669,8 +8669,8 @@ fn fwd_col_pass(
 ) -> bool {
     debug_assert!(row_n <= 64 && (col_n.is_multiple_of(8) || col_n == 4));
     if row_n <= 8 {
-        let mut tin = [i32x8::zero(t); 8];
-        let mut tout = [i32x8::zero(t); 8];
+        let mut tin = [i32x8::zero_t(t); 8];
+        let mut tout = [i32x8::zero_t(t); 8];
         incant!(
             fwd_col_pass_core(
                 kernel,
@@ -8690,8 +8690,8 @@ fn fwd_col_pass(
             [v3, neon]
         );
     } else if row_n <= 16 {
-        let mut tin = [i32x8::zero(t); 16];
-        let mut tout = [i32x8::zero(t); 16];
+        let mut tin = [i32x8::zero_t(t); 16];
+        let mut tout = [i32x8::zero_t(t); 16];
         incant!(
             fwd_col_pass_core(
                 kernel,
@@ -8711,8 +8711,8 @@ fn fwd_col_pass(
             [v3, neon]
         );
     } else {
-        let mut tin = [i32x8::zero(t); 64];
-        let mut tout = [i32x8::zero(t); 64];
+        let mut tin = [i32x8::zero_t(t); 64];
+        let mut tout = [i32x8::zero_t(t); 64];
         incant!(
             fwd_col_pass_core(
                 kernel,
@@ -8769,7 +8769,7 @@ fn fwd_col_pass_core(
                 // and only `active` lanes are stored. So a half batch computes
                 // the same values for its live columns as a full one.
                 let a: [i16; 4] = input[off..off + 4].try_into().unwrap();
-                i32x8::from_array(
+                i32x8::from_array_t(
                     t,
                     [
                         a[0] as i32,
@@ -8947,8 +8947,8 @@ fn fwd_row_pass(
 ) -> bool {
     debug_assert!(col_n <= 64 && row_n.is_multiple_of(8));
     if col_n <= 8 {
-        let mut tin = [i32x8::zero(t); 8];
-        let mut tout = [i32x8::zero(t); 8];
+        let mut tin = [i32x8::zero_t(t); 8];
+        let mut tout = [i32x8::zero_t(t); 8];
         incant!(
             fwd_row_pass_core(
                 kernel,
@@ -8965,8 +8965,8 @@ fn fwd_row_pass(
             [v3, neon]
         );
     } else if col_n <= 16 {
-        let mut tin = [i32x8::zero(t); 16];
-        let mut tout = [i32x8::zero(t); 16];
+        let mut tin = [i32x8::zero_t(t); 16];
+        let mut tout = [i32x8::zero_t(t); 16];
         incant!(
             fwd_row_pass_core(
                 kernel,
@@ -8983,8 +8983,8 @@ fn fwd_row_pass(
             [v3, neon]
         );
     } else {
-        let mut tin = [i32x8::zero(t); 64];
-        let mut tout = [i32x8::zero(t); 64];
+        let mut tin = [i32x8::zero_t(t); 64];
+        let mut tout = [i32x8::zero_t(t); 64];
         incant!(
             fwd_row_pass_core(
                 kernel,
@@ -9026,16 +9026,16 @@ fn fwd_row_pass_core(
         // (contiguous row loads), per-lane gather for the W=4 tail.
         let full = col_n & !7;
         for cg in (0..full).step_by(8) {
-            let mut rows = [i32x8::zero(t); 8];
+            let mut rows = [i32x8::zero_t(t); 8];
             for (k, rk) in rows.iter_mut().enumerate() {
                 let base = (rg + k) * col_n + cg;
-                *rk = i32x8::from_slice(t, &buf[base..base + 8]);
+                *rk = i32x8::from_slice_t(t, &buf[base..base + 8]);
             }
             let tr = transpose8(t, &rows);
             tin[cg..cg + 8].copy_from_slice(&tr);
         }
         for c in full..col_n {
-            tin[c] = i32x8::from_array(t, core::array::from_fn(|k| buf[(rg + k) * col_n + c]));
+            tin[c] = i32x8::from_array_t(t, core::array::from_fn(|k| buf[(rg + k) * col_n + c]));
         }
         incant!(
             run_fwd1d(kernel, &tin[..col_n], &mut tout[..col_n], cos_bit_row, &sr),
@@ -9101,8 +9101,8 @@ fn inv_col_pass(
 ) -> bool {
     debug_assert!(row_n <= 64 && (col_n.is_multiple_of(8) || col_n == 4));
     if row_n <= 8 {
-        let mut tin = [i32x8::zero(t); 8];
-        let mut tout = [i32x8::zero(t); 8];
+        let mut tin = [i32x8::zero_t(t); 8];
+        let mut tout = [i32x8::zero_t(t); 8];
         incant!(
             inv_col_pass_core(
                 kernel,
@@ -9123,8 +9123,8 @@ fn inv_col_pass(
             [v3, neon]
         );
     } else if row_n <= 16 {
-        let mut tin = [i32x8::zero(t); 16];
-        let mut tout = [i32x8::zero(t); 16];
+        let mut tin = [i32x8::zero_t(t); 16];
+        let mut tout = [i32x8::zero_t(t); 16];
         incant!(
             inv_col_pass_core(
                 kernel,
@@ -9145,8 +9145,8 @@ fn inv_col_pass(
             [v3, neon]
         );
     } else {
-        let mut tin = [i32x8::zero(t); 64];
-        let mut tout = [i32x8::zero(t); 64];
+        let mut tin = [i32x8::zero_t(t); 64];
+        let mut tout = [i32x8::zero_t(t); 64];
         incant!(
             inv_col_pass_core(
                 kernel,
@@ -9217,8 +9217,8 @@ fn inv_col_pass_core(
     tin: &mut [I32x8<Token>],
     tout: &mut [I32x8<Token>],
 ) {
-    let zero = i32x8::zero(t);
-    let pix_hi = i32x8::splat(t, (1i32 << bd) - 1);
+    let zero = i32x8::zero_t(t);
+    let pix_hi = i32x8::splat_t(t, (1i32 << bd) - 1);
     let mut c = 0usize;
     while c < col_n {
         let active = (col_n - c).min(8); // 8, or 4 (col_n == 4)
@@ -9230,17 +9230,17 @@ fn inv_col_pass_core(
             let v = if active == 8 {
                 if lr_flip {
                     let base = r * col_n + (col_n - c - 8);
-                    revv(t, i32x8::from_slice(t, &buf[base..base + 8]))
+                    revv(t, i32x8::from_slice_t(t, &buf[base..base + 8]))
                 } else {
                     let base = r * col_n + c;
-                    i32x8::from_slice(t, &buf[base..base + 8])
+                    i32x8::from_slice_t(t, &buf[base..base + 8])
                 }
             } else {
                 let a: [i32; 4] = buf[r * col_n..r * col_n + 4].try_into().unwrap();
                 if lr_flip {
-                    i32x8::from_array(t, [a[3], a[2], a[1], a[0], 0, 0, 0, 0])
+                    i32x8::from_array_t(t, [a[3], a[2], a[1], a[0], 0, 0, 0, 0])
                 } else {
-                    i32x8::from_array(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
+                    i32x8::from_array_t(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
                 }
             };
             *ti = clampv(t, v, col_clamp); // the driver's clamp_buf
@@ -9267,10 +9267,10 @@ fn inv_col_pass_core(
             let idx = r * stride + c;
             let dv = if active == 8 {
                 let d: [u16; 8] = output[idx..idx + 8].try_into().unwrap();
-                i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32))
+                i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32))
             } else {
                 let d: [u16; 4] = output[idx..idx + 4].try_into().unwrap();
-                i32x8::from_array(
+                i32x8::from_array_t(
                     t,
                     [
                         d[0] as i32,
@@ -9390,8 +9390,8 @@ fn inv_col_pass_u8(
 ) -> bool {
     debug_assert!(row_n <= 64 && (col_n.is_multiple_of(8) || col_n == 4));
     if row_n <= 8 {
-        let mut tin = [i32x8::zero(t); 8];
-        let mut tout = [i32x8::zero(t); 8];
+        let mut tin = [i32x8::zero_t(t); 8];
+        let mut tout = [i32x8::zero_t(t); 8];
         incant!(
             inv_col_pass_u8_core(
                 kernel,
@@ -9411,8 +9411,8 @@ fn inv_col_pass_u8(
             [v3, neon]
         );
     } else if row_n <= 16 {
-        let mut tin = [i32x8::zero(t); 16];
-        let mut tout = [i32x8::zero(t); 16];
+        let mut tin = [i32x8::zero_t(t); 16];
+        let mut tout = [i32x8::zero_t(t); 16];
         incant!(
             inv_col_pass_u8_core(
                 kernel,
@@ -9432,8 +9432,8 @@ fn inv_col_pass_u8(
             [v3, neon]
         );
     } else {
-        let mut tin = [i32x8::zero(t); 64];
-        let mut tout = [i32x8::zero(t); 64];
+        let mut tin = [i32x8::zero_t(t); 64];
+        let mut tout = [i32x8::zero_t(t); 64];
         incant!(
             inv_col_pass_u8_core(
                 kernel,
@@ -9499,8 +9499,8 @@ fn inv_col_pass_u8_core(
     tin: &mut [I32x8<Token>],
     tout: &mut [I32x8<Token>],
 ) {
-    let zero = i32x8::zero(t);
-    let pix_hi = i32x8::splat(t, 255); // (1<<8)-1
+    let zero = i32x8::zero_t(t);
+    let pix_hi = i32x8::splat_t(t, 255); // (1<<8)-1
     let mut c = 0usize;
     while c < col_n {
         let active = (col_n - c).min(8);
@@ -9508,17 +9508,17 @@ fn inv_col_pass_u8_core(
             let v = if active == 8 {
                 if lr_flip {
                     let base = r * col_n + (col_n - c - 8);
-                    revv(t, i32x8::from_slice(t, &buf[base..base + 8]))
+                    revv(t, i32x8::from_slice_t(t, &buf[base..base + 8]))
                 } else {
                     let base = r * col_n + c;
-                    i32x8::from_slice(t, &buf[base..base + 8])
+                    i32x8::from_slice_t(t, &buf[base..base + 8])
                 }
             } else {
                 let a: [i32; 4] = buf[r * col_n..r * col_n + 4].try_into().unwrap();
                 if lr_flip {
-                    i32x8::from_array(t, [a[3], a[2], a[1], a[0], 0, 0, 0, 0])
+                    i32x8::from_array_t(t, [a[3], a[2], a[1], a[0], 0, 0, 0, 0])
                 } else {
-                    i32x8::from_array(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
+                    i32x8::from_array_t(t, [a[0], a[1], a[2], a[3], 0, 0, 0, 0])
                 }
             };
             *ti = clampv(t, v, col_clamp);
@@ -9542,10 +9542,10 @@ fn inv_col_pass_u8_core(
             let idx = r * stride + c;
             let dv = if active == 8 {
                 let d: [u8; 8] = output[idx..idx + 8].try_into().unwrap();
-                i32x8::from_array(t, core::array::from_fn(|j| d[j] as i32))
+                i32x8::from_array_t(t, core::array::from_fn(|j| d[j] as i32))
             } else {
                 let d: [u8; 4] = output[idx..idx + 4].try_into().unwrap();
-                i32x8::from_array(
+                i32x8::from_array_t(
                     t,
                     [
                         d[0] as i32,
@@ -9801,11 +9801,11 @@ mod tests {
         label: &str,
     ) {
         let n = case.size;
-        let mut vin = vec![i32x8::zero(t); n];
+        let mut vin = vec![i32x8::zero_t(t); n];
         for (r, c) in cols.iter().enumerate() {
-            vin[r] = i32x8::from_array(t, *c);
+            vin[r] = i32x8::from_array_t(t, *c);
         }
-        let mut vout = vec![i32x8::zero(t); n];
+        let mut vout = vec![i32x8::zero_t(t); n];
         incant!(
             run_kernel(case.simd, &vin, &mut vout, cos_bit, stage_range),
             [v3, neon]

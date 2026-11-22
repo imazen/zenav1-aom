@@ -2081,13 +2081,7 @@ pub fn is_dv_valid(
     // Wavefront constraint: use only the top-left area of the frame as reference.
     let gradient = 1 + INTRABC_DELAY_SB64 + (sb_size > 64) as i32;
     let wf_offset = gradient * (active_sb_row - src_sb_row);
-    if src_sb_row > active_sb_row
-        || src_sb64_col >= active_sb64_col - INTRABC_DELAY_SB64 + wf_offset
-    {
-        return false;
-    }
-
-    true
+    src_sb_row <= active_sb_row && src_sb64_col < active_sb64_col - INTRABC_DELAY_SB64 + wf_offset
 }
 
 /// `assign_dv`'s post-`read_mv` logic (`decodemv.c`) + the `dv_ref`

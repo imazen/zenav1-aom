@@ -77,7 +77,7 @@ use magetypes::simd::generic::{i16x16, i32x8};
 /// exact (`i16::MIN` — the one value whose negation wraps — is unreachable).
 #[inline(always)]
 pub(crate) fn negv16<T: I16x16Backend>(t: T, v: i16x16<T>) -> i16x16<T> {
-    i16x16::zero(t) - v
+    i16x16::zero_t(t) - v
 }
 
 /// Max |lane| of an i16 block, as the FORWARD column pass's runtime gate.
@@ -169,11 +169,11 @@ mod x86 {
         let cw = _mm256_set1_epi32((((w1 as u32) & 0xffff) << 16 | ((w0 as u32) & 0xffff)) as i32);
         let rnd = _mm256_set1_epi32(1 << 11);
         P32 {
-            lo: i32x8::from_m256i(
+            lo: i32x8::from_raw_t(
                 t,
                 _mm256_srai_epi32::<12>(_mm256_add_epi32(_mm256_madd_epi16(u.lo, cw), rnd)),
             ),
-            hi: i32x8::from_m256i(
+            hi: i32x8::from_raw_t(
                 t,
                 _mm256_srai_epi32::<12>(_mm256_add_epi32(_mm256_madd_epi16(u.hi, cw), rnd)),
             ),
@@ -208,7 +208,7 @@ mod x86 {
         let cnt = _mm_cvtsi32_si128(bit);
         let lo = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(u.lo, cw), rnd), cnt);
         let hi = _mm256_sra_epi32(_mm256_add_epi32(_mm256_madd_epi16(u.hi, cw), rnd), cnt);
-        i16x16::from_m256i(t, _mm256_packs_epi32(lo, hi))
+        i16x16::from_raw_t(t, _mm256_packs_epi32(lo, hi))
     }
 
     /// `clamp_value(v, 16)` + narrow of an unpack-order i32 pair: per-128-lane
@@ -218,7 +218,7 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn pack16(t: X64V3Token, p: P32) -> V16 {
         use core::arch::x86_64::*;
-        i16x16::from_m256i(t, _mm256_packs_epi32(p.lo.raw(), p.hi.raw()))
+        i16x16::from_raw_t(t, _mm256_packs_epi32(p.lo.raw(), p.hi.raw()))
     }
 
     /// Sign-extend an i16x16 into an unpack-order i32 pair (for clamp adds
@@ -230,8 +230,8 @@ mod x86 {
         use core::arch::x86_64::*;
         let sign = _mm256_cmpgt_epi16(_mm256_setzero_si256(), v.raw());
         P32 {
-            lo: i32x8::from_m256i(t, _mm256_unpacklo_epi16(v.raw(), sign)),
-            hi: i32x8::from_m256i(t, _mm256_unpackhi_epi16(v.raw(), sign)),
+            lo: i32x8::from_raw_t(t, _mm256_unpacklo_epi16(v.raw(), sign)),
+            hi: i32x8::from_raw_t(t, _mm256_unpackhi_epi16(v.raw(), sign)),
         }
     }
 
@@ -241,7 +241,7 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn sadd16(t: X64V3Token, a: V16, b: V16) -> V16 {
         use core::arch::x86_64::*;
-        i16x16::from_m256i(t, _mm256_adds_epi16(a.raw(), b.raw()))
+        i16x16::from_raw_t(t, _mm256_adds_epi16(a.raw(), b.raw()))
     }
 
     /// `clamp_value(a - b, 16)` for two i16-domain values (also serves
@@ -249,7 +249,7 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn ssub16(t: X64V3Token, a: V16, b: V16) -> V16 {
         use core::arch::x86_64::*;
-        i16x16::from_m256i(t, _mm256_subs_epi16(a.raw(), b.raw()))
+        i16x16::from_raw_t(t, _mm256_subs_epi16(a.raw(), b.raw()))
     }
 
     /// i32-pair add (exact: operands are <= 17-bit transients / sign-extended
@@ -279,7 +279,7 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn mulhrs16(t: X64V3Token, v: V16, m: i16) -> V16 {
         use core::arch::x86_64::*;
-        i16x16::from_m256i(t, _mm256_mulhrs_epi16(v.raw(), _mm256_set1_epi16(m)))
+        i16x16::from_raw_t(t, _mm256_mulhrs_epi16(v.raw(), _mm256_set1_epi16(m)))
     }
 
     /// Gather+clamp: two natural-order i32x8 values -> `clamp_value(_, 16)`
@@ -290,7 +290,7 @@ mod x86 {
     pub(crate) fn pack_clamp16(t: X64V3Token, a: V32, b: V32) -> V16 {
         use core::arch::x86_64::*;
         let p = _mm256_packs_epi32(a.raw(), b.raw());
-        i16x16::from_m256i(t, _mm256_permute4x64_epi64::<0b1101_1000>(p))
+        i16x16::from_raw_t(t, _mm256_permute4x64_epi64::<0b1101_1000>(p))
     }
 
     /// Reverse all 16 lanes (lr_flip on a full column group).
@@ -302,7 +302,7 @@ mod x86 {
             14, 15, 12, 13, 10, 11, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1,
         );
         let r = _mm256_shuffle_epi8(v.raw(), m);
-        i16x16::from_m256i(t, _mm256_permute4x64_epi64::<0b0100_1110>(r))
+        i16x16::from_raw_t(t, _mm256_permute4x64_epi64::<0b0100_1110>(r))
     }
 
     /// Sign-extend lanes 0-7 of an i16x16 to a natural-order i32x8
@@ -310,14 +310,14 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn widen_lo(t: X64V3Token, v: V16) -> V32 {
         use core::arch::x86_64::*;
-        i32x8::from_m256i(t, _mm256_cvtepi16_epi32(_mm256_castsi256_si128(v.raw())))
+        i32x8::from_raw_t(t, _mm256_cvtepi16_epi32(_mm256_castsi256_si128(v.raw())))
     }
 
     /// Sign-extend lanes 8-15 of an i16x16 to a natural-order i32x8.
     #[rite(v3)]
     pub(crate) fn widen_hi(t: X64V3Token, v: V16) -> V32 {
         use core::arch::x86_64::*;
-        i32x8::from_m256i(
+        i32x8::from_raw_t(
             t,
             _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(v.raw())),
         )
@@ -330,13 +330,13 @@ mod x86 {
     #[rite(v3)]
     pub(crate) fn add_store_u8(t: X64V3Token, res: V16, dst: &mut [u8; 16]) {
         use core::arch::x86_64::*;
-        let d16 = _mm256_cvtepu8_epi16(u8x16::load(t, dst).raw());
+        let d16 = _mm256_cvtepu8_epi16(u8x16::load_t(t, dst).raw());
         let sum = _mm256_add_epi16(res.raw(), d16);
         let packed = _mm_packus_epi16(
             _mm256_castsi256_si128(sum),
             _mm256_extracti128_si256::<1>(sum),
         );
-        u8x16::from_m128i(t, packed).store(dst);
+        u8x16::from_raw_t(t, packed).store(dst);
     }
 }
 
@@ -441,7 +441,7 @@ mod neon {
             let hi = vmlal_high_n_s16(vmull_high_n_s16(x, c0), y, c1);
             vqmovn_high_s32(vqmovn_s32(vrshlq_s32(lo, sh)), vrshlq_s32(hi, sh))
         };
-        i16x16::from_repr(t, [half(u.x[0], u.y[0]), half(u.x[1], u.y[1])])
+        i16x16::from_repr_t(t, [half(u.x[0], u.y[0]), half(u.x[1], u.y[1])])
     }
 
     /// `clamp_value(v, 16)` + narrow of a natural-order i32 quad:
@@ -450,7 +450,7 @@ mod neon {
     /// natural.
     #[rite(neon)]
     pub(crate) fn pack16(t: NeonToken, p: P32) -> V16 {
-        i16x16::from_repr(
+        i16x16::from_repr_t(
             t,
             [
                 vqmovn_high_s32(vqmovn_s32(p.0[0]), p.0[1]),
@@ -480,7 +480,7 @@ mod neon {
     #[rite(neon)]
     pub(crate) fn sadd16(t: NeonToken, a: V16, b: V16) -> V16 {
         let (x, y) = (a.into_repr(), b.into_repr());
-        i16x16::from_repr(t, [vqaddq_s16(x[0], y[0]), vqaddq_s16(x[1], y[1])])
+        i16x16::from_repr_t(t, [vqaddq_s16(x[0], y[0]), vqaddq_s16(x[1], y[1])])
     }
 
     /// `clamp_value(a - b, 16)` for two i16-domain values (also serves
@@ -488,7 +488,7 @@ mod neon {
     #[rite(neon)]
     pub(crate) fn ssub16(t: NeonToken, a: V16, b: V16) -> V16 {
         let (x, y) = (a.into_repr(), b.into_repr());
-        i16x16::from_repr(t, [vqsubq_s16(x[0], y[0]), vqsubq_s16(x[1], y[1])])
+        i16x16::from_repr_t(t, [vqsubq_s16(x[0], y[0]), vqsubq_s16(x[1], y[1])])
     }
 
     /// i32-quad add (exact: operands are <= 17-bit transients / sign-extended
@@ -515,7 +515,7 @@ mod neon {
     pub(crate) fn mulhrs16(t: NeonToken, v: V16, m: i16) -> V16 {
         let a = v.into_repr();
         let mv = vdupq_n_s16(m);
-        i16x16::from_repr(t, [vqrdmulhq_s16(a[0], mv), vqrdmulhq_s16(a[1], mv)])
+        i16x16::from_repr_t(t, [vqrdmulhq_s16(a[0], mv), vqrdmulhq_s16(a[1], mv)])
     }
 
     /// Gather+clamp: two natural-order i32x8 values -> `clamp_value(_, 16)`
@@ -524,7 +524,7 @@ mod neon {
     #[rite(neon)]
     pub(crate) fn pack_clamp16(t: NeonToken, a: V32, b: V32) -> V16 {
         let (x, y) = (a.into_repr(), b.into_repr());
-        i16x16::from_repr(
+        i16x16::from_repr_t(
             t,
             [
                 vqmovn_high_s32(vqmovn_s32(x[0]), x[1]),
@@ -544,7 +544,7 @@ mod neon {
             let r = vrev64q_s16(x);
             vextq_s16::<4>(r, r)
         };
-        i16x16::from_repr(t, [rev8(a[1]), rev8(a[0])])
+        i16x16::from_repr_t(t, [rev8(a[1]), rev8(a[0])])
     }
 
     /// Sign-extend lanes 0-7 of an i16x16 to a natural-order i32x8 (`sshll`) —
@@ -552,14 +552,14 @@ mod neon {
     #[rite(neon)]
     pub(crate) fn widen_lo(t: NeonToken, v: V16) -> V32 {
         let a = v.into_repr();
-        i32x8::from_repr(t, [vmovl_s16(vget_low_s16(a[0])), vmovl_high_s16(a[0])])
+        i32x8::from_repr_t(t, [vmovl_s16(vget_low_s16(a[0])), vmovl_high_s16(a[0])])
     }
 
     /// Sign-extend lanes 8-15 of an i16x16 to a natural-order i32x8.
     #[rite(neon)]
     pub(crate) fn widen_hi(t: NeonToken, v: V16) -> V32 {
         let a = v.into_repr();
-        i32x8::from_repr(t, [vmovl_s16(vget_low_s16(a[1])), vmovl_high_s16(a[1])])
+        i32x8::from_repr_t(t, [vmovl_s16(vget_low_s16(a[1])), vmovl_high_s16(a[1])])
     }
 
     /// `dst[j] = (dst[j] + res[j]).clamp(0, 255)` over 16 pixels. Exact: `res`
@@ -568,7 +568,7 @@ mod neon {
     /// saturating narrow IS the [0, 255] pixel clamp.
     #[rite(neon)]
     pub(crate) fn add_store_u8(t: NeonToken, res: V16, dst: &mut [u8; 16]) {
-        let d = u8x16::load(t, dst).into_repr();
+        let d = u8x16::load_t(t, dst).into_repr();
         let d16 = [
             vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(d))),
             vreinterpretq_s16_u16(vmovl_high_u8(d)),
@@ -576,7 +576,7 @@ mod neon {
         let r = res.into_repr();
         let s0 = vaddq_s16(r[0], d16[0]);
         let s1 = vaddq_s16(r[1], d16[1]);
-        u8x16::from_repr(t, vqmovun_high_s16(vqmovun_s16(s0), s1)).store(dst);
+        u8x16::from_repr_t(t, vqmovun_high_s16(vqmovun_s16(s0), s1)).store(dst);
     }
 }
 

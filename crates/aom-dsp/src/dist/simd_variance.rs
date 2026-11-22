@@ -61,19 +61,19 @@ pub(crate) fn highbd_variance64_impl(
     );
     let widen = |s: &[u16]| -> i32x8 {
         let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
-        i32x8::from_array(token, arr)
+        i32x8::from_array_t(token, arr)
     };
     let mut tsum: i64 = 0;
     let mut tsse: u64 = 0;
     for y in 0..h {
         let ra = y * a_stride;
         let rb = y * b_stride;
-        let mut sum_v = i32x8::zero(token);
+        let mut sum_v = i32x8::zero_t(token);
         // Squares accumulate in i32 lanes: two's-complement adds are
         // bit-identical to the u32 adds the scalar performs, and the final
         // `as u32` reinterpretation recovers the exact row total (< 2^31,
         // per the module-doc bound, so no reduce wrap either).
-        let mut sse_v = i32x8::zero(token);
+        let mut sse_v = i32x8::zero_t(token);
         for c in (0..w).step_by(8) {
             let d = widen(&a[ra + c..ra + c + 8]) - widen(&b[rb + c..rb + c + 8]);
             sum_v += d;
@@ -126,17 +126,17 @@ pub(crate) fn sse_u16_u8_impl(
     );
     let widen_a = |s: &[u16]| -> i32x8 {
         let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
-        i32x8::from_array(token, arr)
+        i32x8::from_array_t(token, arr)
     };
     let widen_b = |s: &[u8]| -> i32x8 {
         let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
-        i32x8::from_array(token, arr)
+        i32x8::from_array_t(token, arr)
     };
     let mut tsse: i64 = 0;
     for y in 0..h {
         let ra = y * a_stride;
         let rb = y * b_stride;
-        let mut sse_v = i32x8::zero(token);
+        let mut sse_v = i32x8::zero_t(token);
         for c in (0..w).step_by(8) {
             let d = widen_a(&a[ra + c..ra + c + 8]) - widen_b(&b[rb + c..rb + c + 8]);
             sse_v += d * d;
@@ -380,13 +380,13 @@ pub(crate) fn sse_u8_impl(
     );
     let widen = |s: &[u8]| -> i32x8 {
         let arr: [i32; 8] = core::array::from_fn(|k| s[k] as i32);
-        i32x8::from_array(token, arr)
+        i32x8::from_array_t(token, arr)
     };
     let mut tsse: i64 = 0;
     for y in 0..h {
         let ra = y * a_stride;
         let rb = y * b_stride;
-        let mut sse_v = i32x8::zero(token);
+        let mut sse_v = i32x8::zero_t(token);
         for c in (0..w).step_by(8) {
             let d = widen(&a[ra + c..ra + c + 8]) - widen(&b[rb + c..rb + c + 8]);
             sse_v += d * d;

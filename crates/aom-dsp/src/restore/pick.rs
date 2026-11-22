@@ -543,7 +543,7 @@ fn acc_stat_line_impl<P: LrPixel>(
     // `restore::wiener` already uses; the lane VALUES are the scalar tier's.
     macro_rules! ld {
         ($s:expr, $o:expr) => {
-            i32x8::from_slice(token, &$s[$o..$o + 8])
+            i32x8::from_slice_t(token, &$s[$o..$o + 8])
         };
     }
     macro_rules! st {
@@ -584,7 +584,7 @@ fn acc_stat_line_impl<P: LrPixel>(
         );
         debug_assert_eq!(idx, wiener_win2);
         let xv = [0usize, 1, 2, 3].map(|p| {
-            i32x8::splat(
+            i32x8::splat_t(
                 token,
                 i32::from(src_row[j as usize + p].to_i16() - avg as i16),
             )
@@ -617,10 +617,10 @@ fn acc_stat_line_impl<P: LrPixel>(
         // read — and it is SLOWER: at win7 it costs 217 vector iterations per
         // pixel against 175, +24 %. Do not re-try it without that arithmetic.
         for k in 0..wiener_win2 {
-            let k0 = i32x8::splat(token, y[0][k]);
-            let k1 = i32x8::splat(token, y[1][k]);
-            let k2 = i32x8::splat(token, y[2][k]);
-            let k3 = i32x8::splat(token, y[3][k]);
+            let k0 = i32x8::splat_t(token, y[0][k]);
+            let k1 = i32x8::splat_t(token, y[1][k]);
+            let k2 = i32x8::splat_t(token, y[2][k]);
+            let k3 = i32x8::splat_t(token, y[3][k]);
             let base = k * hstride;
             let mut l = k;
             while l < wiener_win2 {
@@ -651,7 +651,7 @@ fn acc_stat_line_impl<P: LrPixel>(
         );
         debug_assert_eq!(idx, wiener_win2);
 
-        let xv = i32x8::splat(token, x);
+        let xv = i32x8::splat_t(token, x);
         let mut k = 0usize;
         while k < wiener_win2 {
             let acc = ld!(m_row, k) + ld!(y[0], k) * xv;
@@ -659,7 +659,7 @@ fn acc_stat_line_impl<P: LrPixel>(
             k += 8;
         }
         for k in 0..wiener_win2 {
-            let yk = i32x8::splat(token, y[0][k]);
+            let yk = i32x8::splat_t(token, y[0][k]);
             let base = k * hstride;
             let mut l = k;
             while l < wiener_win2 {
@@ -2017,7 +2017,7 @@ fn pixel_proj_error_impl<P: LrPixel>(
 
     let widen = |s: &[P]| -> i32x8 {
         let a: [P; 8] = s[..8].try_into().unwrap();
-        i32x8::from_array(
+        i32x8::from_array_t(
             token,
             [
                 a[0].to_i32(),
@@ -2031,11 +2031,11 @@ fn pixel_proj_error_impl<P: LrPixel>(
             ],
         )
     };
-    let ld32 = |s: &[i32]| -> i32x8 { i32x8::from_slice(token, &s[..8]) };
+    let ld32 = |s: &[i32]| -> i32x8 { i32x8::from_slice_t(token, &s[..8]) };
 
-    let half = i32x8::splat(token, 1 << (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS - 1));
-    let xq0 = i32x8::splat(token, xq[0]);
-    let xq1 = i32x8::splat(token, xq[1]);
+    let half = i32x8::splat_t(token, 1 << (SGRPROJ_RST_BITS + SGRPROJ_PRJ_BITS - 1));
+    let xq0 = i32x8::splat_t(token, xq[0]);
+    let xq1 = i32x8::splat_t(token, xq[1]);
 
     for i in 0..height {
         let dr = dat_off + i * dat_stride;

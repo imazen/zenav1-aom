@@ -43,8 +43,8 @@ pub(crate) fn txb_init_levels_impl(
     let tail = stride * width;
     levels[tail..tail + crate::txb::TX_PAD_BOTTOM * stride + crate::txb::TX_PAD_END].fill(0);
 
-    let zero = i32x8::zero(token);
-    let cap = i32x8::splat(token, i8::MAX as i32);
+    let zero = i32x8::zero_t(token);
+    let cap = i32x8::splat_t(token, i8::MAX as i32);
     // |x|.min(127) with the i32::MIN lane mapping to 127 exactly like the
     // scalar port's unsigned_abs().min(127) — see module docs.
     let abs127 = |x: i32x8| {
@@ -60,7 +60,7 @@ pub(crate) fn txb_init_levels_impl(
         debug_assert!(width.is_multiple_of(2));
         debug_assert_eq!(stride, 8, "height 4 + TX_PAD_HOR 4");
         for p in 0..width / 2 {
-            let a = abs127(i32x8::from_slice(token, &coeff[p * 8..p * 8 + 8])).to_array();
+            let a = abs127(i32x8::from_slice_t(token, &coeff[p * 8..p * 8 + 8])).to_array();
             let out = &mut levels[p * 2 * stride..p * 2 * stride + 2 * stride];
             // One 8-byte store per column instead of four byte stores plus a
             // 4-byte fill: `stride == 8` here, so each column's four levels and
@@ -78,7 +78,7 @@ pub(crate) fn txb_init_levels_impl(
         let col = &coeff[i * height..(i + 1) * height];
         let out = &mut levels[i * stride..i * stride + stride];
         for c in 0..height / 8 {
-            let a = abs127(i32x8::from_slice(token, &col[c * 8..c * 8 + 8])).to_array();
+            let a = abs127(i32x8::from_slice_t(token, &col[c * 8..c * 8 + 8])).to_array();
             // ONE 8-byte store, not eight byte stores. magetypes 0.9.28 has no
             // i32->u8 narrowing primitive (no pack/narrow/shuffle — only
             // `blend`), so libaom's `_mm256_packs_epi32` + `_mm256_packus_epi16`

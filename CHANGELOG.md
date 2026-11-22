@@ -42,6 +42,7 @@ behaviour change that follows from it — the `--cpu-used` 8/9 flat-edge transfo
 
 #### Changed
 
+- Upgraded `archmage` and `magetypes` dependencies to `0.9.33`.
 - **Pinned C oracle: libaom v3.14.1 → v3.15.1** (`44d0a577`, `ef159f4`; shims and pins
   `49bf89e`). `-DENABLE_APPS=1` is now explicit (v3.15 redefined `ENABLE_EXAMPLES`).
   Workspace result against the new oracle: 1552/1562 before any port change, 1562/1562

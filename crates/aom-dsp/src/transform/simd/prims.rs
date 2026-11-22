@@ -78,13 +78,13 @@ pub(crate) fn clampv<T: I32x8Backend>(t: T, v: i32x8<T>, bit: i8) -> i32x8<T> {
     }
     let hi = ((1i64 << (bit - 1)) - 1) as i32;
     let lo = (-(1i64 << (bit - 1))) as i32;
-    v.clamp(i32x8::splat(t, lo), i32x8::splat(t, hi))
+    v.clamp(i32x8::splat_t(t, lo), i32x8::splat_t(t, hi))
 }
 
 /// `wrapping_neg` on lanes (`0 - v` wraps identically).
 #[inline(always)]
 pub(crate) fn negv<T: I32x8Backend>(t: T, v: i32x8<T>) -> i32x8<T> {
-    i32x8::zero(t) - v
+    i32x8::zero_t(t) - v
 }
 
 /// Sign-extend 8 i16s (the forward transform's residual input) to i32 lanes.
@@ -93,7 +93,7 @@ pub(crate) fn negv<T: I32x8Backend>(t: T, v: i32x8<T>) -> i32x8<T> {
 #[inline(always)]
 pub(crate) fn widen16<T: I32x8Backend>(t: T, s: &[i16]) -> i32x8<T> {
     let a: [i16; 8] = s[..8].try_into().unwrap();
-    i32x8::from_array(t, core::array::from_fn(|j| a[j] as i32))
+    i32x8::from_array_t(t, core::array::from_fn(|j| a[j] as i32))
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ mod x86 {
             rnd,
         );
         let cnt = _mm_cvtsi32_si128(cos_bit);
-        i32x8::from_m256i(
+        i32x8::from_raw_t(
             t,
             low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)),
         )
@@ -164,7 +164,7 @@ mod x86 {
             rnd,
         );
         let cnt = _mm_cvtsi32_si128(bit);
-        i32x8::from_m256i(
+        i32x8::from_raw_t(
             t,
             low32_of_i64(_mm256_srl_epi64(lo, cnt), _mm256_srl_epi64(hi, cnt)),
         )
@@ -175,7 +175,7 @@ mod x86 {
     pub(crate) fn revv(t: X64V3Token, v: V) -> V {
         use core::arch::x86_64::*;
         let idx = _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0);
-        i32x8::from_m256i(t, _mm256_permutevar8x32_epi32(v.raw(), idx))
+        i32x8::from_raw_t(t, _mm256_permutevar8x32_epi32(v.raw(), idx))
     }
 
     /// `round_shift(v as i64 * mul, bit)` on lanes — the full-i64-product recipe
@@ -197,7 +197,7 @@ mod x86 {
         // Valid low dwords of `re` sit at dword positions 0,2,4,6 (source lanes
         // 0,2,4,6); shift `ro`'s up to 1,3,5,7 and blend.
         let out = _mm256_blend_epi32::<0b1010_1010>(re, _mm256_slli_epi64::<32>(ro));
-        i32x8::from_m256i(t, out)
+        i32x8::from_raw_t(t, out)
     }
 
     /// The NEGATIVE-bit `round_shift_array` arm on lanes: `clamp_i64(v << k)`
@@ -222,7 +222,7 @@ mod x86 {
         };
         let lo = part(_mm256_castsi256_si128(v.raw()));
         let hi = part(_mm256_extracti128_si256::<1>(v.raw()));
-        i32x8::from_m256i(t, low32_of_i64(lo, hi))
+        i32x8::from_raw_t(t, low32_of_i64(lo, hi))
     }
 
     /// 8x8 i32 in-register transpose (unpack32 → unpack64 → permute2x128, the
@@ -248,14 +248,14 @@ mod x86 {
         let b6 = _mm256_unpacklo_epi64(a5, a7);
         let b7 = _mm256_unpackhi_epi64(a5, a7);
         [
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
-            i32x8::from_m256i(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x20>(b0, b4)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x20>(b1, b5)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x20>(b2, b6)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x20>(b3, b7)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x31>(b0, b4)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x31>(b1, b5)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x31>(b2, b6)),
+            i32x8::from_raw_t(t, _mm256_permute2x128_si256::<0x31>(b3, b7)),
         ]
     }
 
@@ -326,7 +326,7 @@ mod x86 {
         let cnt = _mm_cvtsi32_si128(bit);
         let lo = _mm256_srl_epi64(_mm256_add_epi64(v.lo, rnd), cnt);
         let hi = _mm256_srl_epi64(_mm256_add_epi64(v.hi, rnd), cnt);
-        i32x8::from_m256i(t, low32_of_i64(lo, hi))
+        i32x8::from_raw_t(t, low32_of_i64(lo, hi))
     }
 }
 
@@ -380,7 +380,7 @@ mod neon {
             let hi = vaddq_s64(vmovl_high_s32(p0), vmovl_high_s32(p1));
             rnd_shr_narrow(lo, hi, rnd, sh)
         };
-        i32x8::from_repr(t, [half(a[0], b[0]), half(a[1], b[1])])
+        i32x8::from_repr_t(t, [half(a[0], b[0]), half(a[1], b[1])])
     }
 
     /// `round_shift(v as i64, bit)` on lanes for `bit` in `1..=32`.
@@ -393,7 +393,7 @@ mod neon {
         let part = |x: int32x4_t| -> int32x4_t {
             rnd_shr_narrow(vmovl_s32(vget_low_s32(x)), vmovl_high_s32(x), rnd, sh)
         };
-        i32x8::from_repr(t, [part(a[0]), part(a[1])])
+        i32x8::from_repr_t(t, [part(a[0]), part(a[1])])
     }
 
     /// Reverse the 8 lanes (for `lr_flip` column groups). `vrev64q_s32` reverses
@@ -407,7 +407,7 @@ mod neon {
             let r = vrev64q_s32(x);
             vextq_s32::<2>(r, r)
         };
-        i32x8::from_repr(t, [rev4(a[1]), rev4(a[0])])
+        i32x8::from_repr_t(t, [rev4(a[1]), rev4(a[0])])
     }
 
     /// `round_shift(v as i64 * mul, bit)` on lanes. `vmull_s32` /
@@ -431,7 +431,7 @@ mod neon {
                 sh,
             )
         };
-        i32x8::from_repr(t, [part(a[0]), part(a[1])])
+        i32x8::from_repr_t(t, [part(a[0]), part(a[1])])
     }
 
     /// The NEGATIVE-bit `round_shift_array` arm on lanes: `clamp_i64(v << k)`
@@ -450,7 +450,7 @@ mod neon {
             let hi = vshlq_s64(vmovl_high_s32(x), sh);
             vcombine_s32(vqmovn_s64(lo), vqmovn_s64(hi))
         };
-        i32x8::from_repr(t, [part(a[0]), part(a[1])])
+        i32x8::from_repr_t(t, [part(a[0]), part(a[1])])
     }
 
     /// 8x8 i32 in-register transpose — a pure lane permutation, so exactness is
@@ -483,9 +483,9 @@ mod neon {
         let hi_hi = t4(r[4][1], r[5][1], r[6][1], r[7][1]); // out 4..8, lanes 4..8
         core::array::from_fn(|i| {
             if i < 4 {
-                i32x8::from_repr(t, [lo_lo[i], lo_hi[i]])
+                i32x8::from_repr_t(t, [lo_lo[i], lo_hi[i]])
             } else {
-                i32x8::from_repr(t, [hi_lo[i - 4], hi_hi[i - 4]])
+                i32x8::from_repr_t(t, [hi_lo[i - 4], hi_hi[i - 4]])
             }
         })
     }
@@ -547,7 +547,7 @@ mod neon {
         let rnd = vdupq_n_s64(1i64 << (bit - 1));
         let sh = vdupq_n_s64(-(bit as i64));
         let q = |i: usize| vmovn_s64(vshlq_s64(vaddq_s64(v.0[i], rnd), sh));
-        i32x8::from_repr(t, [vcombine_s32(q(0), q(1)), vcombine_s32(q(2), q(3))])
+        i32x8::from_repr_t(t, [vcombine_s32(q(0), q(1)), vcombine_s32(q(2), q(3))])
     }
 }
 

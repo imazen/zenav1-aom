@@ -293,8 +293,8 @@ pub(crate) fn fwd_col_pass_i16(
     debug_assert!(shift0 == 0 || shift0 == 2);
     debug_assert!((0..=4).contains(&shift1_bit));
     if row_n <= 8 {
-        let mut tin = [i16x16::zero(t); 8];
-        let mut tout = [i16x16::zero(t); 8];
+        let mut tin = [i16x16::zero_t(t); 8];
+        let mut tout = [i16x16::zero_t(t); 8];
         incant!(
             fwd_col_pass_i16_core(
                 kernel,
@@ -314,8 +314,8 @@ pub(crate) fn fwd_col_pass_i16(
             [v3, neon]
         );
     } else if row_n <= 16 {
-        let mut tin = [i16x16::zero(t); 16];
-        let mut tout = [i16x16::zero(t); 16];
+        let mut tin = [i16x16::zero_t(t); 16];
+        let mut tout = [i16x16::zero_t(t); 16];
         incant!(
             fwd_col_pass_i16_core(
                 kernel,
@@ -335,8 +335,8 @@ pub(crate) fn fwd_col_pass_i16(
             [v3, neon]
         );
     } else {
-        let mut tin = [i16x16::zero(t); 64];
-        let mut tout = [i16x16::zero(t); 64];
+        let mut tin = [i16x16::zero_t(t); 64];
+        let mut tout = [i16x16::zero_t(t); 64];
         incant!(
             fwd_col_pass_i16_core(
                 kernel,
@@ -381,7 +381,7 @@ fn fwd_col_pass_i16_core(
         for (r, ti) in tin[..row_n].iter_mut().enumerate() {
             let src_r = if ud_flip { row_n - r - 1 } else { r };
             let base = src_r * stride + cg;
-            let v = i16x16::from_slice(t, &input[base..base + 16]);
+            let v = i16x16::from_slice_t(t, &input[base..base + 16]);
             // round_shift_array(temp_in, -shift[0]) with shift[0] in {0, 2} —
             // the NEGATIVE-bit arm, i.e. `v << shift0` (the scalar clamps to
             // i32 in i64; the gate bounds |v << shift0| <= M* < 2^15, so no
@@ -466,8 +466,8 @@ pub(crate) fn fwd_row_pass_i16(
     debug_assert!(col_n <= 64 && row_n % 16 == 0 && col_n % 8 == 0);
     debug_assert!((0..=4).contains(&shift2_bit));
     if col_n <= 8 {
-        let mut tin = [i16x16::zero(t); 8];
-        let mut tout = [i16x16::zero(t); 8];
+        let mut tin = [i16x16::zero_t(t); 8];
+        let mut tout = [i16x16::zero_t(t); 8];
         incant!(
             fwd_row_pass_i16_core(
                 kernel,
@@ -484,8 +484,8 @@ pub(crate) fn fwd_row_pass_i16(
             [v3, neon]
         );
     } else if col_n <= 16 {
-        let mut tin = [i16x16::zero(t); 16];
-        let mut tout = [i16x16::zero(t); 16];
+        let mut tin = [i16x16::zero_t(t); 16];
+        let mut tout = [i16x16::zero_t(t); 16];
         incant!(
             fwd_row_pass_i16_core(
                 kernel,
@@ -502,8 +502,8 @@ pub(crate) fn fwd_row_pass_i16(
             [v3, neon]
         );
     } else {
-        let mut tin = [i16x16::zero(t); 64];
-        let mut tout = [i16x16::zero(t); 64];
+        let mut tin = [i16x16::zero_t(t); 64];
+        let mut tout = [i16x16::zero_t(t); 64];
         incant!(
             fwd_row_pass_i16_core(
                 kernel,
@@ -545,16 +545,16 @@ fn fwd_row_pass_i16_core(
         // SATURATES, which the gate makes unreachable, so it is a pure width
         // narrowing here.
         for cg in (0..col_n).step_by(8) {
-            let mut lo = [i32x8::zero(t); 8];
+            let mut lo = [i32x8::zero_t(t); 8];
             for (k, rk) in lo.iter_mut().enumerate() {
                 let base = (rg + k) * col_n + cg;
-                *rk = i32x8::from_slice(t, &buf[base..base + 8]);
+                *rk = i32x8::from_slice_t(t, &buf[base..base + 8]);
             }
             let tlo = super::prims::transpose8(t, &lo);
-            let mut hi = [i32x8::zero(t); 8];
+            let mut hi = [i32x8::zero_t(t); 8];
             for (k, rk) in hi.iter_mut().enumerate() {
                 let base = (rg + 8 + k) * col_n + cg;
-                *rk = i32x8::from_slice(t, &buf[base..base + 8]);
+                *rk = i32x8::from_slice_t(t, &buf[base..base + 8]);
             }
             let thi = super::prims::transpose8(t, &hi);
             for j in 0..8 {
@@ -691,11 +691,11 @@ mod tests {
         cols: &[[i16; 16]],
         label: &str,
     ) {
-        let mut vin = vec![i16x16::zero(t); n];
+        let mut vin = vec![i16x16::zero_t(t); n];
         for (r, c) in cols.iter().enumerate() {
-            vin[r] = i16x16::from_array(t, *c);
+            vin[r] = i16x16::from_array_t(t, *c);
         }
-        let mut vout = vec![i16x16::zero(t); n];
+        let mut vout = vec![i16x16::zero_t(t); n];
         incant!(run_fwd1d_i16(kernel, &vin, &mut vout, cos_bit), [v3, neon]);
 
         let mut sin = vec![0i32; n];
@@ -1074,11 +1074,11 @@ mod gate_bite {
                     let cols: Vec<[i16; 16]> = (0..n)
                         .map(|_| core::array::from_fn(|_| rng.bounded(mag.min(32767))))
                         .collect();
-                    let mut vin = vec![i16x16::zero(t); n];
+                    let mut vin = vec![i16x16::zero_t(t); n];
                     for (r, c) in cols.iter().enumerate() {
-                        vin[r] = i16x16::from_array(t, *c);
+                        vin[r] = i16x16::from_array_t(t, *c);
                     }
-                    let mut vout = vec![i16x16::zero(t); n];
+                    let mut vout = vec![i16x16::zero_t(t); n];
                     incant!(run_fwd1d_i16(kernel, &vin, &mut vout, 13), [v3, neon]);
                     let (mut si, mut so) = (vec![0i32; n], vec![0i32; n]);
                     for lane in 0..16 {

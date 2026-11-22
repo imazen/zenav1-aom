@@ -382,16 +382,16 @@ fn filter_intra_edge_impl(token: Token, p: &mut [u16], sz: usize, taps: [i32; 5]
         orig[k] = p[k] as i16;
     }
 
-    let t0 = i32x8::splat(token, taps[0]);
-    let t1 = i32x8::splat(token, taps[1]);
-    let t2 = i32x8::splat(token, taps[2]);
-    let t3 = i32x8::splat(token, taps[3]);
-    let t4 = i32x8::splat(token, taps[4]);
-    let eight = i32x8::splat(token, 8);
+    let t0 = i32x8::splat_t(token, taps[0]);
+    let t1 = i32x8::splat_t(token, taps[1]);
+    let t2 = i32x8::splat_t(token, taps[2]);
+    let t3 = i32x8::splat_t(token, taps[3]);
+    let t4 = i32x8::splat_t(token, taps[4]);
+    let eight = i32x8::splat_t(token, 8);
     // 8 lanes of originals starting at `b`: `widen_low` keeps lanes 0..8 —
     // exactly the `orig[b + k]` each output lane k needs. The 16-lane load
     // reads up to `b + 15 <= i + 9 + 15 <= sz + 6 < FILTER_SCRATCH`.
-    let w8 = |b: usize| -> i32x8 { i16x16::from_slice(token, &orig[b..b + 16]).widen_low() };
+    let w8 = |b: usize| -> i32x8 { i16x16::from_slice_t(token, &orig[b..b + 16]).widen_low() };
 
     p[1] = filter_edge_out(&orig, 1, sz, &taps);
     // Interior outputs i in [2, sz-3]: an 8-chunk starting at i covers
@@ -406,14 +406,14 @@ fn filter_intra_edge_impl(token: Token, p: &mut [u16], sz: usize, taps: [i32; 5]
     // One 4-chunk: outputs i..i+3 interior iff i + 3 <= sz - 3; the 8-lane
     // loads stay < i + 9 <= sz + 3 < FILTER_SCRATCH.
     if i + 4 <= sz - 2 {
-        let q0 = i32x4::splat(token, taps[0]);
-        let q1 = i32x4::splat(token, taps[1]);
-        let q2 = i32x4::splat(token, taps[2]);
-        let q3 = i32x4::splat(token, taps[3]);
-        let q4 = i32x4::splat(token, taps[4]);
-        let w4 = |b: usize| -> i32x4 { i16x8::from_slice(token, &orig[b..b + 8]).widen_low() };
+        let q0 = i32x4::splat_t(token, taps[0]);
+        let q1 = i32x4::splat_t(token, taps[1]);
+        let q2 = i32x4::splat_t(token, taps[2]);
+        let q3 = i32x4::splat_t(token, taps[3]);
+        let q4 = i32x4::splat_t(token, taps[4]);
+        let w4 = |b: usize| -> i32x4 { i16x8::from_slice_t(token, &orig[b..b + 8]).widen_low() };
         let s = q0 * w4(i - 2) + q1 * w4(i - 1) + q2 * w4(i) + q3 * w4(i + 1) + q4 * w4(i + 2);
-        let out = (s + i32x4::splat(token, 8))
+        let out = (s + i32x4::splat_t(token, 8))
             .shr_arithmetic_const::<4>()
             .to_array();
         p[i..i + 4].copy_from_slice(&out.map(|x| x as u16));
@@ -485,19 +485,19 @@ fn upsample_intra_edge_impl(token: Token, buf: &mut [u16], off: usize, sz: usize
     inp[sz + 2] = i32::from(buf[off + sz - 1]);
     buf[off - 2] = inp[0] as u16;
 
-    let nine = i32x8::splat(token, 9);
-    let eight = i32x8::splat(token, 8);
-    let zero8 = i32x8::zero(token);
-    let max8 = i32x8::splat(token, max_v);
+    let nine = i32x8::splat_t(token, 9);
+    let eight = i32x8::splat_t(token, 8);
+    let zero8 = i32x8::zero_t(token);
+    let max8 = i32x8::splat_t(token, max_v);
 
     // Chunk of 8 filtered outputs i..i+7 reads inp[i .. i+11) — in bounds for
     // i + 10 <= sz + 2 (the padded scratch has sz + 3 live entries).
     let mut i = 0usize;
     while i + 8 <= sz {
-        let f = (-i32x8::from_slice(token, &inp[i..i + 8])
-            + nine * i32x8::from_slice(token, &inp[i + 1..i + 9])
-            + nine * i32x8::from_slice(token, &inp[i + 2..i + 10])
-            - i32x8::from_slice(token, &inp[i + 3..i + 11])
+        let f = (-i32x8::from_slice_t(token, &inp[i..i + 8])
+            + nine * i32x8::from_slice_t(token, &inp[i + 1..i + 9])
+            + nine * i32x8::from_slice_t(token, &inp[i + 2..i + 10])
+            - i32x8::from_slice_t(token, &inp[i + 3..i + 11])
             + eight)
             .shr_arithmetic_const::<4>()
             .clamp(zero8, max8)
@@ -511,14 +511,14 @@ fn upsample_intra_edge_impl(token: Token, buf: &mut [u16], off: usize, sz: usize
         i += 8;
     }
     if i + 4 <= sz {
-        let n4 = i32x4::splat(token, 9);
-        let e4 = i32x4::splat(token, 8);
-        let z4 = i32x4::zero(token);
-        let m4 = i32x4::splat(token, max_v);
-        let f = (-i32x4::from_slice(token, &inp[i..i + 4])
-            + n4 * i32x4::from_slice(token, &inp[i + 1..i + 5])
-            + n4 * i32x4::from_slice(token, &inp[i + 2..i + 6])
-            - i32x4::from_slice(token, &inp[i + 3..i + 7])
+        let n4 = i32x4::splat_t(token, 9);
+        let e4 = i32x4::splat_t(token, 8);
+        let z4 = i32x4::zero_t(token);
+        let m4 = i32x4::splat_t(token, max_v);
+        let f = (-i32x4::from_slice_t(token, &inp[i..i + 4])
+            + n4 * i32x4::from_slice_t(token, &inp[i + 1..i + 5])
+            + n4 * i32x4::from_slice_t(token, &inp[i + 2..i + 6])
+            - i32x4::from_slice_t(token, &inp[i + 3..i + 7])
             + e4)
             .shr_arithmetic_const::<4>()
             .clamp(z4, m4)

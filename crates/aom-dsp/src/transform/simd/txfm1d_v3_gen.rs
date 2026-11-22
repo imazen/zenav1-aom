@@ -25,7 +25,7 @@ pub(crate) fn av1_fdct8_impl(
     stage_range: &[i8],
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i32x8::zero(t); 8];
+    let mut step = [i32x8::zero_t(t); 8];
     out[0] = input[0] + input[7];
     out[1] = input[1] + input[6];
     out[2] = input[2] + input[5];
@@ -81,7 +81,7 @@ pub(crate) fn av1_fdct16_impl(
     stage_range: &[i8],
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i32x8::zero(t); 16];
+    let mut step = [i32x8::zero_t(t); 16];
     out[0] = input[0] + input[15];
     out[1] = input[1] + input[14];
     out[2] = input[2] + input[13];
@@ -209,7 +209,7 @@ pub(crate) fn av1_fdct32_impl(
     stage_range: &[i8],
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i32x8::zero(t); 32];
+    let mut step = [i32x8::zero_t(t); 32];
     out[0] = input[0] + input[31];
     out[1] = input[1] + input[30];
     out[2] = input[2] + input[29];
@@ -513,7 +513,7 @@ pub(crate) fn av1_fdct64_impl(
     stage_range: &[i8],
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i32x8::zero(t); 64];
+    let mut step = [i32x8::zero_t(t); 64];
     out[0] = input[0] + input[63];
     out[1] = input[1] + input[62];
     out[2] = input[2] + input[61];
@@ -1233,7 +1233,7 @@ pub(crate) fn av1_fadst8_impl(
     stage_range: &[i8],
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i32x8::zero(t); 8];
+    let mut step = [i32x8::zero_t(t); 8];
     out[0] = input[0];
     out[1] = negv(t, input[7]);
     out[2] = negv(t, input[3]);
@@ -1305,7 +1305,7 @@ pub(crate) fn av1_fadst16_impl(
     stage_range: &[i8],
 ) {
     let cospi = cospi_arr(cos_bit);
-    let mut step = [i32x8::zero(t); 16];
+    let mut step = [i32x8::zero_t(t); 16];
     out[0] = input[0];
     out[1] = negv(t, input[15]);
     out[2] = negv(t, input[7]);

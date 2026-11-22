@@ -89,13 +89,13 @@ pub(crate) fn filter_intra_predict_high_impl(
     let (bw, bh) = (TX_W[tx_size], TX_H[tx_size]);
     debug_assert!(bw <= 32 && bh <= 32);
 
-    let zero = i32x8::zero(t);
-    let maxv = i32x8::splat(t, (1i32 << bd) - 1);
-    let eight = i32x8::splat(t, 8);
+    let zero = i32x8::zero_t(t);
+    let maxv = i32x8::splat_t(t, (1i32 << bd) - 1);
+    let eight = i32x8::splat_t(t, 8);
     // The seven tap vectors for this mode, hoisted out of BOTH loops: `mode` is
     // fixed for the whole predict, so this is 7 loads per call rather than per
     // 4x2 block.
-    let tv: [i32x8; 7] = core::array::from_fn(|j| i32x8::from_slice(t, &TAPS_T[mode][j]));
+    let tv: [i32x8; 7] = core::array::from_fn(|j| i32x8::from_slice_t(t, &TAPS_T[mode][j]));
 
     // Three rows, exactly as the scalar path (KB-PERF-11): the recursion reads
     // only `r-1`, `r`, `r+1`.
@@ -141,9 +141,9 @@ pub(crate) fn filter_intra_predict_high_impl(
                 row1[c - 1] as i32,
             ];
             // lane k = output k; ascending j is the scalar loop's own order.
-            let mut acc = i32x8::splat(t, p[0]) * tv[0];
+            let mut acc = i32x8::splat_t(t, p[0]) * tv[0];
             for j in 1..7 {
-                acc += i32x8::splat(t, p[j]) * tv[j];
+                acc += i32x8::splat_t(t, p[j]) * tv[j];
             }
             let v = ((acc + eight).shr_arithmetic_const::<4>())
                 .max(zero)

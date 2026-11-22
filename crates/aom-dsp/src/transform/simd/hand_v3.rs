@@ -116,7 +116,7 @@ pub(crate) fn av1_fadst4_impl(
 ) {
     let bit = cos_bit;
     let sinpi = sinpi_arr(bit);
-    let sp = |k: usize| i32x8::splat(t, sinpi[k]);
+    let sp = |k: usize| i32x8::splat_t(t, sinpi[k]);
     let (x0, x1, x2, x3) = (input[0], input[1], input[2], input[3]);
 
     // stage 1 — wrapping i32 products (lane mul == wrapping_mul)

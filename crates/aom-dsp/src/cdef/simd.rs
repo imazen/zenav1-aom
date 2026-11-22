@@ -269,11 +269,11 @@ fn cdef_filter_16_w4_impl(
         0
     };
 
-    let zero = i16x8::zero(token);
-    let eight = i16x8::splat(token, 8);
-    let vl = i16x8::splat(token, CDEF_VERY_LARGE as i16);
-    let pri_t = i16x8::splat(token, pri_strength as i16);
-    let sec_t = i16x8::splat(token, sec_strength as i16);
+    let zero = i16x8::zero_t(token);
+    let eight = i16x8::splat_t(token, 8);
+    let vl = i16x8::splat_t(token, CDEF_VERY_LARGE as i16);
+    let pri_t = i16x8::splat_t(token, pri_strength as i16);
+    let sec_t = i16x8::splat_t(token, sec_strength as i16);
 
     let constrain_v = |d: i16x8, thr: i16x8, shift: i32| -> i16x8 {
         let m = d.shr_arithmetic_const::<15>();
@@ -289,7 +289,7 @@ fn cdef_filter_16_w4_impl(
         let mut arr = [0u16; 8];
         arr[..4].copy_from_slice(&in_buf[a..a + 4]);
         arr[4..].copy_from_slice(&in_buf[b..b + 4]);
-        u16x8::from_array(token, arr).bitcast_i16x8()
+        u16x8::from_array_t(token, arr).bitcast_i16x8()
     };
 
     let mut i = 0i32;
@@ -305,7 +305,7 @@ fn cdef_filter_16_w4_impl(
                 let p0 = load2(base + off);
                 let p1 = load2(base - off);
                 if pri_strength != 0 {
-                    let tap = i16x8::splat(token, pri_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, pri_taps[k] as i16);
                     sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
                     sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
@@ -331,7 +331,7 @@ fn cdef_filter_16_w4_impl(
                     minv = minv.min(s0).min(s1).min(s2).min(s3);
                 }
                 if sec_strength != 0 {
-                    let tap = i16x8::splat(token, sec_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, sec_taps[k] as i16);
                     sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
@@ -391,11 +391,11 @@ fn cdef_filter_16_w8_impl(
         0
     };
 
-    let zero = i16x8::zero(token);
-    let eight = i16x8::splat(token, 8);
-    let vl = i16x8::splat(token, CDEF_VERY_LARGE as i16);
-    let pri_t = i16x8::splat(token, pri_strength as i16);
-    let sec_t = i16x8::splat(token, sec_strength as i16);
+    let zero = i16x8::zero_t(token);
+    let eight = i16x8::splat_t(token, 8);
+    let vl = i16x8::splat_t(token, CDEF_VERY_LARGE as i16);
+    let pri_t = i16x8::splat_t(token, pri_strength as i16);
+    let sec_t = i16x8::splat_t(token, sec_strength as i16);
 
     // constrain() on 8 lanes: sign*(clamp(thr - (|d|>>shift), 0, |d|)).
     // (thr == 0 is handled by the caller skipping the class.)
@@ -407,7 +407,7 @@ fn cdef_filter_16_w8_impl(
     };
 
     let load = |idx: i32| -> i16x8 {
-        u16x8::from_slice(token, &in_buf[idx as usize..idx as usize + 8]).bitcast_i16x8()
+        u16x8::from_slice_t(token, &in_buf[idx as usize..idx as usize + 8]).bitcast_i16x8()
     };
 
     for i in 0..block_height as i32 {
@@ -422,7 +422,7 @@ fn cdef_filter_16_w8_impl(
                 let p0 = load(base + off);
                 let p1 = load(base - off);
                 if pri_strength != 0 {
-                    let tap = i16x8::splat(token, pri_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, pri_taps[k] as i16);
                     sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
                     sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
@@ -448,7 +448,7 @@ fn cdef_filter_16_w8_impl(
                     minv = minv.min(s0).min(s1).min(s2).min(s3);
                 }
                 if sec_strength != 0 {
-                    let tap = i16x8::splat(token, sec_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, sec_taps[k] as i16);
                     sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
@@ -671,11 +671,11 @@ fn cdef_filter_8_w4_impl(
         0
     };
 
-    let zero = i16x8::zero(token);
-    let eight = i16x8::splat(token, 8);
-    let vl = i16x8::splat(token, CDEF_VERY_LARGE as i16);
-    let pri_t = i16x8::splat(token, pri_strength as i16);
-    let sec_t = i16x8::splat(token, sec_strength as i16);
+    let zero = i16x8::zero_t(token);
+    let eight = i16x8::splat_t(token, 8);
+    let vl = i16x8::splat_t(token, CDEF_VERY_LARGE as i16);
+    let pri_t = i16x8::splat_t(token, pri_strength as i16);
+    let sec_t = i16x8::splat_t(token, sec_strength as i16);
 
     let constrain_v = |d: i16x8, thr: i16x8, shift: i32| -> i16x8 {
         let m = d.shr_arithmetic_const::<15>();
@@ -690,7 +690,7 @@ fn cdef_filter_8_w4_impl(
         let mut arr = [0u16; 8];
         arr[..4].copy_from_slice(&in_buf[a..a + 4]);
         arr[4..].copy_from_slice(&in_buf[b..b + 4]);
-        u16x8::from_array(token, arr).bitcast_i16x8()
+        u16x8::from_array_t(token, arr).bitcast_i16x8()
     };
 
     let mut i = 0i32;
@@ -706,7 +706,7 @@ fn cdef_filter_8_w4_impl(
                 let p0 = load2(base + off);
                 let p1 = load2(base - off);
                 if pri_strength != 0 {
-                    let tap = i16x8::splat(token, pri_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, pri_taps[k] as i16);
                     sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
                     sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
@@ -732,7 +732,7 @@ fn cdef_filter_8_w4_impl(
                     minv = minv.min(s0).min(s1).min(s2).min(s3);
                 }
                 if sec_strength != 0 {
-                    let tap = i16x8::splat(token, sec_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, sec_taps[k] as i16);
                     sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
@@ -793,11 +793,11 @@ fn cdef_filter_8_w8_impl(
         0
     };
 
-    let zero = i16x8::zero(token);
-    let eight = i16x8::splat(token, 8);
-    let vl = i16x8::splat(token, CDEF_VERY_LARGE as i16);
-    let pri_t = i16x8::splat(token, pri_strength as i16);
-    let sec_t = i16x8::splat(token, sec_strength as i16);
+    let zero = i16x8::zero_t(token);
+    let eight = i16x8::splat_t(token, 8);
+    let vl = i16x8::splat_t(token, CDEF_VERY_LARGE as i16);
+    let pri_t = i16x8::splat_t(token, pri_strength as i16);
+    let sec_t = i16x8::splat_t(token, sec_strength as i16);
 
     let constrain_v = |d: i16x8, thr: i16x8, shift: i32| -> i16x8 {
         let m = d.shr_arithmetic_const::<15>();
@@ -807,7 +807,7 @@ fn cdef_filter_8_w8_impl(
     };
 
     let load = |idx: i32| -> i16x8 {
-        u16x8::from_slice(token, &in_buf[idx as usize..idx as usize + 8]).bitcast_i16x8()
+        u16x8::from_slice_t(token, &in_buf[idx as usize..idx as usize + 8]).bitcast_i16x8()
     };
 
     for i in 0..block_height as i32 {
@@ -822,7 +822,7 @@ fn cdef_filter_8_w8_impl(
                 let p0 = load(base + off);
                 let p1 = load(base - off);
                 if pri_strength != 0 {
-                    let tap = i16x8::splat(token, pri_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, pri_taps[k] as i16);
                     sum += tap * constrain_v(p0 - x, pri_t, pri_shift);
                     sum += tap * constrain_v(p1 - x, pri_t, pri_shift);
                 }
@@ -848,7 +848,7 @@ fn cdef_filter_8_w8_impl(
                     minv = minv.min(s0).min(s1).min(s2).min(s3);
                 }
                 if sec_strength != 0 {
-                    let tap = i16x8::splat(token, sec_taps[k] as i16);
+                    let tap = i16x8::splat_t(token, sec_taps[k] as i16);
                     sum += tap * constrain_v(s0 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s1 - x, sec_t, sec_shift);
                     sum += tap * constrain_v(s2 - x, sec_t, sec_shift);
@@ -988,12 +988,12 @@ fn cdef_find_dir_partials_impl(
     if !(0..=7).contains(&coeff_shift) {
         return false;
     }
-    let limit = u16x8::splat(token, ((256u32 << coeff_shift) - 1) as u16);
-    let mut over = u16x8::zero(token);
-    let mut raw = [u16x8::zero(token); 8];
+    let limit = u16x8::splat_t(token, ((256u32 << coeff_shift) - 1) as u16);
+    let mut over = u16x8::zero_t(token);
+    let mut raw = [u16x8::zero_t(token); 8];
     for (i, slot) in raw.iter_mut().enumerate() {
         let o = i * stride;
-        let r = u16x8::from_slice(token, &img[o..o + 8]);
+        let r = u16x8::from_slice_t(token, &img[o..o + 8]);
         over |= r.simd_gt(limit);
         *slot = r;
     }
@@ -1002,8 +1002,8 @@ fn cdef_find_dir_partials_impl(
     }
 
     // ---- lines: (px >> cs) - 128, exactly the scalar port's `row` ----
-    let c128 = i16x8::splat(token, 128);
-    let mut line = [i16x8::zero(token); 8];
+    let c128 = i16x8::splat_t(token, 128);
+    let mut line = [i16x8::zero_t(token); 8];
     for (slot, r) in line.iter_mut().zip(raw) {
         *slot = shr_u16_by!(r, coeff_shift).bitcast_i16x8() - c128;
     }
@@ -1014,13 +1014,13 @@ fn cdef_find_dir_partials_impl(
     // the fixed-size-array conversion is in bounds by construction).
     let add8 = |acc: &mut [i16; 16], off: usize, v: i16x8| {
         let dst: &mut [i16; 8] = (&mut acc[off..off + 8]).try_into().unwrap();
-        (i16x8::load(token, &*dst) + v).store(dst);
+        (i16x8::load_t(token, &*dst) + v).store(dst);
     };
     // pf[k] = row[2k] + row[2k+1] in the low 4 lanes, 0 in the high 4 (the
     // zero lanes land on unread slots, and adding 0 is a no-op regardless).
     let fold = |v: i16x8| -> i16x8 {
         let a = v.to_array();
-        i16x8::from_array(
+        i16x8::from_array_t(
             token,
             [
                 a[0].wrapping_add(a[1]),
@@ -1035,7 +1035,7 @@ fn cdef_find_dir_partials_impl(
         )
     };
 
-    let mut a6 = i16x8::zero(token);
+    let mut a6 = i16x8::zero_t(token);
     for k in 0..4usize {
         let (i0, i1) = (2 * k, 2 * k + 1);
         let (r0, r1) = (line[i0], line[i1]);

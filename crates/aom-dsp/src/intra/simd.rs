@@ -192,21 +192,21 @@ fn smooth_impl(
         sww_i32[c] = sw_w[c] as i32;
     }
 
-    let scale_v = i32x8::splat(token, SCALE);
-    let right_v = i32x8::splat(token, right);
-    let round = i32x8::splat(token, 1 << SMOOTH_WEIGHT_LOG2_SCALE); // 1<<(9-1)=256
+    let scale_v = i32x8::splat_t(token, SCALE);
+    let right_v = i32x8::splat_t(token, right);
+    let round = i32x8::splat_t(token, 1 << SMOOTH_WEIGHT_LOG2_SCALE); // 1<<(9-1)=256
 
     for r in 0..bh {
         let wh = sw_h[r] as i32;
         let left_r = left[r] as i32;
-        let wh_v = i32x8::splat(token, wh);
-        let below_term = i32x8::splat(token, (SCALE - wh) * below);
-        let left_r_v = i32x8::splat(token, left_r);
+        let wh_v = i32x8::splat_t(token, wh);
+        let below_term = i32x8::splat_t(token, (SCALE - wh) * below);
+        let left_r_v = i32x8::splat_t(token, left_r);
         let row = r * stride;
         let mut c = 0;
         while c < full {
-            let above_v = i32x8::from_slice(token, &above_i32[c..c + 8]);
-            let ww_v = i32x8::from_slice(token, &sww_i32[c..c + 8]);
+            let above_v = i32x8::from_slice_t(token, &above_i32[c..c + 8]);
+            let ww_v = i32x8::from_slice_t(token, &sww_i32[c..c + 8]);
             // p = wh*above + (256-wh)*below + ww*left_r + (256-ww)*right
             let p = wh_v * above_v + below_term + ww_v * left_r_v + (scale_v - ww_v) * right_v;
             let out = (p + round).shr_arithmetic_const::<9>();
@@ -316,15 +316,15 @@ fn smooth_v_impl(
     for c in 0..bw {
         above_i32[c] = above_row[c] as i32;
     }
-    let round = i32x8::splat(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 1<<(8-1)=128
+    let round = i32x8::splat_t(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 1<<(8-1)=128
     for r in 0..bh {
         let w = sw_h[r] as i32;
-        let w_v = i32x8::splat(token, w);
-        let below_term = i32x8::splat(token, (SCALE - w) * below);
+        let w_v = i32x8::splat_t(token, w);
+        let below_term = i32x8::splat_t(token, (SCALE - w) * below);
         let row = r * stride;
         let mut c = 0;
         while c < full {
-            let above_v = i32x8::from_slice(token, &above_i32[c..c + 8]);
+            let above_v = i32x8::from_slice_t(token, &above_i32[c..c + 8]);
             let p = w_v * above_v + below_term;
             let out = (p + round).shr_arithmetic_const::<8>();
             let a = out.to_array();
@@ -416,16 +416,16 @@ fn smooth_h_impl(
     for c in 0..bw {
         sww_i32[c] = sw_w[c] as i32;
     }
-    let scale_v = i32x8::splat(token, SCALE);
-    let right_v = i32x8::splat(token, right);
-    let round = i32x8::splat(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
+    let scale_v = i32x8::splat_t(token, SCALE);
+    let right_v = i32x8::splat_t(token, right);
+    let round = i32x8::splat_t(token, 1 << (SMOOTH_WEIGHT_LOG2_SCALE - 1)); // 128
     for r in 0..bh {
         let left_r = left[r] as i32;
-        let left_r_v = i32x8::splat(token, left_r);
+        let left_r_v = i32x8::splat_t(token, left_r);
         let row = r * stride;
         let mut c = 0;
         while c < full {
-            let w_v = i32x8::from_slice(token, &sww_i32[c..c + 8]);
+            let w_v = i32x8::from_slice_t(token, &sww_i32[c..c + 8]);
             let p = w_v * left_r_v + (scale_v - w_v) * right_v;
             let out = (p + round).shr_arithmetic_const::<8>();
             let a = out.to_array();
@@ -534,35 +534,35 @@ fn paeth_impl(
 ) {
     let tl = top_left as u16;
     let tl2 = tl + tl; // <= 8190: no wrap
-    let tl_v = u16x16::splat(token, tl);
-    let tl2_v = u16x16::splat(token, tl2);
+    let tl_v = u16x16::splat_t(token, tl);
+    let tl2_v = u16x16::splat_t(token, tl2);
     // Loop-invariant per 16-column chunk: the above row itself and
     // `p_left = |above - tl|`. bw in {8,16,32,64} here (bw==4 early-outs).
     let n16 = bw >> 4;
-    let mut top_v = [u16x16::zero(token); 4];
-    let mut pl_v = [u16x16::zero(token); 4];
+    let mut top_v = [u16x16::zero_t(token); 4];
+    let mut pl_v = [u16x16::zero_t(token); 4];
     for (k, tv) in top_v.iter_mut().enumerate().take(n16) {
-        let t = u16x16::from_slice(token, &above_row[k * 16..k * 16 + 16]);
+        let t = u16x16::from_slice_t(token, &above_row[k * 16..k * 16 + 16]);
         *tv = t;
         pl_v[k] = t.max(tl_v) - t.min(tl_v);
     }
     // bw == 8's lane (the only tx width below 16 that reaches here).
     let top8 = if bw & 8 != 0 {
-        let t = u16x8::from_slice(token, &above_row[n16 * 16..n16 * 16 + 8]);
+        let t = u16x8::from_slice_t(token, &above_row[n16 * 16..n16 * 16 + 8]);
         Some((
             t,
-            t.max(u16x8::splat(token, tl)) - t.min(u16x8::splat(token, tl)),
+            t.max(u16x8::splat_t(token, tl)) - t.min(u16x8::splat_t(token, tl)),
         ))
     } else {
         None
     };
-    let tl8_v = u16x8::splat(token, tl);
-    let tl28_v = u16x8::splat(token, tl2);
+    let tl8_v = u16x8::splat_t(token, tl);
+    let tl28_v = u16x8::splat_t(token, tl2);
     for r in 0..bh {
         let l = left[r];
         let pt = l.abs_diff(tl); // p_top = |left - tl|
-        let lv = u16x16::splat(token, l);
-        let pt_v = u16x16::splat(token, pt);
+        let lv = u16x16::splat_t(token, l);
+        let pt_v = u16x16::splat_t(token, pt);
         let row = r * stride;
         for k in 0..n16 {
             let top = top_v[k];
@@ -579,8 +579,8 @@ fn paeth_impl(
             );
         }
         if let Some((top8, pl8)) = top8 {
-            let lv8 = u16x8::splat(token, l);
-            let pt8 = u16x8::splat(token, pt);
+            let lv8 = u16x8::splat_t(token, l);
+            let pt8 = u16x8::splat_t(token, pt);
             let sum = top8 + lv8;
             let p_tl = sum.max(tl28_v) - sum.min(tl28_v);
             let use_left = pl8.simd_le(pt8) & pl8.simd_le(p_tl);

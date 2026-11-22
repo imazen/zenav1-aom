@@ -467,25 +467,25 @@ fn calc_ab_impl(
     // (no `shr_logical_uniform` in 0.9.28). `bit_depth` is 8, 10 or 12, so
     // `shift_a` is 0/4/8 and `shift_b` is 0/2/4: each is a select over three
     // const shifts, with the masks hoisted out of the loop.
-    let all = i32x8::splat(token, -1);
-    let none = i32x8::zero(token);
+    let all = i32x8::splat_t(token, -1);
+    let none = i32x8::zero_t(token);
     let m_a4 = if shift_a >= 4 { all } else { none };
     let m_a8 = if shift_a >= 8 { all } else { none };
     let m_b2 = if shift_b >= 2 { all } else { none };
     let m_b4 = if shift_b >= 4 { all } else { none };
 
-    let nv = i32x8::splat(token, n as i32);
-    let sv = i32x8::splat(token, s as i32);
-    let obx = i32x8::splat(token, one_by_x as i32);
-    let sgr = i32x8::splat(token, SGRPROJ_SGR);
-    let half_a = i32x8::splat(token, ((1u32 << shift_a) >> 1) as i32);
-    let half_b = i32x8::splat(token, ((1u32 << shift_b) >> 1) as i32);
-    let half_z = i32x8::splat(token, ((1u32 << SGRPROJ_MTABLE_BITS) >> 1) as i32);
-    let half_r = i32x8::splat(token, ((1u32 << SGRPROJ_RECIP_BITS) >> 1) as i32);
-    let c255 = i32x8::splat(token, 255);
+    let nv = i32x8::splat_t(token, n as i32);
+    let sv = i32x8::splat_t(token, s as i32);
+    let obx = i32x8::splat_t(token, one_by_x as i32);
+    let sgr = i32x8::splat_t(token, SGRPROJ_SGR);
+    let half_a = i32x8::splat_t(token, ((1u32 << shift_a) >> 1) as i32);
+    let half_b = i32x8::splat_t(token, ((1u32 << shift_b) >> 1) as i32);
+    let half_z = i32x8::splat_t(token, ((1u32 << SGRPROJ_MTABLE_BITS) >> 1) as i32);
+    let half_r = i32x8::splat_t(token, ((1u32 << SGRPROJ_RECIP_BITS) >> 1) as i32);
+    let c255 = i32x8::splat_t(token, 255);
     // Flipping the sign bit of both operands turns signed `>=` into `>=` on the
     // u32 bit patterns — the unsigned compare `saturating_sub` needs.
-    let bias = i32x8::splat(token, i32::MIN);
+    let bias = i32x8::splat_t(token, i32::MIN);
 
     for t in 0..rows {
         let y = y0 + t * ystep;
@@ -507,14 +507,14 @@ fn calc_ab_impl(
 
         let mut o = 0usize;
         while o + 8 <= count {
-            let a_raw = (i32x8::from_slice(token, &sq_br[o..o + 8])
-                - i32x8::from_slice(token, &sq_tr[o..o + 8]))
-                - (i32x8::from_slice(token, &sq_bl[o..o + 8])
-                    - i32x8::from_slice(token, &sq_tl[o..o + 8]));
-            let b_raw = (i32x8::from_slice(token, &sm_br[o..o + 8])
-                - i32x8::from_slice(token, &sm_tr[o..o + 8]))
-                - (i32x8::from_slice(token, &sm_bl[o..o + 8])
-                    - i32x8::from_slice(token, &sm_tl[o..o + 8]));
+            let a_raw = (i32x8::from_slice_t(token, &sq_br[o..o + 8])
+                - i32x8::from_slice_t(token, &sq_tr[o..o + 8]))
+                - (i32x8::from_slice_t(token, &sq_bl[o..o + 8])
+                    - i32x8::from_slice_t(token, &sq_tl[o..o + 8]));
+            let b_raw = (i32x8::from_slice_t(token, &sm_br[o..o + 8])
+                - i32x8::from_slice_t(token, &sm_tr[o..o + 8]))
+                - (i32x8::from_slice_t(token, &sm_bl[o..o + 8])
+                    - i32x8::from_slice_t(token, &sm_tl[o..o + 8]));
 
             // a = ROUND_POWER_OF_TWO(a_raw, shift_a), b likewise, in u32.
             let xa = a_raw + half_a;
@@ -545,7 +545,7 @@ fn calc_ab_impl(
             for t in 0..8 {
                 lut[t] = X_BY_XPLUS1[(zs[t] as usize) & 255];
             }
-            let a_out = i32x8::from_slice(token, &lut[..]);
+            let a_out = i32x8::from_slice_t(token, &lut[..]);
 
             let b_out = (((sgr - a_out) * b_raw * obx) + half_r).shr_logical::<12>();
 
@@ -804,8 +804,8 @@ fn sgr_final_full_impl<P: crate::restore::pick::LrPixel>(
     height: usize,
 ) {
     const SH: u32 = (SGRPROJ_SGR_BITS + 5 - SGRPROJ_RST_BITS) as u32;
-    let rnd = i32x8::splat(token, (1i32 << SH) >> 1);
-    let c4 = i32x8::splat(token, 4);
+    let rnd = i32x8::splat_t(token, (1i32 << SH) >> 1);
+    let c4 = i32x8::splat_t(token, 4);
     for i in 0..height {
         let k0 = org + i * bs;
         let l0 = dgd_origin + i * dgd_stride;
@@ -827,27 +827,27 @@ fn sgr_final_full_impl<P: crate::restore::pick::LrPixel>(
         while j + 8 <= width {
             // cross_sum = 4*(fours + threes) - threes (the C factorization —
             // identical wrap-i32 result to 4*fours + 3*threes).
-            let fa = i32x8::from_slice(token, &a_c[j..j + 8])
-                + i32x8::from_slice(token, &a_c[j + 1..j + 9])
-                + i32x8::from_slice(token, &a_c[j + 2..j + 10])
-                + i32x8::from_slice(token, &a_u[j + 1..j + 9])
-                + i32x8::from_slice(token, &a_d[j + 1..j + 9]);
-            let ta = i32x8::from_slice(token, &a_u[j..j + 8])
-                + i32x8::from_slice(token, &a_u[j + 2..j + 10])
-                + i32x8::from_slice(token, &a_d[j..j + 8])
-                + i32x8::from_slice(token, &a_d[j + 2..j + 10]);
+            let fa = i32x8::from_slice_t(token, &a_c[j..j + 8])
+                + i32x8::from_slice_t(token, &a_c[j + 1..j + 9])
+                + i32x8::from_slice_t(token, &a_c[j + 2..j + 10])
+                + i32x8::from_slice_t(token, &a_u[j + 1..j + 9])
+                + i32x8::from_slice_t(token, &a_d[j + 1..j + 9]);
+            let ta = i32x8::from_slice_t(token, &a_u[j..j + 8])
+                + i32x8::from_slice_t(token, &a_u[j + 2..j + 10])
+                + i32x8::from_slice_t(token, &a_d[j..j + 8])
+                + i32x8::from_slice_t(token, &a_d[j + 2..j + 10]);
             let va = (fa + ta) * c4 - ta;
-            let fb = i32x8::from_slice(token, &b_c[j..j + 8])
-                + i32x8::from_slice(token, &b_c[j + 1..j + 9])
-                + i32x8::from_slice(token, &b_c[j + 2..j + 10])
-                + i32x8::from_slice(token, &b_u[j + 1..j + 9])
-                + i32x8::from_slice(token, &b_d[j + 1..j + 9]);
-            let tb = i32x8::from_slice(token, &b_u[j..j + 8])
-                + i32x8::from_slice(token, &b_u[j + 2..j + 10])
-                + i32x8::from_slice(token, &b_d[j..j + 8])
-                + i32x8::from_slice(token, &b_d[j + 2..j + 10]);
+            let fb = i32x8::from_slice_t(token, &b_c[j..j + 8])
+                + i32x8::from_slice_t(token, &b_c[j + 1..j + 9])
+                + i32x8::from_slice_t(token, &b_c[j + 2..j + 10])
+                + i32x8::from_slice_t(token, &b_u[j + 1..j + 9])
+                + i32x8::from_slice_t(token, &b_d[j + 1..j + 9]);
+            let tb = i32x8::from_slice_t(token, &b_u[j..j + 8])
+                + i32x8::from_slice_t(token, &b_u[j + 2..j + 10])
+                + i32x8::from_slice_t(token, &b_d[j..j + 8])
+                + i32x8::from_slice_t(token, &b_d[j + 2..j + 10]);
             let vb = (fb + tb) * c4 - tb;
-            let src = i32x8::from_array(token, core::array::from_fn(|t| drow[j + t].to_i32()));
+            let src = i32x8::from_array_t(token, core::array::from_fn(|t| drow[j + t].to_i32()));
             let w = (va * src + vb + rnd).shr_arithmetic_const::<9>();
             w.store((&mut dout[j..j + 8]).try_into().unwrap());
             j += 8;
@@ -909,9 +909,9 @@ fn sgr_final_fast_impl<P: crate::restore::pick::LrPixel>(
 ) {
     const SH_EVEN: u32 = (SGRPROJ_SGR_BITS + 5 - SGRPROJ_RST_BITS) as u32;
     const SH_ODD: u32 = (SGRPROJ_SGR_BITS + 4 - SGRPROJ_RST_BITS) as u32;
-    let rnd_even = i32x8::splat(token, (1i32 << SH_EVEN) >> 1);
-    let rnd_odd = i32x8::splat(token, (1i32 << SH_ODD) >> 1);
-    let c5 = i32x8::splat(token, 5);
+    let rnd_even = i32x8::splat_t(token, (1i32 << SH_EVEN) >> 1);
+    let rnd_odd = i32x8::splat_t(token, (1i32 << SH_ODD) >> 1);
+    let c5 = i32x8::splat_t(token, 5);
     for i in 0..height {
         let k0 = org + i * bs;
         let l0 = dgd_origin + i * dgd_stride;
@@ -933,21 +933,22 @@ fn sgr_final_fast_impl<P: crate::restore::pick::LrPixel>(
             // even row: sixes = x_t + x_b, fives = the four corners;
             // cross = 6*sixes + 5*fives = 5*(fives + sixes) + sixes.
             while j + 8 <= width {
-                let sa = i32x8::from_slice(token, &a_u[j + 1..j + 9])
-                    + i32x8::from_slice(token, &a_d[j + 1..j + 9]);
-                let fa = i32x8::from_slice(token, &a_u[j..j + 8])
-                    + i32x8::from_slice(token, &a_d[j..j + 8])
-                    + i32x8::from_slice(token, &a_u[j + 2..j + 10])
-                    + i32x8::from_slice(token, &a_d[j + 2..j + 10]);
+                let sa = i32x8::from_slice_t(token, &a_u[j + 1..j + 9])
+                    + i32x8::from_slice_t(token, &a_d[j + 1..j + 9]);
+                let fa = i32x8::from_slice_t(token, &a_u[j..j + 8])
+                    + i32x8::from_slice_t(token, &a_d[j..j + 8])
+                    + i32x8::from_slice_t(token, &a_u[j + 2..j + 10])
+                    + i32x8::from_slice_t(token, &a_d[j + 2..j + 10]);
                 let va = (fa + sa) * c5 + sa;
-                let sb = i32x8::from_slice(token, &b_u[j + 1..j + 9])
-                    + i32x8::from_slice(token, &b_d[j + 1..j + 9]);
-                let fb = i32x8::from_slice(token, &b_u[j..j + 8])
-                    + i32x8::from_slice(token, &b_d[j..j + 8])
-                    + i32x8::from_slice(token, &b_u[j + 2..j + 10])
-                    + i32x8::from_slice(token, &b_d[j + 2..j + 10]);
+                let sb = i32x8::from_slice_t(token, &b_u[j + 1..j + 9])
+                    + i32x8::from_slice_t(token, &b_d[j + 1..j + 9]);
+                let fb = i32x8::from_slice_t(token, &b_u[j..j + 8])
+                    + i32x8::from_slice_t(token, &b_d[j..j + 8])
+                    + i32x8::from_slice_t(token, &b_u[j + 2..j + 10])
+                    + i32x8::from_slice_t(token, &b_d[j + 2..j + 10]);
                 let vb = (fb + sb) * c5 + sb;
-                let src = i32x8::from_array(token, core::array::from_fn(|t| drow[j + t].to_i32()));
+                let src =
+                    i32x8::from_array_t(token, core::array::from_fn(|t| drow[j + t].to_i32()));
                 let w = (va * src + vb + rnd_even).shr_arithmetic_const::<9>();
                 w.store((&mut dout[j..j + 8]).try_into().unwrap());
                 j += 8;
@@ -961,15 +962,16 @@ fn sgr_final_fast_impl<P: crate::restore::pick::LrPixel>(
         } else {
             // odd row: sixes = x, fives = x_l + x_r.
             while j + 8 <= width {
-                let sa = i32x8::from_slice(token, &a_c[j + 1..j + 9]);
-                let fa = i32x8::from_slice(token, &a_c[j..j + 8])
-                    + i32x8::from_slice(token, &a_c[j + 2..j + 10]);
+                let sa = i32x8::from_slice_t(token, &a_c[j + 1..j + 9]);
+                let fa = i32x8::from_slice_t(token, &a_c[j..j + 8])
+                    + i32x8::from_slice_t(token, &a_c[j + 2..j + 10]);
                 let va = (fa + sa) * c5 + sa;
-                let sb = i32x8::from_slice(token, &b_c[j + 1..j + 9]);
-                let fb = i32x8::from_slice(token, &b_c[j..j + 8])
-                    + i32x8::from_slice(token, &b_c[j + 2..j + 10]);
+                let sb = i32x8::from_slice_t(token, &b_c[j + 1..j + 9]);
+                let fb = i32x8::from_slice_t(token, &b_c[j..j + 8])
+                    + i32x8::from_slice_t(token, &b_c[j + 2..j + 10]);
                 let vb = (fb + sb) * c5 + sb;
-                let src = i32x8::from_array(token, core::array::from_fn(|t| drow[j + t].to_i32()));
+                let src =
+                    i32x8::from_array_t(token, core::array::from_fn(|t| drow[j + t].to_i32()));
                 let w = (va * src + vb + rnd_odd).shr_arithmetic_const::<8>();
                 w.store((&mut dout[j..j + 8]).try_into().unwrap());
                 j += 8;

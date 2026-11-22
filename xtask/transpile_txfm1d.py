@@ -143,7 +143,7 @@ def transpile(path):
                  '#[allow(unused_variables)]',
                  f'pub(crate) fn {name}_impl(t: Token, input: &[I32x8<Token>], out: &mut [I32x8<Token>], cos_bit: i32, stage_range: &[i8]) {{',
                  f'    let cospi = cospi_arr(cos_bit);',
-                 f'    let mut step = [i32x8::zero(t); {size}];',
+                 f'    let mut step = [i32x8::zero_t(t); {size}];',
                  *body,
                  '}']
     else:
@@ -327,7 +327,7 @@ def transpile16(path):
            f'pub(crate) fn {name}_i16_impl(t: Token, input: &[I16x16<Token>], out: &mut [I16x16<Token>]) {{',
            '    let cospi = cospi_arr(12);']
     if step_used[0]:
-        hdr.append(f'    let mut step = [i16x16::zero(t); {size}];')
+        hdr.append(f'    let mut step = [i16x16::zero_t(t); {size}];')
     return '\n'.join(hdr + body + ['}'])
 
 
@@ -463,7 +463,7 @@ def transpile16f(path):
            'out: &mut [I16x16<Token>], cos_bit: i32) {',
            '    let cospi = cospi_arr(cos_bit);']
     if step_used[0]:
-        hdr.append(f'    let mut step = [i16x16::zero(t); {size}];')
+        hdr.append(f'    let mut step = [i16x16::zero_t(t); {size}];')
     return '\n'.join(hdr + body + ['}'])
 
 
